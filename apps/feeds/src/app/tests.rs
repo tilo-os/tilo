@@ -1480,7 +1480,8 @@ fn the_sidebar_shortcut_collapses_and_expands_the_sidebar() {
 
 /// In a half-width window, where the sidebar is a screen of its own, the
 /// window bar's Show sidebar brings it up from the article list: the places
-/// are not reachable only through Back.
+/// are not reachable only through Back. The places' screen then holds Back to
+/// the list it covered, and the toggle stands aside for it.
 #[test]
 fn show_sidebar_brings_up_the_places_in_a_half_width_window() {
     let libraries: [(fn() -> FeedsApp, u32); 2] = [(FeedsApp::new, 640), (app, 640)];
@@ -1506,10 +1507,22 @@ fn show_sidebar_brings_up_the_places_in_a_half_width_window() {
             mounted.shell().is_sidebar_open(),
             "Show sidebar showed the places {width} wide"
         );
+        let bar = ui::window_toolbar::declared().expect("the window bar declares its slots");
         assert_eq!(
-            ui::window_toolbar::declared().and_then(|bar| bar.sidebar),
-            Some(true),
-            "the bar's toggle now hides it {width} wide"
+            bar.sidebar, None,
+            "the places' screen holds Back instead of the toggle {width} wide"
+        );
+        assert!(
+            bar.leading
+                .iter()
+                .any(|action| action.id == ui::widget::WINDOW_BACK),
+            "one leading control, the way back {width} wide: {bar:?}"
+        );
+        Framed::harness_mut(&mut mounted).press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
+        settle(&mut mounted);
+        assert!(
+            !mounted.shell().is_sidebar_open(),
+            "Back returns to the list the places covered {width} wide"
         );
     }
 }

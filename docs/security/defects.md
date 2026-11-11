@@ -635,10 +635,9 @@ pressure, and the frozen RPM set would then be resolved against an unrecorded ba
 **Fix direction:** mirror the base into `registry.tilo.so/tilo/fedora-bootc` and pin against the
 mirror — the same shape `os/Containerfile.rpms` + `snapshot-rpms` already use for packages, since
 our registry collects nothing. Copy with the multi-arch index intact. Fixed on this branch: the
-`mirror-base` workflow plus `os/base-snapshot.env` (`BASE_REF`), consumed as a `--build-arg` by
-every Containerfile that builds on it. The workflow has since been replaced by
-`os/dev/ensure-base-mirror.sh`; `BASE_REF` in `os/base-snapshot.env` still pins
-`registry.tilo.so/tilo/fedora-bootc` by digest.
+`mirror-base` workflow plus `os/base-snapshot.env` (`BASE_REF`), consumed by every Containerfile
+as a `--build-arg`. The workflow has since been replaced by `os/dev/ensure-base-mirror.sh`;
+`BASE_REF` in `os/base-snapshot.env` still pins `registry.tilo.so/tilo/fedora-bootc` by digest.
 
 Two adjacent holes in the same guarantee were found alongside it:
 

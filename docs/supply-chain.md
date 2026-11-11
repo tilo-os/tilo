@@ -266,17 +266,16 @@ operate it. Companion to `docs/security/design-rationale.md`.
   kernel pins once stable has published them. The ensure step refuses a `BASE_SOURCE`
   whose digest no longer matches the pin, so a silent major bump fails closed
   instead of shipping.
-  The server images that ship without a bootc base (the relay, the agent host,
-  the front door, the VM host) run on `fedora-minimal` instead, pinned by digest
-  from `registry.fedoraproject.org`, which keeps the digests quay.io prunes.
-  Their runtime packages come from the same frozen snapshot as the OS, so all of
-  them share one base and one package set; `tools/ci/publish/relay-build.sh`,
-  `agent-host-build.sh`, `front-door-build.sh` and `vm-host-build.sh` are the
-  build path they share. Their programs are compiled by t
-  (`relay-binaries`, `front-door-binaries`, `vm-host-binaries`, all through
-  tools/ci/publish/server-binaries.sh) and the images only package the result, so
-  no image build compiles Rust: a change costs that crate's compile and a
-  layering run.
+  The server images that ship without a bootc base (the relay, the front door,
+  the VM host) run on `fedora-minimal` instead, pinned by digest from
+  `registry.fedoraproject.org`, which keeps the digests quay.io prunes. Their
+  runtime packages come from the same frozen snapshot as the OS, so all of them
+  share one base and one package set; `tools/ci/publish/relay-build.sh`,
+  `front-door-build.sh` and `vm-host-build.sh` are the build path they share.
+  The front door's and the VM host's programs are compiled by t
+  (`front-door-binaries`, `vm-host-binaries`, tools/ci/publish/server-binaries.sh)
+  and the images only package the result, so no image build compiles Rust: a
+  change costs that crate's compile and a layering run.
 - **Persistent GitHub input cache.** Every GitHub-hosted tarball, source
   snapshot, catalogue, and license consumed by the OS image is declared once
   in `os/external-assets/github-assets.tsv` with an immutable URL and SHA-256.

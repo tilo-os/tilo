@@ -40,8 +40,8 @@ pub(crate) trait RecordSource: Send + Sync + 'static {
     /// The workspace is not held here, or its documents cannot be listed.
     fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String>;
 
-    /// What `workspace` holds of `app`'s `record` now, or `None` when there
-    /// is nothing new to read or the device may not read it.
+    /// What `workspace` holds of `app`'s `record` now, or `None` while the keys that open it
+    /// are not here.
     ///
     /// # Errors
     /// The record cannot be read now.
@@ -148,6 +148,9 @@ pub(crate) struct RecordIndex {
     content: Option<Arc<AppContentIndex>>,
     /// The records to read, each once however often it changed.
     queued: Mutex<BTreeSet<(String, String, String)>>,
+    /// The records whose keys were not here when they were read: read again once the channels
+    /// settled.
+    sealed: Mutex<BTreeSet<(String, String, String)>>,
     /// Wakes the worker: a record is waiting.
     wake: std::sync::mpsc::Sender<()>,
     /// What a change of a record reached besides the index: the one stream the roles that follow
@@ -171,6 +174,7 @@ impl RecordIndex {
             reader,
             content,
             queued: Mutex::new(BTreeSet::new()),
+            sealed: Mutex::new(BTreeSet::new()),
             wake,
             changes,
         });
@@ -190,13 +194,13 @@ impl RecordIndex {
         if let Err(error) = started {
             tracing::warn!(%error, "the records are not indexed");
         }
-        index.sweep();
         index
     }
 
-    /// Read what this device already holds, once: the records of every workspace it keeps, so
-    /// search finds them before anything changes. What it holds is not news to the roles
-    /// following records: these reached them with the workspace's own replay.
+    /// Read what this device already holds, once the channel service that opens its sealed
+    /// records runs: the records of every workspace it keeps, so search finds them before
+    /// anything changes. What it holds is not news to the roles following records: these reached
+    /// them with the workspace's own replay.
     pub(crate) fn sweep(&self) {
         for workspace in self.source.workspaces() {
             match self.source.records(&workspace) {
@@ -212,6 +216,17 @@ impl RecordIndex {
                 ),
             }
         }
+    }
+
+    /// The channels settled: the records whose keys were not here are read again, and those whose
+    /// keys still are not wait for the next settling.
+    pub(crate) fn settled(&self) {
+        let sealed = std::mem::take(&mut *self.sealed.lock_recover());
+        if sealed.is_empty() {
+            return;
+        }
+        self.queued.lock_recover().extend(sealed);
+        let _ = self.wake.send(());
     }
 
     /// Queue `record` for the next pass, once, however often it changed, and note the change in
@@ -248,9 +263,11 @@ impl RecordIndex {
         for (workspace, app, record) in queued {
             let doc = match self.source.record(&workspace, &app, &record) {
                 Ok(Some(doc)) => doc,
-                // Unchanged since it was last read, or nothing this device holds: what search keeps
-                // of it is what it holds.
-                Ok(None) => continue,
+                // Its keys are not here yet: it is read once the channels settled.
+                Ok(None) => {
+                    self.sealed.lock_recover().insert((workspace, app, record));
+                    continue;
+                }
                 Err(error) => {
                     tracing::warn!(%error, %workspace, %app, %record, "a record is not indexed");
                     continue;

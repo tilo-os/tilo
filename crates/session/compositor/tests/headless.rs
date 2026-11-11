@@ -36,7 +36,9 @@ mod typing;
 #[path = "headless/window_icons.rs"]
 mod window_icons;
 
-use harness::{Seen, TestClient, headless, mapped_client, mapped_client_without_touch, pump};
+use harness::{
+    Seen, TestClient, headless, mapped_client, mapped_client_without_touch, pump, shown,
+};
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -706,10 +708,6 @@ fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
         [0, 255, 0, 255],
         Rc::clone(&log),
     ))));
-    let shown = |compositor: &mut Compositor, x, y| {
-        compositor.draw_frame().expect("a frame");
-        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
-    };
     assert_eq!(shown(&mut compositor, 10, 10), Some([0, 255, 0, 255]));
 
     // A 20x20 yellow icon (a frame's pixels are RGBA), its hotspot two pixels in from its top left.
@@ -1165,10 +1163,6 @@ fn the_desktop_moves_scales_and_fades_a_window_without_moving_it() {
     let (info, rect) = compositor.windows()[0].clone();
     assert_eq!(rect, (220, 190, 200, 100));
     let red = Some([255, 0, 0, 255]);
-    let shown = |compositor: &mut Compositor, x, y| {
-        compositor.draw_frame().expect("a frame");
-        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
-    };
 
     compositor.set_window_effect(
         info.id,
@@ -1223,10 +1217,6 @@ fn a_window_that_closed_is_still_drawn_until_the_desktop_lets_it_go() {
     let mut client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
     let (info, rect) = compositor.windows()[0].clone();
     assert_eq!(rect, (220, 190, 200, 100));
-    let shown = |compositor: &mut Compositor, x, y| {
-        compositor.draw_frame().expect("a frame");
-        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
-    };
     assert_eq!(shown(&mut compositor, 320, 240), Some([255, 0, 0, 255]));
 
     // The frame kept is the one the window drew last.
@@ -1303,10 +1293,6 @@ fn a_closed_window_is_drawn_where_and_as_big_as_it_stood() {
         .unwrap();
     let mut client = mapped_client(&mut compositor, "blue", (200, 100), [0, 0, 255, 255]);
     let (info, _) = compositor.windows()[0].clone();
-    let shown = |compositor: &mut Compositor, x, y| {
-        compositor.draw_frame().expect("a frame");
-        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
-    };
     assert_eq!(shown(&mut compositor, 640, 480), Some([0, 0, 255, 255]));
 
     client.toplevel.as_ref().unwrap().destroy();

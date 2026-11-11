@@ -36,11 +36,23 @@
 //!   typed [`Refusal`] — the VM path's refusal, not a second one — and one
 //!   the person did not allow is never counted.
 //!
+//! - **Stop** ([`HostedBrowsers::stopped`]): the environment's device is
+//!   refused on every plane first — its entry in the relay's register says it
+//!   stopped, before anything is delisted, so a delisting that fails leaves it
+//!   refused rather than open — then the session in the VM is ended, its
+//!   device delisted, and every connection it had is cut. The register says so
+//!   on disk too, so a relay that restarts keeps it refused until the
+//!   certificate it was given expires.
+//!
 //! What starts and stops sessions is the hosted-VM service's
-//! ([`BrowserSessions`]): this host places, routes and counts.
+//! ([`BrowserSessions`]): this host places, routes and counts, and stops an
+//! environment when its session here ends ([`RECONNECT`] after the last one
+//! went, unless the device is back by then): the signal is the device's own
+//! sessions to this relay, so a session that dies is heard wherever it ran,
+//! and the certificate's expiry bounds whatever is missed.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
@@ -66,6 +78,10 @@ pub const PAGE_RESOURCE: &str = "browser.page";
 /// How long a device certified for a session lasts: as long as the session
 /// may run.
 pub const DEVICE_LIFETIME: Duration = Duration::from_secs(2 * 60 * 60);
+/// How long an environment device whose last session here ended has to come
+/// back before its environment stops. A session in a VM that dies is gone; one
+/// whose connection dropped is back in a moment, and its window lives on.
+pub const RECONNECT: Duration = Duration::from_secs(30);
 /// How long the person's answer to one page action stays good for running
 /// it: their confirmation of that invocation, not a standing grant.
 pub const WITNESS_LIFETIME: u64 = 5 * 60 * 1_000_000_000;
@@ -233,6 +249,9 @@ pub struct HostedBrowsers {
     /// The page actions handed to a window and not yet answered, by
     /// invocation: what a count is owed for once it ran, and what asks first.
     handed: Mutex<HashMap<tilo_actions::InvocationId, Handed>>,
+    /// How long an environment device that disconnected has to come back
+    /// before its environment stops ([`RECONNECT`]).
+    reconnect: Duration,
 }
 
 #[allow(
@@ -254,7 +273,16 @@ impl HostedBrowsers {
             open: Mutex::default(),
             authority: Mutex::default(),
             handed: Mutex::default(),
+            reconnect: RECONNECT,
         }
+    }
+
+    /// Wait `reconnect` for a disconnected environment device to come back
+    /// before its environment stops ([`RECONNECT`]).
+    #[must_use]
+    pub const fn with_reconnect(mut self, reconnect: Duration) -> Self {
+        self.reconnect = reconnect;
+        self
     }
 
     /// The Browser this host's environment names, when it serves Browser
@@ -293,8 +321,18 @@ impl HostedBrowsers {
     }
 
     /// Name the host's identity and workspaces, once it runs: needed to
-    /// certify an session's device and to list it in its workspace.
-    pub fn serve_from(&self, authority: Authority) {
+    /// certify a session's device and to list it in its workspace. It is also
+    /// where this host hears that one of its environment's sessions ended
+    /// ([`Self::session_ended`]).
+    pub fn serve_from(self: &Arc<Self>, authority: Authority) {
+        let browsers = Arc::downgrade(self);
+        authority
+            .environments
+            .when_ended(Arc::new(move |scope, device| {
+                if let Some(browsers) = browsers.upgrade() {
+                    browsers.session_ended(scope.workspace, device);
+                }
+            }));
         *self.authority.lock_recover() = Some(authority);
     }
 
@@ -609,19 +647,29 @@ impl HostedBrowsers {
             };
             (device, material)
         };
-        let window = self.sessions.start(&material)?;
-        // The workspace lists the session's device while it runs, so the
-        // window's actions reach it, and confines it to that record before
-        // the session can ask for anything: the scope is registered here, at
-        // the relay, and the device itself is asked nothing.
-        self.confine(
+        // Confine the device to that record before it can ask for anything
+        // and before the workspace lists it: the register is the relay's own
+        // state, written down here, so a relay that restarts still confines
+        // it. The device itself is asked nothing.
+        let until_ns = device
+            .expires_at_ns
+            .unwrap_or_else(|| tilo_clock::unix_now_ns().saturating_add(lifetime_ns()));
+        if let Err(error) = self.confine(
             &device,
-            Some(crate::environment::EnvironmentScope::for_record(
-                workspace_id,
-                APP,
-                record,
-            )),
-        );
+            crate::environment::EnvironmentScope::for_record(workspace_id, APP, record),
+            until_ns,
+        ) {
+            return Err(format!("Browser did not open: {error}"));
+        }
+        let window = match self.sessions.start(&material) {
+            Ok(window) => window,
+            Err(error) => {
+                // The device never left this host, so nothing holds it: it is
+                // forgotten rather than left a member of the workspace.
+                self.forget(&device);
+                return Err(error);
+            }
+        };
         self.list(workspace_id, &device, true);
         open.insert(
             workspace_id,
@@ -634,25 +682,141 @@ impl HostedBrowsers {
         Ok(window)
     }
 
-    /// The workspace's browser session stopped: forget its device and its window.
+    /// The workspace's browser session stopped: refuse its device on every
+    /// plane, end the session in the VM, forget the device and its window, and
+    /// cut every connection the device has here.
+    ///
+    /// The refusal comes first and is written down, so a stop leaves the
+    /// device refused even when what follows fails, and keeps it refused until
+    /// the certificate it was given expires.
     pub fn stopped(&self, workspace_id: u64) {
         let stopped = self.open.lock_recover().remove(&workspace_id);
-        let Some(stopped) = stopped else {
-            return;
+        let devices = {
+            let authority = self.authority.lock_recover();
+            authority.as_ref().map_or_else(Vec::new, |authority| {
+                authority.environments.placed_in(workspace_id)
+            })
         };
-        self.sessions.stop(&stopped.workspace);
-        self.confine(&stopped.device, None);
-        self.list(workspace_id, &stopped.device, false);
+        self.refuse(
+            devices
+                .iter()
+                .map(|(device, _, until_ns)| (*device, *until_ns)),
+        );
+        if let Some(stopped) = &stopped {
+            self.sessions.stop(&stopped.workspace);
+            self.list(workspace_id, &stopped.device, false);
+        }
+        // Every connection the devices had here audits on this: the planes
+        // that carried them refuse them, and their sessions end.
+        crate::authority_epoch::bump();
     }
 
-    /// Register the scope a session's device reaches, or forget it and with
-    /// it everything the device could reach.
-    fn confine(&self, device: &DeviceCert, scope: Option<crate::environment::EnvironmentScope>) {
+    /// One environment's device stopped — its session ended and did not come
+    /// back: refuse it on every plane, forget its window, end what is left of
+    /// the session in the VM and delist it. A device placed for the same
+    /// workspace since is another environment, and is not this stop's.
+    ///
+    /// The refusal comes first and is written down, so what follows may fail:
+    /// the device stays refused until its certificate expires.
+    fn stopped_device(&self, workspace_id: u64, device: [u8; 32], until_ns: u64) {
+        let stopped = {
+            let mut open = self.open.lock_recover();
+            match open.get(&workspace_id) {
+                Some(up) if up.window.device == device => open.remove(&workspace_id),
+                Some(_) | None => None,
+            }
+        };
+        self.refuse(std::iter::once((device, until_ns)));
+        if let Some(stopped) = &stopped {
+            self.sessions.stop(&stopped.workspace);
+            self.list(workspace_id, &stopped.device, false);
+        }
+        crate::authority_epoch::bump();
+    }
+
+    /// Refuse `devices`, on every plane, until the certificate each was given
+    /// expires. A refusal that cannot be written down is still refused here,
+    /// and a restart confines it no wider than its scope.
+    fn refuse(&self, devices: impl Iterator<Item = ([u8; 32], u64)>) {
         let authority = self.authority.lock_recover();
         let Some(authority) = authority.as_ref() else {
             return;
         };
-        crate::environment::confine(&authority.environments, device.device_public_key, scope);
+        for (device, until_ns) in devices {
+            if let Err(error) = authority.environments.stop(device, until_ns) {
+                tracing::error!(
+                    %error,
+                    device = %hex::encode(device),
+                    "a stopped browser environment's device is refused here but was not kept"
+                );
+            }
+        }
+    }
+
+    /// One of the workspace's environment devices ended its last session here
+    /// and has not come back: its environment stops, and with it the window
+    /// that session held.
+    ///
+    /// A session whose connection dropped is back in a moment and its window
+    /// lives on, so the device is given [`RECONNECT`] first, and what decides
+    /// is whether a session of it is here then.
+    fn session_ended(self: &Arc<Self>, workspace_id: u64, device: [u8; 32]) {
+        let (runtime, environments) = {
+            let authority = self.authority.lock_recover();
+            let Some(authority) = authority.as_ref() else {
+                return;
+            };
+            (authority.runtime.clone(), authority.environments.clone())
+        };
+        let browsers = Arc::clone(self);
+        runtime.spawn(async move {
+            tokio::time::sleep(browsers.reconnect).await;
+            if environments.connected(&device)
+                || crate::environment::environment_of(&environments, &device).is_none()
+            {
+                return;
+            }
+            let until_ns = browsers
+                .open
+                .lock_recover()
+                .get(&workspace_id)
+                .filter(|up| up.window.device == device)
+                .and_then(|up| up.device.expires_at_ns)
+                .unwrap_or_else(|| tilo_clock::unix_now_ns().saturating_add(lifetime_ns()));
+            // Stopping asks VM hosts and writes workspace membership: never on
+            // a runtime thread.
+            let _ = tokio::task::spawn_blocking(move || {
+                browsers.stopped_device(workspace_id, device, until_ns);
+            })
+            .await;
+        });
+    }
+
+    /// Register what a session's device reaches, before it is handed to the
+    /// session and listed in its workspace.
+    fn confine(
+        &self,
+        device: &DeviceCert,
+        scope: crate::environment::EnvironmentScope,
+        until_ns: u64,
+    ) -> Result<(), String> {
+        let authority = self.authority.lock_recover();
+        let Some(authority) = authority.as_ref() else {
+            return Err("this host is not running yet".to_owned());
+        };
+        authority
+            .environments
+            .place(device.device_public_key, scope, until_ns)
+    }
+
+    /// Forget a device that never left this host: one whose session could not
+    /// be started.
+    fn forget(&self, device: &DeviceCert) {
+        let authority = self.authority.lock_recover();
+        let Some(authority) = authority.as_ref() else {
+            return;
+        };
+        authority.environments.forget(&device.device_public_key);
     }
 
     /// List (or forget) the session's device in the workspace it serves,
@@ -680,6 +844,11 @@ impl HostedBrowsers {
     }
 }
 
+/// [`DEVICE_LIFETIME`] in nanoseconds: how long a session's certificate lasts.
+fn lifetime_ns() -> u64 {
+    u64::try_from(DEVICE_LIFETIME.as_nanos()).unwrap_or(u64::MAX)
+}
+
 /// A fresh device for a session, certified by the host's stand-in as a
 /// member device of the workspace's person, for as long as the session
 /// may run.
@@ -701,9 +870,7 @@ fn certified(stand_in: &DeviceCert, key: &SigningKey) -> Result<(DeviceCert, [u8
         device_label: DEVICE_LABEL.to_owned(),
         capabilities: DeviceCapabilities::member(),
         issued_at_ns: now,
-        expires_at_ns: Some(
-            now.saturating_add(u64::try_from(DEVICE_LIFETIME.as_nanos()).unwrap_or(u64::MAX)),
-        ),
+        expires_at_ns: Some(now.saturating_add(lifetime_ns())),
         signature: [0; 64],
         issuer: Some(Box::new(stand_in.clone())),
     };

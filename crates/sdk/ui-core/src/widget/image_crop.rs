@@ -409,15 +409,18 @@ impl Widget for ImageCropEditor {
                 .with_action_target(target)
                 .with_state(AccessState::new().focusable(true))
         };
+        let percent = |share: f64| format!("{:.0}", share * 100.0);
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Crop page")
-                .with_description(format!(
-                    "From {:.0}% across and {:.0}% down to {:.0}% across and {:.0}% down",
-                    selection.left * 100.0,
-                    selection.top * 100.0,
-                    selection.right * 100.0,
-                    selection.bottom * 100.0
+                .with_name(crate::i18n::widget_format("widget-crop-name", &[]))
+                .with_description(crate::i18n::widget_format(
+                    "widget-crop-hint",
+                    &[
+                        ("left", percent(selection.left).into()),
+                        ("top", percent(selection.top).into()),
+                        ("right", percent(selection.right).into()),
+                        ("bottom", percent(selection.bottom).into()),
+                    ],
                 ))
                 .with_state(AccessState::new().focusable(true).focused(self.focused))
                 .with_children(vec![

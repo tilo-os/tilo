@@ -2268,7 +2268,10 @@ impl Widget for TileHost {
         if let Some(detail) = &self.record_transition_error {
             return Some(
                 crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                    .with_name("Document switch blocked")
+                    .with_name(crate::i18n::widget_format(
+                        "widget-document-switch-blocked",
+                        &[],
+                    ))
                     .with_description(detail.clone())
                     .with_live(crate::a11y::Politeness::Assertive)
                     .with_bounds(self.rect),

@@ -239,6 +239,9 @@ pub struct DesktopSearch {
     /// row they chose.
     auto_selected: Option<String>,
     shown_query: Option<String>,
+    /// The query an Enter was pressed on before its rows were in: its top row is chosen once the
+    /// search has answered it.
+    enter_waiting: Option<String>,
     /// [`ui::search::engine_generation`] when the rows were built: the
     /// content rows come again once the index's code arrived.
     shown_generation: u64,
@@ -307,6 +310,7 @@ impl DesktopSearch {
             everything: false,
             auto_selected: None,
             shown_query: None,
+            enter_waiting: None,
             shown_generation: 0,
             shown_kinds: Vec::new(),
             catalogue: false,
@@ -523,6 +527,40 @@ impl DesktopSearch {
     /// sources sent and ask the source that holds the frame's state next.
     /// Returns whether the rows changed.
     pub fn refresh(&mut self) -> bool {
+        let changed = self.refresh_rows();
+        self.take_waiting_enter();
+        changed
+    }
+
+    /// An Enter that waited for its query's rows: once the search has answered that query, its
+    /// top row is chosen; a person who typed on since meant something else.
+    fn take_waiting_enter(&mut self) {
+        let Some(query) = self.enter_waiting.clone() else {
+            return;
+        };
+        if self.palette.query() != query || !self.palette.is_open() {
+            self.enter_waiting = None;
+            return;
+        }
+        if self.shown_query.as_deref() != Some(query.as_str())
+            || self.answering()
+            || self.waiting()
+            || !ui::search::engine_ready()
+        {
+            return;
+        }
+        self.enter_waiting = None;
+        let top = self
+            .palette
+            .visible_entries()
+            .iter()
+            .find_map(|entry| self.hit(&entry.id));
+        if let Some(hit) = top {
+            self.choose_hit(hit, None);
+        }
+    }
+
+    fn refresh_rows(&mut self) -> bool {
         let Some(sources) = &self.sources else {
             return false;
         };
@@ -920,6 +958,16 @@ impl DesktopSearch {
                     id: crate::model::ALL_APPS_COMMAND.into(),
                 });
                 self.palette.close();
+            } else if outcome.argument.is_none()
+                && self.shown_query.as_deref() != Some(self.palette.query())
+            {
+                // Enter came in the same batch of input as the keys before it, ahead of the frame
+                // that answers them: the rows on screen are an earlier query's, and the row it
+                // named is one of those ("canvas" and Enter started a call, the top row of the
+                // empty search). Enter waits for the typed query's answer and takes its top row. A
+                // row's own line (an action's argument) is typed in the field after its query, so
+                // an Enter that carries one is never this.
+                self.choose_top_of_typed_query();
             } else if let Some(hit) = self.hit(&outcome.id) {
                 self.choose_hit(hit, outcome.argument);
             }
@@ -929,6 +977,16 @@ impl DesktopSearch {
         }
         self.finish();
         true
+    }
+
+    /// Hold an Enter pressed on rows of an earlier query until the search has answered the query
+    /// the field holds: the search stays open on it, and its top row, which the highlight sits on,
+    /// is chosen as the rows come in ([`Self::take_waiting_enter`]).
+    fn choose_top_of_typed_query(&mut self) {
+        let query = self.palette.query().to_owned();
+        self.palette.open();
+        self.palette.set_query(&query);
+        self.enter_waiting = Some(query);
     }
 
     /// Choose `hit`, with `argument` the one line its action asks for:
@@ -1064,6 +1122,7 @@ impl DesktopSearch {
         self.kept_choice = None;
         self.refusal = None;
         self.shown_query = None;
+        self.enter_waiting = None;
     }
 }
 
@@ -2664,6 +2723,30 @@ mod tests {
                 .iter()
                 .all(|entry| entry.id != ALL_RESULTS_ID),
             "nothing is left over to offer"
+        );
+    }
+
+    /// Enter pressed in the same batch of input as the keys before it, before a frame answered
+    /// them, opens the top result of what was typed, never a row of the query before.
+    #[test]
+    fn enter_right_after_typing_opens_what_was_typed() {
+        let mut search = DesktopSearch::new();
+        search.open(data());
+        search.set_query("sheets");
+        settled(&mut search);
+        // "notes", then Enter, with no frame between them.
+        search.palette_mut().set_query("notes");
+        search.palette_mut().activate_selected();
+        search.observe();
+        assert!(
+            search.take_choice().is_none(),
+            "nothing is opened from the earlier rows"
+        );
+        settled(&mut search);
+        let chosen = format!("{:?}", search.take_choice().expect("Enter chose a row"));
+        assert!(
+            chosen.contains("notes") && !chosen.contains("sheets"),
+            "Enter after typing \"notes\" chose {chosen}"
         );
     }
 

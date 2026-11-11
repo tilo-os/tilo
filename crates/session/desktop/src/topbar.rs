@@ -438,6 +438,10 @@ pub struct TopBarChrome {
     tray_hit_rect: Rect,
     /// Where the bell's unread count was painted, `Rect::ZERO` without one.
     bell_badge_rect: Rect,
+    /// The bell's own click target inside the status cluster: a press there opens the
+    /// notification centre, and the rest of the cluster opens quick settings. The whole cluster
+    /// when the host has no quick settings.
+    bell_hit_rect: Rect,
     media_indicator_rect: Rect,
     media_signature: Vec<(u32, u8, String)>,
     media_started: Option<Instant>,
@@ -563,6 +567,7 @@ impl TopBarChrome {
             app_tray_images: HashMap::new(),
             tray_hit_rect: Rect::ZERO,
             bell_badge_rect: Rect::ZERO,
+            bell_hit_rect: Rect::ZERO,
             media_indicator_rect: Rect::ZERO,
             media_signature: Vec::new(),
             media_started: None,
@@ -1097,6 +1102,8 @@ impl TopBarChrome {
     const CONTROL_WORKSPACE_SETTINGS: &'static str = "topbar:workspace-settings";
     /// The current strip's name in the workspace pill: opens the strips.
     const CONTROL_STRIP_NAME: &'static str = "topbar:strip-name";
+    /// The bell inside the status cluster: its own target, which opens the notification centre.
+    const CONTROL_NOTIFICATIONS: &'static str = "topbar:notifications";
     const CONTROL_QUICK_SETTINGS: &'static str = "topbar:quick-settings";
     const CONTROL_COLLABORATORS: &'static str = "topbar:collaborators";
     const CONTROL_MEDIA: &'static str = "topbar:media";
@@ -1436,6 +1443,10 @@ impl Widget for TopBarChrome {
                 self.control_rect(Self::CONTROL_QUICK_SETTINGS),
             ),
             (
+                "topbar_bell".to_string(),
+                self.control_rect(Self::CONTROL_NOTIFICATIONS),
+            ),
+            (
                 "topbar_media_indicator".to_string(),
                 self.control_rect(Self::CONTROL_MEDIA),
             ),
@@ -1483,7 +1494,7 @@ impl Widget for TopBarChrome {
                         ..Default::default()
                     });
                 // The bell painted in the status cluster says what it shows.
-                if target == Self::CONTROL_QUICK_SETTINGS
+                if target == Self::CONTROL_NOTIFICATIONS
                     && let Some(bell) = self.bell_name()
                 {
                     node = node

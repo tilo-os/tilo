@@ -12,6 +12,8 @@ use super::*;
 struct Held {
     docs: Mutex<BTreeMap<(String, String), Vec<IndexEntry>>>,
     reads: Mutex<Vec<String>>,
+    /// The records whose keys are not here: they read as nothing.
+    sealed: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl Held {
@@ -58,6 +60,9 @@ impl RecordSource for Source {
         let Some(entries) = held else {
             return Ok(None);
         };
+        if self.held.sealed.lock_recover().contains(record) {
+            return Ok(None);
+        }
         self.held
             .reads
             .lock_recover()
@@ -106,6 +111,7 @@ fn index(held: &Arc<Held>, content: &Arc<AppContentIndex>) -> RecordIndex {
         reader: Arc::new(Reader),
         content: Some(Arc::clone(content)),
         queued: Mutex::new(BTreeSet::new()),
+        sealed: Mutex::new(BTreeSet::new()),
         wake,
         changes: crate::platform::records::Changes::default(),
     }
@@ -145,6 +151,41 @@ fn what_a_record_holds_is_found_with_its_app_never_launched() {
         content.title("w", "agents/a1").as_deref(),
         Some("Ada"),
         "and an agent"
+    );
+}
+
+/// An agent whose record's keys reach this device after the sweep read it is found once the
+/// channels settled, without any change to the record.
+#[test]
+fn a_record_sealed_at_the_sweep_is_found_once_its_keys_arrive() {
+    let held = Arc::new(Held::default());
+    held.hold("so.tilo.chat", "agents", vec![entry("agents/a1", "Ada")]);
+    held.sealed.lock_recover().insert("agents".to_owned());
+    let content = Arc::new(AppContentIndex::in_memory());
+
+    let index = index(&held, &content);
+    index.sweep();
+    index.pass();
+    assert_eq!(content.title("w", "agents/a1"), None);
+
+    index.settled();
+    index.pass();
+    assert_eq!(
+        content.title("w", "agents/a1"),
+        None,
+        "still sealed: still waiting"
+    );
+    assert_eq!(index.waiting(), 0);
+
+    held.sealed.lock_recover().clear();
+    index.settled();
+    index.pass();
+    assert_eq!(content.title("w", "agents/a1").as_deref(), Some("Ada"));
+    index.settled();
+    assert_eq!(
+        index.waiting(),
+        0,
+        "read once its keys came, it waits for nothing"
     );
 }
 

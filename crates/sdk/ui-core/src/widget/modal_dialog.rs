@@ -521,7 +521,8 @@ pub fn paint_sheet(
     }
 
     if let Some(c) = layout.close {
-        let face = ButtonFace::icon_only(c, Icon::X, "Close")
+        let name = crate::i18n::widget_format("widget-dialog-close", &[]);
+        let face = ButtonFace::icon_only(c, Icon::X, &name)
             .hovered(spec.close_hovered)
             .focused(spec.close_focused);
         Button::paint(scene, transform, text_renderer, &on_sheet(theme), &face);
@@ -2610,7 +2611,7 @@ impl Widget for ModalDialog<dyn Widget> {
         if self.up() && self.closable() {
             node.children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("Close"))
+                    .with_name(crate::i18n::widget_format("widget-dialog-close", &[]))
                     .with_key(3)
                     .with_state(AccessState::new().focusable(true))
                     .with_bounds(self.close_rect().unwrap_or(Rect::ZERO))

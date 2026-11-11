@@ -192,10 +192,8 @@ pub(super) async fn subscribe(
     // own record and nothing else of the workspace.
     if ws.lock().await.attached(&peer.device_public_key) {
         ticket = ticket.with_every_record();
-    } else if let Some(channel) = session
-        .environment(&peer.device_public_key)
-        .and_then(|scope| scope.channel)
-    {
+    } else if let Some(scope) = session.environment(&peer.device_public_key) {
+        let channel = scope.channel;
         ticket = ticket.with_channels(std::iter::once(channel).collect());
     }
     crate::timing::event("join.ticket_wait", waited, 0);
