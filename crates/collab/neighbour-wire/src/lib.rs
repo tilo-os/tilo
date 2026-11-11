@@ -661,13 +661,18 @@ pub enum NeighbourMsg {
     /// `app_id` in workspace `cluster_id` refers to, by its BLAKE3 `hash`. Rides
     /// the workspace's topic, so only peers admitted to read the workspace see it;
     /// any of them holding the content answers with
-    /// [`Self::RecordContentPiece`]. Appended to preserve every existing
+    /// [`Self::RecordContentPiece`]. `have` is what the asker already holds of
+    /// it, which an answer leaves out: a device asks again while it is missing
+    /// pieces, and every answer carries the next of them rather than all of
+    /// them, so a large piece of content arrives without one device filling
+    /// its peers' outbound queues. Appended to preserve every existing
     /// Postcard discriminant.
     RecordContentWant {
         requester: PeerId,
         app_id: String,
         cluster_id: String,
         hash: String,
+        have: Vec<content::Span>,
     },
     /// One bounded piece of a record's content, answering
     /// `requester`'s [`Self::RecordContentWant`]: `bytes` start at `offset` of the
@@ -1378,6 +1383,7 @@ mod tests {
                     app_id: "so.tilo.slides".into(),
                     cluster_id: "workspace".into(),
                     hash: "ab".into(),
+                    have: Vec::new(),
                 },
             ),
             (
@@ -1618,7 +1624,7 @@ mod tests {
         ),
         (
             "record content want",
-            "17ef9baf050e736f2e74696c6f2e736c6964657309776f726b7370616365026162",
+            "17ef9baf050e736f2e74696c6f2e736c6964657309776f726b737061636502616200",
         ),
         (
             "record content piece",

@@ -1048,7 +1048,10 @@ impl Joined {
     /// a record's window asked for, now on the record's lane.
     fn content_piece(&mut self, frame: &[u8]) -> bool {
         let device = self.peer.status().device;
-        let Some(arrived) = self.content.piece(&device, frame) else {
+        let Some(arrived) = self
+            .content
+            .piece(&device, frame, tilo_clock::unix_now_ms())
+        else {
             return false;
         };
         let (app, record) = arrived.tag;

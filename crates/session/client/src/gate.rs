@@ -392,6 +392,7 @@ mod tests {
                     app_id: "so.tilo.notes".into(),
                     cluster_id: WORKSPACE.into(),
                     hash: "ab".into(),
+                    have: Vec::new(),
                 },
                 Some(read()),
             ),

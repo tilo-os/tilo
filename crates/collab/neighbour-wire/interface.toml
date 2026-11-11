@@ -26,6 +26,7 @@ sources = [
     "crates/collab/actions/src/record_sync.rs",
     "crates/collab/neighbour-wire/src/retention.rs",
     "crates/collab/neighbour-wire/src/unit_chain.rs",
+    "crates/collab/neighbour-wire/src/content.rs",
     "crates/collab/tilo-user-identity/src/cert.rs",
     "crates/collab/collab-types/src/channel.rs",
     "crates/hosting/tilo-relay-protocol/src/voice.rs",
@@ -556,6 +557,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "NeighbourMsg::RecordContentWant.app_id" = "#1 String"
 "NeighbourMsg::RecordContentWant.cluster_id" = "#2 String"
 "NeighbourMsg::RecordContentWant.hash" = "#3 String"
+"NeighbourMsg::RecordContentWant.have" = "#4 Vec<Span>"
 "NeighbourMsg::RecordContentWant.requester" = "#0 PeerId"
 "NeighbourMsg::RemoteAction" = "#18 struct"
 "NeighbourMsg::RemoteAction.frame" = "#0 Vec<u8>"
@@ -793,6 +795,9 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "SignedWire.action" = "#1 Vec<u8> with=serde_bytes"
 "SignedWire.issued_at_ns" = "#0 u64"
 "SignedWire.signature" = "#2 [u8; 64] with=serde_bytes"
+"Span" = "struct"
+"Span.len" = "#1 u64"
+"Span.offset" = "#0 u64"
 "State" = "struct"
 "State.app_installed" = "#3 bool"
 "State.critical_battery" = "#6 bool"

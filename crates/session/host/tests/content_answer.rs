@@ -76,7 +76,7 @@ async fn a_member_asking_for_content_a_page_keeps_is_answered_by_its_session() {
             PeerEvent::RecordContent { from, frame, .. }
                 if from == keeper.cert.device_public_key =>
             {
-                wants.piece(&device, &frame)
+                wants.piece(&device, &frame, tilo_clock::unix_now_ms())
             }
             _ => None,
         });

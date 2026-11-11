@@ -1161,6 +1161,7 @@ fn answer(want: &[u8], device: [u8; 32], bytes: &[u8]) -> Vec<u8> {
         app_id,
         cluster_id,
         hash,
+        ..
     } = postcard::from_bytes(want).unwrap()
     else {
         panic!("a request for content")
@@ -1190,6 +1191,7 @@ fn opened(
         app_id: CHAT.into(),
         cluster_id: workspace.into(),
         hash: blake3::hash(bytes).to_hex().to_string(),
+        have: Vec::new(),
     })
     .unwrap();
     let mut whole = Vec::new();

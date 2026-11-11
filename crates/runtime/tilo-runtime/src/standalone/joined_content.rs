@@ -71,6 +71,7 @@ impl ContentPeers for JoinedPeers {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id.clone(),
             hash: hash.to_owned(),
+            have: Vec::new(),
         };
         let _ = live.send(message);
     }
@@ -172,6 +173,7 @@ impl Joined {
             app_id,
             cluster_id,
             hash,
+            ..
         } = message
         else {
             return false;

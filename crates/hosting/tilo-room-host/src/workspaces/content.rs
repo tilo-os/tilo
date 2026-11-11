@@ -49,6 +49,7 @@ pub(crate) fn lacks_answer(host: &[u8; 32], body: &[u8]) -> Option<Vec<u8>> {
         app_id,
         cluster_id,
         hash,
+        ..
     }) = postcard::from_bytes(body)
     else {
         return None;
@@ -339,12 +340,11 @@ impl Workspaces {
         // addressed to the host's own device, whoever among the members
         // answered with it.
         let device = self.inner.host.cert.device_public_key;
-        let arrived = self
-            .inner
-            .content
-            .surfaces
-            .lock_recover()
-            .piece(&device, frame);
+        let arrived = self.inner.content.surfaces.lock_recover().piece(
+            &device,
+            frame,
+            tilo_clock::unix_now_ms(),
+        );
         if let Some(arrived) = arrived {
             crate::surfaces::keep(&arrived.hash, &arrived.bytes);
         }
@@ -440,6 +440,7 @@ impl Workspaces {
             app_id,
             cluster_id,
             hash,
+            have,
         }) = postcard::from_bytes(body)
         else {
             return Vec::new();
@@ -479,18 +480,27 @@ impl Workspaces {
             offset,
             bytes: chunk.to_vec(),
         };
+        // At most a window of what the asker lacks: it asks again for the
+        // rest, so a large file crosses a session's outbound queue in windows
+        // instead of filling it and losing what it cannot carry
+        // ([`neighbour_wire::content::answer`] makes the same answer for the
+        // content a keeper holds).
         let pieces = if bytes.is_empty() {
             vec![piece(0, &[])]
         } else {
-            let mut offset = 0_u64;
-            bytes
-                .chunks(PIECE_BYTES)
-                .map(|chunk| {
-                    let message = piece(offset, chunk);
-                    offset = offset.saturating_add(u64::try_from(chunk.len()).unwrap_or(0));
-                    message
-                })
-                .collect()
+            let mut pieces = Vec::new();
+            for (index, chunk) in bytes.chunks(PIECE_BYTES).enumerate() {
+                if pieces.len() >= neighbour_wire::content::PIECES_PER_ANSWER {
+                    break;
+                }
+                let offset = u64::try_from(index.saturating_mul(PIECE_BYTES)).unwrap_or(u64::MAX);
+                let len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+                if neighbour_wire::content::holds(&have, offset, len) {
+                    continue;
+                }
+                pieces.push(piece(offset, chunk));
+            }
+            pieces
         };
         pieces
             .iter()
@@ -567,6 +577,7 @@ mod tests {
             app_id: "so.tilo.chat".into(),
             cluster_id: workspace.into(),
             hash: hash.into(),
+            have: Vec::new(),
         })
         .unwrap()
     }

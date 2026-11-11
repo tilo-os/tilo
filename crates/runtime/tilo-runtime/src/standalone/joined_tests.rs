@@ -57,6 +57,7 @@ impl HostParts {
                     app_id,
                     cluster_id,
                     hash,
+                    ..
                 } = frame.message
                 else {
                     continue;
@@ -1233,6 +1234,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id.clone(),
         hash: hash.clone(),
+        have: Vec::new(),
     };
     governor.send(want).unwrap();
     let mut gathered = vec![0_u8; picture.len()];

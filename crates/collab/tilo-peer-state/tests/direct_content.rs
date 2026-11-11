@@ -169,6 +169,7 @@ async fn a_hosts_ask_for_a_records_content_reaches_its_linked_member() {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.to_string(),
         hash: "ab".repeat(32),
+        have: Vec::new(),
     };
     host_link.send(ask.clone()).unwrap();
     let heard = next_content(&mut at_member).await;
