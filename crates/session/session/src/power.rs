@@ -147,6 +147,13 @@ impl Session {
                 .take();
             if let Some(config) = next {
                 a11y_settings::apply(&mut self.compositor, &config.a11y)?;
+                // A layout the person chose in Settings types from now on, and the keys drawn
+                // follow it.
+                let sources = crate::config::Sources::from_config(&config);
+                if sources != self.sources {
+                    self.sources = sources;
+                    crate::controls::apply_keyboard(&mut self.compositor, &self.sources.compiled());
+                }
                 // The keyboard is started or stopped by the choice the person made in this change,
                 // on this pass's displays.
                 self.keyboard_preference = config.on_screen_keyboard;

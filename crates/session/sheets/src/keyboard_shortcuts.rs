@@ -53,13 +53,16 @@ pub fn label(entry: &ShortcutEntry) -> String {
     t(&entry.label_key)
 }
 
-/// `chord` as people read it (`Super+K`, `Super+Page Up`), in the legends
-/// of the active keyboard layout, the way the shortcut guide spells the
-/// desktop's fixed chords: a German layout reads `Strg+Umschalt+T`. The
-/// chord itself stays canonical; only its label follows the layout.
+/// `chord` as people read it (`Super+K`, `Super+Page Up`): the keys the
+/// active keyboard layout presses for it, in its legends, the way the
+/// shortcut guide draws them. A German layout reads `Strg+Umschalt+T`, and
+/// `Super+/` as `Super+Umschalt+7`. The chord itself stays canonical; only its
+/// label follows the layout.
 #[must_use]
 pub fn chord_text(chord: &KeyChord) -> String {
-    ui::keycaps::active().chord(chord.modifiers.iter().map(String::as_str), &chord.key)
+    let (modifiers, key) =
+        ui::keycaps::as_typed(chord.modifiers.iter().map(String::as_str), &chord.key);
+    ui::keycaps::active().chord(modifiers.iter().map(String::as_str), &key)
 }
 
 /// `chord` in the desktop's canonical US spelling, whatever layout is

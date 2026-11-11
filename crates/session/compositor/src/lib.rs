@@ -150,6 +150,7 @@ pub use share_stream::ShareStream;
 /// The quarter turns an output is shown at.
 pub use smithay::utils::Transform;
 pub use state::State;
+pub use typing::TypedMark;
 
 use smithay::utils::{Point, Rectangle};
 pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
@@ -1714,6 +1715,12 @@ impl Compositor {
                 "keyboard layout did not compile"
             );
         }
+    }
+
+    /// Where the layout the keyboard types in now puts each ASCII mark: the key, as it types alone,
+    /// and whether Shift or `AltGr` add the mark. What a chord on a mark is shown as.
+    pub fn typed_marks(&mut self) -> Vec<TypedMark> {
+        self.data.state.typed_marks()
     }
 
     /// The layout the keyboard types in now, as XKB names it; `None` without a keyboard.

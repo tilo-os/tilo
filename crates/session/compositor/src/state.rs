@@ -1779,6 +1779,23 @@ impl State {
         })
     }
 
+    /// Where the active layout types each ASCII mark, by the keys [`Self::stroke_for`] presses.
+    pub(crate) fn typed_marks(&mut self) -> Vec<crate::typing::TypedMark> {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return Vec::new();
+        };
+        keyboard.with_xkb_state(self, |context| {
+            let Ok(xkb) = context.xkb().lock() else {
+                return Vec::new();
+            };
+            let layout = xkb.active_layout().0;
+            // Safety: the keymap reference never outlives the `Xkb` it borrows from, which the lock
+            // holds for this scan.
+            let keymap = unsafe { xkb.keymap() };
+            crate::typing::typed_marks(keymap, layout, |code| (1..=255).contains(&code))
+        })
+    }
+
     /// The evdev code of a key of the active layout that produces `keysym` ; `None` when the layout
     /// cannot type it.
     #[expect(

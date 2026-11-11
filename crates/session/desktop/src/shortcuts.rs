@@ -24,7 +24,7 @@ pub fn shortcut_chord_matches(logical_key: &Key, modifiers: Modifiers, chord: &K
         chord.key.eq_ignore_ascii_case(&key)
             || state.shift_key()
                 && unshifted_shortcut_key(&key)
-                    .is_some_and(|base| chord.key.eq_ignore_ascii_case(base))
+                    .is_some_and(|base| chord.key.eq_ignore_ascii_case(&base))
     });
     key_matches
         && chord.modifiers.contains("Super") == state.super_key()
@@ -34,32 +34,13 @@ pub fn shortcut_chord_matches(logical_key: &Key, modifiers: Modifiers, chord: &K
 }
 
 /// Winit reports the logical character produced by Shift, while shortcut configuration stores the
-/// physical punctuation printed on the key.
-fn unshifted_shortcut_key(key: &str) -> Option<&'static str> {
-    Some(match key {
-        "?" => "/",
-        ":" => ";",
-        "\"" => "'",
-        "<" => ",",
-        ">" => ".",
-        "_" => "-",
-        "+" => "=",
-        "{" => "[",
-        "}" => "]",
-        "|" => "\\",
-        "~" => "`",
-        "!" => "1",
-        "@" => "2",
-        "#" => "3",
-        "$" => "4",
-        "%" => "5",
-        "^" => "6",
-        "&" => "7",
-        "*" => "8",
-        "(" => "9",
-        ")" => "0",
-        _ => return None,
-    })
+/// punctuation printed on the key: the mark a US keyboard's key types alone.
+fn unshifted_shortcut_key(key: &str) -> Option<String> {
+    let mut chars = key.chars();
+    let (Some(shifted), None) = (chars.next(), chars.next()) else {
+        return None;
+    };
+    ui::keycaps::us_unshifted(shifted).map(String::from)
 }
 
 /// The sole configurable shortcut resolver. The input pre-router owns a press exactly when this
