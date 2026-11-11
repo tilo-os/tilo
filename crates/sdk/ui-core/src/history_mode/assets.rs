@@ -145,7 +145,7 @@ mod tests {
             )])));
             let (received, result) = receiver.recv().unwrap();
             assert_eq!(received, key);
-            assert!(result.unwrap_err().contains("recorded content hash"));
+            assert!(result.unwrap_err().contains("damaged"));
         }
     }
 }
@@ -203,7 +203,7 @@ mod algorithm_regressions {
         // phase: count_and_aggregate_limits_precede_delivery
         {
             let too_many = (0..4097).map(|i| (i.to_string(), Arc::from([]))).collect();
-            assert!(admit(too_many).unwrap_err().contains("4096"));
+            assert!(admit(too_many).unwrap_err().contains("too many pictures"));
             let bytes: Arc<[u8]> = vec![0u8; 65 * 1024 * 1024].into();
             let sha = hex::encode(Sha256::digest(&bytes));
             let blake = format!("asset:blake3:{}", blake3::hash(&bytes).to_hex());

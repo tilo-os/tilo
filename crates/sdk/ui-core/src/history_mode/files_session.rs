@@ -817,10 +817,7 @@ mod tests {
             };
             controller.load();
             assert!(controller.drain());
-            assert_eq!(
-                controller.message,
-                "File history is unavailable on this host"
-            );
+            assert_eq!(controller.message, "This file has no history here");
             assert!(!controller.has_results(), "no immediate retry loop");
         }
         // phase: files_activity_rejects_incoherent_page_metadata_and_order
@@ -949,7 +946,7 @@ mod tests {
             })
             .unwrap();
         initial.drain();
-        assert_eq!(initial.message, "0 immutable versions");
+        assert_eq!(initial.message, "0 versions");
 
         let mut controller = controller();
         controller.active = false;
@@ -1211,7 +1208,7 @@ mod tests {
                 .unwrap();
             controller.drain();
             assert!(controller.scope.is_none());
-            assert!(controller.message.contains("binding changed"));
+            assert!(controller.message.contains("another file"));
         }
         // phase: files_closed_generation_retains_original_intent_result_without_retargeting
         {

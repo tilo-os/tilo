@@ -964,7 +964,10 @@ mod tests {
 
     #[test]
     fn reasons_are_bounded_for_the_wire() {
-        assert_eq!(bounded_reason(String::new()), "the speaker request failed");
+        assert_eq!(
+            bounded_reason(String::new()),
+            "the speaker group didn't answer"
+        );
         assert_eq!(bounded_reason("x".repeat(1000)).len(), 256);
     }
 
