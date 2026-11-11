@@ -28,8 +28,8 @@ use crate::app::{AppSurface, SurfaceDamage};
 use crate::time::testing::with_monotonic_time;
 use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use crate::widget::{
-    CodeEditor, Column, ListRow, ScrollRegion, Scrollable, Text, TreeMarks, VecListModel,
-    VirtualList,
+    Block, BlockEditor, CodeEditor, Column, ListRow, ScrollRegion, Scrollable, Text, TreeMarks,
+    VecListModel, VirtualList,
 };
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -560,9 +560,23 @@ fn code(lines: usize) -> Box<dyn Widget> {
     Box::new(editor)
 }
 
+/// A long note: `blocks` paragraphs of prose in the rich text editor every
+/// document surface of the toolkit edits, scrolled in the window.
+fn note(blocks: usize) -> Box<dyn Widget> {
+    let mut editor = BlockEditor::new()
+        .with_wrap_lines(true)
+        .with_compact_paragraph_spacing(true);
+    editor.set_blocks(
+        (0..blocks)
+            .map(|index| Block::paragraph(&sentence(index)))
+            .collect(),
+    );
+    Box::new(Scrollable::new_vertical().with_child(Box::new(editor)))
+}
+
 type Fixture = (&'static str, fn() -> Box<dyn Widget>);
 
-fn fixtures() -> [Fixture; 6] {
+fn fixtures() -> [Fixture; 7] {
     [
         ("scrollable column 2k", || column(2_000)),
         ("virtual list 100k", || virtual_list(100_000)),
@@ -570,6 +584,7 @@ fn fixtures() -> [Fixture; 6] {
         ("tree view 10k", || tree_view(500, 20)),
         ("scroll region 10k", || transcript(10_000)),
         ("code editor 3k lines", || code(3_000)),
+        ("rich text note 600", || note(600)),
     ]
 }
 
