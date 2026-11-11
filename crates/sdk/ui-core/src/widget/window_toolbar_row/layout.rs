@@ -114,6 +114,9 @@ pub(crate) struct LocationForms {
     /// Each of the notice's buttons as a text button (none: the notice up
     /// has none, or it is not measured).
     pub actions: Vec<f64>,
+    /// The word that follows the label ([`super::trailing_word`]): its width and the gap before
+    /// it, where there is one.
+    pub trailing: Option<(f64, f64)>,
 }
 
 impl LocationForms {
@@ -226,6 +229,8 @@ pub(super) struct MeasureKey {
     pub(super) lead: LocationLead,
     /// The notice's buttons' names.
     pub(super) notice: Vec<String>,
+    /// The word that follows the label: "Edited", "View only".
+    pub(super) trailing: Option<String>,
     pub(super) text_scale: u32,
 }
 

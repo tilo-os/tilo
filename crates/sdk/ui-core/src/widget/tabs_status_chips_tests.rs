@@ -163,3 +163,51 @@ fn the_agents_mark_follows_an_apps_location_in_its_bar() {
         "before the app's actions: {rect:?} {actions:?}"
     );
 }
+
+/// The mark follows the word after an edited document's location, not just its label: "Edited" and
+/// the agent's name never stand on each other.
+#[test]
+fn the_agents_mark_follows_the_edited_word() {
+    use crate::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::light().with_reduce_motion(true);
+    let mut tr = TextRenderer::new();
+    let mut bar = TabBar::new("edited", vec![TabDescriptor::new(1, "Letter")], 1);
+    bar.set_window_controls(true);
+    assert!(bar.set_toolbar(
+        1,
+        Some(WindowToolbar {
+            location: Some(ToolbarLocation {
+                label: "Hello from the agent".into(),
+                edited: true,
+                ..ToolbarLocation::default()
+            }),
+            actions: vec![ToolbarAction::new("new", "plus", "New page")],
+            ..WindowToolbar::default()
+        })
+    ));
+    assert!(bar.set_opened_by(1, Some(run("Write a paragraph"))));
+    for _ in 0..2 {
+        super::super::tests::lay_out_at_width_with(&mut bar, 1200.0, &theme);
+        draw(&mut bar, &mut tr, &theme);
+    }
+    let (rect, _) = bar
+        .opened_by_chip(&mut tr, &theme)
+        .expect("the mark shows beside the app's slots");
+    let location = bar
+        .painted_labels()
+        .into_iter()
+        .find(|label| label.widget == "BarLocation")
+        .expect("the location is painted");
+    let edited = crate::i18n::I18nManager::lookup_plain("window-toolbar-edited");
+    assert!(
+        location.text.ends_with(&edited),
+        "the edited word is shown: {location:?}"
+    );
+    let [x, _, w, _] = location.rect;
+    assert!(
+        rect.x0 >= x + w,
+        "the mark {rect:?} stands after the location and its edited word, which end at {}",
+        x + w
+    );
+}
