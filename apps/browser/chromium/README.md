@@ -428,6 +428,23 @@ python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromiu
 
 ### Reading a page
 
+A read follows the tree a person sees, the flat tree: an element with an open
+shadow tree is read as that tree, a slot as the nodes it was given, and as its
+own children only when it was given none; a slot handed on to another shadow
+tree's slot is followed in its turn. No element is left out for its name, its
+role or its lack of one: only what is not laid out is (`display: none`, the
+`hidden` attribute, `visibility: hidden`, `aria-hidden`, what a closed
+`details` or `content-visibility: hidden` folds away). An element whose
+display is `contents` has no box and is laid out as what it holds, so it is
+read through: a slot is one, and so is an article a page sets in a grid.
+`find`, `search` and `fields` read the same tree, and a ref inside a shadow
+tree acts like any other. A closed shadow tree is out of a
+page script's reach: a custom element that draws from one is listed in one
+line that says so and carries its ref, for a `capture` of it. A `pre` is a
+block of code, read as `code "…"` with its line breaks and indentation kept
+(a long one a part to a line, broken between two of its own lines); code
+named inside a sentence stays a word of the sentence.
+
 An outline line of text carries a paragraph whole; names and values stay
 short. Running text the page parts with two line breaks, as pages without
 paragraph elements do, is a line to each part. A run longer than 2000

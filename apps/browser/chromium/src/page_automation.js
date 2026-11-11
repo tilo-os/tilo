@@ -13,6 +13,12 @@ globalThis.__tiloPage ||= (() => {
     can_redo: Reflect.apply(queryNativeHistory, document, ['redo'])
   });
   const MAX_LINES = 1200, MAX_CHARS = 100000, MAX_VISITED = 40000;
+  // What bounds a read is the elements it looks at, each a style to ask
+  // for. A text node costs its characters, which the read's size bounds, and
+  // so little besides that a page may hold ten times as many: the spaces a
+  // page's mark-up leaves between its elements are text nodes too, and
+  // counted like elements they ended the read of a long article early.
+  const MAX_VISITED_TEXT = 400000;
   const MAX_TEXT = 200, MAX_NAME = 120, MAX_VALUE = 200, MAX_OPTIONS = 30;
   // A paragraph is read whole: a page's own words are what a reader came
   // for, and a paragraph cut after a sentence or two cannot be read at all.
@@ -21,6 +27,9 @@ globalThis.__tiloPage ||= (() => {
   // How a line break stands in text being gathered, and what two or more
   // of them with nothing but space between are.
   const LINE_BREAK = '\u0000', PARAGRAPH_BREAK = /\u0000(?:\s*\u0000)+/;
+  // In code being gathered the same mark stands where a box of its own
+  // starts or ends: one line break there, unless the code has its own.
+  const BOX_BREAK = /\n?\u0000+\n?/g;
   const INPUT_ROLES = {button: 'button', submit: 'button', reset: 'button', image: 'button',
     file: 'file', color: 'color', checkbox: 'checkbox', radio: 'radio', range: 'slider',
     number: 'spinbutton', search: 'searchbox'};
@@ -485,7 +494,8 @@ globalThis.__tiloPage ||= (() => {
     // trigger a hover opens a menu with, a draggable row, a drawing surface.
     if (NAMED_FROM_CONTENT.has(kind) || kind === 'hint' || kind === 'draggable' || kind === 'canvas') {
       text = clean(element.innerText, MAX_NAME) || clean([...element.querySelectorAll('img[alt],[aria-label],svg title')]
-        .map(part => part.getAttribute('alt') || part.getAttribute('aria-label') || part.textContent).join(' '), MAX_NAME);
+        .map(part => part.getAttribute('alt') || part.getAttribute('aria-label') || part.textContent).join(' '), MAX_NAME) ||
+        clean(shownText(element), MAX_NAME);
       if (text) return text;
     }
     return clean(element.title, MAX_NAME);
@@ -864,7 +874,7 @@ globalThis.__tiloPage ||= (() => {
   // element itself when it is one an agent can act on, else the nearest
   // ancestor that is.
   function targetAt(hit) {
-    for (let node = hit; node && node.nodeType === 1; node = node.parentNode || node.host) {
+    for (let node = hit; node && node.nodeType === 1; node = node.assignedSlot || node.parentNode || node.host) {
       if (INTERACTIVE.has(role(node)) || node.hasAttribute('onclick') ||
           node.localName === 'canvas' || node.getAttribute('draggable') === 'true' || hoverReveals(node))
         return node;
@@ -1073,7 +1083,7 @@ globalThis.__tiloPage ||= (() => {
 
   function walkLines(maxLines, maxChars) {
     const lines = [], frames = [];
-    let chars = 0, visited = 0, truncated = false, pending = '', pendingDepth = 0;
+    let chars = 0, visited = 0, texts = 0, truncated = false, pending = '', pendingDepth = 0;
     const emit = (depth, text) => {
       if (lines.length >= maxLines || chars >= maxChars) { truncated = true; return false; }
       const line = '  '.repeat(Math.min(depth, 24)) + '- ' + text;
@@ -1105,21 +1115,38 @@ globalThis.__tiloPage ||= (() => {
     };
     markHoverTargets();
     const hovering = hoverTargets || new Set();
-    const children = parent => {
-      if (parent.shadowRoot) return parent.shadowRoot.childNodes;
-      const assigned = parent.localName === 'slot' ? parent.assignedNodes({flatten: true}) : null;
-      return assigned && assigned.length ? assigned : parent.childNodes;
+    // A block of code is read as it is written: its line breaks and its
+    // indentation are part of what it says. It takes the line the walk kept
+    // for it, and a long one goes on in the next line, broken between two
+    // of its own lines.
+    const placeCode = (at, depth, parts, ref) => {
+      let rest = parts.join('').replace(BOX_BREAK, '\n').replace(/[ \t]+$/gm, '').replace(/^\n+|\n+$/g, '');
+      const placed = [], indent = '  '.repeat(Math.min(depth, 24));
+      while (rest) {
+        const end = rest.length > MAX_PROSE ? rest.lastIndexOf('\n', MAX_PROSE) : rest.length;
+        const piece = rest.slice(0, end > MAX_PROSE / 2 ? end : MAX_PROSE);
+        rest = rest.slice(piece.length).replace(/^\n/, '');
+        placed.push(`${indent}- code ${quote(piece)}${placed.length ? '' : ref}`);
+      }
+      // A block with no words of its own is listed only for what it holds.
+      if (!placed.length && lines.length > at + 1) placed.push(`${indent}- code${ref}`);
+      chars += placed.reduce((sum, line) => sum + line.length + 1, 0) - lines[at].length - 1;
+      lines.splice(at, 1, ...placed);
+      for (const frame of frames) if (frame.line > at) frame.line += placed.length - 1;
+      if (lines.length > maxLines) { lines.length = maxLines; truncated = true; }
     };
     const walk = (parent, depth, context) => {
-      for (const child of children(parent)) {
+      for (const child of flatChildren(parent)) {
         if (truncated) return;
         visit(child, depth, context);
       }
     };
     const visit = (node, depth, context) => {
-      if (++visited > MAX_VISITED) { truncated = true; return; }
+      if (node.nodeType === 1 ? ++visited > MAX_VISITED : ++texts > MAX_VISITED_TEXT) { truncated = true; return; }
       if (node.nodeType === 3) {
-        if (!context.inside && context.visible) {
+        if (!context.visible || context.folded) return;
+        if (context.code) context.code.push(node.data);
+        else if (!context.inside) {
           if (!pending) pendingDepth = depth;
           pending += node.data;
         }
@@ -1131,16 +1158,19 @@ globalThis.__tiloPage ||= (() => {
       if (tag === 'input' && type(element) === 'hidden') return;
       // A line break inside running text: two of them end a paragraph.
       if (tag === 'br') {
-        if (pending && !context.inside && context.visible) pending += LINE_BREAK;
+        if (context.code) context.code.push('\n');
+        else if (pending && !context.inside && context.visible) pending += LINE_BREAK;
         return;
       }
-      if (element.checkVisibility && !element.checkVisibility()) return;
+      if (!laidOut(element, context.folded)) return;
       const style = getComputedStyle(element);
       const visible = style.visibility === 'visible';
       const block = !style.display.startsWith('inline') && style.display !== 'contents';
-      if (block) flush();
+      if (block) { flush(); if (context.code) context.code.push(LINE_BREAK); }
       const pointer = style.cursor === 'pointer';
       let kind = visible ? role(element) : '';
+      // Preformatted text with no role of its own is a block of code.
+      const code = tag === 'pre' && visible && !kind && !context.code ? [] : null;
       // A page's drag source is what a gesture grabs, so a gesture addresses
       // it by ref: a list item that is also a listitem is still the thing a
       // hand moves. Roles only a container carries keep their words.
@@ -1163,11 +1193,26 @@ globalThis.__tiloPage ||= (() => {
       if (tag === 'canvas' && visible && !context.inside) kind = 'canvas';
       else if (visible && !context.inside && element.getAttribute('draggable') === 'true') kind = 'draggable';
       // A bound label's words are its control's name; listing them again is noise.
-      const inner = {inside: context.inside || (tag === 'label' && !!element.control), pointer, visible};
+      const inner = {inside: context.inside || (tag === 'label' && !!element.control), pointer, visible,
+        folded: folds(element, style), code: code || context.code};
       if (kind === 'img') {
         flush();
         const label = name(element, kind);
         emit(depth, label ? `${kind} ${quote(label)}` : kind);
+        return;
+      }
+      // Code is one thing to read, whatever a highlighter cut it into. A
+      // block a gesture can reach (one that scrolls, one the page made
+      // clickable) keeps its ref, and so does what is acted on inside it.
+      if (code) {
+        flush();
+        const at = lines.length;
+        if (!emit(depth, 'code')) return;
+        inner.inside = true;
+        walk(element, depth + 1, inner);
+        const reached = INTERACTIVE.has(kind) || element.scrollHeight > element.clientHeight ||
+          element.scrollWidth > element.clientWidth;
+        placeCode(at, depth, code, reached ? ` [ref=${refOf(element)}]` : '');
         return;
       }
       // A drawing surface is one element a gesture draws on, never the boxes
@@ -1242,8 +1287,16 @@ globalThis.__tiloPage ||= (() => {
         }
         return;
       }
+      // What a closed shadow tree shows is not read, and the read says so:
+      // the line names the element, so a picture of it can be asked for.
+      if (visible && !context.inside && sealed(element)) {
+        flush();
+        emit(depth, `text ${quote(`… <${tag}> shows what is in a closed shadow tree, which a read cannot reach; ` +
+          'a capture of it shows it')} [ref=${refOf(element)}]`);
+        return;
+      }
       walk(element, depth, inner);
-      if (block) flush();
+      if (block) { flush(); if (context.code) context.code.push(LINE_BREAK); }
     };
     if (document.body) visit(document.body, 0, {inside: false, pointer: false, visible: true});
     flush();
@@ -1339,10 +1392,76 @@ globalThis.__tiloPage ||= (() => {
     return kind;
   }
 
-  function childrenOf(element) {
-    if (element.shadowRoot) return element.shadowRoot.childNodes;
-    const assigned = element.localName === 'slot' ? element.assignedNodes({flatten: true}) : null;
-    return assigned && assigned.length ? assigned : element.childNodes;
+  // The tree a person sees is the flat tree, and every read follows it: an
+  // element with a shadow tree shows that tree instead of its own children,
+  // and a slot shows the nodes it was given, or its own children when it was
+  // given none. A slot handed on to a slot of another shadow tree is one of
+  // the nodes that slot was given, and is followed in its turn.
+  function flatChildren(parent) {
+    const root = parent.shadowRoot;
+    if (root) { watchRoot(root); return root.childNodes; }
+    const given = parent.localName === 'slot' && parent.assignedNodes ? parent.assignedNodes() : null;
+    return given && given.length ? given : parent.childNodes;
+  }
+  // An element is on the page when it is laid out. One whose display is
+  // `contents` has no box of its own and is there none the less: what it
+  // holds is laid out in its place. A slot is one, and so is the article of
+  // a page that sets its parts in a grid. Only where what holds it is folded
+  // away is it off the page with the rest.
+  function laidOut(element, folded) {
+    if (!element.checkVisibility || element.checkVisibility()) return true;
+    return !folded && getComputedStyle(element).display === 'contents';
+  }
+  // Whether an element shows itself and keeps what it holds off the page: a
+  // details that is closed, past its summary, and content its style skips.
+  const folds = (element, style) => style.contentVisibility === 'hidden' ||
+    (element.localName === 'details' && !element.open);
+  // A closed shadow tree is out of a script's reach, so what it shows is not
+  // read. It is known by what is left of it: a custom element that is laid
+  // out with a box, has no shadow tree a script may see, and shows none of
+  // its own children.
+  function sealed(element) {
+    if (!element.localName.includes('-') || element.shadowRoot || !element.matches(':defined')) return false;
+    for (const child of element.childNodes) {
+      if (child.nodeType === 1 && laidOut(child)) return false;
+      if (child.nodeType === 3 && child.data.trim()) {
+        const range = document.createRange();
+        range.selectNodeContents(child);
+        if (range.getClientRects().length) return false;
+      }
+    }
+    const box = element.getBoundingClientRect();
+    return box.width > 0 && box.height > 0;
+  }
+  // The words an element shows, gathered along the flat tree: what its own
+  // children say nothing of when the words are its shadow tree's or a slot's.
+  const MAX_SHOWN_TEXT_NODES = 2000;
+  function shownText(element) {
+    let text = '', visited = 0;
+    const gather = (parent, visible, folded) => {
+      for (const child of flatChildren(parent)) {
+        if (text.length > MAX_NAME * 2 || ++visited > MAX_SHOWN_TEXT_NODES) return;
+        if (child.nodeType === 3) { if (visible && !folded) text += child.data; continue; }
+        if (child.nodeType !== 1 || SKIP.has(child.localName) || child.getAttribute('aria-hidden') === 'true' ||
+            !laidOut(child, folded)) continue;
+        const style = getComputedStyle(child);
+        if (!style.display.startsWith('inline') && style.display !== 'contents') text += ' ';
+        gather(child, style.visibility === 'visible', folds(child, style));
+      }
+    };
+    gather(element, true, false);
+    return text;
+  }
+  // A shadow tree is watched as the document is, from the first read that
+  // meets it: a password field in it that the page turns into plain text is
+  // still one.
+  const watchedRoots = new WeakSet();
+  let typeWatch = null;
+  function watchRoot(root) {
+    if (watchedRoots.has(root)) return;
+    watchedRoots.add(root);
+    for (const field of root.querySelectorAll('input[type=password i]')) wasPassword.add(field);
+    if (typeWatch) typeWatch.observe(root, {subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ['type']});
   }
 
   // Every element of this document the outline prints with a ref, in the
@@ -1352,14 +1471,14 @@ globalThis.__tiloPage ||= (() => {
     const found = [];
     let visited = 0;
     const under = (places, text) => `${places}${text}${text.endsWith(':') ? ' ' : ': '}`;
-    const visit = (element, inside, places, pointer) => {
+    const visit = (element, inside, places, pointer, folded) => {
       if (++visited > MAX_FIND_CANDIDATES) return;
       const tag = element.localName;
       if (SKIP.has(tag) || element.getAttribute('aria-hidden') === 'true') return;
       if (tag === 'input' && type(element) === 'hidden') return;
-      if (element.checkVisibility && !element.checkVisibility()) return;
+      if (!laidOut(element, folded)) return;
       const style = getComputedStyle(element);
-      const visible = style.visibility === 'visible';
+      const visible = style.visibility === 'visible', within = folds(element, style);
       const kind = kindOf(element, visible, inside, pointer || style.cursor === 'pointer');
       // A frame is its own document, read with the frame's id.
       if (kind === 'iframe') return;
@@ -1376,19 +1495,19 @@ globalThis.__tiloPage ||= (() => {
         // The line's own name carries what is inside it, so what is found
         // within is found under the line it is printed beneath.
         if (kind === 'textbox' || kind === 'searchbox') return;
-        for (const child of childrenOf(element)) if (child.nodeType === 1)
-          visit(child, true, under(places, `${kind}${label ? ' ' + quote(label) : ''}`), style.cursor === 'pointer');
+        for (const child of flatChildren(element)) if (child.nodeType === 1)
+          visit(child, true, under(places, `${kind}${label ? ' ' + quote(label) : ''}`), style.cursor === 'pointer', within);
         return;
       }
       if (CONTAINERS.has(kind)) {
         const label = FIND_NAMED.has(kind) ? name(element, kind) : '';
         const bar = `${kind}${label ? ' ' + quote(label) : ''}`;
-        for (const child of childrenOf(element)) if (child.nodeType === 1)
-          visit(child, inner, label ? under(places, bar) : places, pointer || style.cursor === 'pointer');
+        for (const child of flatChildren(element)) if (child.nodeType === 1)
+          visit(child, inner, label ? under(places, bar) : places, pointer || style.cursor === 'pointer', within);
         return;
       }
-      for (const child of childrenOf(element)) if (child.nodeType === 1)
-        visit(child, inner, places, pointer || style.cursor === 'pointer');
+      for (const child of flatChildren(element)) if (child.nodeType === 1)
+        visit(child, inner, places, pointer || style.cursor === 'pointer', within);
     };
     if (document.body) visit(document.body, false, '', false);
     return found;
@@ -1547,14 +1666,20 @@ globalThis.__tiloPage ||= (() => {
   function topmost(x, y) {
     let hit = document.elementFromPoint(x, y);
     while (hit && hit.shadowRoot) {
-      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      let inner = hit.shadowRoot.elementFromPoint(x, y);
+      // Over words an element hands to a slot of its shadow tree the answer
+      // is that element again: what is drawn there is the box of its shadow
+      // tree that holds the slot, a button around its own label.
+      if (inner === hit) inner = hit.shadowRoot.elementsFromPoint(x, y).find(under => under.getRootNode() === hit.shadowRoot);
       if (!inner || inner === hit) break;
       hit = inner;
     }
     return hit;
   }
+  // Whether a node is drawn inside an element: up the flat tree, so what a
+  // slot was given is inside what holds the slot.
   function within(node, element) {
-    for (; node; node = node.parentNode || node.host) if (node === element) return true;
+    for (; node; node = node.assignedSlot || node.parentNode || node.host) if (node === element) return true;
     return false;
   }
   function describe(element) {
@@ -2612,13 +2737,14 @@ globalThis.__tiloPage ||= (() => {
     if (watching || typeof globalThis.__tiloPageNote !== 'function') return;
     watching = true;
     try {
-      new MutationObserver(records => {
+      typeWatch = new MutationObserver(records => {
         shapesDirty = true;
         // A password field the page turns into plain text is still one.
         for (const record of records)
           if (record.type === 'attributes' && record.attributeName === 'type' &&
               String(record.oldValue).toLowerCase() === 'password') wasPassword.add(record.target);
-      }).observe(document, {subtree: true, childList: true, attributes: true, attributeOldValue: true});
+      });
+      typeWatch.observe(document, {subtree: true, childList: true, attributes: true, attributeOldValue: true});
       heldNow();
       shapesNow();
       shapesDirty = false;

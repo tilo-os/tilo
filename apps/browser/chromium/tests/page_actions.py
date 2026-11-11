@@ -625,6 +625,122 @@ TWO_SITES = {'/news': NEWS, '/consent': CONSENT, '/consent-loading': CONSENT_LOA
              '/blank': b'<!doctype html><title>blank</title>'}
 
 
+# Components as libraries write them: what a person reads is among an
+# element's own children, in its shadow tree, or handed from one to the other
+# through a slot, and one shadow tree holds another.
+SHADOW = b"""<!doctype html><title>Components</title>
+<h1>Simple template</h1>
+<template id="my-paragraph"><style>p { color: white; background: #666; padding: 5px }</style>
+<p><slot name="my-text">My default text</slot></p></template>
+<my-paragraph><span slot="my-text">Let's have some different text!</span></my-paragraph>
+<my-paragraph><ul slot="my-text"><li>Slotted first item</li><li>In a list!</li></ul></my-paragraph>
+<my-paragraph></my-paragraph>
+<my-paragraph><span>Never given a slot</span></my-paragraph>
+<outer-card><span slot="title">Card title</span><a slot="more" href="/next">Read more</a></outer-card>
+<sealed-note></sealed-note>
+<slot-button>Save draft</slot-button> <slot-button><span>Send <b>now</b></span></slot-button>
+<p id="status"></p>
+<script>
+customElements.define('slot-button', class extends HTMLElement {
+  constructor() {
+    super();
+    const root = this.attachShadow({mode: 'open'});
+    root.innerHTML = '<button type="button" style="padding: 12px 24px"><slot></slot></button>';
+    root.querySelector('button').onclick = () =>
+      document.getElementById('status').textContent = 'pressed ' + this.textContent;
+  }
+});
+customElements.define('my-paragraph', class extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({mode: 'open'}).appendChild(document.getElementById('my-paragraph').content.cloneNode(true));
+  }
+});
+customElements.define('inner-box', class extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({mode: 'open'}).innerHTML = `<div><slot name="body">Nothing here</slot></div>
+      <p><slot name="foot">No footer</slot></p><p><slot name="absent">Inner fallback</slot></p>
+      <a href="/inner">Inner link</a>`;
+  }
+});
+customElements.define('outer-card', class extends HTMLElement {
+  constructor() {
+    super();
+    const root = this.attachShadow({mode: 'open'});
+    root.innerHTML = `<section><h2><slot name="title">Untitled</slot></h2>
+      <inner-box><slot name="more" slot="body">No link given</slot>
+        <label slot="body">Member name <input name="member"></label>
+        <label slot="body">Passphrase <input name="pass" type="password"></label>
+        <label slot="body">Pin <input name="pin" type="password"></label>
+        <em slot="foot">The card's own footer</em></inner-box></section>`;
+    root.querySelector('[name=member]').addEventListener('input', event =>
+      document.getElementById('status').textContent = 'member ' + event.target.value);
+  }
+});
+customElements.define('sealed-note', class extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({mode: 'closed'}).innerHTML = '<p>Sealed words</p>';
+  }
+});
+</script>"""
+
+
+# Code as documentation shows it: a block whose line breaks and indentation
+# are part of what it says, beside prose that names a word of code in passing.
+CODE_BLOCK = '/* matches a password input */\ninput[type="password"] {\n  color: red;\n}\n\ninput[pattern] {\n}'
+CODE = ('''<!doctype html><title>Snippets</title>
+<style>.line { display: block } .numbers { display: none }</style>
+<h1>Attribute selectors</h1>
+<p>Match a control by its <code>type</code> or its <code>pattern</code>.</p>
+<div class="code-example"><div class="example-header"><span class="language-name">css</span></div>
+<pre class="brush: css"><code>''' + CODE_BLOCK + '''
+</code></pre></div>
+<pre><span class="numbers">1 2</span><span class="line">first();</span><span class="line">  second();</span></pre>
+<pre><a href="/next">linked()</a> + 1</pre>
+<pre>''' + ''.join(f'step({number});\n' for number in range(1, 401)) + '</pre>').encode()
+
+
+# A page laid out as a documentation site lays its own out: the article's
+# element is a part of a grid and has no box of its own (`display: contents`),
+# so its header, its list of contents and its body are the grid's own cells.
+LAYOUT = b"""<!doctype html><title>The input element</title>
+<style>.grid { display: grid; grid-template-columns: 1fr 3fr 1fr; gap: 8px }
+.content, .passthrough { display: contents }</style>
+<header><nav><a href="/home">Home</a></nav></header>
+<div class="grid"><main id="content" class="content">
+  <div class="head"><h1>The input element</h1><p>Used to create interactive controls.</p></div>
+  <aside><nav><h2>In this article</h2><a href="#attributes">Attributes</a></nav></aside>
+  <div class="body"><section aria-labelledby="attributes"><h2 id="attributes">Attributes</h2>
+    <p>The pattern attribute is a regular expression.</p>
+    <table><tr><th>Type</th><th>Description</th></tr><tr><td>text</td><td>A single-line text field</td></tr></table>
+    <div class="passthrough"><p>Words in a box of no box.</p></div>
+    <pre><code>input[pattern] {
+}</code></pre>
+    <details><summary>More on patterns</summary>Folded words<div class="passthrough"><p>Folded paragraph</p>Folded run</div></details>
+    <div style="display: none"><div class="passthrough"><p>Never shown</p>nor this</div></div>
+    <div hidden><div class="passthrough"><p>Hidden by attribute</p></div></div>
+    <div class="passthrough" aria-hidden="true"><p>Hidden from readers</p></div>
+    <div style="visibility: hidden"><div class="passthrough"><p>Invisible words</p></div></div>
+    <div style="content-visibility: hidden">Skipped run<div class="passthrough"><p>Skipped words</p>skipped too</div></div>
+  </section></div>
+</main>
+<aside id="sidebar"><a href="/other">Another element</a></aside></div>
+<footer><p>About this site</p></footer>"""
+
+# A page whose mark-up leaves more text nodes than a read looks at elements:
+# the spaces between a long page's elements, here set down by a script.
+SPACED = b"""<!doctype html><title>Spaced</title>
+<h1>Spaced</h1><div id="gaps"></div><p>The end of the page.</p>
+<script>
+const gaps = document.getElementById('gaps');
+for (let number = 0; number < 45000; number++) gaps.append(' ');
+</script>"""
+
+READS = {'/shadow': SHADOW, '/code': CODE, '/layout': LAYOUT, '/spaced': SPACED}
+
+
 # A shop, from its search to an order's confirmation: the stand-in for a real
 # order, which is never placed on a real site. Its bag and its orders are the
 # server's own, so a test reads what the shop received.
@@ -733,6 +849,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path.startswith('/shop'):
             return self.shop('GET')
+        if path in READS:
+            return self.answer(READS[path])
         if path in TWO_SITES:
             return self.answer(TWO_SITES[path].replace(b'{OTHER}', self.server.other.encode())
                                .replace(b'{NEAR}', self.server.near.encode()))
@@ -3105,6 +3223,230 @@ class PageActions(unittest.TestCase):
         self.assertEqual(found['data']['element'], self.ref(self.outline(), 'button "Shadow button"'))
         self.ok('click', element=found['data']['element'])
         self.assertIn('text "shadow clicked"', self.outline())
+
+    def test_a_read_follows_a_slot_to_what_it_was_given(self):
+        # A component hands its own children to a slot of its shadow tree,
+        # and a person reads them where the slot stands. A read does too.
+        self.h.navigate(self.url + '/shadow')
+        outline = self.outline()
+        self.assertIn('heading "Simple template" level=1', outline)
+        self.assertIn('text "Let\'s have some different text!"', outline)
+        self.assertIn('listitem: "Slotted first item"', outline)
+        self.assertIn('listitem: "In a list!"', outline)
+        # A slot given nothing shows its own words, one given something
+        # never does, and a child no slot takes is not on the page.
+        self.assertEqual(outline.count('text "My default text"'), 2, outline)
+        self.assertNotIn('Never given a slot', outline)
+        # What a read prints, a search finds.
+        found = self.ok('search', text='in a LIST')
+        self.assertEqual(found['data']['total'], 1, found)
+        self.assertIn('In a list!', found['data']['matches'][0]['text'])
+        self.assertEqual(self.ok('search', text='never given')['data']['total'], 0)
+
+    def test_a_read_follows_one_shadow_tree_into_another(self):
+        # A component built of components: the card's shadow tree holds a box
+        # with a shadow tree of its own, and hands on what the page handed it.
+        self.h.navigate(self.url + '/shadow')
+        outline = self.outline()
+        self.assertIn('heading "Card title" level=2', outline)
+        self.assertRegex(outline, r'link "Read more" \[ref=d\d+e\d+\] -> http://127\.0\.0\.1:\d+/next')
+        self.assertRegex(outline, r'textbox "Member name" \[ref=d\d+e\d+\]')
+        self.assertIn('text "The card\'s own footer"', outline)
+        self.assertIn('text "Inner fallback"', outline)
+        self.assertRegex(outline, r'link "Inner link" \[ref=d\d+e\d+\]')
+        for unseen in ('Untitled', 'No link given', 'Nothing here', 'No footer'):
+            self.assertNotIn(unseen, outline)
+        # In the order a person reads them.
+        places = [outline.index(words) for words in
+                  ('Card title', 'Read more', 'Member name', 'own footer', 'Inner fallback', 'Inner link')]
+        self.assertEqual(places, sorted(places), outline)
+
+    def test_a_field_and_a_link_inside_a_shadow_tree_are_operated_by_ref(self):
+        self.h.navigate(self.url + '/shadow')
+        outline = self.outline()
+        member = self.ref(outline, 'textbox "Member name"')
+        # A find reaches what a read prints, and answers the same ref.
+        found = self.find(role='textbox', name='Member name')
+        self.assertTrue(found['ok'], found)
+        self.assertEqual(found['data']['element'], member)
+        self.ok('fill', element=member, text='ada', actor='ada')
+        after = self.outline()
+        self.assertIn('text "member ada"', after)
+        self.assertIn(f'textbox "Member name" [ref={member}] value="ada"', after)
+        review = {field['name']: field for field in self.ok('fields')['data']['fields']}
+        self.assertEqual((review['Member name']['value'], review['Member name']['set']['by']), ('ada', 'ada'))
+        entry = self.ok('ledger', since=0)['data']['entries'][-1]
+        self.assertEqual((entry['action'], entry['target'], entry['text']),
+                         ('fill', {'role': 'textbox', 'name': 'Member name'}, 'ada'))
+        # A link handed down through two slots is clicked where it is drawn.
+        link = self.find(role='link', name='Read more')
+        self.assertTrue(link['ok'], link)
+        self.assertEqual(link['data']['element'], self.ref(outline, 'link "Read more"'))
+        clicked = self.ok('click', element=link['data']['element'])
+        self.assertEqual((clicked['navigation'], clicked['navigated']), ('started', True), clicked)
+        self.assertTrue(clicked['url'].endswith('/next'), clicked)
+
+    def test_a_button_whose_words_are_handed_to_its_slot_is_named_and_clicked(self):
+        # A component library's button is a button in a shadow tree around a
+        # slot, and its words are the component's own children. It is named
+        # by the words it shows, and a click lands on it: over those words a
+        # point is the component's, and the button is what is drawn there.
+        self.h.navigate(self.url + '/shadow')
+        outline = self.outline()
+        save, send = self.ref(outline, 'button "Save draft"'), self.ref(outline, 'button "Send now"')
+        self.assertEqual(self.find(role='button', name='Save draft')['data']['element'], save)
+        self.ok('click', element=save)
+        self.assertIn('text "pressed Save draft"', self.outline())
+        self.ok('click', element=send)
+        self.assertIn('text "pressed Send now"', self.outline())
+        # A point over the words names the button a click there presses.
+        box = json.loads(self.main_world('JSON.stringify(document.querySelector("slot-button").getBoundingClientRect())'))
+        hit = self.ok('at', x=box['x'] + box['width'] / 2, y=box['y'] + box['height'] / 2)
+        self.assertEqual((hit['data']['ref'], hit['data']['target']), (save, 'button "Save draft"'), hit)
+
+    def test_a_secret_inside_a_shadow_tree_is_kept_as_one_outside_it_is(self):
+        self.h.navigate(self.url + '/shadow')
+        said = []
+
+        def heard(answer):
+            said.append(answer)
+            return answer
+        fields = 'document.querySelector("outer-card").shadowRoot'
+        outline = heard(self.ok('outline', actor='ada'))['outline']
+        self.assertRegex(outline, r'textbox "Passphrase" \[ref=d\d+e\d+\] type=password')
+        field, pin = self.ref(outline, 'textbox "Passphrase"'), self.ref(outline, 'textbox "Pin"')
+        refused = heard(self.page('fill', element=field, text='correct-horse', actor='ada'))
+        self.assertEqual((refused['ok'], refused['code']), (False, 'secret_field'), refused)
+        heard(self.ok('fill', element=field, text='correct-horse', secret=True, actor='ada'))
+        keys = dict(ctrl=False, shift=False, alt=False, meta=False)
+        for char in '-battery':
+            pressed = heard(self.ok('press', element=field, key=char, actor='ben', **keys))
+            self.assertEqual(pressed['message'], 'Pressed a key in a secret field', pressed)
+        # A page that shows a password on request turns its field into plain
+        # text. In a shadow tree too, what it holds is no less a secret, even
+        # when nothing had been written into it before.
+        self.main_world(f'({fields}.querySelector("[name=pin]").type = "text", 1)')
+        refused = heard(self.page('fill', element=pin, text='pin-4711', actor='ada'))
+        self.assertEqual((refused['ok'], refused['code']), (False, 'secret_field'), refused)
+        heard(self.ok('fill', element=pin, text='pin-4711', secret=True, actor='ada'))
+        # A secret a person types is set down as set, and no more.
+        self.h.settle(1.6)
+        mark = len(self.h.seen)
+        self.main_world(f'({fields}.querySelector("[name=pin]").focus(), 1)')
+        self.typed('-x9')
+        typed = self.told('page_record', mark)['entry']
+        self.assertEqual((typed['how'], typed['secret'], typed['target']),
+                         ('input', True, {'role': 'textbox', 'name': 'Pin'}), typed)
+        self.assertNotIn('text', typed)
+        said.append(typed)
+        held = json.loads(self.main_world(f'JSON.stringify([...{fields}.querySelectorAll("input")].map(i => i.value))'))
+        self.assertEqual(held, ['', 'correct-horse-battery', 'pin-4711-x9'])
+        again = heard(self.ok('outline', actor='rev'))['outline']
+        self.assertIn(f'textbox "Passphrase" [ref={field}] type=password value=<21 characters hidden>', again)
+        self.assertIn(f'textbox "Pin" [ref={pin}] value=<11 characters hidden>', again)
+        # A search says the words it looked for, so it looks for parts of them.
+        for words in ('orrect-hor', 'atter', '471', '-x'):
+            self.assertEqual(heard(self.ok('search', text=words))['data']['total'], 0)
+        review = {listed['name']: listed for listed in heard(self.ok('fields', actor='rev'))['data']['fields']}
+        self.assertEqual((review['Passphrase']['value'], review['Pin']['value']),
+                         ('<21 characters hidden>', '<11 characters hidden>'))
+        entries = heard(self.ok('ledger', since=0, actor='cy'))['data']['entries']
+        fills = [entry for entry in entries if entry.get('action') == 'fill' and entry['ok']]
+        self.assertEqual([(entry['target']['name'], entry.get('text'), entry['secret']) for entry in fills],
+                         [('Passphrase', None, True), ('Pin', None, True)])
+        self.assertEqual({entry['message'] for entry in entries if entry.get('action') == 'press'},
+                         {'Pressed a key in a secret field'})
+        everything = json.dumps(said)
+        for text in ('correct-horse', 'battery', 'pin-4711', '4711', 'x9'):
+            self.assertNotIn(text, everything)
+
+    def test_a_read_says_what_a_closed_shadow_tree_keeps_from_it(self):
+        # A closed shadow tree is out of a page script's reach, so its words
+        # are not read. The read says so in a line, and names the element: a
+        # picture of it shows what the read could not.
+        self.h.navigate(self.url + '/shadow')
+        outline = self.outline()
+        self.assertNotIn('Sealed words', outline)
+        told = [line for line in outline.splitlines() if 'sealed-note' in line]
+        self.assertEqual(len(told), 1, outline)
+        self.assertIn('closed shadow tree', told[0])
+        box = self.ok('capture', element=re.search(r'\[ref=(d\d+e\d+)\]', told[0]).group(1))
+        self.assertEqual(box['data']['format'], 'png')
+        self.assertGreater(box['data']['height'], 0)
+        # The elements whose shadow trees are open are read, and said nothing of.
+        self.assertEqual(outline.count('closed shadow tree'), 1, outline)
+
+    def test_a_code_block_is_read_as_code_line_for_line(self):
+        self.h.navigate(self.url + '/code')
+        outline = self.outline()
+        # A word of code in a sentence is a word of the sentence.
+        self.assertIn('text "Match a control by its type or its pattern."', outline)
+        # A block of code keeps its lines and its indentation.
+        self.assertIn('- code ' + json.dumps(CODE_BLOCK), outline)
+        # Lines a highlighter sets in boxes of their own are lines, and a
+        # gutter the page hides is not read.
+        self.assertIn('- code ' + json.dumps('first();\n  second();'), outline)
+        # A link in code is read with it and still acted on by its ref.
+        self.assertIn('- code "linked() + 1"', outline)
+        self.assertRegex(outline, r'link "linked\(\)" \[ref=d\d+e\d+\]')
+        # A long block is read whole, a part to a line, broken between two
+        # of its own lines.
+        self.assertEqual(re.findall(r'step\((\d+)\);', outline), [str(number) for number in range(1, 401)])
+        parts = [line for line in outline.splitlines() if 'step(' in line]
+        self.assertGreater(len(parts), 1, parts)
+        for part in parts:
+            self.assertTrue(part.startswith('- code "step('), part)
+            self.assertTrue(part.endswith(');"'), part)
+            self.assertLess(len(part), 2200, part)
+        # A search finds code by what it says, and a read goes on from it.
+        found = self.ok('search', text='input[pattern]')
+        self.assertEqual(found['data']['total'], 1, found)
+        around = self.ok('outline', **{'from': found['data']['matches'][0]['line']})
+        self.assertTrue(around['outline'].splitlines()[0].startswith('- code "/* matches a password input */'), around)
+
+    def test_the_spaces_between_a_page_s_elements_do_not_end_its_read(self):
+        # A read looks at so many elements and no more, so that it ends
+        # whatever the page holds. The text nodes between them are not
+        # elements: a long article's mark-up leaves more of them than it has
+        # elements, and its read goes to its end all the same.
+        self.h.navigate(self.url + '/spaced')
+        self.assertEqual(self.main_world('document.getElementById("gaps").childNodes.length'), 45000)
+        read = self.ok('outline')
+        self.assertEqual(read['outline'], '- heading "Spaced" level=1\n- text "The end of the page."', read)
+        self.assertEqual(read['message'], 'Read 2 lines')
+        self.assertEqual(self.ok('search', text='the end of')['data']['total'], 1)
+
+    def test_a_read_goes_through_an_element_that_has_no_box_of_its_own(self):
+        # A documentation site sets its article in a grid: the article's
+        # element is `display: contents`, so it has no box and what it holds
+        # is laid out in its place. It is on the page all the same.
+        self.h.navigate(self.url + '/layout')
+        outline = self.outline()
+        self.assertIn('- main', outline)
+        self.assertIn('heading "The input element" level=1', outline)
+        self.assertIn('text "Used to create interactive controls."', outline)
+        self.assertIn('heading "Attributes" level=2', outline)
+        self.assertIn('text "The pattern attribute is a regular expression."', outline)
+        self.assertIn('columnheader: "Description"', outline)
+        self.assertIn('cell: "A single-line text field"', outline)
+        self.assertIn('text "Words in a box of no box."', outline)
+        self.assertIn('- code ' + json.dumps('input[pattern] {\n}'), outline)
+        self.assertIn('text "About this site"', outline)
+        # What is hidden stays out, whatever stands between it and what
+        # hides it.
+        for hidden in ('Folded', 'Never shown', 'nor this', 'Hidden by attribute', 'Hidden from readers',
+                       'Invisible words', 'Skipped', 'skipped'):
+            self.assertNotIn(hidden, outline)
+        self.assertEqual(self.ok('search', text='the PATTERN attribute')['data']['total'], 1)
+        self.assertEqual(self.ok('search', text='folded')['data']['total'], 0)
+        link = self.find(role='link', name='Attributes')
+        self.assertTrue(link['ok'], link)
+        self.assertEqual(link['data']['element'], self.ref(outline, 'link "Attributes"'))
+        # What a person opens is then read.
+        self.ok('click', element=self.ref(outline, 'button "More on patterns"'))
+        opened = self.outline()
+        for words in ('Folded words', 'Folded paragraph', 'Folded run'):
+            self.assertIn(words, opened)
 
     def test_a_find_reads_a_frame_s_own_document(self):
         self.h.navigate(self.url + '/embed')
