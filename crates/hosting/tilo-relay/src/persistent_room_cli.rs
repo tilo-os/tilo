@@ -286,6 +286,8 @@ pub struct PersistentArgs {
     /// Serve the deployment's plain-HTTP routes at this address: the health
     /// page (`/mode`), the published avatars (`/avatars/<name>`) and Discord's
     /// sign-in callback (`/discord/callback`), as an ingress publishes them.
+    /// An address ending in `:0` takes a port the kernel picks, which the
+    /// room announces once it serves.
     #[arg(long = "http", value_name = "ADDR", requires = "persistent")]
     pub http: Option<std::net::SocketAddr>,
     /// The largest file a member posts in the workspace's Chat that the workspace
@@ -1634,7 +1636,8 @@ pub(crate) async fn run(
         };
         // The deployment's own routes: its health check and the addresses other
         // services are configured with. Started once the room serves, so a health
-        // check that answers means people can get in.
+        // check that answers means people can get in, and announced at the address
+        // it bound so a deployment can reach a port it let the kernel pick.
         let management = match persistent.http {
             Some(listen) => Some(
                 http::serve(http::Config {
@@ -1648,6 +1651,15 @@ pub(crate) async fn run(
             ),
             None => None,
         };
+        if let Some(management) = &management {
+            println!(
+                "{}",
+                OperatorEvent::DeploymentRoutes {
+                    origin: format!("http://{}", management.addr),
+                }
+                .to_line()
+            );
+        }
         let governance = Governance {
             owners,
             moderators,

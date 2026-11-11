@@ -1,6 +1,8 @@
 //! The persistent room as its deployment runs it: a real `tilo-relay room
-//! --persistent` process spoken to over operator protocol 5, and the plain-HTTP
-//! routes beside it.
+//! --persistent` process spoken to over its operator protocol, and the
+//! plain-HTTP routes beside it. Every listener is bound on port 0 and the
+//! room's first answers name the ports it got, so no test picks one another
+//! process may already hold.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -250,9 +252,7 @@ fn a_room_whose_state_is_gone_starts_again_under_its_id() {
 fn start_lounge(
     state: &std::path::Path,
     root_file: &std::path::Path,
-    plain: std::net::SocketAddr,
 ) -> std::io::Result<Workspace> {
-    let web_plain = plain.to_string();
     start_with(
         state,
         root_file,
@@ -267,7 +267,7 @@ fn start_lounge(
             "--default-role",
             "editor",
             "--web-plain",
-            &web_plain,
+            "127.0.0.1:0",
         ],
     )
 }
@@ -285,14 +285,10 @@ fn a_volume_a_room_service_left_keeps_its_workspace_and_people() {
     }
     let root_file = scratch.path().join("root");
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
-    let plain = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap();
 
     // The workspace the room service ran, and one person it took in.
-    let room = start_lounge(&state, &root_file, plain).unwrap();
-    let (workspace, _) = announced(&room);
+    let room = start_lounge(&state, &root_file).unwrap();
+    let started = announced(&room);
     let OperatorEvent::Online { members, .. } =
         room.next(|e| matches!(e, OperatorEvent::Online { .. }))
     else {
@@ -300,8 +296,14 @@ fn a_volume_a_room_service_left_keeps_its_workspace_and_people() {
     };
     assert_eq!(members, 1, "the owner is the workspace's only member");
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    join_through_door(&runtime, plain, &workspace, own_device(0x41, "Ana"), "Ana");
-    let listed = runtime.block_on(directory_page(plain));
+    join_through_door(
+        &runtime,
+        started.plain,
+        &started.workspace,
+        own_device(0x41, "Ana"),
+        "Ana",
+    );
+    let listed = runtime.block_on(directory_page(started.plain));
     assert_eq!(
         listed.workspaces[0].members, 2,
         "the owner and the person who joined"
@@ -309,7 +311,7 @@ fn a_volume_a_room_service_left_keeps_its_workspace_and_people() {
     room.stop();
 
     // The new image's first start of that volume.
-    let room = start_lounge(&state, &root_file, plain).unwrap();
+    let room = start_lounge(&state, &root_file).unwrap();
     let OperatorEvent::Started {
         workspace: Some(again),
         ..
@@ -318,7 +320,7 @@ fn a_volume_a_room_service_left_keeps_its_workspace_and_people() {
         panic!("no governed room announced")
     };
     assert_eq!(
-        again, workspace,
+        again, started.workspace,
         "the volume's workspace is the one it serves"
     );
     let OperatorEvent::Online { members, .. } =
@@ -395,12 +397,12 @@ fn a_page_is_told_the_packet_relay_its_host_runs_from_the_first_answer() {
     std::fs::create_dir_all(state.join("secrets")).unwrap();
     let root_file = scratch.path().join("root");
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
-    let plain = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap();
-    let web_plain = plain.to_string();
-    let flags = ["--web-plain", &web_plain, "--packet-relay", "127.0.0.1:0"];
+    let flags = [
+        "--web-plain",
+        "127.0.0.1:0",
+        "--packet-relay",
+        "127.0.0.1:0",
+    ];
 
     // The volume the first start left: the workspace it seeded, so the restart
     // below serves its listener without seeding anything.
@@ -409,10 +411,10 @@ fn a_page_is_told_the_packet_relay_its_host_runs_from_the_first_answer() {
     room.stop();
 
     let room = start_with(&state, &root_file, &state.join("secrets"), &flags).unwrap();
-    let _ = announced(&room);
+    let started = announced(&room);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let info = runtime
-        .block_on(tilo_relay_client::https::host_info(&Plain(plain)))
+        .block_on(tilo_relay_client::https::host_info(&Plain(started.plain)))
         .expect("the host answers where its pages dial it");
     let address = info.address.expect("the host names an endpoint");
     let relay = address
@@ -668,17 +670,42 @@ async fn assert_page_reads_the_chat(
     doc
 }
 
-/// The room's announced workspace id and the workspace it numbers.
-fn announced(room: &Workspace) -> (String, u64) {
+/// What the room answered first: the workspace it serves, and the plain
+/// listener it bound for the pages that speak HTTP. Tests dial the address
+/// the room announces, never one they picked and the room may not get.
+struct Started {
+    /// The governed workspace's id.
+    workspace: String,
+    /// The workspace id its records are numbered by.
+    id: u64,
+    /// The plain loopback listener the room bound.
+    plain: std::net::SocketAddr,
+}
+
+/// The room's first answer, with the addresses it bound.
+fn announced(room: &Workspace) -> Started {
     let OperatorEvent::Started {
-        workspace: Some(id),
+        workspace: Some(workspace),
+        plain_origin: Some(plain_origin),
         ..
     } = room.next(|e| matches!(e, OperatorEvent::Started { .. }))
     else {
         panic!("no governed room announced")
     };
-    let workspace_id = tilo_relay::room_workspace_id(&id).unwrap();
-    (id, workspace_id)
+    Started {
+        id: tilo_relay::room_workspace_id(&workspace).unwrap(),
+        plain: bound_address(&plain_origin),
+        workspace,
+    }
+}
+
+/// The loopback address a listener's announced origin names.
+fn bound_address(origin: &str) -> std::net::SocketAddr {
+    let port = origin
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse().ok())
+        .unwrap_or_else(|| panic!("{origin} names no port"));
+    std::net::SocketAddr::from(([127, 0, 0, 1], port))
 }
 
 /// The room's chat as a page on `plain` reaches it: the room host's
@@ -753,11 +780,6 @@ fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
     std::fs::create_dir_all(&state).unwrap();
     let root_file = scratch.path().join("root");
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
-    let plain = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap();
-    let web_plain = plain.to_string();
     let room = start_with(
         &state,
         &root_file,
@@ -768,13 +790,13 @@ fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
             "--default-role",
             "editor",
             "--web-plain",
-            &web_plain,
+            "127.0.0.1:0",
         ],
     )
     .unwrap();
-    let (workspace, _) = announced(&room);
+    let started = announced(&room);
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let before = runtime.block_on(directory_page(plain));
+    let before = runtime.block_on(directory_page(started.plain));
     assert_eq!(before.workspaces.len(), 1);
     assert_eq!(before.workspaces[0].description, "Coffee and tea");
     assert_eq!(
@@ -788,8 +810,8 @@ fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
         let (device, cert) = own_device(seed, name);
         let admitted = runtime
             .block_on(enter_through_door(
-                plain,
-                &workspace,
+                started.plain,
+                &started.workspace,
                 (&device, &cert),
                 name,
             ))
@@ -799,7 +821,7 @@ fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
     }
     assert_ne!(people[0], people[1], "two people, not one");
 
-    let after = runtime.block_on(directory_page(plain));
+    let after = runtime.block_on(directory_page(started.plain));
     assert_eq!(
         after.workspaces[0].members,
         before.workspaces[0].members + 2,
@@ -829,11 +851,6 @@ fn the_room_keeps_out_a_person_it_removed_before_the_door() {
         .to_string(),
     )
     .unwrap();
-    let plain = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap();
-    let web_plain = plain.to_string();
     let room = start_with(
         &state,
         &root_file,
@@ -842,16 +859,16 @@ fn the_room_keeps_out_a_person_it_removed_before_the_door() {
             "--listing-description",
             "Coffee and tea",
             "--web-plain",
-            &web_plain,
+            "127.0.0.1:0",
         ],
     )
     .unwrap();
-    let (workspace, _) = announced(&room);
+    let started = announced(&room);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let refused = runtime
         .block_on(enter_through_door(
-            plain,
-            &workspace,
+            started.plain,
+            &started.workspace,
             (&device, &cert),
             "Ana",
         ))
@@ -875,11 +892,6 @@ fn a_persistent_rooms_pages_read_the_room_and_write_what_their_role_lets_them() 
     std::fs::create_dir_all(&state).unwrap();
     let root_file = scratch.path().join("root");
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
-    let plain = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap();
-    let web_plain = plain.to_string();
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let room = start_with(
@@ -892,21 +904,17 @@ fn a_persistent_rooms_pages_read_the_room_and_write_what_their_role_lets_them() 
             "--listing-description",
             "Coffee and tea",
             "--web-plain",
-            &web_plain,
+            "127.0.0.1:0",
         ],
     )
     .unwrap();
-    let (id, workspace_id) = announced(&room);
+    let started = announced(&room);
+    let (id, plain) = (started.workspace, started.plain);
     let visiting = join_through_door(&runtime, plain, &id, own_device(0x71, "Ana"), "Ana");
     let writer = join_through_door(&runtime, plain, &id, own_device(0x72, "Ben"), "Ben");
     let sibling = unenrolled_owner_device();
     runtime.block_on(persons_read_the_room_and_are_refused(
-        plain,
-        &id,
-        workspace_id,
-        visiting,
-        writer,
-        sibling,
+        plain, &id, started.id, visiting, writer, sibling,
     ));
     room.stop();
 
@@ -924,17 +932,23 @@ fn a_persistent_rooms_pages_read_the_room_and_write_what_their_role_lets_them() 
             "--default-role",
             "editor",
             "--web-plain",
-            &web_plain,
+            "127.0.0.1:0",
         ],
     )
     .unwrap();
-    let (same, _) = announced(&room);
-    assert_eq!(same, id, "the same room opens");
-    let editor = join_through_door(&runtime, plain, &same, own_device(0x73, "Cy"), "Cy");
+    let started = announced(&room);
+    assert_eq!(started.workspace, id, "the same room opens");
+    let editor = join_through_door(
+        &runtime,
+        started.plain,
+        &started.workspace,
+        own_device(0x73, "Cy"),
+        "Cy",
+    );
     runtime.block_on(an_editor_page_writes_and_is_committed(
-        plain,
-        &same,
-        workspace_id,
+        started.plain,
+        &started.workspace,
+        started.id,
         editor,
     ));
     room.stop();
@@ -1062,11 +1076,6 @@ fn a_persistent_room_reopens_after_hard_stops() {
     std::fs::create_dir_all(&state).unwrap();
     let root_file = scratch.path().join("root");
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
-    let plain = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap();
-    let web_plain = plain.to_string();
     let extra = [
         "--chat-channel",
         "general",
@@ -1075,21 +1084,14 @@ fn a_persistent_room_reopens_after_hard_stops() {
         "--listing-description",
         "Coffee and tea",
         "--web-plain",
-        web_plain.as_str(),
+        "127.0.0.1:0",
     ];
-    let started = |room: &Workspace| match room.next(|e| matches!(e, OperatorEvent::Started { .. }))
-    {
-        OperatorEvent::Started {
-            workspace: Some(id),
-            ..
-        } => id,
-        other => panic!("no governed room announced: {other:?}"),
-    };
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let room = start_with(&state, &root_file, &secrets, &extra).unwrap();
-    let id = started(&room);
-    join_through_door(&runtime, plain, &id, own_device(0x74, "Ana"), "Ana");
+    let first = announced(&room);
+    let id = first.workspace.clone();
+    join_through_door(&runtime, first.plain, &id, own_device(0x74, "Ana"), "Ana");
     room.kill();
 
     // Killed again before it says it started.
@@ -1098,11 +1100,12 @@ fn a_persistent_room_reopens_after_hard_stops() {
     starting.kill();
 
     let room = start_with(&state, &root_file, &secrets, &extra).unwrap();
-    assert_eq!(started(&room), id, "the same room opens");
-    let workspace_id = tilo_relay::room_workspace_id(&id).unwrap();
-    let (key, cert) = join_through_door(&runtime, plain, &id, own_device(0x75, "Ben"), "Ben");
+    let again = announced(&room);
+    assert_eq!(again.workspace, id, "the same room opens");
+    let workspace_id = again.id;
+    let (key, cert) = join_through_door(&runtime, again.plain, &id, own_device(0x75, "Ben"), "Ben");
     runtime.block_on(async {
-        let info = tilo_relay_client::https::host_info(&Plain(plain))
+        let info = tilo_relay_client::https::host_info(&Plain(again.plain))
             .await
             .unwrap();
         let host_cert = info.host_cert.clone();
@@ -1299,15 +1302,6 @@ fn the_room_serves_without_an_operator_and_answers_its_deployment_routes() {
     let secret = scratch.path().join("discord-client-secret");
     std::fs::write(&secret, "s3cret").unwrap();
 
-    let plain = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap();
-    let management = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap();
-    let (web_plain, http) = (plain.to_string(), management.to_string());
     let avatars = state.join("avatars");
     let avatars = avatars.to_str().unwrap();
     let secret = secret.to_str().unwrap();
@@ -1321,11 +1315,11 @@ fn the_room_serves_without_an_operator_and_answers_its_deployment_routes() {
             "--default-role",
             "editor",
             "--web-plain",
-            &web_plain,
+            "127.0.0.1:0",
             "--web-entry",
             "https://tilo.example/",
             "--http",
-            &http,
+            "127.0.0.1:0",
             "--public-avatars",
             avatars,
             "--public-avatars-url",
@@ -1346,7 +1340,13 @@ fn the_room_serves_without_an_operator_and_answers_its_deployment_routes() {
     .unwrap();
     // The deployment runs the room with nobody at the operator's end.
     room.close_operator();
-    let (workspace, _) = announced(&room);
+    let started = announced(&room);
+    let OperatorEvent::DeploymentRoutes { origin } =
+        room.next(|e| matches!(e, OperatorEvent::DeploymentRoutes { .. }))
+    else {
+        panic!("no deployment routes announced")
+    };
+    let management = bound_address(&origin);
     let runtime = tokio::runtime::Runtime::new().unwrap();
 
     let mode = get(&runtime, management, "/mode");
@@ -1359,7 +1359,7 @@ fn the_room_serves_without_an_operator_and_answers_its_deployment_routes() {
     answers_its_sign_in(&runtime, management);
     assert_eq!(get(&runtime, management, "/join").status, 404);
     assert_eq!(get(&runtime, management, "/wait-list").status, 404);
-    answers_the_door(&runtime, plain, &workspace);
+    answers_the_door(&runtime, started.plain, &started.workspace);
 
     room.stop();
 }

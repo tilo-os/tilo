@@ -16,7 +16,6 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Write as _};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command as ProcessCommand, Stdio};
 use std::sync::Mutex;
@@ -132,7 +131,6 @@ impl SharedWorkspace {
         if !owner_root.exists() {
             write_secret(&owner_root, &hex::encode(random::<32>()?))?;
         }
-        let [web, plain] = free_ports()?;
         let app_id = project.manifest.package.id.clone();
         let name = project.display_name();
         let mut child = ProcessCommand::new(&relay)
@@ -150,8 +148,11 @@ impl SharedWorkspace {
             .arg("--room-id-file")
             .arg(state.join("room-id"))
             .args(["--author-app", &app_id])
-            .args(["--web", &format!("127.0.0.1:{web}")])
-            .args(["--web-plain", &format!("127.0.0.1:{plain}")])
+            // Both listeners take a port the kernel picks, which the host
+            // announces once it serves: a port chosen here could be held by
+            // something else by the time the host binds it.
+            .args(["--web", "127.0.0.1:0"])
+            .args(["--web-plain", "127.0.0.1:0"])
             .args(["--allowed-origin", pages_origin])
             .env(
                 "TILO_RELAY_LOG",
@@ -174,6 +175,11 @@ impl SharedWorkspace {
             .and_then(Value::as_str)
             .context("the host named no room")?
             .to_owned();
+        let origin = started
+            .get("plain_origin")
+            .and_then(Value::as_str)
+            .context("the host announced no plain listener")?
+            .to_owned();
         let records_file = state.join("records.json");
         let people_file = state.join("people.json");
         let people = std::fs::read(&people_file)
@@ -185,7 +191,7 @@ impl SharedWorkspace {
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
         Ok(Self {
-            origin: format!("http://127.0.0.1:{plain}"),
+            origin,
             relay_room,
             app_id,
             name,
@@ -339,13 +345,6 @@ fn relay_binary(project: &Project) -> Result<PathBuf> {
 
 fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
-}
-
-/// Two free loopback ports, for the host's TLS and plain listeners.
-fn free_ports() -> Result<[u16; 2]> {
-    let a = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
-    let b = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
-    Ok([a.local_addr()?.port(), b.local_addr()?.port()])
 }
 
 fn random<const N: usize>() -> Result<[u8; N]> {
