@@ -533,7 +533,7 @@ fn proof_places_section() -> ModelView<Vec<String>> {
                 .push(Box::new(Text::new("publisher-proof-places-help")));
             if places.is_empty() {
                 column = column.push(Box::new(
-                    Text::new("Name a domain or forge account to see where its proof goes.")
+                    Text::new(&crate::locales::CATALOG.t("publisher-proof-empty"))
                         .with_role(TextRole::Caption)
                         .dimmed(),
                 ));
@@ -557,7 +557,7 @@ fn proof_places_section() -> ModelView<Vec<String>> {
 fn status_timeline(pane: &Pane) -> Element {
     if pane.history.is_empty() {
         return Box::new(
-            Text::new("No application status has been checked in this window yet.")
+            Text::new(&crate::locales::CATALOG.t("publisher-status-empty"))
                 .with_role(TextRole::Caption)
                 .dimmed(),
         );
@@ -567,7 +567,7 @@ fn status_timeline(pane: &Pane) -> Element {
         .with_no_padding()
         .with_intrinsic_height()
         .push(Box::new(
-            Text::new("Application status")
+            Text::new(&crate::locales::CATALOG.t("publisher-status-heading"))
                 .with_id("status-timeline-heading")
                 .with_role(TextRole::Heading),
         ));

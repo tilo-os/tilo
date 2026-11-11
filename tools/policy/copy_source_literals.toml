@@ -77,3 +77,67 @@ reason = "Sample mail the headless screenshot opens, never a person's own window
 file = "apps/mail/src/compose.rs"
 text = "Re: Spring launch plan"
 reason = "Sample mail the headless screenshot opens, never a person's own window."
+
+# The Themes app draws a mock window to judge a theme by, and the words in it
+# are that sample's content — a person reads them as part of the picture, the
+# way they read a photograph's, not as this window's own copy.
+
+[[allow]]
+file = "apps/themes/src/draw.rs"
+text = "Inbox"
+reason = "Sample content in a theme preview."
+
+[[allow]]
+file = "apps/themes/src/draw.rs"
+text = "Move to trash?"
+reason = "Sample content in a theme preview."
+
+[[allow]]
+file = "apps/themes/src/draw.rs"
+text = "The file stays recoverable for 30 days."
+reason = "Sample content in a theme preview."
+
+[[allow]]
+file = "apps/themes/src/draw.rs"
+text = "Keep the copy"
+reason = "Sample content in a theme preview."
+
+[[allow]]
+file = "apps/themes/src/draw.rs"
+text = "Cancel"
+reason = "Sample content in a theme preview."
+
+[[allow]]
+file = "apps/themes/src/draw.rs"
+text = "Move"
+reason = "Sample content in a theme preview."
+
+[[allow]]
+file = "apps/themes/src/draw.rs"
+text = "Quarterly review"
+reason = "Sample content in a theme preview."
+
+[[allow]]
+file = "apps/themes/src/draw.rs"
+text = "Shared with Ada and Bo"
+reason = "Sample content in a theme preview."
+
+[[allow]]
+file = "apps/themes/src/draw.rs"
+text = "Edited 2 minutes ago"
+reason = "Sample content in a theme preview."
+
+[[allow]]
+file = "apps/themes/src/draw.rs"
+text = "Budget notes"
+reason = "Sample content in a theme preview."
+
+[[allow]]
+file = "apps/themes/src/draw.rs"
+text = "Share"
+reason = "Sample content in a theme preview."
+
+[[allow]]
+file = "apps/sheets/src/app/annotations.rs"
+text = "Ag"
+reason = "A sample word measured to lay out a card; never shown."

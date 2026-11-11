@@ -106,7 +106,7 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
         &sink.method,
     )
     .with_id("api.method")
-    .with_accessible_name("Method");
+    .with_accessible_name(crate::locales::CATALOG.t("api-tester-method"));
     let field = Workspace::paths().request.method;
     let method = sink.bind_field(method, field.clone().cast::<String>(), move |_, method| {
         field.set(HttpMethod::from_str(&method))
@@ -116,7 +116,7 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
             .with_kind(TextInputKind::Url)
             .with_id("api.url")
             .with_placeholder(crate::locales::CATALOG.t("api-tester-url-placeholder"))
-            .with_accessible_name("Request URL"),
+            .with_accessible_name(crate::locales::CATALOG.t("api-tester-request-url")),
         sink,
         &sink.url.borrow(),
         Workspace::paths().request.url,
@@ -402,7 +402,7 @@ pub(crate) fn body_inner(
                     .multiline(true)
                     .with_mono()
                     .with_id("api.body")
-                    .with_accessible_name("Request body"),
+                    .with_accessible_name(crate::locales::CATALOG.t("api-tester-request-body")),
                 sink,
                 &request.body_text,
                 Workspace::paths().request.body,

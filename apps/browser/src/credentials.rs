@@ -448,9 +448,9 @@ impl Credentials {
             .no_wrap()
             .push(Box::new(
                 Text::new(if self.address_mode {
-                    "Address autofill"
+                    crate::resource::CATALOG.t("browser-section-address-autofill")
                 } else {
-                    "Passwords"
+                    crate::resource::CATALOG.t("browser-section-passwords")
                 })
                 .with_role(TextRole::Title),
             ))

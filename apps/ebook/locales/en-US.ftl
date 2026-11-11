@@ -81,3 +81,6 @@ ebook-field-name = Name
 ebook-a11y-comments = Highlight comments
 ebook-a11y-edit-note = Edit note
 ebook-a11y-choose-colour = Choose colour
+
+## Window and accessibility copy
+ebook-drop-epub = Drop an EPUB here or choose one

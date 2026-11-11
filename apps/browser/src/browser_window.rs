@@ -367,9 +367,9 @@ impl BrowserWindow {
             .with_intrinsic_height()
             .push(Box::new(
                 Text::new(if cancelling {
-                    "Cancelling downloads before quitting…"
+                    crate::resource::CATALOG.t("browser-quit-cancelling-downloads")
                 } else {
-                    "Downloads are still running"
+                    crate::resource::CATALOG.t("browser-quit-downloads-running")
                 })
                 .with_role(ui::tokens::TextRole::Heading),
             ))

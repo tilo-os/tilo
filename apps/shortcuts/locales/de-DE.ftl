@@ -101,3 +101,6 @@ shortcuts-schedule-missed-once = Verpasste Läufe werden einmal ausgeführt.
 shortcuts-schedule-missed-skip = Verpasste Läufe werden übersprungen.
 
 shortcuts-no-matching-actions = Keine Aktionen passen zu diesem Filter
+
+## Fenster- und Barrierefreiheits-Texte
+shortcuts-a11y-window = Tastenkürzel

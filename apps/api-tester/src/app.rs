@@ -656,7 +656,7 @@ impl ApiTesterApp {
         options.extend(commands.iter().map(|(label, _)| (*label).to_owned()));
         let picker = Dropdown::from_state(options, state)
             .with_id("api.env")
-            .caption("Environment");
+            .caption(crate::locales::CATALOG.t("api-tester-environment"));
         Box::new(match sink.actions.borrow().as_ref() {
             Some(actions) => actions.bind_effect(picker, ApiTesterEffect::PICK_ENVIRONMENT),
             None => picker.with_enabled(false),

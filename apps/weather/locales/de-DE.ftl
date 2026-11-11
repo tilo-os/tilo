@@ -55,3 +55,7 @@ weather-places-hint = Mit den Pfeiltasten den Ort wechseln, mit Eingabe seine Vo
 weather-city-name = Ortsname
 weather-no-places = Noch keine Orte. Füge einen Ort hinzu, um seine Vorhersage zu sehen.
 weather-choose-place = Wähle einen gespeicherten Ort, um seine Vorhersage zu sehen.
+
+## Fenster- und Barrierefreiheits-Texte
+weather-a11y-places = Orte
+weather-add-place = Ort hinzufügen

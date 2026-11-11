@@ -233,3 +233,6 @@ video-editor-shortcut-close = Esc oder ? zum Schließen
 
 video-editor-a11y-mix-clipped = Zur nächsten Stelle springen, an der der Mix übersteuert hat
 video-editor-a11y-mix-level = Pegel des Mixes
+
+## Fenster- und Barrierefreiheits-Texte
+video-editor-a11y-timecode = Zeitcode

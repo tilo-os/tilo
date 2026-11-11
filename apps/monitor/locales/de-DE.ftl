@@ -16,3 +16,6 @@ monitor-monitor-flat = { $new ->
     [true] Die Prozesse flach aufgelistet
    *[false] Den Prozessbaum angezeigt
 }
+
+## Fenster- und Barrierefreiheits-Texte
+monitor-a11y-processes = Prozesse

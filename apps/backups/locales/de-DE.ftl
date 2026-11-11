@@ -79,3 +79,10 @@ backups-retention-policy-monthly = { $new ->
     [one] Eine monatliche Sicherung aufbewahren
    *[other] { $new } monatliche Sicherungen aufbewahren
 }
+
+## Fenster- und Barrierefreiheits-Texte
+backups-file-list-pending = Die Dateiliste dieser Sicherung ist noch nicht verfügbar.
+backups-restore-note = Die ganze Sicherung wird in einen neuen oder leeren Ordner deiner Wahl zurückgespielt, und jede Datei wird geprüft. Nichts, was schon vorhanden ist, wird ersetzt.
+backups-heading-snapshots = Sicherungen
+backups-a11y-order = Reihenfolge der Sicherungen
+backups-a11y-window = Sicherungen

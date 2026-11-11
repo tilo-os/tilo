@@ -125,3 +125,8 @@ music-a11y-search-description-simple = Search for a song, album, or artist
 music-a11y-choose-source = Choose where your music comes from
 music-a11y-empty = Empty music library
 music-a11y-description = Music library and playback controls
+
+## Window and accessibility copy
+music-search-this-app = In this app
+music-a11y-songs = Songs
+music-a11y-navigation = Music navigation

@@ -131,3 +131,6 @@ mail-compose-placeholder-body = Schreib deine Nachricht
 mail-compose-a11y = E-Mail schreiben
 mail-compose-a11y-description = Fenster zum Schreiben einer E-Mail
 mail-shortcuts-title = Tastenkürzel
+
+## Fenster- und Barrierefreiheits-Texte
+mail-a11y-mailboxes = Postfächer

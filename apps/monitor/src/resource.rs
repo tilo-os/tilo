@@ -13,7 +13,7 @@ use ui::widget::Element;
 use crate::app::{MonitorApp, SortKey};
 use crate::model::MonitorModel;
 
-ui::embedded_catalog!(static CATALOG, ["de-DE", "en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 /// How the process table is laid out, shared with everyone who sees it.
 /// Each part is edited at its path (`Monitor::paths().flat.set(true)`); the

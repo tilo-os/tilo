@@ -259,7 +259,7 @@ impl SettingsPane {
         let large_text = theme.text_scale >= 1.5;
         let header = Row::new()
             .push(Box::new(
-                Text::new("Settings")
+                Text::new(&crate::resource::CATALOG.t("browser-settings-title"))
                     .with_role(ui::TextRole::Title)
                     .with_heading_level(1),
             ))
@@ -294,7 +294,7 @@ impl SettingsPane {
                 Box::new(preference_toggle(
                     Toggle::from_state(&self.presentation.adblock)
                         .with_id("settings.adblock")
-                        .with_accessible_name("Block ads & trackers"),
+                        .with_accessible_name(crate::resource::CATALOG.t("browser-a11y-block-ads")),
                     self.actions.adblock.clone(),
                 )),
             ),
@@ -304,7 +304,9 @@ impl SettingsPane {
                 Box::new(preference_toggle(
                     Toggle::from_state(&self.presentation.clear_on_exit)
                         .with_id("settings.clear_on_exit")
-                        .with_accessible_name("Clear data when the browser closes"),
+                        .with_accessible_name(
+                            crate::resource::CATALOG.t("browser-a11y-clear-on-quit"),
+                        ),
                     self.actions.clear_on_exit.clone(),
                 )),
             ),
@@ -421,7 +423,7 @@ fn search_engine_row(
 ) -> El {
     let mut chooser = ui::widget::Dropdown::from_state(Vec::new(), state)
         .with_id("settings.search_engine")
-        .with_accessible_name("Search engine");
+        .with_accessible_name(crate::resource::CATALOG.t("browser-a11y-search-engine"));
     chooser.set_value_options(search_engine_choices(&state.with(Clone::clone)));
     let chooser = match choose {
         Some(choose) => chooser.on_action(choose),

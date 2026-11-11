@@ -233,3 +233,6 @@ video-editor-shortcut-close = Esc or ? to close
 
 video-editor-a11y-mix-clipped = Go to the next place the mix clipped
 video-editor-a11y-mix-level = Mix level
+
+## Window and accessibility copy
+video-editor-a11y-timecode = Timecode

@@ -661,7 +661,9 @@ impl EditForm {
                 "Favorite",
                 Toggle::from_state(&self.favorite)
                     .with_id("contacts.form.favorite")
-                    .with_accessible_name("Favorite"),
+                    .with_accessible_name(
+                        crate::account_editor::CATALOG.t("contacts-a11y-favorite"),
+                    ),
             ));
 
         let mut phones = FormSection::new("Phone");
@@ -710,7 +712,9 @@ impl EditForm {
             let picker_shared = std::rc::Rc::clone(shared);
             details = details.content(Box::new(
                 DatePicker::new(initial)
-                    .with_accessible_name("Birthday calendar")
+                    .with_accessible_name(
+                        crate::account_editor::CATALOG.t("contacts-a11y-birthday-calendar"),
+                    )
                     .on_view("contacts.birthday-picker", move |date| {
                         picker_shared
                             .borrow_mut()

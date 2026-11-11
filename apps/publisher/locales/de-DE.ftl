@@ -44,3 +44,8 @@ publisher-proof-places-help = Lege die Nachweiszeile dort ab, wo nur du schreibe
 publisher-key-exported = Deinen Publisher-Schlüssel exportiert
 publisher-key-exported-detail = Bewahre publisher-key.json sicher auf; außerhalb dieses Geräts ist es die einzige Kopie.
 publisher-key-export-cancelled = Export abgebrochen
+
+## Fenster- und Barrierefreiheits-Texte
+publisher-status-heading = Antragsstatus
+publisher-status-empty = In diesem Fenster wurde noch kein Antragsstatus geprüft.
+publisher-proof-empty = Nenne eine Domain oder ein Forge-Konto, um zu sehen, wohin sein Nachweis geht.

@@ -28,3 +28,6 @@ hex-editor-new-file = Neue leere Datei
 hex-editor-new-file-detail = Einen leeren Puffer zum Eintippen von Bytes beginnen
 hex-editor-window-name = Hex-Editor
 hex-editor-window-detail = Die Bytes einer Datei, Byte für Byte bearbeitet.
+
+## Fenster- und Barrierefreiheits-Texte
+hex-editor-inspector = Inspektor

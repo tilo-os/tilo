@@ -331,3 +331,13 @@ browser-filters-failed-worker = Update failed: worker unavailable. Previous rule
 browser-address-suggestions = Address suggestions
 browser-window-name = Browser
 browser-page-menu-name = Page context menu
+
+## Window and accessibility copy
+browser-quit-downloads-running = Downloads are still running
+browser-quit-cancelling-downloads = Cancelling downloads before quitting…
+browser-section-passwords = Passwords
+browser-section-address-autofill = Address autofill
+browser-a11y-search-engine = Search engine
+browser-a11y-clear-on-quit = Clear data when the browser closes
+browser-a11y-block-ads = Block ads & trackers
+browser-settings-title = Settings

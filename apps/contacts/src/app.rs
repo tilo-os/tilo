@@ -301,7 +301,7 @@ fn sort_control(sort: Option<&ActionBinding<String>>, sort_choice: &LocalState<S
         .collect();
     let picker = Dropdown::from_state(labels, sort_choice)
         .with_id("contacts.sort")
-        .with_accessible_name("Sort contacts");
+        .with_accessible_name(crate::account_editor::CATALOG.t("contacts-a11y-sort"));
     let mut sort = match sort {
         Some(sort) => picker.on_action(sort.clone()),
         None => picker.with_enabled(false),
@@ -1183,7 +1183,7 @@ impl ContactsApp {
         NavList::new(sections)
             .with_headings()
             .with_id("contacts.groups")
-            .with_accessible_name("Groups")
+            .with_accessible_name(crate::account_editor::CATALOG.t("contacts-a11y-groups"))
             .bind_selection(destination)
     }
 

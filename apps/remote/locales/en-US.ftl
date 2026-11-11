@@ -33,3 +33,6 @@ remote-mark-used = Connected to { $item }
 remote-describe-put-file = Send one local file to this SSH machine: name the local path and where to write it remotely.
 remote-describe-fetch-file = Fetch one file from this SSH machine: name the remote path and where to write it here.
 remote-describe-forget-host-key = Remove this device's stale SSH host-key pin; reconnect to inspect a replacement key.
+
+## Window and accessibility copy
+remote-a11y-window = Remote

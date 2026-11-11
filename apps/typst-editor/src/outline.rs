@@ -146,7 +146,7 @@ impl Outline {
         Self {
             drawer: SidebarDrawer::new().left().closed(),
             list: NavList::new(Vec::new())
-                .with_accessible_name("Outline")
+                .with_accessible_name(crate::resource::CATALOG.t("typst-editor-a11y-outline"))
                 .on_view("typst.outline", move |id| *pick.borrow_mut() = Some(id)),
             chosen,
             headings: Vec::new(),

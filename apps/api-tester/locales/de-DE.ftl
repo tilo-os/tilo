@@ -79,3 +79,12 @@ api-tester-record-sent = Eine Anfrage gesendet, die Status { $status } zurückga
 ## Barrierefreiheit
 api-tester-row-actions = Zeilenaktionen
 api-tester-url-placeholder = URL eingeben
+
+## Fenster- und Barrierefreiheits-Texte
+api-tester-environment = Umgebung
+api-tester-a11y-use-row = Diese Zeile verwenden
+api-tester-request-body = Anfragetext
+api-tester-request-url = Anfrage-URL
+api-tester-method = Methode
+api-tester-response-headers = Antwort-Header
+api-tester-requests = Anfragen

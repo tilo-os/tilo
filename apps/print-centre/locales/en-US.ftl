@@ -29,3 +29,6 @@ print-centre-finding-printers = Finding nearby printers
 print-centre-choose-printer = Choose a printer
 print-centre-preparing-preview = Preparing document preview
 print-centre-all-pages = All pages
+
+## Window and accessibility copy
+print-centre-a11y-pages = Pages to print

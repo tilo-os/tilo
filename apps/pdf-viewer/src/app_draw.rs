@@ -1920,7 +1920,7 @@ impl PdfApp {
         } else if cm.comment.text.is_empty() {
             tr.draw_style(
                 scene,
-                "Write a comment…",
+                crate::t("pdf-viewer-comment-placeholder"),
                 theme.text_tertiary,
                 base * Affine::translate((body_x, body_top)),
                 Some(text_w as f32),
@@ -2201,7 +2201,7 @@ impl PdfApp {
         let heading = theme.text(TextRole::Subheading);
         tr.draw_style(
             scene,
-            "Your signature",
+            crate::t("pdf-viewer-signature-your"),
             theme.text_primary,
             base * Affine::translate((geo.mode.x0, geo.heading_y)),
             None,
@@ -2281,7 +2281,7 @@ impl PdfApp {
         let caption_h = f64::from(caption.line_height_px());
         tr.draw_style(
             scene,
-            "Signing as",
+            crate::t("pdf-viewer-signing-as"),
             theme.text_dim,
             base * Affine::translate((card.x0 + pad, card.y0 + f64::from(theme.tokens.spacing.s2))),
             None,
@@ -2451,7 +2451,7 @@ impl PdfApp {
         let theme = ctx.theme;
         let heading = theme.text(TextRole::Subheading);
         ctx.text(
-            "Placed",
+            crate::t("pdf-viewer-signature-placed"),
             &heading,
             theme.text_primary,
             Point::new(geo.place.x0, geo.placed_y),
@@ -2473,7 +2473,7 @@ impl PdfApp {
         );
         if self.signatures.is_empty() {
             ctx.text(
-                "Placed signatures appear here.",
+                crate::t("pdf-viewer-signature-placed-note"),
                 &theme.text(TextRole::Body),
                 theme.text_dim,
                 Point::new(geo.place.x0, geo.list_top),

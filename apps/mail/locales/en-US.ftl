@@ -134,3 +134,6 @@ mail-compose-placeholder-body = Write your message
 mail-compose-a11y = Compose email
 mail-compose-a11y-description = Email composer
 mail-shortcuts-title = Keyboard shortcuts
+
+## Window and accessibility copy
+mail-a11y-mailboxes = Mailboxes

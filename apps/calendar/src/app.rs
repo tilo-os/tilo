@@ -506,7 +506,7 @@ impl CalendarApp {
             task_popover: None,
             task_due_picker: DatePicker::new(today)
                 .with_today(today)
-                .with_accessible_name("Task due date"),
+                .with_accessible_name(crate::resource::t("calendar-a11y-task-due")),
             choices: Box::new(Choices::new()),
             form: FormRects::default(),
             modal: None,
@@ -582,7 +582,8 @@ impl CalendarApp {
         self.today = today;
         self.anchor = today;
         self.event_popovers = EventPopovers::new(today);
-        self.task_due_picker = DatePicker::new(today).with_accessible_name("Task due date");
+        self.task_due_picker = DatePicker::new(today)
+            .with_accessible_name(crate::resource::t("calendar-a11y-task-due"));
         self.dirty = true;
     }
 

@@ -364,7 +364,7 @@ impl ResourceApp for MusicShell {
         let music = music.in_shell(&places, &transport, shell.window_bar_link(), &pane);
         let sidebar = ui::widget::NavList::new(Vec::new())
             .with_id("music.places")
-            .with_accessible_name("Music navigation")
+            .with_accessible_name(crate::i18n::t("music-a11y-navigation"))
             .fed_by(&places);
         Box::new(
             shell

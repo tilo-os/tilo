@@ -16,3 +16,6 @@ monitor-monitor-flat = { $new ->
     [true] Listed the processes flat
    *[false] Showed the process tree
 }
+
+## Window and accessibility copy
+monitor-a11y-processes = Processes

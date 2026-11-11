@@ -81,3 +81,6 @@ ebook-field-name = Name
 ebook-a11y-comments = Kommentare zur Markierung
 ebook-a11y-edit-note = Notiz bearbeiten
 ebook-a11y-choose-colour = Farbe wählen
+
+## Fenster- und Barrierefreiheits-Texte
+ebook-drop-epub = EPUB hier ablegen oder eines auswählen

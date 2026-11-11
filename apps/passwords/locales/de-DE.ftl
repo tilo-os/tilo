@@ -34,3 +34,7 @@ passwords-add-note = Notiz hinzufügen
 passwords-tags-hint = Schlagwörter durch Kommas trennen
 passwords-custom-fields-hint = Eines pro Zeile, etwa PIN = 1234
 passwords-export-acknowledge = Mir ist klar, dass die Datei nicht verschlüsselt ist
+
+## Fenster- und Barrierefreiheits-Texte
+passwords-confirm-export = Bestätige, dass du das verstehst, bevor du eine Datei wählst.
+passwords-a11y-vault = Tresor

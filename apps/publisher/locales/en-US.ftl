@@ -44,3 +44,8 @@ publisher-proof-places-help = Put the proof line where only you can write it, th
 publisher-key-exported = Exported your publisher key
 publisher-key-exported-detail = Keep publisher-key.json somewhere safe; it is the only copy outside this device.
 publisher-key-export-cancelled = Export cancelled
+
+## Window and accessibility copy
+publisher-status-heading = Application status
+publisher-status-empty = No application status has been checked in this window yet.
+publisher-proof-empty = Name a domain or forge account to see where its proof goes.

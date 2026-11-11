@@ -220,7 +220,8 @@ fn headers(rows: &[KeyValue]) -> Element {
             .with_kind(TextKind::Identifier)
             .with_text(|row: &KeyValue| row.value.clone()),
     ];
-    let mut table = DataTable::new(columns).with_accessible_name("Response headers");
+    let mut table = DataTable::new(columns)
+        .with_accessible_name(crate::locales::CATALOG.t("api-tester-response-headers"));
     table.set_rows(rows.to_vec());
     Box::new(
         Scrollable::new_vertical()

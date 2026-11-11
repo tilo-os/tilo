@@ -28,3 +28,6 @@ hex-editor-new-file = New empty file
 hex-editor-new-file-detail = Start an empty buffer to type bytes into
 hex-editor-window-name = Hex editor
 hex-editor-window-detail = The bytes of one file, edited byte by byte.
+
+## Window and accessibility copy
+hex-editor-inspector = Inspector

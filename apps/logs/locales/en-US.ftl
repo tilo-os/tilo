@@ -14,3 +14,7 @@ logs-logs-unit = Showed the entries of unit { $new }
 logs-logs-boot = Showed the entries of one boot
 logs-logs-search = Searched the journal
 logs-clear-filters = Cleared the journal filters
+
+## Window and accessibility copy
+logs-severity = Severity
+logs-a11y-entries = Journal entries

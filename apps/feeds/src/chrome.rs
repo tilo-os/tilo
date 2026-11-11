@@ -80,7 +80,7 @@ pub(crate) fn reader_settings_panel(
             .with_step(10.0)
             .with_suffix("%")
             .with_id("feeds.reading-scale")
-            .with_accessible_name("Text size")
+            .with_accessible_name(crate::i18n::t("feeds-a11y-text-size"))
             .compact(),
         requests: Rc::clone(requests),
     };

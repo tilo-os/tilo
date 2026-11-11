@@ -383,7 +383,7 @@ fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackC
     let menu = Rc::clone(events);
     let mut table = DataTable::new(columns)
         .with_id("music.tracks")
-        .with_accessible_name("Songs")
+        .with_accessible_name(crate::i18n::t("music-a11y-songs"))
         .selectable(true)
         .host_scrolled()
         .with_row_height(shape.row_height)

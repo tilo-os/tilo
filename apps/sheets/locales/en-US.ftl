@@ -88,3 +88,6 @@ sheets-reopen-comment = Reopen comment
 sheets-actions = Spreadsheet actions
 sheets-window-name = Sheets
 sheets-window-detail = Editable workbook with formula bar and sheet tabs
+
+## Window and accessibility copy
+sheets-numbers-none = No numbers in this range

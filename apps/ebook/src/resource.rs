@@ -31,7 +31,7 @@ use crate::model::{
     Progress, Settings, annotation_key, default_fonts, default_schemes,
 };
 
-ui::embedded_catalog!(static CATALOG, ["de-DE", "en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 /// How many books the published library carries as places; the rest are
 /// resolved one by one when addressed.

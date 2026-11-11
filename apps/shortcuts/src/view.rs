@@ -541,7 +541,7 @@ impl LibraryNav {
         let nav = NavList::new(library_sections(&ui.live, &ui.door))
             .bind_selection(&ui.selected)
             .with_id("shortcuts-library")
-            .with_accessible_name("Shortcuts");
+            .with_accessible_name(crate::locales::CATALOG.t("shortcuts-a11y-window"));
         Self {
             nav,
             live: ui.live.clone(),

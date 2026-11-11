@@ -384,7 +384,7 @@ impl ContactsApp {
             .with_text(|row: &Contact| row.display_name()),
         ])
         .with_id("contacts.export.selection")
-        .with_accessible_name("Contacts to export")
+        .with_accessible_name(crate::account_editor::CATALOG.t("contacts-a11y-export-list"))
         .selectable(true)
         .on_check_view("contacts.export.selection", move |index, checked| {
             if let Some(id) = toggled_ids.get(index) {

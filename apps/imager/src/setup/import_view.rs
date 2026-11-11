@@ -2186,10 +2186,7 @@ impl ImportApp {
                 Property::new("Copy to", destination).with_kind(TextKind::Identifier),
             ])))
             .push(Box::new(
-                Text::new(
-                    "Tilo copies the folder once and checks every file. Your originals stay where they are.",
-                )
-                .dimmed(),
+                Text::new(&crate::setup::strings::t("installer-import-copy-note")).dimmed(),
             ))
             .push(Box::new(actions));
         Section::new(vec![Box::new(body)]).with_header(SectionHeader::heading("Copy a folder"))
@@ -2430,9 +2427,9 @@ impl ImportApp {
     fn continuation_card(&self, c: &Continuation) -> Section {
         let mut items: Vec<Box<dyn Widget>> = vec![Box::new(
             Text::new(if self.identity_ready {
-                "Review where each folder goes, then copy. Your originals stay unchanged."
+                crate::setup::strings::t("installer-import-review-note")
             } else {
-                "Finish setting up your Tilo identity, then review where each folder goes. Your originals stay unchanged."
+                crate::setup::strings::t("installer-import-review-note-identity")
             })
             .with_id("import.continuation.explanation"),
         )];
