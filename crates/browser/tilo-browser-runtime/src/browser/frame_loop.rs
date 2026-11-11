@@ -56,6 +56,15 @@ pub(crate) async fn sleep_ms(ms: u32) {
 /// loop works out when the next frame is due.
 pub(super) struct Runner;
 
+/// How often the page looks at an overflow readback still out. The native
+/// render worker polls it every few milliseconds on a thread of its own; the
+/// page polls on the one thread that also takes input and draws, and a slow
+/// GPU leaves the readback out for most of every frame, so polling at the
+/// worker's pace woke the loop some 250 times a second while a view
+/// scrolled, each pass costing a browser timer. A frame's wait to learn of an
+/// overflow is no later than the frame it repaints in.
+const PAGE_BUMP_POLL: ui::time::Duration = ui::time::Duration::from_millis(16);
+
 thread_local! {
     /// The browser's wheel events carry no touch phase: each mount's swipe
     /// in progress, begun and ended here so a scroll view's give springs
@@ -295,7 +304,9 @@ impl ApplicationHandler<u64> for Runner {
         let mut deadline: Option<ui::time::Instant> = None;
         let mut wake =
             |at: ui::time::Instant| deadline = Some(deadline.map_or(at, |old| old.min(at)));
-        if let Some(at) = poll_bump_counters().and_then(|again| now.checked_add(again)) {
+        if let Some(at) =
+            poll_bump_counters().and_then(|again| now.checked_add(again.max(PAGE_BUMP_POLL)))
+        {
             wake(at);
         }
         let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
