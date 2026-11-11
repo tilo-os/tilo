@@ -65,6 +65,16 @@ dir=$chrome
 while dir=$(dirname "$dir") && [[ $dir != / ]]; do chmod o+rx "$dir"; done
 chmod -R o+rX "$(dirname "$chrome")"
 
+# tilo-enroll, where the check built it, is the user's to run: it makes the VM
+# host's member device, and the stack starts the host through the user's sudo.
+if [[ -n ${TILO_SH_TILO_ENROLL:-} ]]; then
+  [[ -x ${TILO_SH_TILO_ENROLL} ]] || { echo "TILO_SH_TILO_ENROLL=$TILO_SH_TILO_ENROLL is not a program" >&2; exit 1; }
+  pool=${TILO_SH_TILO_ENROLL}
+  dir=$(dirname "$pool")
+  chmod o+rx "$dir" 2>/dev/null || true
+  chmod o+rx "$pool" 2>/dev/null || true
+fi
+
 # The source tree is read-only to the user; the check writes only under
 # WORK and the state.
 exec runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime" CHROME="$chrome" \
