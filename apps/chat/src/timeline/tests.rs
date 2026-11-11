@@ -324,12 +324,22 @@ fn a_channel_keeps_its_answers_in_a_thread_and_a_direct_conversation_shows_them_
     app.reload(&doc);
     let mut frames = Frames::new();
 
+    // The rows the timeline stands on, as the view groups them.
+    let rows = |app: &ChatApp| -> Vec<String> {
+        app.timeline_groups()
+            .iter()
+            .flat_map(|group| group.message_indices.iter())
+            .filter_map(|index| app.messages.get(*index))
+            .map(|message| message.id.clone())
+            .collect()
+    };
+
     // `#design-crit` holds the three answers to one message as a thread: the
-    // timeline shows the message they answer, and the link into them.
+    // timeline stands on the message they answer, and the link into them.
     let chat = crate::projection::read(&doc.chat);
     app.open_conversation(&Id::from_raw("c_crit"), &chat);
     assert!(app.keeps_threads(), "a channel keeps its threads");
-    let (_, shown) = frames.draw(&mut app);
+    let shown = rows(&app);
     assert!(shown.contains(&"m_concept".to_owned()), "{shown:?}");
     assert!(
         !shown.iter().any(|id| id.starts_with("m_thread_")),
@@ -372,12 +382,16 @@ fn a_channel_keeps_its_answers_in_a_thread_and_a_direct_conversation_shows_them_
         .find(|message| message.author.as_str() == "agent:notes")
         .map(|message| message.id.clone())
         .expect("the conversation holds the agent's answer");
-    let (_, shown) = frames.draw(&mut app);
-    let asked_at = shown.iter().position(|id| *id == asked);
-    let answered_at = shown.iter().position(|id| *id == answered);
+    assert_eq!(
+        rows(&app),
+        vec![asked.clone(), answered.clone()],
+        "the answer stands right under the message it answers"
+    );
+    // And the frame paints it there, as a row of its own.
+    let (_, painted) = frames.draw(&mut app);
     assert!(
-        asked_at.is_some() && answered_at > asked_at,
-        "the answer shows under the message it answers: {shown:?}"
+        painted.contains(&answered),
+        "the agent's answer is painted in the conversation: {painted:?}"
     );
     assert!(
         !app.bar_actions(&asked)
