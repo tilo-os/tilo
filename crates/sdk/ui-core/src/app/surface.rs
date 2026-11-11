@@ -1003,7 +1003,19 @@ impl App {
     /// controls it shows now. Whether it rebuilt.
     fn build_tree_before_input(&mut self) -> bool {
         if self.layout.root_node.is_none() {
-            return false;
+            // Input can arrive before the app's first frame: a sheet opened
+            // and typed into in one step, a panel's first press. Build and
+            // lay out the tree it belongs to now, with the keyboard where
+            // the app puts it, so the input lands instead of dropping.
+            self.init_layout();
+            self.rebuild_structure();
+            if self.autofocus_first
+                && self.focused_node.is_none()
+                && let Some(id) = self.initial_live_focus_target()
+            {
+                self.set_focused_node(Some(id));
+            }
+            return true;
         }
         let changed = self.take_root_structure_dirty();
         self.layout.structure_dirty |= changed;
