@@ -907,7 +907,11 @@ impl PersonalStore {
         }
         let mut store = Self::open(durable.root, durable.device, now)?;
         for certificate in durable.certificates {
-            store.admit_device(&certificate, now)?;
+            // A sibling's certificate that stopped holding since the store
+            // was kept admits nothing, and the store opens without it: the
+            // person's documents are not lost to another device's expiry.
+            // ignored-failure: a kept certificate that no longer holds is not admitted
+            let _ = store.admit_device(&certificate, now);
         }
         for entry in durable.revocations {
             store.revoke(entry)?;
@@ -1568,5 +1572,63 @@ mod tests {
         };
         sign_device_cert(&mut cert, root).unwrap();
         cert
+    }
+
+    /// A device `seed` names, certified by `signer` for the identity `root`
+    /// from `issued_at_ns` until `expires_at_ns`, called `label`.
+    fn certificate(
+        signer: &SigningKey,
+        root: [u8; 32],
+        seed: [u8; 32],
+        label: &str,
+        issued_at_ns: u64,
+        expires_at_ns: Option<u64>,
+    ) -> (SigningKey, DeviceCert) {
+        let key = SigningKey::from_bytes(&seed);
+        let mut cert = DeviceCert {
+            user_public_key: root,
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: label.into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns,
+            expires_at_ns,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, signer).unwrap();
+        (key, cert)
+    }
+
+    fn holds(store: &PersonalStore, device: &DeviceCert) -> bool {
+        store
+            .devices()
+            .iter()
+            .any(|held| held.device_public_key == device.device_public_key)
+    }
+
+    /// A store kept while it held a sibling's certificate opens after that
+    /// certificate expired: the person's documents are there, and the device
+    /// whose certificate no longer holds is not one of theirs here.
+    #[test]
+    fn a_store_opens_after_a_siblings_certificate_expired() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let root_key = root.verifying_key().to_bytes();
+        let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
+        let kept_at = now();
+        let expires = now_ns(kept_at + Duration::from_secs(60));
+        let (_, short) = certificate(&root, root_key, [5; 32], "short-lived", 1, Some(expires));
+        let mut a = PersonalStore::open(root_key, a_cert.clone(), kept_at).unwrap();
+        assert!(a.admit_device(&short, kept_at).unwrap());
+        a.publish("tube", "prefs", &record("theme", "dark"), &a_key, kept_at)
+            .unwrap();
+        let kept = a.durable().unwrap();
+
+        let later = kept_at + Duration::from_secs(120);
+        let restored = PersonalStore::restore(&kept, &a_cert, later).unwrap();
+        assert_eq!(
+            field(&restored.document("tube", "prefs").unwrap(), "theme").as_deref(),
+            Some("dark")
+        );
+        assert!(!holds(&restored, &short));
     }
 }
