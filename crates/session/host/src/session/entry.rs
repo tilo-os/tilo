@@ -202,16 +202,24 @@ impl Task {
     /// is here, so its Welcome comes first in its download.
     ///
     /// [`PeerConfig::entering`]: super::PeerConfig::entering
-    pub(super) async fn entry_access(&mut self) -> Option<collab_types::MlsAccessRequestV1> {
-        let workspace = self.config.entering.as_ref()?.workspace.clone();
-        let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace)?;
-        self.channels
-            .ask_on_entry(
-                workspace,
-                tilo_clock::Instant::now(),
-                tilo_clock::unix_now(),
-            )
-            .await
+    pub(super) fn entry_access(
+        &self,
+    ) -> impl Future<Output = Option<collab_types::MlsAccessRequestV1>> + 'static {
+        let workspace = self
+            .config
+            .entering
+            .as_ref()
+            .and_then(|entering| tilo_desktop_model::WorkspaceId::parse(&entering.workspace));
+        let channels = self.channels.clone();
+        async move {
+            channels
+                .ask_on_entry(
+                    workspace?,
+                    tilo_clock::Instant::now(),
+                    tilo_clock::unix_now(),
+                )
+                .await
+        }
     }
 
     /// Make another entry on `client`'s connection, off the session's loop:

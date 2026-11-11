@@ -521,7 +521,6 @@ enum Command {
     /// Make another entry on the session's connection
     /// ([`PeerHandle::enter_then`]).
     Enter(tilo_relay_protocol::entering::Entering, EntryCompletion),
-    Compact([u8; 16], Vec<u8>),
     Reconnect,
     /// The network is back: a session waiting out its backoff tries again
     /// now; a connected or failed one stays as it is.

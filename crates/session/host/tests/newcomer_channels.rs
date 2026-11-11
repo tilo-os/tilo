@@ -25,10 +25,10 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_host::device::{Entering, door_entry};
-use tilo_session_host::{MemoryPeerStore, PeerEvent, PeerHandle};
+use tilo_session_host::{MemoryPeerStore, PeerHandle};
 use tilo_user_identity::{DeviceCert, UserIdentity};
 
-use support::{enrol, enter_page, in_workspace, start_workspace_host_relaying, wait_for};
+use support::{enrol, enter_page, hears, in_workspace, start_workspace_host_relaying, wait_for};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -59,18 +59,6 @@ fn change(base: &mut automerge::AutoCommit, key: &str) -> DocumentMutation {
     doc.save_incremental();
     doc.put(automerge::ROOT, key, key).unwrap();
     DocumentMutation::Incremental(doc.save_incremental())
-}
-
-/// Wait until `page` receives `mutation` on `route`, keeping what else came.
-async fn receives(page: &PeerHandle, route: &DocumentRoute, mutation: &DocumentMutation) {
-    wait_for("the page receives the desktop change", || {
-        let found = page.drain().into_iter().any(|event| {
-            matches!(&event, PeerEvent::Document(document)
-                if document.route == *route && document.mutation().as_ref() == Some(mutation))
-        });
-        async move { found.then_some(()) }
-    })
-    .await;
 }
 
 /// A visitor's page entering `workspace` through its door, its session
@@ -169,25 +157,19 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
 
     // The newcomer reads it.
     let newcomer = enter("Newcomer").await;
-    wait_for("the newcomer reads the desktop", || {
-        let read = newcomer.drain().into_iter().any(
-            |event| matches!(&event, PeerEvent::Document(document) if document.route == desktop),
-        );
-        async move { read.then_some(()) }
-    })
-    .await;
+    hears(&newcomer, &desktop, "windows").await;
 
     // Keyed, it writes, and the member reads that.
     let written = change(&mut base, "newcomer");
     newcomer.publish(desktop.clone(), &written).unwrap();
-    receives(&member, &desktop, &written).await;
+    hears(&member, &desktop, "newcomer").await;
 
     // Someone else arrives: the group moves to a later epoch, which the
     // newcomer follows, reading what is sealed under it.
     let later = enter("Later").await;
     let after = change(&mut base, "later");
     later.publish(desktop.clone(), &after).unwrap();
-    receives(&newcomer, &desktop, &after).await;
+    hears(&newcomer, &desktop, "later").await;
 
     // Its connection drops; once back it reads and writes as before.
     newcomer.reconnect().unwrap();
@@ -195,10 +177,10 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
     wait_keyed(&newcomer, &desktop).await;
     let again = change(&mut base, "member-again");
     member.publish(desktop.clone(), &again).unwrap();
-    receives(&newcomer, &desktop, &again).await;
+    hears(&newcomer, &desktop, "member-again").await;
     let back = change(&mut base, "newcomer-back");
     newcomer.publish(desktop.clone(), &back).unwrap();
-    receives(&later, &desktop, &back).await;
+    hears(&later, &desktop, "newcomer-back").await;
 
     for page in [member, newcomer, later] {
         page.close();

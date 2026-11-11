@@ -406,14 +406,14 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         events
             .into_iter()
             .filter_map(|event| match event {
-                PeerEvent::Document(document)
-                    if document.author == agent_key
-                        && chat::parts::part_index(&ui::record::RecordId::parse(
-                            &document.route.record,
-                        )?)
+                PeerEvent::Landed {
+                    route,
+                    author: Some(author),
+                } if author == agent_key
+                    && chat::parts::part_index(&ui::record::RecordId::parse(&route.record)?)
                         .is_some() =>
                 {
-                    Some(document.route.record)
+                    Some(route.record)
                 }
                 _ => None,
             })
