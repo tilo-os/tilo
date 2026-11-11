@@ -229,6 +229,7 @@ impl RelayCoeditSession {
 
     /// The host connection's packet and frame counters
     /// ([`RelayClient::transport_stats`]).
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn transport_stats(&self) -> Option<iroh::endpoint::ConnectionStats> {
         self.client.transport_stats()

@@ -70,6 +70,15 @@ macro_rules! over_each_carrier {
                 }
             )*
         }
+        /// A page's way: the browser's transport, to the host's listener.
+        mod webtransport {
+            $(
+                #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+                async fn $scenario() {
+                    super::$scenario(tilo_session_host::Carrier::WebTransport).await;
+                }
+            )*
+        }
     };
 }
 

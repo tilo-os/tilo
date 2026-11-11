@@ -112,6 +112,11 @@ pub struct HostAddress {
     /// The packet relay it is reached through, when it names one; a page dials
     /// the endpoint through it rather than over the network's own relays.
     pub relay_url: Option<String>,
+    /// Where the host takes WebTransport sessions: how a page reaches it,
+    /// with the browser's own transport. `None` from a host that serves no
+    /// browsers.
+    #[serde(default)]
+    pub web: Option<WebLink>,
 }
 
 /// [`HostInfo`] as a page reads it (JSON): what `hostInfo()` in the page's
@@ -136,6 +141,9 @@ pub struct PageHostAddress {
     /// The packet relay the host is reached through, when it names one.
     #[serde(default)]
     pub relay_url: Option<String>,
+    /// The host's WebTransport listener: how a page reaches it.
+    #[serde(default)]
+    pub web: Option<WebLink>,
 }
 
 impl From<HostAddress> for PageHostAddress {
@@ -143,6 +151,7 @@ impl From<HostAddress> for PageHostAddress {
         Self {
             endpoint_addr: address.endpoint_addr,
             relay_url: address.relay_url,
+            web: address.web,
         }
     }
 }
@@ -152,6 +161,7 @@ impl From<PageHostAddress> for HostAddress {
         Self {
             endpoint_addr: address.endpoint_addr,
             relay_url: address.relay_url,
+            web: address.web,
         }
     }
 }
@@ -167,10 +177,11 @@ impl From<HostInfo> for PageHost {
 
 impl HostInfo {
     /// What a site hands its page about this host: its certificate, its
-    /// endpoint's key and the packet relay pages reach it through, without
-    /// the network addresses it answers at. A page has no UDP socket to dial
-    /// those, and they change whenever the host starts somewhere else, while
-    /// the rest stays as long as the host keeps its identity.
+    /// endpoint's key, the packet relay and the WebTransport listener a page
+    /// reaches it at, without the network addresses its endpoint answers at.
+    /// Those change whenever the host starts somewhere else, while the rest
+    /// stays as long as the host keeps its identity (and, for a pinned
+    /// certificate, until it renews it).
     #[must_use]
     pub fn for_site(&self) -> PageHost {
         let address = self.address.as_ref().map(|address| {
@@ -185,6 +196,7 @@ impl HostInfo {
             PageHostAddress {
                 endpoint_addr,
                 relay_url: address.relay_url.clone(),
+                web: address.web.clone(),
             }
         });
         PageHost {
@@ -193,6 +205,31 @@ impl HostInfo {
         }
     }
 }
+/// A host's WebTransport listener: HTTP/3 on the UDP port of its HTTPS
+/// origin, presenting the same certificate. A device opens one session per
+/// thing it asks, at that thing's path ([`LINK_SESSION_PATH`],
+/// [`LINK_CERTIFY_PATH`], [`LINK_PLANE_PATH`]): the same conversations a
+/// native device holds over the host's iroh endpoint on their ALPNs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebLink {
+    /// `https://host:port`, the origin the sessions open at.
+    pub origin: String,
+    /// SHA-256 of the certificate a development host generated for itself,
+    /// which a device pins (a browser's `serverCertificateHashes`); `None`
+    /// for a certificate the system trust bundle verifies.
+    pub certificate_sha256: Option<[u8; 32]>,
+}
+
+/// The session with the host (the relay ALPN's): its first stream carries
+/// the handshake and then the session, as over iroh.
+pub const LINK_SESSION_PATH: &str = "/peer/v1/link/session";
+/// Certification: each stream one conversation, as each connection on
+/// the certification ALPN.
+pub const LINK_CERTIFY_PATH: &str = "/peer/v1/link/certify";
+/// A workspace's live plane: the first stream proves which device opened
+/// the session (the relay handshake, `crate::auth`), then the plane's own
+/// admission and `moq-lite` follow, as over iroh.
+pub const LINK_PLANE_PATH: &str = "/peer/v1/link/plane";
 
 /// Whether its owner deleted the workspace a device names by its id, below
 /// [`API_PREFIX`]: what a device the host no longer lets in (it was a member

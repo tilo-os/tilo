@@ -559,6 +559,7 @@ mod tests {
             public_origin: None,
             fetch_proxy: None,
             door: None,
+            link: None,
         }
     }
 

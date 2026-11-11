@@ -1274,7 +1274,7 @@ doc = false
 "tilo-recurrence" = { path = "../../../crates/sdk/tilo-recurrence", default-features = false, features = [] }
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
 "tilo-relay" = { path = "../../../crates/hosting/tilo-relay", default-features = false, features = ["agents", "test-support", "web"] }
-"tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "iroh"] }
+"tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "dial"] }
 "tilo-relay-protocol" = { path = "../../../crates/hosting/tilo-relay-protocol", default-features = false, features = [] }
 "tilo-relay-session" = { path = "../../../crates/hosting/tilo-relay-session", default-features = false, features = [] }
 "tilo-relay-store" = { path = "../../../crates/hosting/tilo-relay-store", default-features = false, features = ["test-support"] }
@@ -2421,7 +2421,7 @@ doc = false
 "tilo-presentation" = { path = "../../../crates/platform/tilo-presentation", default-features = false, features = ["gpu-damage"] }
 "tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["native"] }
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
-"tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "iroh"] }
+"tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "dial"] }
 "tilo-relay-protocol" = { path = "../../../crates/hosting/tilo-relay-protocol", default-features = false, features = [] }
 "tilo-relay-session" = { path = "../../../crates/hosting/tilo-relay-session", default-features = false, features = [] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
@@ -3874,7 +3874,7 @@ doc = false
 "tilo-recurrence" = { path = "../../../crates/sdk/tilo-recurrence", default-features = false, features = [] }
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
 "tilo-relay" = { path = "../../../crates/hosting/tilo-relay", default-features = false, features = ["agents", "test-support", "web"] }
-"tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "iroh"] }
+"tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "dial"] }
 "tilo-relay-protocol" = { path = "../../../crates/hosting/tilo-relay-protocol", default-features = false, features = [] }
 "tilo-relay-session" = { path = "../../../crates/hosting/tilo-relay-session", default-features = false, features = [] }
 "tilo-relay-store" = { path = "../../../crates/hosting/tilo-relay-store", default-features = false, features = ["test-support"] }
@@ -4998,7 +4998,7 @@ doc = false
 "tilo-presentation" = { path = "../../../crates/platform/tilo-presentation", default-features = false, features = ["gpu-damage"] }
 "tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["native"] }
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
-"tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "iroh"] }
+"tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "dial"] }
 "tilo-relay-protocol" = { path = "../../../crates/hosting/tilo-relay-protocol", default-features = false, features = [] }
 "tilo-relay-session" = { path = "../../../crates/hosting/tilo-relay-session", default-features = false, features = [] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }

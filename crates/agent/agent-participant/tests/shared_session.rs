@@ -148,6 +148,7 @@ async fn start_host(
             public_origin: None,
             fetch_proxy: None,
             door: None,
+            link: None,
         })
         .await
         .unwrap();

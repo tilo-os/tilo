@@ -240,6 +240,17 @@ grep -Fq TILO_ROOMS_TLS_CERT "$work/err" || fail "the refusal does not name the 
 fails_with lounge TILO_ROOMS_TLS_CERT=/run/tls/a,b.crt TILO_ROOMS_TLS_KEY=/run/tls/tls.key
 grep -Fq comma "$work/err" || fail "a path with a comma was not refused"
 
+# Pages reach the host over WebTransport at the address and origin named
+# together; one without the other stops the start.
+lounge \
+  TILO_ROOMS_LINK=0.0.0.0:8443 \
+  TILO_ROOMS_LINK_ORIGIN=https://live.example:443/ \
+  >"$work/args" || fail "a deployment with a WebTransport listener did not start"
+pair --link-listen 0.0.0.0:8443 || fail "the WebTransport address did not reach the host"
+pair --link-origin https://live.example:443 || fail "the WebTransport origin did not reach the host"
+fails_with lounge TILO_ROOMS_LINK=0.0.0.0:8443
+grep -Fq TILO_ROOMS_LINK_ORIGIN "$work/err" || fail "the refusal does not name the missing origin"
+
 # Without what it cannot invent, it names the setting and starts nothing.
 for required in TILO_ROOMS_PERSISTENT TILO_ROOMS_ROOT_FILE TILO_ROOMS_RELAY_ORIGIN TILO_ROOMS_WEB_ENTRY; do
   unset_env=(TILO_ROOMS_PERSISTENT=lounge TILO_ROOMS_ROOT_FILE=/root TILO_ROOMS_RELAY_ORIGIN=https://eu1.example

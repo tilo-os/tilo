@@ -4,7 +4,7 @@
 //! program's session carries them. What only one host can do is that host's own vocabulary beside
 //! this one.
 
-use iroh::{EndpointAddr, EndpointId};
+use iroh_base::{EndpointAddr, EndpointId};
 use neighbour_wire::{NeighbourMsg, PeerId};
 use tilo_peer_state::document_frame::DocumentRoute;
 

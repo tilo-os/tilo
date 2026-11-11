@@ -139,6 +139,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
             public_origin: None,
             fetch_proxy: None,
             door: None,
+            link: None,
         })
         .await
         .unwrap();

@@ -1441,6 +1441,7 @@ impl Client {
     }
 
     /// This device's collaboration endpoint, once it has bound.
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn endpoint(&self) -> Option<iroh::Endpoint> {
         self.inner.endpoint()

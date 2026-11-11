@@ -27,7 +27,10 @@ use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::{Command, Task, lock};
+use tilo_relay_client::Carrier;
+use tilo_relay_client::link::{Dialer, Purpose};
+
+use super::{Command, DeviceSigner, Task, lock};
 use channel_crypto::ChannelContentKeys;
 
 /// The message a page shows in its members' place when its live plane cannot
@@ -285,27 +288,35 @@ impl Planes {
     }
 }
 
-/// Join `workspace_id`'s plane over iroh, as this device, against the device
-/// that serves it; the outcome comes back as [`Command::PlaneJoined`].
+/// Join `workspace_id`'s plane as this device, against the device that
+/// serves it, over the session's carrier; the outcome comes back as
+/// [`Command::PlaneJoined`].
 ///
-/// The grant is this device's certificate (the roster every member applies),
-/// so a page-shaped peer reaches the same plane a browser reaches over
-/// WebTransport: it seals and opens as itself, under the workspace scope's
-/// keys, and the serving device copies bytes it cannot open.
-pub(crate) struct NativeJoin {
-    /// The endpoint this device dials from.
-    pub endpoint: iroh::Endpoint,
-    /// The serving device's address.
-    pub host: iroh_base::EndpointAddr,
+/// The grant is this device's certificate (the roster every member applies):
+/// it seals and opens as itself, under the workspace scope's keys, and the
+/// serving device copies bytes it cannot open.
+pub(crate) struct PlaneJoin {
+    /// The dialer the session reaches its host through.
+    pub dialer: Arc<Dialer>,
+    /// Where the plane is served, over the session's carrier.
+    pub host: tilo_relay_client::Host,
     /// Where the outcome goes.
     pub commands: tokio::sync::mpsc::WeakUnboundedSender<Command>,
     /// This device's certificate, presented as the grant.
     pub cert: tilo_user_identity::DeviceCert,
-    /// This device's statement that the endpoint speaks for it, when the
-    /// endpoint is not the device's own key (a page): the grant carries it.
+    /// What signs for this device: over WebTransport it proves itself on the
+    /// plane's link before the grant.
+    pub signer: Arc<dyn DeviceSigner>,
+    /// The revocations this device knows, which the host's proof is read
+    /// against.
+    pub revocations: tilo_user_identity::RevocationList,
+    /// The certificate of the host the session reached: who the plane's
+    /// host must prove to be over WebTransport.
+    pub host_cert: tilo_user_identity::DeviceCert,
+    /// This device's statement that its iroh endpoint speaks for it, when the
+    /// endpoint is not the device's own key (a custody-held one): the grant
+    /// carries it. Empty over WebTransport, where the device proves itself.
     pub delegation: Vec<u8>,
-    /// This device.
-    pub device: [u8; 32],
     /// The workspace joined.
     pub workspace_id: u64,
     /// The workspace.
@@ -316,31 +327,11 @@ pub(crate) struct NativeJoin {
     pub members: BTreeSet<[u8; 32]>,
 }
 
-pub(crate) fn join_native(join: NativeJoin) {
-    let NativeJoin {
-        endpoint,
-        host,
-        commands,
-        cert,
-        delegation,
-        device,
-        workspace_id,
-        workspace,
-        keys,
-        members,
-    } = join;
+pub(crate) fn join_plane(join: PlaneJoin) {
+    let commands = join.commands.clone();
+    let workspace_id = join.workspace_id;
     n0_future::task::spawn(async move {
-        let joined = native(
-            &endpoint,
-            host,
-            &cert,
-            &delegation,
-            device,
-            &workspace,
-            keys,
-            members,
-        )
-        .await;
+        let joined = joined(join).await;
         #[cfg(not(target_arch = "wasm32"))]
         let joined = Command::PlaneJoined(workspace_id, joined);
         #[cfg(target_arch = "wasm32")]
@@ -356,47 +347,83 @@ pub(crate) fn join_native(join: NativeJoin) {
 
 /// The join itself: the grant this device presents, then the plane on the
 /// serving device's carrier.
-async fn native(
-    endpoint: &iroh::Endpoint,
-    host: iroh_base::EndpointAddr,
-    cert: &tilo_user_identity::DeviceCert,
-    delegation: &[u8],
-    device: [u8; 32],
-    workspace: &str,
-    keys: ChannelContentKeys,
-    members: BTreeSet<[u8; 32]>,
-) -> Result<Arc<Plane>, Failed> {
+async fn joined(join: PlaneJoin) -> Result<Arc<Plane>, Failed> {
     use tilo_live::plane::PlaneError;
-    let Some(uuid) = tilo_desktop_model::WorkspaceId::parse(workspace) else {
+    let Some(uuid) = tilo_desktop_model::WorkspaceId::parse(&join.workspace) else {
         return Err(Failed::Unavailable);
     };
-    let scope = Scope::workspace(workspace);
-    let certificate = serde_json::to_vec(cert).map_err(|_| Failed::Unavailable)?;
+    let scope = Scope::workspace(&join.workspace);
+    let certificate = serde_json::to_vec(&join.cert).map_err(|_| Failed::Unavailable)?;
     let grant = tilo_live::grant::Native::new(
         *uuid.as_uuid().as_bytes(),
         &scope.id(),
-        keys.epoch(),
+        join.keys.epoch(),
         certificate,
-        delegation.to_vec(),
+        join.delegation.clone(),
     )
-    .map_err(|_| Failed::Unavailable)?;
-    Plane::join(
-        &tilo_live::native::Iroh::new(endpoint.clone(), host),
-        &grant.encode(),
-        Join {
-            scope,
-            device,
-            keys,
-            roster: Roster::new(members),
-            publish: true,
-        },
-    )
-    .await
-    .map(Arc::new)
-    .map_err(|error| match error {
+    .map_err(|_| Failed::Unavailable)?
+    .encode();
+    let plane = Join {
+        scope,
+        device: join.cert.device_public_key,
+        keys: join.keys.clone(),
+        roster: Roster::new(join.members.clone()),
+        publish: true,
+    };
+    let joined = match join.host.carrier() {
+        Carrier::WebTransport => {
+            let session = proven_plane_link(&join).await?;
+            Plane::join(&tilo_live::admit::Opened::new(session), &grant, plane).await
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        Carrier::Direct | Carrier::Relay => {
+            let endpoint = join
+                .dialer
+                .endpoint()
+                .await
+                .map_err(|_| Failed::Unavailable)?;
+            Plane::join(
+                &tilo_live::native::Iroh::new(endpoint, join.host.addr()),
+                &grant,
+                plane,
+            )
+            .await
+        }
+        #[cfg(target_arch = "wasm32")]
+        Carrier::Direct | Carrier::Relay => return Err(Failed::Unavailable),
+    };
+    joined.map(Arc::new).map_err(|error| match error {
         PlaneError::Denied => Failed::Refused,
         _ => Failed::Unavailable,
     })
+}
+
+/// A WebTransport session to the plane's host, on which this device has
+/// proved itself with the relay handshake: what the plane is admitted on.
+async fn proven_plane_link(join: &PlaneJoin) -> Result<tilo_net::webtransport::Session, Failed> {
+    let unavailable = |_| Failed::Unavailable;
+    let link = join
+        .dialer
+        .link_offering(Purpose::Plane, &[tilo_live::preface::PROTOCOL])
+        .await
+        .map_err(unavailable)?;
+    let (mut send, mut recv) = link.open_bi().await.map_err(unavailable)?;
+    let proved = tilo_relay_session::client::prove(
+        &mut send,
+        &mut recv,
+        &join.cert,
+        join.signer.as_ref(),
+        &join.revocations,
+        join.host_cert.user_public_key,
+        Some(join.host_cert.device_public_key),
+    )
+    .await;
+    if proved.is_err() {
+        link.close("the device did not prove itself");
+        return Err(Failed::Refused);
+    }
+    send.finish();
+    link.web_session().ok_or(Failed::Unavailable)
 }
 
 // Where a plane waits for the session's command, on the target whose carrier
@@ -455,7 +482,7 @@ impl Task {
     /// joined again after a reconnect, and dropped when the page leaves the
     /// workspace.
     pub(super) fn settle_planes(&mut self) {
-        let Some((endpoint, delegation)) = self.dial.plane() else {
+        let Some((dialer, delegation)) = self.dial.plane() else {
             return;
         };
         self.planes.keep_only(&self.workspaces);
@@ -519,21 +546,19 @@ impl Task {
             // The workspace's own governance names where its host listens; a
             // host that has not named itself yet is dialled where the session
             // reached it.
-            let host = self
-                .replicas
-                .host(workspace_id)
-                .map_or_else(
-                    || self.config.host.clone(),
-                    |named| named.over(self.config.host.carrier()),
-                )
-                .addr();
-            join_native(NativeJoin {
-                endpoint: endpoint.clone(),
+            let host = self.replicas.host(workspace_id).map_or_else(
+                || self.config.host.clone(),
+                |named| named.over(self.config.host.carrier()),
+            );
+            join_plane(PlaneJoin {
+                dialer: dialer.clone(),
                 host,
                 commands: self.commands.clone(),
                 cert: self.config.cert.clone(),
+                signer: self.signer.clone(),
+                revocations: self.config.revocations.clone(),
+                host_cert: self.config.host_cert.clone(),
                 delegation: delegation.clone(),
-                device: self.config.cert.device_public_key,
                 workspace_id,
                 workspace,
                 keys,

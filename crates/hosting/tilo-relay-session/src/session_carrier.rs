@@ -2,11 +2,14 @@
 //!
 //! This module does not authenticate peers or construct certified evidence.
 //! Callers assemble a client only after the protocol-specific mutual proof.
-//! Two carriers: the Iroh transport, and any byte stream pair for a host in
-//! the same process. Both carry the same state envelopes.
+//! Two carriers: a link to the host (iroh or WebTransport,
+//! `tilo_relay_client::link`), and any byte stream pair for a host in the
+//! same process. Both carry the same state envelopes.
 
-use iroh::endpoint::{Connection, ConnectionStats, Endpoint};
+#[cfg(not(target_arch = "wasm32"))]
+use iroh::endpoint::{ConnectionStats, Endpoint};
 use n0_future::boxed::BoxFuture;
+use tilo_relay_client::link::Link;
 use tokio::sync::mpsc;
 
 use crate::transport::Envelope;
@@ -25,12 +28,13 @@ pub(crate) trait SessionCarrier {
     fn disconnect(&self) -> BoxFuture<()>;
     fn close_owned(&self) -> BoxFuture<()>;
     /// The transport's own packet and frame counters, where it keeps them.
+    #[cfg(not(target_arch = "wasm32"))]
     fn transport_stats(&self) -> Option<ConnectionStats> {
         None
     }
-    /// The connection the session rides, where it rides one: other sessions
-    /// open streams of their own on it.
-    fn connection(&self) -> Option<Connection> {
+    /// The link the session rides, where it rides one: other sessions open
+    /// streams of their own on it.
+    fn link(&self) -> Option<Link> {
         None
     }
 }
@@ -40,62 +44,73 @@ pub(crate) type CarrierHandle = Box<dyn SessionCarrier + Send + Sync>;
 #[cfg(target_arch = "wasm32")]
 pub(crate) type CarrierHandle = Box<dyn SessionCarrier>;
 
-/// Owns Iroh transport resources without exposing them to the session handle.
-pub(crate) struct IrohCarrier {
-    connection: Connection,
-    // Connection alone does not keep the socket open. Retain this handle for
-    // the client's lifetime; the pump also keeps a clone through its final FIN.
-    endpoint: Endpoint,
+/// Owns a link's resources without exposing them to the session handle.
+pub(crate) struct LinkCarrier {
+    link: Link,
+    // A link alone does not keep an iroh endpoint open. Retain the endpoint
+    // the session dialled from, when it owns it, for the client's lifetime;
+    // the pump also keeps a clone through its final FIN.
+    #[cfg(not(target_arch = "wasm32"))]
+    endpoint: Option<Endpoint>,
     // Dropping this handle detaches rather than aborting the pump, so normal
     // client drop can still send the queued Unsubscribe and gracefully finish.
     _pump: n0_future::task::JoinHandle<()>,
 }
 
-impl IrohCarrier {
+impl LinkCarrier {
     pub(crate) fn new(
-        connection: Connection,
-        endpoint: Endpoint,
+        link: Link,
+        #[cfg(not(target_arch = "wasm32"))] endpoint: Option<Endpoint>,
         pump: n0_future::task::JoinHandle<()>,
     ) -> Self {
         Self {
-            connection,
+            link,
+            #[cfg(not(target_arch = "wasm32"))]
             endpoint,
             _pump: pump,
         }
     }
 }
 
-impl SessionCarrier for IrohCarrier {
+impl SessionCarrier for LinkCarrier {
     fn abort(&self, reason: &'static [u8]) {
-        self.connection.close(0u32.into(), reason);
+        self.link
+            .close(std::str::from_utf8(reason).unwrap_or_default());
     }
 
     fn disconnect(&self) -> BoxFuture<()> {
-        let connection = self.connection.clone();
+        let link = self.link.clone();
         Box::pin(async move {
-            connection.close(0u32.into(), b"broker lane disconnected");
-            connection.closed().await;
+            link.close("broker lane disconnected");
+            link.closed().await;
         })
     }
 
     fn close_owned(&self) -> BoxFuture<()> {
-        let connection = self.connection.clone();
+        let link = self.link.clone();
+        #[cfg(not(target_arch = "wasm32"))]
         let endpoint = self.endpoint.clone();
         Box::pin(async move {
-            connection.close(0u32.into(), b"client closed");
-            connection.closed().await;
+            link.close("client closed");
+            link.closed().await;
             // Endpoint::close flushes the connection close before releasing
             // the socket. Callers sharing an endpoint must use disconnect.
-            endpoint.close().await;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(endpoint) = endpoint {
+                endpoint.close().await;
+            }
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn transport_stats(&self) -> Option<ConnectionStats> {
-        Some(self.connection.stats())
+        self.link
+            .connection()
+            .map(iroh::endpoint::Connection::stats)
     }
 
-    fn connection(&self) -> Option<Connection> {
-        Some(self.connection.clone())
+    fn link(&self) -> Option<Link> {
+        Some(self.link.clone())
     }
 }
 

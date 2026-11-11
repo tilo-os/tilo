@@ -104,6 +104,7 @@ impl std::str::FromStr for WorkspaceLink {
 /// # Errors
 /// The endpoint could not bind, or the host could not be reached or did
 /// not complete the handshake.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn connect(
     link: &WorkspaceLink,
     cert: tilo_user_identity::DeviceCert,

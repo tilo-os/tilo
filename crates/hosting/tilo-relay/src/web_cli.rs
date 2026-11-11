@@ -75,6 +75,15 @@ pub struct WebArgs {
     /// `--web-plain` bind a non-loopback address.
     #[arg(long = "public-origin", value_name = "ORIGIN", requires = "web_plain")]
     pub public_origin: Option<String>,
+    /// Take WebTransport sessions, how pages reach this host, at this UDP
+    /// address instead of beside the HTTPS listener: for a deployment whose
+    /// HTTPS arrives through a proxy that carries no UDP.
+    #[arg(long = "link-listen", value_name = "ADDR", requires = "link_origin")]
+    pub link_listen: Option<SocketAddr>,
+    /// The `https://` origin pages open those sessions at; its name must
+    /// lead to `--link-listen` and be on the host's certificate.
+    #[arg(long = "link-origin", value_name = "ORIGIN", requires = "link_listen")]
+    pub link_origin: Option<String>,
     /// Run this host's own iroh packet relay at this address, and have its
     /// pages reach it through it: a page has no UDP socket, so it reaches a
     /// host only through a relay. Without it the host uses the public relays.
@@ -395,6 +404,10 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
         // The door's wait list is the room's own: whoever starts one sets it
         // on the config it gives the listener.
         door: None,
+        link: args
+            .link_listen
+            .zip(args.link_origin.clone())
+            .map(|(listen, origin)| tilo_relay::web::LinkListen { listen, origin }),
     }
 }
 

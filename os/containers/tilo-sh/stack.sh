@@ -104,6 +104,7 @@ iroh_port=$((base + 4))        # the relay's iroh endpoint, UDP (7704)
 relay_web_port=$((base + 5))   # the relay's own dev TLS listener, which nothing here uses
 live_port=$((base + 6))        # Caddy: the live plane's origin (live-eu1.tilo.sh)
 caddy_http_port=$((base + 7))  # Caddy's HTTP port, which serves nothing here
+link_port=$((base + 8))        # the relay's WebTransport listener, UDP: how pages reach it
 door_port=$((base + 10))       # the front door (mcp.tilo.sh)
 site_port=$((base + 20))       # the web entry (tilo.sh)
 releases_port=$((base + 22))   # this checkout's tilo command, as the site's /releases serves it
@@ -250,6 +251,8 @@ relay_env() {
     "TILO_ROOMS_RELAY_PLAIN=127.0.0.1:$plain_port"
     "TILO_ROOMS_HTTP=127.0.0.1:$routes_port"
     "TILO_ROOMS_WEB=127.0.0.1:$relay_web_port"
+    "TILO_ROOMS_LINK=127.0.0.1:$link_port"
+    "TILO_ROOMS_LINK_ORIGIN=https://127.0.0.1:$link_port"
   )
   # Not here: the moderation and summary model keys (no model is asked
   # locally), and the Discord bridge's real server unless --discord.

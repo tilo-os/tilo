@@ -300,6 +300,47 @@ pub trait Dial: Send + Sync + 'static {
     ) -> Dialling<'a>;
 }
 
+/// A carrier the caller already opened, handed to the plane once: a
+/// transport whose dial runs steps of its own before the admission (a
+/// WebTransport session the device first proved itself on). A second dial
+/// finds nothing to hand over and is unavailable.
+pub struct Opened<S>(std::sync::Mutex<Option<S>>);
+
+impl<S> Opened<S> {
+    /// Hand `session` to the next dial.
+    #[must_use]
+    pub const fn new(session: S) -> Self {
+        Self(std::sync::Mutex::new(Some(session)))
+    }
+}
+
+impl<S> Dial for Opened<S>
+where
+    S: Carrier,
+    S::SendStream: Send,
+    S::RecvStream: Send,
+{
+    fn dial<'a>(
+        &'a self,
+        grant: &'a [u8],
+        publish: Option<moq_net::origin::Consumer>,
+        subscribe: Option<moq_net::origin::Producer>,
+        timeout: Duration,
+    ) -> Dialling<'a> {
+        let session = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        Box::pin(async move {
+            let session = session.ok_or(AdmissionError::Unavailable)?;
+            n0_future::time::timeout(timeout, start(session, grant, publish, subscribe))
+                .await
+                .map_err(|_| AdmissionError::Unavailable)?
+        })
+    }
+}
+
 /// Runs an origin's driver for as long as it lives. An origin makes no
 /// progress (routing, serving, cache expiry) unless its driver runs.
 pub struct OriginTask(Option<n0_future::task::JoinHandle<()>>);

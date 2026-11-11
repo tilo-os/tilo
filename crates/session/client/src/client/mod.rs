@@ -9,7 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use collab_types::presence::Presence as Frame;
-use iroh::{EndpointAddr, EndpointId};
+use iroh_base::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::DesktopTree;
 
@@ -96,6 +96,7 @@ pub struct Client {
     endpoint: EndpointAddr,
     /// This device's endpoint itself, once it has bound: what the session's traffic runs on, and
     /// what names this device.
+    #[cfg(not(target_arch = "wasm32"))]
     endpoint_handle: std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>>,
     /// The protocols this session was handed to serve beside its own, by ALPN: what it answers on
     /// this device's endpoint, so the client can say whether it serves one.
@@ -146,6 +147,7 @@ impl Client {
             sibling_arrived: Cell::new(false),
             personal: RefCell::new(Vec::new()),
             endpoint: device.endpoint,
+            #[cfg(not(target_arch = "wasm32"))]
             endpoint_handle: std::sync::Arc::new(std::sync::OnceLock::new()),
             beside: Vec::new(),
         }
@@ -171,6 +173,7 @@ impl Client {
 
     /// The endpoint this device bound, for a host that serves more on it than the plane's own
     /// traffic.
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn bound_to(
         mut self,
@@ -462,6 +465,7 @@ impl Client {
 
     /// This device's collaboration endpoint, once it has bound: where what a call carries runs,
     /// beside the workspaces' own traffic. `None` on a client taking part in no transport.
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn endpoint(&self) -> Option<iroh::Endpoint> {
         self.endpoint_handle.get().cloned()
@@ -469,6 +473,7 @@ impl Client {
 
     /// Where that endpoint lands, for what starts before it has bound: a call joins the endpoint
     /// the moment the plane has it.
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn endpoint_handle(&self) -> std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>> {
         std::sync::Arc::clone(&self.endpoint_handle)

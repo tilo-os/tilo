@@ -329,6 +329,7 @@ pub async fn start_host_serving(
             public_origin: None,
             fetch_proxy,
             door: None,
+            link: None,
         })
         .await
         .unwrap();
@@ -409,6 +410,7 @@ pub async fn start_workspace_host_relaying(
             public_origin: None,
             fetch_proxy: None,
             door: None,
+            link: None,
         })
         .await
         .unwrap();
@@ -424,9 +426,10 @@ impl TestHost {
         https::DevHttps::new(self.web.addr, self.web.certificate_sha256.as_ref().unwrap())
     }
 
-    /// The host as a session reaches it: its iroh endpoint.
+    /// The host as a session reaches it: its iroh endpoint, and the
+    /// WebTransport listener pages reach it at.
     pub fn iroh(&self) -> Host {
-        Host::at(self.relay.node_addr())
+        Host::at(self.relay.node_addr()).with_web(Some(self.web.link.clone()))
     }
 
     /// The host as a device reaches it over `carrier`.
@@ -450,6 +453,11 @@ pub async fn approve_one(host: &TestHost, root: &SigningKey, laptop: &Device) ->
 
 /// [`approve_one`], with `laptop` reaching the host as `host` says.
 pub async fn approve_one_over(host: &Host, root: &SigningKey, laptop: &Device) -> String {
+    // The laptop approves over iroh, whichever way the new device came.
+    let host = match host.carrier() {
+        Carrier::WebTransport => host.clone().over(Carrier::Direct),
+        _ => host.clone(),
+    };
     let endpoint = host.bind(None).await.unwrap();
     let mut approver = Approver::connect(
         &endpoint,

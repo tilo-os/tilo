@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use iroh::{EndpointAddr, EndpointId};
+use iroh_base::{EndpointAddr, EndpointId};
 use tilo_desktop_model::WorkspaceId;
 use tilo_session_client::presence::OwnPresence;
 use tilo_session_client::{Device, Presence, SayPresence, topic_of};
@@ -97,7 +97,7 @@ mod tests {
 
     /// The publisher `seed` names.
     fn publisher(seed: u8) -> [u8; 32] {
-        iroh::SecretKey::from_bytes(&[seed; 32])
+        iroh_base::SecretKey::from_bytes(&[seed; 32])
             .public()
             .as_bytes()
             .to_owned()

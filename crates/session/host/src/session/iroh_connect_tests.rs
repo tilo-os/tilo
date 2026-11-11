@@ -101,30 +101,30 @@ fn every_client_error_has_a_deliberate_link_class() {
 
     // Reachability: retried with backoff, never counted as a refusal.
     assert_eq!(
-        iroh_link_error(ClientError::UnsupportedProtocol),
+        link_error(ClientError::UnsupportedProtocol),
         LinkError::Unavailable("host does not speak tilo-relay/1".into()),
     );
     assert_eq!(
-        iroh_link_error(ClientError::Iroh("timed out".into())),
+        link_error(ClientError::Transport("timed out".into())),
         LinkError::Unavailable("timed out".into()),
     );
     // The device's own signer.
     assert_eq!(
-        iroh_link_error(ClientError::Sign("locked".into())),
+        link_error(ClientError::Sign("locked".into())),
         LinkError::Sign("locked".into()),
     );
     // An answer that does not decode says nothing about this device.
     assert_eq!(
-        iroh_link_error(ClientError::Codec("bad ack".into())),
+        link_error(ClientError::Codec("bad ack".into())),
         LinkError::Malformed("bad ack".into()),
     );
     // The host turned this device away without a reason.
     assert_eq!(
-        iroh_link_error(ClientError::Auth(AuthError::Revoked)),
+        link_error(ClientError::Auth(AuthError::Revoked)),
         LinkError::Refused("auth: peer device is revoked".into()),
     );
     assert_eq!(
-        iroh_link_error(ClientError::Io(std::io::ErrorKind::UnexpectedEof.into())),
+        link_error(ClientError::Io(std::io::ErrorKind::UnexpectedEof.into())),
         LinkError::Refused("io: unexpected end of file".into()),
     );
 }

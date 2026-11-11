@@ -1135,7 +1135,7 @@ impl Engine {
         invitee_name: Option<String>,
         recipient_user_public_key: Option<[u8; 32]>,
         expires_in_seconds: u64,
-        endpoint: &iroh::EndpointAddr,
+        endpoint: &iroh_base::EndpointAddr,
         now: SystemTime,
     ) -> Result<Issued, String> {
         let room = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
@@ -1283,7 +1283,10 @@ impl Engine {
     /// Where `workspace` 's host is reached and the device its enrollment pins: the address its
     /// live plane is dialled at.
     #[cfg(target_os = "linux")]
-    pub fn workspace_host(&self, workspace: WorkspaceId) -> Option<([u8; 32], iroh::EndpointAddr)> {
+    pub fn workspace_host(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<([u8; 32], iroh_base::EndpointAddr)> {
         self.owner.host_addr(workspace)
     }
 
@@ -1379,7 +1382,7 @@ impl Engine {
     fn own_host_hint(
         &self,
         workspace: &str,
-        endpoint: &iroh::EndpointAddr,
+        endpoint: &iroh_base::EndpointAddr,
     ) -> Result<tilo_peer_state::join::TransportHint, String> {
         let workspace_id = tilo_peer_state::join::room_workspace_id(workspace)
             .map_err(|error| error.to_string())?;
@@ -1413,7 +1416,7 @@ impl Engine {
         slot: WorkspaceSlot,
         workspace: WorkspaceId,
         name: &str,
-        endpoint: Option<&iroh::EndpointAddr>,
+        endpoint: Option<&iroh_base::EndpointAddr>,
     ) {
         if self.holds(workspace) || self.unfounded.lock_recover().contains(&workspace) {
             return;
@@ -1461,7 +1464,7 @@ impl Engine {
     /// one founded before its record said: a workspace founded here is reached at its own host, and
     /// a record that does not say so leaves its records where no device reaches them.
     #[cfg(target_os = "linux")]
-    pub fn name_own_hosts(&self, endpoint: &iroh::EndpointAddr) {
+    pub fn name_own_hosts(&self, endpoint: &iroh_base::EndpointAddr) {
         for workspace in self.owner.hosts_unnamed() {
             let hint = match self.own_host_hint(&workspace.to_string(), endpoint) {
                 Ok(hint) => hint,
@@ -1669,9 +1672,9 @@ mod tests {
     }
 
     /// Where a desk's own host is reached: its device's endpoint.
-    fn endpoint(identity: &HostIdentity) -> iroh::EndpointAddr {
-        iroh::EndpointAddr::new(
-            iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key)
+    fn endpoint(identity: &HostIdentity) -> iroh_base::EndpointAddr {
+        iroh_base::EndpointAddr::new(
+            iroh_base::EndpointId::from_bytes(&identity.device_cert.device_public_key)
                 .expect("a device endpoint"),
         )
     }

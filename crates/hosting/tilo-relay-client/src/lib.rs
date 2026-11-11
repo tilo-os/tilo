@@ -21,14 +21,15 @@
 //! - [`error`] — why a call to a host failed, and why a host turned a device
 //!   away;
 //! - [`host`] — where a workspace's host is reached;
+//! - [`link`] — how a device reaches it for each thing it asks: iroh
+//!   natively, the browser's WebTransport in a page;
 //! - [`https`] — what a page asks a host before it holds a session, over
 //!   HTTPS through its `fetch`: the host's certificate and address, and
 //!   joining a workspace.
 //!
 //! The messages themselves are defined in [`tilo_relay_protocol`]. Without
-//! the default `iroh` feature certification is left out and the signer seam,
-//! the co-edit payloads and the frame codec remain, for peers that reach the host another way (a
-//! browser over HTTPS).
+//! the default `dial` feature the dialers (certification, the link) are left
+//! out and the signer seam, the co-edit payloads and the frame codec remain.
 
 #![deny(rust_2018_idioms)]
 #![cfg_attr(
@@ -39,7 +40,7 @@
     )
 )]
 
-#[cfg(feature = "iroh")]
+#[cfg(feature = "dial")]
 pub mod certify;
 pub mod coedit;
 pub mod error;
@@ -47,25 +48,30 @@ pub mod frame;
 pub mod host;
 pub mod https;
 pub mod invite;
+/// How a device reaches its host for each thing it asks: iroh natively, the
+/// browser's WebTransport in a page.
+#[cfg(feature = "dial")]
+pub mod link;
 /// A computer signing in as one of the person's devices, and the two ways
 /// into a workspace with it: through the site's door, and by an invitation.
 /// Reading a login code is a computer's work alone (a page writes the code,
 /// never reads it), so that part of the module is native only; the ways in
 /// are a page's too ([`login::Door`]).
-#[cfg(feature = "iroh")]
+#[cfg(feature = "dial")]
 pub mod login;
 /// A host's login codes and the person's stand-in approver, for the tab and the computer alike.
 pub mod login_code;
 pub mod pairing;
-#[cfg(feature = "iroh")]
+#[cfg(feature = "dial")]
 pub mod questions;
 pub mod sign_in;
 pub mod signer;
 
-#[cfg(feature = "iroh")]
+#[cfg(all(feature = "dial", not(target_arch = "wasm32")))]
+pub use certify::{Approver, request_certification};
+#[cfg(feature = "dial")]
 pub use certify::{
-    Approver, CERTIFICATION_WAIT_NS, CertificationOutcome, MemberApprover, MemberHost, ask_member,
-    certify, request_certification,
+    CERTIFICATION_WAIT_NS, CertificationOutcome, MemberApprover, MemberHost, ask_member, certify,
 };
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound};
 pub use error::{CertifyError, LinkError};
@@ -75,7 +81,7 @@ pub use pairing::{
     IssuedRole, NODE_CERT_LIFETIME_NS, certify_with_root, issue_agent_grant, issue_device_cert,
     issue_stand_in, revoke_device,
 };
-#[cfg(feature = "iroh")]
+#[cfg(feature = "dial")]
 pub use pairing::{answer_pairing, decide_pairing, pending_pairings};
 pub use sign_in::{encode, grant_label, sign_in_proof};
 pub use signer::{DeviceSigner, MaybeSendSync, SignError, SignFuture};

@@ -13,6 +13,7 @@
 mod envelopes;
 mod fetch;
 pub mod install;
+mod link;
 mod login_codes;
 mod page_errors;
 pub(crate) mod plane;
@@ -36,7 +37,7 @@ use bytes::Bytes;
 use http_body_util::BodyExt as _;
 use hyper::{Method, Request, Response, StatusCode, header};
 pub(crate) use tilo_relay_protocol::web as protocol;
-use tilo_relay_protocol::web::{API_PREFIX, HostAddress, HostInfo, MAX_REQUEST_BYTES};
+use tilo_relay_protocol::web::{API_PREFIX, HostAddress, HostInfo, MAX_REQUEST_BYTES, WebLink};
 
 use crate::daemon::{Relay, RelayError, WebContext};
 
@@ -66,6 +67,20 @@ pub struct WebConfig {
     /// invitation, when whoever runs it keeps one
     /// ([`crate::door::WaitListDoor`]).
     pub door: Option<Arc<crate::door::WaitListDoor>>,
+    /// Where the host takes WebTransport sessions, when not on the UDP port of
+    /// [`Self::listen`] at the origin pages are told: a deployment whose
+    /// HTTPS arrives through a proxy that carries no UDP names a way around
+    /// it. `None` listens beside the HTTPS listener.
+    pub link: Option<LinkListen>,
+}
+
+/// A WebTransport listener of its own ([`WebConfig::link`]).
+#[derive(Clone, Debug)]
+pub struct LinkListen {
+    /// The UDP address it binds.
+    pub listen: SocketAddr,
+    /// The `https://` origin devices open its sessions at.
+    pub origin: String,
 }
 
 /// A running browser listener. Dropping it stops serving.
@@ -76,6 +91,8 @@ pub struct WebHandle {
     pub origin: String,
     /// SHA-256 of a development certificate.
     pub certificate_sha256: Option<String>,
+    /// Where pages reach the host over WebTransport, as `/host` publishes it.
+    pub link: WebLink,
     /// `http://localhost:port` of the plain loopback listener, if any.
     pub plain_origin: Option<String>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -280,6 +297,8 @@ impl Relay {
             endpoint_addr = endpoint_addr.with_relay_url(relay.clone());
         }
         let relay_url = endpoint_addr.relay_urls().next().map(ToString::to_string);
+        let (link_listener, web_link) =
+            bind_link(&config, addr, public_origin.as_ref(), &identity).map_err(failed)?;
         let web = Arc::new(Web {
             context: context.clone(),
             host_info: HostInfo {
@@ -287,6 +306,7 @@ impl Relay {
                 address: Some(HostAddress {
                     endpoint_addr,
                     relay_url,
+                    web: Some(web_link.clone()),
                 }),
             },
             allowed_origins: config.allowed_origins,
@@ -331,12 +351,21 @@ impl Relay {
             plain_origin = Some(format!("http://localhost:{port}"));
             tasks.push(tokio::spawn(plain_accept_loop(plain, web.clone())));
         }
+        tasks.push(tokio::spawn(link::serve(
+            link_listener,
+            link::Serving {
+                relay: context.relay.clone(),
+                certification: context.certification.clone(),
+                plane: plane.origin(),
+            },
+        )));
         tasks.push(tokio::spawn(accept_loop(tcp, acceptor, web)));
         let published_origin = self.publish_browser_origin(public_origin.clone())?;
         Ok(WebHandle {
             addr,
             origin: public_origin.unwrap_or_else(|| format!("https://{addr}")),
             certificate_sha256: identity.fingerprint,
+            link: web_link,
             plain_origin,
             tasks,
             locator_origin: Arc::clone(&self.browser_origin),
@@ -349,6 +378,34 @@ impl Relay {
 impl Relay {}
 
 /// The HTTPS listener on `listen`. For port 0 the kernel picks the port.
+/// Where a page reaches this host: WebTransport, on the HTTPS listener's
+/// port and certificate unless the deployment names another way in.
+fn bind_link(
+    config: &WebConfig,
+    addr: SocketAddr,
+    public_origin: Option<&String>,
+    identity: &tls::Identity,
+) -> Result<(tilo_net::webtransport::Listener, WebLink), String> {
+    let socket = std::net::UdpSocket::bind(config.link.as_ref().map_or(addr, |link| link.listen))
+        .map_err(|error| format!("WebTransport listener: {error}"))?;
+    let listener = tilo_net::webtransport::Listener::bind(socket, identity.certificate()?)
+        .map_err(|error| format!("WebTransport listener: {error}"))?;
+    let link = WebLink {
+        origin: config
+            .link
+            .as_ref()
+            .map(|link| link.origin.clone())
+            .or_else(|| public_origin.cloned())
+            .unwrap_or_else(|| format!("https://{addr}")),
+        certificate_sha256: identity
+            .fingerprint
+            .as_deref()
+            .and_then(|fingerprint| hex::decode(fingerprint).ok())
+            .and_then(|bytes| bytes.try_into().ok()),
+    };
+    Ok((listener, link))
+}
+
 fn bind_listener(listen: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
     let socket = if listen.is_ipv4() {
         tokio::net::TcpSocket::new_v4()?

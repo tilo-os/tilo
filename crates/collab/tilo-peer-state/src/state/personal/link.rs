@@ -24,10 +24,15 @@
 
 use super::PeerPersonal;
 use crate::NeighbourMsg;
-use crate::frames::{OUTGOING, REFUSED, bump, read_message, send_all};
+use crate::frames::{OUTGOING, bump};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::frames::{REFUSED, read_message, send_all};
 use ed25519_dalek::SigningKey;
+#[cfg(not(target_arch = "wasm32"))]
 use iroh::endpoint::Connection;
+#[cfg(not(target_arch = "wasm32"))]
 use iroh::protocol::{AcceptError, ProtocolHandler};
+#[cfg(not(target_arch = "wasm32"))]
 use iroh::{Endpoint, EndpointAddr};
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
@@ -196,6 +201,7 @@ impl PersonalSync {
 
     /// Dial the device at `addr` from `endpoint` and sync with it until the
     /// link ends.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn connect(
         &self,
         endpoint: &Endpoint,
@@ -210,6 +216,7 @@ impl PersonalSync {
 
     /// Sync with the device on the other end of `connection` until the link
     /// ends, whichever side dialled.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn run(&self, connection: &Connection) -> Result<(), String> {
         let remote = *connection.remote_id().as_bytes();
         // Subscribe before taking the catch-up, so a write published in
@@ -241,6 +248,7 @@ impl PersonalSync {
     /// store refuses is that write's verdict, not the link's: the link stays
     /// up for the frames after it. A device whose identity the store does not
     /// admit loses the link.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn receive_all(&self, remote: [u8; 32], connection: &Connection) -> Result<(), String> {
         let mut recv = connection
             .accept_uni()
@@ -305,6 +313,7 @@ fn admitted_frame(message: &NeighbourMsg) -> Option<AdmittedFrame> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ProtocolHandler for PersonalSync {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         self.run(&connection)

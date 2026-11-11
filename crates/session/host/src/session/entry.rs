@@ -248,7 +248,7 @@ impl Task {
             .map_err(|_| {
                 LinkError::Unavailable("the host did not answer the entry in time".to_owned())
             })
-            .and_then(|answer| answer.map_err(super::connect::iroh_link_error));
+            .and_then(|answer| answer.map_err(super::connect::link_error));
             done(answer);
         });
     }

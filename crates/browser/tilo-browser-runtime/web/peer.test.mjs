@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 import {memberText} from './json-text.mjs';
-import {forgetSiteHosts, nameSiteHost, STALE_SITE_HOST} from './site-host.mjs';
+import {forgetSiteHosts, nameSiteHost, STALE_SITE_HOST, staleSiteHost} from './site-host.mjs';
 
 const WORKSPACE = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -356,6 +356,18 @@ test('a site that names its host as it was before it was set up again stops the 
   assert.equal(asked, 1, 'the host is asked who it is once, only once the session could not reach it');
   assert.ok(said.some(line => line.includes('TILO_WEB_HOME_HOST_INFO') && line.includes('tilo-relay page-host https://host.example:8443')), said.join('\n'));
   assert.ok(runtime.peer.disposed, 'the session is let go');
+});
+
+test('a host that listens for pages elsewhere, or under a renewed pinned certificate, is not the one the site named', () => {
+  const at = (origin, hash) => {
+    const info = JSON.parse(siteNamed());
+    info.address.web = {origin, certificate_sha256: hash};
+    return info;
+  };
+  const named = at('https://host.example:8443', [1, 2]);
+  assert.equal(staleSiteHost(named, at('https://host.example:8443', [1, 2])), false);
+  assert.equal(staleSiteHost(named, at('https://host.example:9443', [1, 2])), true);
+  assert.equal(staleSiteHost(named, at('https://host.example:8443', [3, 4])), true);
 });
 
 test('a session that cannot reach the host its site names as it is goes on trying', async t => {

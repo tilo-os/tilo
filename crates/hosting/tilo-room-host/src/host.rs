@@ -20,7 +20,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream};
+use iroh::endpoint::{Connection, Endpoint};
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler};
 use tilo_clock::unix_now_ns;
 use tilo_lock::RwLockRecover as _;
@@ -1110,23 +1110,68 @@ impl RelayProtocol {
                 "home peer is decommissioned",
             )));
         }
-        let first = connection.accept_bi().await?;
-        tokio::spawn(serve_streams(self.clone(), connection, first));
+        let connection = tilo_relay_client::link::Link::iroh(connection);
+        let binding = connection.offer_binding().await;
+        let first = connection
+            .accept_bi()
+            .await
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        tokio::spawn(serve_streams(self.clone(), connection, binding, first));
         Ok(())
+    }
+
+    /// Prove which member device opened a stream that does not say so itself
+    /// (a WebTransport session's first): the relay handshake under the live
+    /// policy, as every session opens with.
+    ///
+    /// # Errors
+    ///
+    /// The device is not one this host admits, or the handshake failed.
+    pub async fn authenticate_member<R, W>(
+        &self,
+        recv: &mut R,
+        send: &mut W,
+    ) -> Result<crate::auth::AuthenticatedPeer, HandshakeError>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send,
+        W: tokio::io::AsyncWrite + Unpin + Send,
+    {
+        self.identity
+            .authenticate(
+                EndpointTrust::Live(&self.trust_policy),
+                recv,
+                send,
+                MAX_FRAME_BYTES,
+            )
+            .await
+    }
+
+    /// Serve every session `link` carries, each on a stream of its own, until
+    /// it closes: what a WebTransport session at the session path is, as a
+    /// connection on the relay ALPN is.
+    pub async fn serve_link(&self, link: tilo_relay_client::link::Link) {
+        let binding = link.offer_binding().await;
+        let Ok(first) = link.accept_bi().await else {
+            return;
+        };
+        serve_streams(self.clone(), link, binding, first).await;
     }
 }
 
 /// Serve every session `connection` carries, `first` (already accepted)
-/// first, each on a stream of its own, until the connection closes.
+/// first, each on a stream of its own, until the connection closes. An entry
+/// on any of them is bound to `binding`
+/// ([`tilo_relay_client::link::Link::offer_binding`]).
 async fn serve_streams(
     ctx: RelayProtocol,
-    connection: Connection,
-    first: (SendStream, RecvStream),
+    connection: tilo_relay_client::link::Link,
+    binding: Option<[u8; 32]>,
+    first: (
+        tilo_relay_client::link::LinkSend,
+        tilo_relay_client::link::LinkRecv,
+    ),
 ) {
     let sessions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    // What an entry's proof is bound to: unique to this connection, so a proof
-    // captured from it proves nothing on another.
-    let binding = entry_binding(&connection);
     let mut first = Some(first);
     loop {
         let (send, recv) = match first.take() {
@@ -1150,26 +1195,10 @@ async fn serve_streams(
             }
             let last = sessions.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1;
             if last {
-                connection.close(0u32.into(), b"relay session ended");
+                connection.close("relay session ended");
             }
         });
     }
-}
-
-/// The keying material an entry on `connection` is bound to
-/// ([`tilo_relay_protocol::entering::ENTRY_BINDING_LABEL`]), as this end
-/// exports it from the connection's TLS session; `None` when it does not
-/// export, which takes no entry.
-fn entry_binding(connection: &Connection) -> Option<[u8; 32]> {
-    let mut binding = [0u8; 32];
-    connection
-        .export_keying_material(
-            &mut binding,
-            tilo_relay_protocol::entering::ENTRY_BINDING_LABEL,
-            &[],
-        )
-        .ok()?;
-    Some(binding)
 }
 
 /// One member session over `recv`/`send`: the bounded shared handshake

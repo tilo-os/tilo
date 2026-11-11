@@ -195,9 +195,20 @@ impl Lounge {
     ) -> Self {
         let owner_root = owner_root.unwrap_or_else(|| read_root(root_file));
         let entrypoint = entrypoint();
+        // Pages reach the host over WebTransport at an origin naming its
+        // UDP port, as the deployment's own name does.
+        let link_port = std::net::UdpSocket::bind("127.0.0.1:0")
+            .and_then(|socket| socket.local_addr())
+            .expect("a free UDP port")
+            .port();
         let mut command = Command::new("sh");
         command
             .arg(&entrypoint)
+            .env("TILO_ROOMS_LINK", format!("127.0.0.1:{link_port}"))
+            .env(
+                "TILO_ROOMS_LINK_ORIGIN",
+                format!("https://127.0.0.1:{link_port}"),
+            )
             .env("PATH", relay_on_path())
             // eu1's environment, as apps/tilo-eu1/deployment.yaml sets it,
             // without the Discord, mail and model secrets: this run starts no
@@ -369,16 +380,9 @@ impl Lounge {
         who: &Person,
         entering: Option<tilo_relay_protocol::entering::Entering>,
     ) -> PeerHandle {
-        // A page has no UDP socket: every packet it sends goes through the
-        // relay its host names, which is the only way it reaches the host.
-        // The IP addresses `/host` publishes are the host's own — a native
-        // device dials them, a page cannot — so the page is given the
-        // endpoint's key and the relay, and nothing else: exactly what a
-        // browser in the Lounge has.
-        let host = Host::published(&tilo_relay_protocol::web::HostAddress {
-            endpoint_addr: iroh::EndpointAddr::new(self.address.endpoint_addr.id),
-            relay_url: self.address.relay_url.clone(),
-        });
+        // A page reaches its host over WebTransport, at the listener `/host`
+        // names: exactly what a browser in the Lounge has.
+        let host = Host::published(&self.address).over(tilo_relay_client::Carrier::WebTransport);
         tilo_session_host::PeerHandle::start(
             tilo_session_host::PeerConfig {
                 host,

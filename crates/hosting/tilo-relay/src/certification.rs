@@ -25,6 +25,7 @@ use std::time::Duration;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use tilo_clock::unix_now_ns;
+use tilo_relay_client::link::{Link, LinkSend};
 use tilo_user_identity::{
     CertificationPolicy, CertificationRequest, DeviceCert, RevocationList, verify_issued_cert,
 };
@@ -420,8 +421,8 @@ impl CertificationProtocol {
     /// One approver command from a member's root, answered once.
     async fn serve_member(
         &self,
-        connection: &Connection,
-        mut send: iroh::endpoint::SendStream,
+        connection: &Link,
+        mut send: LinkSend,
         approval: MemberApproval,
     ) -> Result<(), AcceptError> {
         let reply = if self.admits(approval.user_public_key).await {
@@ -439,8 +440,8 @@ impl CertificationProtocol {
 
     async fn serve_requester(
         &self,
-        connection: &Connection,
-        mut send: iroh::endpoint::SendStream,
+        connection: &Link,
+        mut send: LinkSend,
         request: CertificationRequest,
     ) -> Result<(), AcceptError> {
         let expires_at_ns = request.expires_at_ns;
@@ -482,7 +483,7 @@ impl CertificationProtocol {
         let wait = Duration::from_nanos(expires_at_ns.saturating_sub(now));
         let reply = tokio::select! {
             reply = answered(answer, wait) => reply,
-            _ = connection.closed() => {
+            () = connection.closed() => {
                 self.lock().remove(&digest);
                 return Ok(());
             }
@@ -496,9 +497,9 @@ impl CertificationProtocol {
 
     async fn serve_approver(
         &self,
-        connection: &Connection,
-        mut send: iroh::endpoint::SendStream,
-        mut recv: iroh::endpoint::RecvStream,
+        connection: &Link,
+        mut send: LinkSend,
+        mut recv: tilo_relay_client::link::LinkRecv,
         hello: auth::Hello,
     ) -> Result<(), AcceptError> {
         // Only the owner's devices that may admit devices approve, checked
@@ -705,27 +706,37 @@ impl CertificationProtocol {
     }
 }
 
-async fn finish(
-    connection: &Connection,
-    mut send: iroh::endpoint::SendStream,
-) -> Result<(), AcceptError> {
-    send.finish().map_err(|error| io(&error))?;
+async fn finish(connection: &Link, mut send: LinkSend) -> Result<(), AcceptError> {
+    send.finish();
     let _ = tokio::time::timeout(CLOSE_GRACE, connection.closed()).await;
     Ok(())
 }
 
 impl ProtocolHandler for CertificationProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let (send, mut recv) = connection.accept_bi().await?;
+        self.serve(&Link::iroh(connection)).await
+    }
+}
+
+impl CertificationProtocol {
+    /// Serve the one conversation `connection` opens with, whichever carrier
+    /// it came over: a connection on the certification ALPN, or a
+    /// WebTransport session at its path.
+    ///
+    /// # Errors
+    ///
+    /// The conversation did not decode, or its stream failed.
+    pub(crate) async fn serve(&self, connection: &Link) -> Result<(), AcceptError> {
+        let (send, mut recv) = connection.accept_bi().await.map_err(|error| io(&error))?;
         let open: CertifyOpen =
             postcard::from_bytes(&read_frame(&mut recv, MAX_CERTIFY_FRAME_BYTES).await?)
                 .map_err(|error| io(&error))?;
         match open {
-            CertifyOpen::Request(request) => self.serve_requester(&connection, send, request).await,
+            CertifyOpen::Request(request) => self.serve_requester(connection, send, request).await,
             CertifyOpen::Approver(hello) => {
-                self.serve_approver(&connection, send, recv, hello).await
+                self.serve_approver(connection, send, recv, hello).await
             }
-            CertifyOpen::Member(approval) => self.serve_member(&connection, send, approval).await,
+            CertifyOpen::Member(approval) => self.serve_member(connection, send, approval).await,
         }
     }
 }

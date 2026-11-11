@@ -17793,7 +17793,6 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
- "iroh",
  "iroh-base",
  "js-sys",
  "neighbour-wire",
@@ -20838,6 +20837,7 @@ dependencies = [
  "tilo-user-identity",
  "tokio",
  "uuid",
+ "web-transport-trait",
  "wire-frame",
  "workspace-hack",
 ]
@@ -21582,6 +21582,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "iroh",
+ "iroh-base",
  "neighbour-wire",
  "postcard",
  "rand_core 0.10.0",

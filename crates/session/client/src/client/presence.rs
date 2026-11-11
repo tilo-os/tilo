@@ -9,7 +9,7 @@ use std::time::Duration;
 use tilo_clock::Instant;
 
 use collab_types::presence::{Payload, Presence as Frame, ShellPresence, Shown};
-use iroh::EndpointId;
+use iroh_base::EndpointId;
 use tilo_desktop_model::WorkspaceId as DeskWorkspaceId;
 use tilo_live::presence;
 use tilo_live::presence::Board;

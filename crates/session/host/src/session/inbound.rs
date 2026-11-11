@@ -74,7 +74,9 @@ impl Task {
         // whoever waits for it reads every write the replay carried.
         self.keep_arrived();
         // A host is dialled by its certified key, so a session that got this far holds a valid one.
-        if let Ok(peer) = iroh::EndpointId::from_bytes(&self.config.host_cert.device_public_key) {
+        if let Ok(peer) =
+            iroh_base::EndpointId::from_bytes(&self.config.host_cert.device_public_key)
+        {
             self.emit(&tilo_session_client::Event::HostReady {
                 ws: workspace_id,
                 peer,

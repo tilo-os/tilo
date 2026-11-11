@@ -100,6 +100,7 @@ async fn main() {
             public_origin: None,
             fetch_proxy: None,
             door: None,
+            link: None,
         })
         .await
         .expect("serve browsers");

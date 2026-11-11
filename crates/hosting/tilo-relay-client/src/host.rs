@@ -8,13 +8,16 @@
 //! it, so whatever dials a host (the session, its planes, certification)
 //! dials it the same way.
 //!
-//! How a device reaches it is its [`Carrier`]: a page's is always the relay; a
-//! native device's is direct unless it is asked to go the page's way, which
-//! is how a feature is shown to work over both.
+//! How a device reaches it is its [`Carrier`]: a page's is the browser's
+//! WebTransport, to the host's own listener ([`WebLink`]); a native device's
+//! is iroh, direct unless it is asked to go through the relay. A native
+//! device can take the page's way too, which is how a feature is shown to
+//! work over every carrier ([`crate::link`] dials each).
 
 use iroh_base::{EndpointAddr, RelayUrl};
+use tilo_relay_protocol::web::WebLink;
 
-#[cfg(feature = "iroh")]
+#[cfg(all(feature = "dial", not(target_arch = "wasm32")))]
 use crate::LinkError;
 
 /// How a device's packets reach its host.
@@ -23,15 +26,18 @@ pub enum Carrier {
     /// The host's own addresses, and its relay when no direct path opens: a
     /// native device's.
     Direct,
-    /// Only the relay the host names: a page's, which holds no UDP socket.
+    /// Only the packet relay the host names, over iroh.
     Relay,
+    /// The host's WebTransport listener: a page's, with the browser's own
+    /// transport, and a native device's when asked to go the page's way.
+    WebTransport,
 }
 
 impl Carrier {
-    /// The carrier this build has: a page reaches its host through a relay
-    /// only.
+    /// The carrier this build has: a page reaches its host over the
+    /// browser's WebTransport, a native device over iroh.
     pub const OWN: Self = if cfg!(target_family = "wasm") {
-        Self::Relay
+        Self::WebTransport
     } else {
         Self::Direct
     };
@@ -45,6 +51,8 @@ pub struct Host {
     addr: EndpointAddr,
     /// How this device reaches it.
     carrier: Carrier,
+    /// Its WebTransport listener, when it serves browsers.
+    web: Option<WebLink>,
 }
 
 impl Host {
@@ -54,6 +62,7 @@ impl Host {
         Self {
             addr,
             carrier: Carrier::OWN,
+            web: None,
         }
     }
 
@@ -61,6 +70,18 @@ impl Host {
     #[must_use]
     pub fn over(self, carrier: Carrier) -> Self {
         Self { carrier, ..self }
+    }
+
+    /// This host, taking WebTransport sessions at `web`.
+    #[must_use]
+    pub fn with_web(self, web: Option<WebLink>) -> Self {
+        Self { web, ..self }
+    }
+
+    /// Where the host takes WebTransport sessions, when it does.
+    #[must_use]
+    pub const fn web(&self) -> Option<&WebLink> {
+        self.web.as_ref()
     }
 
     /// How this device reaches the host.
@@ -86,7 +107,7 @@ impl Host {
             .relay_url
             .as_deref()
             .and_then(|url| url.parse::<RelayUrl>().ok());
-        Self::through(address.endpoint_addr.clone(), relay)
+        Self::through(address.endpoint_addr.clone(), relay).with_web(address.web.clone())
     }
 
     /// The address a device dials: over the relay, the endpoint's key and its
@@ -116,9 +137,14 @@ impl Host {
     /// [`LinkError::Unavailable`] when the endpoint does not bind, or, over
     /// the relay, when the host names none: an endpoint with no direct
     /// transport and no relay could never reach the host.
-    #[cfg(feature = "iroh")]
+    #[cfg(all(feature = "dial", not(target_arch = "wasm32")))]
     pub async fn bind(&self, key: Option<[u8; 32]>) -> Result<iroh::Endpoint, LinkError> {
         let relay = self.relay().cloned();
+        if self.carrier == Carrier::WebTransport {
+            return Err(LinkError::Unavailable(
+                "a host reached over WebTransport is dialled without an endpoint".into(),
+            ));
+        }
         if self.carrier == Carrier::Relay && relay.is_none() {
             return Err(LinkError::Unavailable(
                 "the host named no relay a page can reach it through".into(),
@@ -163,13 +189,13 @@ impl Host {
 /// network carries and whose queue holds this much; a host's endpoint, which
 /// devices also dial directly, is paced over the round trip, so the window
 /// goes out as a steady stream rather than one burst.
-#[cfg(feature = "iroh")]
+#[cfg(all(feature = "dial", not(target_arch = "wasm32")))]
 pub const INITIAL_WINDOW: u64 = 256 * 1024;
 
 /// The QUIC transport of an endpoint that sends a workspace's replay or
 /// reaches its host through the relay: iroh's, starting from
 /// [`INITIAL_WINDOW`].
-#[cfg(feature = "iroh")]
+#[cfg(all(feature = "dial", not(target_arch = "wasm32")))]
 #[must_use]
 pub fn transport() -> iroh::endpoint::QuicTransportConfig {
     let mut cubic = noq_proto::congestion::CubicConfig::default();
@@ -202,6 +228,7 @@ mod tests {
         let published = Host::published(&HostAddress {
             endpoint_addr: EndpointAddr::new(key),
             relay_url: Some("https://relay.example".into()),
+            web: None,
         });
         assert_eq!(
             published.relay(),

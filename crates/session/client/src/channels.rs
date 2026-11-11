@@ -754,7 +754,7 @@ pub fn roster_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Roster,
     members_of(engine, workspace)?
         .into_iter()
         .map(|member| {
-            iroh::EndpointId::from_bytes(&member.device)
+            iroh_base::EndpointId::from_bytes(&member.device)
                 .map(|publisher| (publisher, member.cert.expires_at_ns))
                 .map_err(|error| error.to_string())
         })

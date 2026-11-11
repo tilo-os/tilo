@@ -52,7 +52,7 @@ pub use agent_run::AgentRunCompletion;
 use connect::Dial;
 pub use connect::SessionMemberHost;
 #[cfg(test)]
-use connect::{connect, iroh_link_error};
+use connect::{connect, link_error};
 pub use entry::Entry;
 pub use entry::EntryCompletion;
 use entry::{Refusal, refusal};
@@ -1837,7 +1837,7 @@ impl Task {
                     let Some(mut envelope) = envelope else {
                         return client.handshake_failure().map_or_else(
                             || Exit::Lost("the host closed the session".into()),
-                            |error| Exit::Unproved(connect::iroh_link_error(error)),
+                            |error| Exit::Unproved(connect::link_error(error)),
                         );
                     };
                     // What else the host sent is read in the same pass, so

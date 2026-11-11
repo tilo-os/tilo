@@ -23,7 +23,9 @@ use tilo_relay_protocol::certify::{
 };
 use tokio::sync::mpsc;
 
-use crate::certify::{Approver, MemberHost};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::certify::Approver;
+use crate::certify::MemberHost;
 use crate::error::CertifyError;
 use crate::signer::DeviceSigner;
 
@@ -56,6 +58,7 @@ pub trait QuestionSheet {
     fn withdraw(&mut self, id: [u8; 32]);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl QuestionHost for Approver {
     async fn confirmations(&mut self) -> Result<Vec<PendingConfirmation>, CertifyError> {
         self.list_confirmations().await

@@ -199,6 +199,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
             public_origin: None,
             fetch_proxy: None,
             door: None,
+            link: None,
         },
         paths.clone(),
         INSTALL_TOKEN,
@@ -287,6 +288,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
             public_origin: None,
             fetch_proxy: None,
             door: None,
+            link: None,
         })
         .await
         .unwrap();

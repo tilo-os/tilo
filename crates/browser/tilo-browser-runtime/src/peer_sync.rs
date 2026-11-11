@@ -13,7 +13,7 @@ use collab_types::presence::{
     ShellChat, ShellPresence, ShellReaction, ShellSelection, ShellWindow, Shown, ShownLayout,
     ShownWave,
 };
-use iroh::{EndpointAddr, EndpointId};
+use iroh_base::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use tilo_session::sync::{Client, Device, Outbox, OwnPresence, Topic, Transport};
 use tilo_session_core::remote::SessionActions;

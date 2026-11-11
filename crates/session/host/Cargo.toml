@@ -19,15 +19,14 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Asking another device's actions through this session is the session's own role, written once for
 # every host that asks one.
 tilo-session-core = { version = "0.1.0", path = "../../session/core" }
-tilo-relay-client = { version = "0.1.0", path = "../../hosting/tilo-relay-client", features = ["iroh"] }
+tilo-relay-client = { version = "0.1.0", path = "../../hosting/tilo-relay-client", features = ["dial"] }
 tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-protocol" }
-# The iroh session client the page and native peers reach the host with.
+# The session client every device reaches its host with, over its link.
 tilo-relay-session = { version = "0.1.0", path = "../../hosting/tilo-relay-session" }
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 # Signed document envelopes, exactly as native peers exchange them.
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
-iroh = { workspace = true }
 iroh-base = { workspace = true }
 n0-future = "0.3"
 web-time = "1"
@@ -45,9 +44,11 @@ channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto" }
 # The channel engine every participant runs, here as a reader.
 tilo-channels = { version = "0.1.0", path = "../../collab/channels" }
 uuid.workspace = true
-# The live plane's names, tracks and voice objects, and the carrier client the
-# page runs over its iroh session.
-tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["plane", "iroh"] }
+# The live plane's names, tracks and voice objects, and its client, admitted
+# on the link's carrier (the carrier over iroh is native only).
+tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["plane"] }
+# A plane's WebTransport session: the browser's own in a page.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["webtransport"] }
 # `moq-lite` itself: the page's live session is a publisher and a subscriber.
 moq-net = { workspace = true }
 bytes.workspace = true
@@ -123,6 +124,8 @@ uuid.workspace = true
 workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iroh = { workspace = true }
+tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["plane", "iroh"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 # A login code is a Tilo link, read under the grammar the page writes it with.
