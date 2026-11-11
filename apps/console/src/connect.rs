@@ -41,7 +41,6 @@ pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
         let agents: Vec<Element> = if door.grants.is_empty() {
             vec![Box::new(
                 EmptyState::new(tr("console-grants-empty"))
-                    .with_message(tr("console-grants-empty-message"))
                     .with_icon(Icon::Link)
                     .with_id("console-grants-empty"),
             )]

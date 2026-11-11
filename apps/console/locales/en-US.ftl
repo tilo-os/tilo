@@ -69,7 +69,6 @@ console-client-other = Any MCP client
 console-client-every-run = Every { $client } run
 console-grants-heading = Connected agents
 console-grants-empty = No agent connected yet
-console-grants-empty-message = Run one of the lines above where your agent runs, then let it in.
 console-reach-account = Every workspace, and may make new ones
 console-reach-workspace = Only { $workspace }
 console-grant-browser-pages = Browser pages
