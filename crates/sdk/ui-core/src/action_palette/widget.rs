@@ -205,7 +205,7 @@ impl Widget for ActionPalette {
             let target = self.target("field");
             children.push(
                 field
-                    .with_name("Search")
+                    .with_name(crate::i18n::widget_format("action-palette-query", &[]))
                     .with_hashed_key(&target)
                     .with_action_target(target)
                     .with_bounds(self.field.get_rect()),

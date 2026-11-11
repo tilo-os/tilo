@@ -3284,7 +3284,7 @@ impl Widget for NotesApp {
         ];
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Notes")
+                .with_name(crate::metadata::CATALOG.t("notes-window-name"))
                 .with_description(ui::i18n!("notes-window-description"))
                 .with_children(children),
         )

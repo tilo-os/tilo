@@ -217,7 +217,8 @@ impl SearchField {
     /// query to the platform search of this app, and the count slot is
     /// reserved so the text never runs under the count.
     pub fn filter() -> Self {
-        let mut field = Self::new().with_placeholder("Filter");
+        let mut field =
+            Self::new().with_placeholder(&crate::i18n::widget_format("search-field-filter", &[]));
         field.escalation = Some(SearchRequest::this_app());
         field.reserve_count = true;
         field
@@ -234,7 +235,7 @@ impl SearchField {
             input: input
                 .with_plain_chrome()
                 .with_kind(TextInputKind::Search)
-                .with_placeholder("Search"),
+                .with_placeholder(&crate::i18n::widget_format("search-field-placeholder", &[])),
             leading: Icon::Search,
             clearable: true,
             cleared: false,

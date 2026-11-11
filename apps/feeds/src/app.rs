@@ -207,7 +207,11 @@ fn window_actions(core: &Core, front: NavPane) -> Vec<ToolbarAction> {
             "Open original article",
         )
         .enabled(!article.url.is_empty()),
-        action("feeds.reader-settings", Icon::Settings2, "Reading settings"),
+        action(
+            "feeds.reader-settings",
+            Icon::Settings2,
+            &crate::i18n::t("feeds-reading-settings"),
+        ),
         action(
             "feeds.toggle-read",
             Icon::Mail,
@@ -1944,7 +1948,7 @@ impl FeedsApp {
                 &self.requests,
                 actions.as_ref(),
             ))
-            .with_label("Reading settings")
+            .with_label(crate::i18n::t("feeds-reading-settings"))
             .anchored(anchor)
             .side(PopoverSide::Below)
             .with_viewport(window)
@@ -2549,7 +2553,7 @@ impl ui::widget::Decorator for FeedsApp {
         }
         Some(
             AccessNode::new(Role::Window)
-                .with_name("Feeds")
+                .with_name(crate::i18n::t("feeds-window-name"))
                 .with_semantic_key("feeds.application")
                 .with_bounds(core.window)
                 .with_children(children),

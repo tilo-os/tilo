@@ -414,3 +414,4 @@ chat-menu-report-sender = Report sender
 chat-menu-ban = Ban from the workspace
 chat-menu-volume = Volume
 chat-attach-share = Share a file
+chat-channel-composer-placeholder = Message #{ $channel }

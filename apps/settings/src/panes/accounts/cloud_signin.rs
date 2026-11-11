@@ -1200,7 +1200,7 @@ impl SignInFlow {
                             .with_kind(TextInputKind::Code)
                             .with_id("accounts.signin.code")
                             .with_accessible_name("Code from the provider")
-                            .with_placeholder("Paste the code"),
+                            .with_placeholder(crate::i18n::t("settings-paste-code")),
                     ),
                 )),
                 Stage::Code { .. } => fields.push(field_row(
@@ -1318,14 +1318,14 @@ impl SignInFlow {
                     ),
                 ));
                 fields.push(field_row(
-                    "Password",
+                    &crate::i18n::t("accounts-password-short"),
                     Box::new(
                         TextInput::from_state(&self.password)
                             .with_kind(TextInputKind::Password)
                             .with_id("accounts.signin.password")
                             .with_accessible_name("Apple ID password")
                             .with_secret(true)
-                            .with_placeholder("Password"),
+                            .with_placeholder(crate::i18n::t("accounts-password-short")),
                     ),
                 ));
             }

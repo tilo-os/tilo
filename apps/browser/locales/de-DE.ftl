@@ -328,3 +328,7 @@ browser-filters-updated = Filterlisten aktualisiert
 browser-filters-cached = Gespeicherte Filterlisten werden verwendet
 browser-filters-failed = Aktualisierung fehlgeschlagen: { $detail }. Die bisherigen Regeln bleiben erhalten.
 browser-filters-failed-worker = Aktualisierung fehlgeschlagen: Hilfsprozess nicht verfügbar. Die bisherigen Regeln bleiben erhalten.
+browser-address-suggestions = Adressvorschläge
+browser-window-name = Browser
+browser-window-name = Browser
+browser-page-menu-name = Seitenmenü

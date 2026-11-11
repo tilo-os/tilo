@@ -2812,3 +2812,4 @@ settings-billing-invoice-paid = Paid
 settings-billing-invoice-open = Due
 settings-billing-invoice-past-due = Past due
 settings-billing-invoice-void = Void
+settings-paste-code = Paste the code

@@ -54,3 +54,4 @@ terminal-record-run = { $command } ausgeführt
 terminal-remember = { $command } gemerkt
 terminal-used = Die zuletzt von diesem Gerät geöffnete Umgebung gemerkt
 terminal-recent-environments-devices = Die zuletzt von jedem Gerät geöffnete Umgebung gemerkt
+terminal-link-in-output = Link in der sichtbaren Terminalausgabe

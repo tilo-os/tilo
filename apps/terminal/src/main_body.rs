@@ -1277,7 +1277,7 @@ impl TerminalWidget {
                 self.links.get(&link_id).map(|url| {
                     AccessNode::new(Role::Link)
                         .with_name(link_resource_label(url))
-                        .with_description("Link in visible terminal output")
+                        .with_description(crate::i18n::t("terminal-link-in-output"))
                         .with_semantic_key(self.terminal_link_resource_id(link_id))
                         .with_action_target(self.terminal_link_resource_id(link_id))
                         .with_state(AccessState::new().focusable(true))

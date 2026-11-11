@@ -1079,7 +1079,10 @@ fn reactions(c: &Channel, message: &Message, key: &str) -> Node {
 /// bound to, so a press and an agent's step take the one path to the record.
 fn composer(c: &Channel, cx: &ViewCx) -> Node {
     let field: Node = ui::TextInputBuilder::new(&cx.key("draft"))
-        .placeholder(format!("Message #{}", c.name))
+        .placeholder(crate::i18n::t_args(
+            "chat-channel-composer-placeholder",
+            &[("channel", c.name.as_str().into())],
+        ))
         .lines(1_i64)
         .entry(true)
         .into();

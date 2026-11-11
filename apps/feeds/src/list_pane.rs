@@ -121,7 +121,7 @@ impl Default for ListState {
             reveal: true,
             content: 0.0,
             rows: Vec::new(),
-            progress: ProgressBar::new(0.0).with_label("Refreshing feeds"),
+            progress: ProgressBar::new(0.0).with_label(crate::i18n::t("feeds-refreshing")),
             shown_drawing: None,
             shown_presented: None,
         }

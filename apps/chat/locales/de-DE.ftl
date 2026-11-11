@@ -415,3 +415,4 @@ chat-attach-share = Datei teilen
 chat-send-empty = Schreib eine Nachricht oder häng etwas an.
 chat-send-needs-recipient = Wähle, an wen die Nachricht geht.
 chat-send-one-conversation = Ein Gespräch steht für sich: wähle es, oder die Personen, an die es geht.
+chat-channel-composer-placeholder = Nachricht an #{ $channel }

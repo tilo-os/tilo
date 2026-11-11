@@ -50,7 +50,7 @@ impl Core {
     /// that 24 readings exist behind a picture it cannot enter.
     pub fn detail_accessibility(&self, rect: Rect) -> AccessNode {
         let node = AccessNode::new(Role::Group)
-            .with_name("Forecast")
+            .with_name(crate::i18n::t("weather-forecast"))
             .with_bounds(rect);
         let Some(location) = self.model.selected_location() else {
             return node.with_description(if self.model.locations.is_empty() {
@@ -94,7 +94,7 @@ impl Core {
             children.push(
                 AccessNode::new(Role::Button)
                     .with_name(RETRY)
-                    .with_description("Fetch the forecast again")
+                    .with_description(crate::i18n::t("weather-refresh"))
                     .with_hashed_key(RETRY_KEY)
                     .with_bounds(hit),
             );

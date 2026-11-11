@@ -2812,3 +2812,4 @@ settings-billing-invoice-paid = Bezahlt
 settings-billing-invoice-open = Fällig
 settings-billing-invoice-past-due = Überfällig
 settings-billing-invoice-void = Storniert
+settings-paste-code = Code einfügen

@@ -54,3 +54,4 @@ terminal-record-run = Ran { $command }
 terminal-remember = Remembered { $command }
 terminal-used = Remembered the environment this device opened last
 terminal-recent-environments-devices = Remembered the environment each device opened last
+terminal-link-in-output = Link in visible terminal output

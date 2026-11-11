@@ -17,7 +17,7 @@ const KIND_FACET: &str = "kind";
 pub(super) fn kind_facets(groups: &[KindGroup<Hit>]) -> Vec<ui::search::Facet> {
     let mut facet = ui::search::Facet::new(KIND_FACET, "Kind");
     for group in groups {
-        facet = facet.value(group.kind.id(), group.kind.label());
+        facet = facet.value(group.kind.id(), &group.kind.display_label());
     }
     vec![facet]
 }
@@ -65,7 +65,7 @@ pub(super) fn entries_for(
     rows.clear();
     let mut entries = Vec::new();
     for group in groups {
-        let label = group.kind.label().to_owned();
+        let label = group.kind.display_label();
         let capped = group.is_capped();
         let applications = browsing && !catalogue && group.kind == ResourceKind::Application;
         for hit in &group.results {

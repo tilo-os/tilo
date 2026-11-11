@@ -525,6 +525,8 @@ pub struct BrowserWidget {
     /// The reader view a running page operation asked for.
     reader_request: Option<bool>,
     title: String,
+    /// What the window is called when no page names it, in the desktop's language.
+    window_name: String,
     favicon: Option<vello::peniko::ImageData>,
     /// The favicon as the engine sent it, for the window's bar
     /// (`ui::window_toolbar::ToolbarImage`).
@@ -1500,6 +1502,7 @@ impl BrowserWidget {
             reader_view: false,
             reader_request: None,
             title: String::new(),
+            window_name: crate::resource::CATALOG.t("browser-window-name"),
             favicon: None,
             favicon_png: None,
             bar_query: None,
@@ -5091,7 +5094,7 @@ impl Widget for BrowserWidget {
                 .collect();
             return (!nodes.is_empty()).then(|| {
                 AccessNode::new(Role::Group)
-                    .with_name("Browser")
+                    .with_name(crate::resource::CATALOG.t("browser-window-name"))
                     .with_children(nodes)
             });
         }
@@ -5795,7 +5798,7 @@ impl BrowserWidget {
         let mut browser = ResourceSpec::new(
             crate::resource::Browser::KIND,
             crate::resource::Browser::KIND,
-            "Browser",
+            crate::resource::CATALOG.t("browser-window-name"),
         );
         browser.actions = E::specs();
         browser.children = vec![
@@ -6312,7 +6315,7 @@ impl AppWidget for BrowserWidget {
     }
     fn app_title(&self) -> &str {
         if self.title.is_empty() {
-            "Browser"
+            &self.window_name
         } else {
             &self.title
         }

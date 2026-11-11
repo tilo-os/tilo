@@ -663,7 +663,7 @@ impl ui::widget::Decorator for WeatherApp {
     fn accessibility(&self) -> Option<AccessNode> {
         let core = self.core.borrow();
         let mut root = AccessNode::new(Role::Window)
-            .with_name("Weather")
+            .with_name(crate::i18n::t("weather-window-name"))
             .with_bounds(self.nav.get_rect());
         if !core.status.is_empty() {
             root.children.push(
@@ -1157,7 +1157,10 @@ mod interaction_tests {
             h.app.core.borrow_mut().status = "Forecast updated".into();
             let tree = h.app.accessibility().expect("weather exports a window");
             assert_eq!(tree.role, Role::Window);
-            assert_eq!(tree.name.as_deref(), Some("Weather"));
+            assert_eq!(
+                tree.name.as_deref(),
+                Some(crate::i18n::t("weather-window-name").as_str())
+            );
             assert!(tree.children.iter().any(|node| {
                 node.name.as_deref() == Some("Forecast updated")
                     && node.live == Some(Politeness::Polite)

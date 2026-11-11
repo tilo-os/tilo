@@ -44,6 +44,12 @@ Catalogues that still carry old copy list it, per message and rule, in
 replaced by `-`). A shard only shrinks: a listed message that no longer breaks
 its rule fails the check until the line is deleted, and a new message that
 breaks a rule fails outright.
+
+A crate that ships a translation paints what a person reads through its
+catalogue: an English literal handed to a copy builder there ships the source
+language inside a translated window, so it fails unless
+`copy_source_literals.toml` says why no catalogue has to carry it (what an
+agent is told a tool does, a key's name, a capture label).
 """
 
 from __future__ import annotations
@@ -62,6 +68,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 GLOSSARY = HERE / "copy_glossary.toml"
 SAVE_EXCEPTIONS = HERE / "copy_save_exceptions.toml"
+SOURCE_LITERALS = HERE / "copy_source_literals.toml"
 BASELINE = HERE / "copy_language_baseline"
 
 SOURCE_LOCALE = "en-US"
@@ -409,6 +416,103 @@ def routine_save_literals(root: Path) -> list[tuple[str, int, str]]:
     return found
 
 
+COPY_BUILDERS = (
+    "Notification::new(",
+    ".with_name(",
+    ".with_label(",
+    ".with_tooltip(",
+    ".with_description(",
+    ".with_title(",
+    ".with_body(",
+    ".with_placeholder(",
+    ".with_hint(",
+    ".with_subtitle(",
+    "push_error_notification(",
+    "push_notification(",
+    ".draw_text(",
+    ".draw_text_weighted(",
+    "draw_task_button(",
+    "draw_more_row(",
+    ".set_placeholder(",
+    ".set_title(",
+    ".set_text(",
+    ".set_label(",
+    ".set_body(",
+)
+
+
+def english_words(value: str) -> bool:
+    """A literal that reads as English words rather than an id or a key."""
+    letters = [character for character in value]
+    has_word = any(
+        letters[index].isalpha() and letters[index + 1].isalpha()
+        for index in range(len(letters) - 1)
+    )
+    if not has_word:
+        return False
+    spaced = any(
+        letters[index].isalpha()
+        and letters[index + 1].isalpha()
+        and letters[index + 2] == " "
+        and letters[index + 3].isalpha()
+        for index in range(len(letters) - 3)
+    )
+    capitalised = len(letters) > 1 and letters[0].isupper() and letters[1].islower()
+    return spaced or capitalised
+
+
+def translated_units(root: Path) -> list[str]:
+    """The crates that ship a language beyond their source catalogue."""
+    units = set()
+    for catalogue in catalogues(root):
+        if catalogue.stem != SOURCE_LOCALE:
+            units.add(catalogue.parents[1].relative_to(root).as_posix())
+    return sorted(units)
+
+
+def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
+    """(file, line, text) of each English literal handed to a copy builder by a
+    crate that ships translations, in production code."""
+    from check_app_copy import first_argument
+
+    units = translated_units(root)
+    found = []
+    for path in rust_sources(root):
+        unit = path.relative_to(root).as_posix()
+        if not any(unit.startswith(f"{crate}/") for crate in units):
+            continue
+        text = path.read_text(errors="replace")
+        if not any(builder in text for builder in COPY_BUILDERS):
+            continue
+        code, literals = rust_source.lex(text)
+        marked = list(code)
+        for literal in literals:
+            for index in range(literal.start, literal.end):
+                if marked[index] != "\n":
+                    marked[index] = "x"
+        kept = rust_source.blank_test_items("".join(marked))
+        starts = {literal.start: literal for literal in literals if not literal.byte}
+        for builder in COPY_BUILDERS:
+            start = code.find(builder)
+            while start >= 0:
+                begin, _ = first_argument(code, start + len(builder))
+                if begin < len(code) and code[begin] == "&":
+                    begin += 1
+                # Lexed literals read as spaces, so skip whitespace only up to
+                # the literal it hides.
+                while begin < len(code) and begin not in starts and code[begin].isspace():
+                    begin += 1
+                literal = starts.get(begin)
+                if literal is not None and kept[begin] == "x" and english_words(literal.value):
+                    found.append((
+                        path.relative_to(root).as_posix(),
+                        rust_source.line_number(text, begin),
+                        literal.value,
+                    ))
+                start = code.find(builder, start + len(builder))
+    return sorted(set(found))
+
+
 def catalogues(root: Path) -> list[Path]:
     return sorted(path for path in root.rglob("locales/*.ftl")
                   if "target" not in path.relative_to(root).parts
@@ -454,10 +558,13 @@ def named(root: Path, path: Path) -> str:
 
 
 def check(root: Path, glossary_path: Path, baseline_dir: Path,
-          save_exceptions_path: Path | None = None) -> list[str]:
+          save_exceptions_path: Path | None = None,
+          source_literals_path: Path | None = None) -> list[str]:
     glossary = load_glossary(glossary_path)
     baseline = load_baseline(baseline_dir)
     exceptions = load_save_exceptions(save_exceptions_path) if save_exceptions_path else set()
+    literals = (load_save_exceptions(source_literals_path)
+                if source_literals_path else set())
     used: set[SaveException] = set()
     errors = []
     found = scan(root, glossary)
@@ -485,6 +592,19 @@ def check(root: Path, glossary_path: Path, baseline_dir: Path,
             continue
         errors.append(f"{file}:{line}: \"{text}\" announces routine saving; saving says "
                       "nothing unless it stalls or fails (ui::SaveStatusSurface) [save-status]")
+    used_literals: set[SaveException] = set()
+    for file, line, text in source_copy_literals(root):
+        exception = SaveException(None, None, file, text)
+        if exception in literals:
+            used_literals.add(exception)
+            continue
+        errors.append(f"{file}:{line}: \"{text}\" is painted as-is; a window that ships a "
+                      "translation resolves its copy through the crate's catalogue "
+                      "[uncatalogued]")
+    name_literals = named(root, source_literals_path) if source_literals_path else "source copy"
+    for exception in sorted(literals - used_literals, key=repr):
+        errors.append(f"{name_literals}: {exception.file}: \"{exception.text}\" no longer "
+                      "matches anything; delete it")
     name = named(root, save_exceptions_path) if save_exceptions_path else "save exceptions"
     for exception in sorted(exceptions - used, key=repr):
         errors.append(f"{name}: {exception} no longer matches anything; delete it")
@@ -498,7 +618,7 @@ def main(argv: list[str]) -> int:
             for locale, message, rule, _, _ in entries:
                 print(unit, locale, message.key.split(".")[0], rule)
         return 0
-    errors = check(ROOT, GLOSSARY, BASELINE, SAVE_EXCEPTIONS)
+    errors = check(ROOT, GLOSSARY, BASELINE, SAVE_EXCEPTIONS, SOURCE_LITERALS)
     if errors:
         print("\n".join(errors))
         return 1

@@ -678,7 +678,7 @@ impl ActionPalette {
             field: field_source
                 .build()
                 .control_size(FIELD_SIZE)
-                .with_placeholder("Search actions and results"),
+                .with_placeholder(&crate::i18n::widget_format("action-palette-query", &[])),
             results: SearchResultsView::new()
                 .with_empty_text("No matches")
                 .with_test_id("action-palette-results"),
@@ -1159,7 +1159,7 @@ impl ActionPalette {
             .field_source
             .build()
             .control_size(FIELD_SIZE)
-            .with_placeholder("Search actions and results");
+            .with_placeholder(&crate::i18n::widget_format("action-palette-query", &[]));
         field.set_scope_token(self.scope.as_ref().map(scope_token_label));
         field
     }

@@ -734,7 +734,10 @@ impl Widget for BrowserWindow {
     }
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
-        Some(AccessNode::new(Role::Group).with_name("Browser"))
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(crate::resource::CATALOG.t("browser-window-name")),
+        )
     }
     fn take_structure_dirty(&mut self) -> bool {
         let dirty = std::mem::take(&mut self.dirty);

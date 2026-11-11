@@ -1,0 +1,69 @@
+# Copy a builder is handed that no catalogue has to say
+# (check_copy_language.py, rule `uncatalogued`).
+#
+# A crate that ships a translation resolves everything a person reads through
+# its catalogue, so a German window never mixes the two languages. Three kinds
+# of text are exempt, each saying why here:
+#
+# * what an agent is told a tool does — the agent reads English, the person
+#   never sees it;
+# * a key's name as the keyboard prints it, spelled the same in every
+#   language;
+# * a label a performance harness paints, which no one reads.
+#
+# An entry that no longer matches anything fails the check.
+
+[[allow]]
+file = "crates/sdk/tilo-app/src/framework/root/facts.rs"
+text = "What this holds as a compact summary of plain values (names, times, counts, text), to check it against a request or compare two versions. With version, the facts as of that version."
+reason = "What the facts tool answers an agent, never shown in a window."
+
+[[allow]]
+file = "crates/sdk/tilo-app/src/framework/root.rs"
+text = "Open the app at one item: the anchor of a search hit."
+reason = "What the open tool does, told to an agent."
+
+[[allow]]
+file = "crates/sdk/tilo-app/src/framework/root.rs"
+text = "Show this item."
+reason = "What the show tool does, told to an agent."
+
+[[allow]]
+file = "crates/sdk/tilo-app/src/runner/presentation.rs"
+text = "See the app's window as a picture: answers with the image and the revision of the document it shows. With an anchor, shows that item first."
+reason = "What the screenshot tool answers an agent."
+
+[[allow]]
+file = "crates/session/desktop-surface/src/window.rs"
+text = "See a window this desktop does not run as it shows now: answers with the picture, \\\n         kept as content of the workspace the window stands in."
+reason = "What the window-picture tool answers an agent."
+
+[[allow]]
+file = "crates/session/desktop-surface/src/window.rs"
+text = "What a window this desktop does not run says of itself: its title and the app it \\\n         belongs to."
+reason = "What the window-description tool answers an agent."
+
+[[allow]]
+file = "apps/word-processor/src/semantic_read/action.rs"
+text = "The document as Markdown, one block per line ending in its {#block id}; **bold**, *italic*, ~~struck~~, `code` and [links](url) show inline, their delimiters not counted in character offsets; tables are Markdown tables tagged {#table id}, each cell ending in its {#block id}. Pages of up to 64 blocks: pass nextCursor for the next"
+reason = "How the Markdown an agent reads is shaped; a description of a tool's answer."
+
+[[allow]]
+file = "apps/video-player/src/app.rs"
+text = "Escape"
+reason = "A key's name, as the keyboard prints it."
+
+[[allow]]
+file = "apps/video-player/src/app.rs"
+text = "Ctrl+O"
+reason = "A key's name, as the keyboard prints it."
+
+[[allow]]
+file = "apps/git-client/src/app.rs"
+text = "Flush the blur pass before presenting"
+reason = "A capture label a frame-timing harness paints."
+
+[[allow]]
+file = "crates/sdk/ui-core/src/widget/replaced_tripwire.rs"
+text = "Tripwire"
+reason = "A sample label in the widget that trips on a replaced widget."

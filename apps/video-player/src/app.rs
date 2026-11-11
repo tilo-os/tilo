@@ -1187,7 +1187,7 @@ impl PlayerState {
             if self.library_back_rect.width() > 0.0 {
                 children.push(
                     AccessNode::new(Role::Button)
-                        .with_name("Back to video")
+                        .with_name(crate::i18n::t("video-back-to-video"))
                         .with_description("Escape")
                         .with_action_target("video-player.library.back")
                         .with_bounds(self.library_back_rect)
@@ -1200,7 +1200,7 @@ impl PlayerState {
             }
             children.extend([
                 AccessNode::new(Role::Tab)
-                    .with_name("Queue")
+                    .with_name(crate::i18n::t("video-queue"))
                     .with_action_target("video-player.library.tab.queue")
                     .with_bounds(self.library_queue_tab_rect)
                     .with_state(AccessState {
@@ -1210,7 +1210,7 @@ impl PlayerState {
                         ..Default::default()
                     }),
                 AccessNode::new(Role::Tab)
-                    .with_name("Recent")
+                    .with_name(crate::i18n::t("video-recent"))
                     .with_action_target("video-player.library.tab.recent")
                     .with_bounds(self.library_recent_tab_rect)
                     .with_state(AccessState {
@@ -1220,7 +1220,7 @@ impl PlayerState {
                         ..Default::default()
                     }),
                 AccessNode::new(Role::Tab)
-                    .with_name("Shared")
+                    .with_name(crate::i18n::t("video-shared"))
                     .with_action_target("video-player.library.tab.shared")
                     .with_bounds(self.library_shared_tab_rect)
                     .with_state(AccessState {
@@ -1242,7 +1242,7 @@ impl PlayerState {
                     .with_action_target("video-player.formats")
             } else {
                 AccessNode::new(Role::Button)
-                    .with_name("Open video")
+                    .with_name(crate::i18n::t("video-open-video"))
                     .with_description("Ctrl+O")
                     .with_action_target("video-player.open")
             };

@@ -587,7 +587,7 @@ pub(super) fn shared_accessibility_nodes(app: &PlayerState) -> Vec<ui::a11y::Acc
     use ui::a11y::{AccessNode, AccessState, Role};
     let mut nodes = vec![
         AccessNode::new(Role::Button)
-            .with_name("Add current video to Watch later")
+            .with_name(crate::i18n::t("video-add-to-watch-later"))
             .with_action_target("video-player.shared.watch-later")
             .with_bounds(app.shared_watch_later_rect)
             .with_state(AccessState {
@@ -597,7 +597,7 @@ pub(super) fn shared_accessibility_nodes(app: &PlayerState) -> Vec<ui::a11y::Acc
                 ..Default::default()
             }),
         AccessNode::new(Role::Button)
-            .with_name("Bookmark current timestamp")
+            .with_name(crate::i18n::t("video-bookmark-timestamp"))
             .with_action_target("video-player.shared.bookmark")
             .with_bounds(app.shared_bookmark_rect)
             .with_state(AccessState {
@@ -647,7 +647,7 @@ pub(super) fn local_library_accessibility_nodes(app: &PlayerState) -> Vec<ui::a1
                 .map_or("Local video", |entry| entry.title.as_str());
             AccessNode::new(Role::Button)
                 .with_name(format!("Play {title}"))
-                .with_description("Opens this device-local video")
+                .with_description(crate::i18n::t("video-local-only-detail"))
                 .with_action_target(format!("video-player.library.play.{id}"))
                 .with_bounds(row.play)
                 .with_state(AccessState {
@@ -660,8 +660,8 @@ pub(super) fn local_library_accessibility_nodes(app: &PlayerState) -> Vec<ui::a1
     if app.library_tab == LibraryTab::Recent && !app.recent.is_empty() {
         nodes.push(
             AccessNode::new(Role::Button)
-                .with_name("Clear recent videos")
-                .with_description("Removes recent-history entries from this device")
+                .with_name(crate::i18n::t("video-clear-recent"))
+                .with_description(crate::i18n::t("video-clear-recent-detail"))
                 .with_action_target("video-player.library.clear")
                 .with_bounds(app.library_clear_rect)
                 .with_state(AccessState {
@@ -674,8 +674,8 @@ pub(super) fn local_library_accessibility_nodes(app: &PlayerState) -> Vec<ui::a1
     nodes.extend(app.library_row_hits.iter().filter_map(|row| {
         row.remove.map(|remove| {
             AccessNode::new(Role::Button)
-                .with_name("Remove from queue")
-                .with_description("Removes this item from the session-only queue")
+                .with_name(crate::i18n::t("video-remove-from-queue"))
+                .with_description(crate::i18n::t("video-remove-from-queue-detail"))
                 .with_action_target(format!("video-player.library.remove.{}", row.id))
                 .with_bounds(remove)
                 .with_state(AccessState {

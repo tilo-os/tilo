@@ -197,3 +197,4 @@ notes-status-counts = { $notes ->
 notes-outline = Outline
 notes-outline-empty = No headings
 notes-outline-untitled = Untitled heading
+notes-window-name = Notes

@@ -2785,7 +2785,7 @@ impl InstallerApp {
         children.push(Box::new(
             Dropdown::from_state(layouts::display_names(), &self.keymap)
                 .with_id("installer.keymap")
-                .with_placeholder("Select a keyboard layout"),
+                .with_placeholder(crate::setup::strings::t("installer-keyboard-layout")),
         ));
         children.push(Box::new(KeyboardView::new(&self.keymap)));
         actions.push(self.nav_row(Step::Keyboard, self.next_control(), "Next", false));
@@ -2869,7 +2869,7 @@ impl InstallerApp {
                 )
                 .with_id("installer.locale")
                 .with_accessible_name("Language & locale")
-                .with_placeholder("Choose a language and locale"),
+                .with_placeholder(crate::setup::strings::t("installer-language-locale")),
             ));
             children.push(Box::new(
                 Text::new("This controls language, formatting, and regional conventions after installation.")
@@ -2883,7 +2883,7 @@ impl InstallerApp {
             children.push(Box::new(
                 Dropdown::from_state(self.timezones.clone(), &self.timezone)
                     .with_id("installer.timezone")
-                    .with_placeholder("Select a time zone")
+                    .with_placeholder(crate::setup::strings::t("installer-time-zone"))
                     .open_if(self.tz_open_for_shot),
             ));
             children.push(Box::new(

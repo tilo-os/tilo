@@ -774,6 +774,23 @@ display-arrangement-caption-status = { $status } · { $name }
 # Search: the row that lists the rest of a group the palette cut short
 search-show-all = Show all { $count }
 search-no-matches = No matches
+# What a group header and its kind chip say the results are
+search-kind-actions = Actions
+search-kind-apps = Apps
+search-kind-notes = Notes
+search-kind-records = Records
+search-kind-files = Files
+search-kind-folders = Folders
+search-kind-creators = Creators
+search-kind-videos = Videos
+search-kind-playlists = Playlists
+search-kind-tabs = Tabs
+search-kind-window-groups = Window groups
+window-root-name = Tilo application window
+action-palette-query = Search actions and results
+search-field-filter = Filter
+search-field-placeholder = Search
+presentation-window-title = Audience presentation
 
 approved-check-reports-disabled = Phase reports unavailable
 

@@ -386,8 +386,8 @@ impl DailyControls {
                 TextInput::from_state(&self.query)
                     .with_id(FIND_INPUT)
                     .with_kind(ui::widget::TextInputKind::Search)
-                    .with_accessible_name("Find in page")
-                    .with_placeholder("Find in page"),
+                    .with_accessible_name(crate::resource::CATALOG.t("browser-menu-find"))
+                    .with_placeholder(crate::resource::CATALOG.t("browser-menu-find")),
             ))
             .push(Box::new(
                 Container::new()

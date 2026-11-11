@@ -1090,7 +1090,7 @@ impl GitClientState {
             })
             .collect();
         ui::a11y::AccessNode::new(ui::a11y::Role::Group)
-            .with_name("Git")
+            .with_name(crate::i18n::t("git-window-name"))
             .with_description(if let Some(job) = &self.remote_job {
                 job.label.clone()
             } else if self.awaiting_repo {

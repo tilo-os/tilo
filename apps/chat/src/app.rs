@@ -1302,7 +1302,10 @@ impl ChatApp {
     pub(crate) fn conversation_placeholder(&self, channel: &str) -> String {
         match self.channel(channel) {
             Some(row) if row.direct => crate::i18n::t("chat-person-chat-placeholder"),
-            Some(row) => format!("Message #{}", row.name),
+            Some(row) => crate::i18n::t_args(
+                "chat-channel-composer-placeholder",
+                &[("channel", row.name.as_str().into())],
+            ),
             None => String::new(),
         }
     }

@@ -351,3 +351,4 @@ store-remotes-configured = Eingerichtete Quellen
 
 # The installed list, with what the apps on it take on this device in all.
 store-installed-total = { $count } installiert, { $size } insgesamt
+store-window-name = App Store

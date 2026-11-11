@@ -254,7 +254,7 @@ impl Core {
             side_by_side: false,
             search: Autocomplete::new()
                 .with_id("weather.city_search")
-                .with_placeholder("City name"),
+                .with_placeholder(&crate::i18n::t("weather-city-name")),
             search_field_rect: Rect::ZERO,
             add_panel: Rect::ZERO,
             search_query: String::new(),
@@ -1051,11 +1051,9 @@ impl Core {
             })
             .collect();
         let places = AccessNode::new(Role::List)
-            .with_name("Saved places")
+            .with_name(crate::i18n::t("weather-saved-places"))
             .with_hashed_key("weather.places")
-            .with_description(
-                "Use Up and Down Arrow to change place, and Enter to open its forecast.",
-            )
+            .with_description(crate::i18n::t("weather-places-hint"))
             .with_bounds(rect)
             .with_children(items);
         let mut children = Vec::new();
@@ -1066,7 +1064,7 @@ impl Core {
         }
         children.push(places);
         AccessNode::new(Role::Group)
-            .with_name("Places")
+            .with_name(crate::i18n::t("weather-places"))
             .with_bounds(rect)
             .with_children(children)
             .with_keyed_action_routes("weather-overview")

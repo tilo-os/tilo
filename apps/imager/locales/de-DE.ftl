@@ -1428,3 +1428,6 @@ installer-hardware-evidence-firmware = Firmware { $firmware }
 installer-hardware-unavailable = Dieser Computer sagt zu wenig über sein Modell aus, um den Kompatibilitätsbericht zu erstellen; deshalb wurde nichts an ihm geprüft.
 installer-hardware-blocks-install = Eine Komponente, ohne die der Schreibtisch nicht startet, wird auf diesem Computer nicht unterstützt; deshalb endet die Installation an diesem Schritt. Es wurde nichts geändert.
 destination-windows-password = Passwort zur Vorbereitung dieses Mediums
+installer-keyboard-layout = Tastaturbelegung wählen
+installer-language-locale = Sprache und Region wählen
+installer-time-zone = Zeitzone wählen

@@ -767,6 +767,23 @@ display-arrangement-caption-status = { $status } · { $name }
 # Suche: die Zeile, die den Rest einer gekürzten Gruppe zeigt
 search-show-all = Alle { $count } zeigen
 search-no-matches = Keine Treffer
+# Was eine Gruppenüberschrift und ihr Chip über die Ergebnisse sagen
+search-kind-actions = Aktionen
+search-kind-apps = Apps
+search-kind-notes = Notizen
+search-kind-records = Datensätze
+search-kind-files = Dateien
+search-kind-folders = Ordner
+search-kind-creators = Creator
+search-kind-videos = Videos
+search-kind-playlists = Wiedergabelisten
+search-kind-tabs = Tabs
+search-kind-window-groups = Fenstergruppen
+window-root-name = Tilo-Anwendungsfenster
+action-palette-query = Aktionen und Ergebnisse durchsuchen
+search-field-filter = Filtern
+search-field-placeholder = Suchen
+presentation-window-title = Präsentationsfenster
 approved-check-reports-disabled = Phasenmeldungen nicht verfügbar
 
 author-bot-chip = Bot
