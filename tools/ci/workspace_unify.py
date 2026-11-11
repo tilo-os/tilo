@@ -17,7 +17,8 @@ selection then resolves as in the family's whole build. Its one target needs a f
 enables, so it adds no unit: it only takes part in resolving features.
 
   workspace_unify.py --write   regenerate this architecture's tables
-  workspace_unify.py --check   fail if they are not what --write would write
+  workspace_unify.py --check   fail if they are not what --write would write, or if another
+                               architecture's table names a version Cargo.lock no longer resolves
 """
 from __future__ import annotations
 
@@ -182,28 +183,36 @@ def lines(packages: dict, members: set[str], root: Path, features_of) -> dict[st
             where = f'version = "^{package["version"]}"'
         else:
             raise SystemExit(f"{name} {package['version']} comes from {source}, which workspace_unify.py can't name")
-        key = re.sub(r"[^A-Za-z0-9_-]", "_", key)
+        key = mangled(key)
         rename = "" if key == name else f'package = "{name}", '
         result[key] = f'{json.dumps(key)} = {{ {rename}{where}, default-features = false, features = [{listed}] }}\n'
     return result
 
 
-# A dependency line's source expression: the path of a workspace member or patched crate, or the
-# version of one from the registry.
-SOURCE = re.compile(r'(?:path = "[^"]*"|version = "[^"]*")')
+# A dependency line's package, which it names when its key is not the package's name; the version
+# it asks for, which a line naming a path does not; and its feature list, which only the
+# architecture that resolved the line can compute.
+PACKAGE = re.compile(r'package = "([^"]+)"')
+VERSION = re.compile(r'version = "\^([^"]+)"')
+FEATURES = re.compile(r'(features = )(\[[^\]\n]*\])')
 
 
-def source_of(line: str) -> str:
-    """The source expression of a dependency line."""
-    found = SOURCE.search(line)
-    if found is None:
-        raise SystemExit(f"no source in {line!r}")
-    return found.group(0)
+def mangled(key: str) -> str:
+    """A dependency line's key: a package's name, or its name and the version it resolves."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", key)
 
 
-def with_source(line: str, source: str) -> str:
-    """`line`, naming `source` instead of the source it names."""
-    return SOURCE.sub(lambda _: source, line, count=1)
+def with_features(line: str, features: str) -> str:
+    """`line`, enabling `features` instead of its own: another architecture's, which this machine
+    does not resolve."""
+    return FEATURES.sub(lambda match: match.group(1) + features, line, count=1)
+
+
+def retargeted(line: str, name: str, version: str) -> str:
+    """`line`, naming `name` at `version`: one lock resolves one version of a package for every
+    architecture, so a line a version moved past takes that version without a machine of its own."""
+    renamed = re.sub(r'^"[^"]+"', lambda _: json.dumps(mangled(f"{name}-{version}")), line, count=1)
+    return VERSION.sub(lambda _: f'version = "^{version}"', renamed, count=1)
 
 
 def header(arch: str, kind: str) -> str:
@@ -223,20 +232,46 @@ def sections(text: str) -> dict[str, str]:
     return out
 
 
-def still_there(root: Path) -> dict[str, set[str]]:
-    """For each other architecture, the keys of the dependency lines its tables may still have:
-    the libraries its build could still reach in the workspace at `root` (`cargo metadata
-    --filter-platform`). A line for a package the workspace no longer has keeps cargo from loading
-    the workspace at all, on every architecture."""
-    out = {}
-    for arch, target in TARGETS.items():
-        if arch == ARCH:
+def lock_versions(root: Path) -> dict[str, set[str]]:
+    """Every version the workspace's Cargo.lock at `root` resolves, by package name. One lock
+    serves every architecture, so this is the same on each: a line names a version the workspace
+    no longer resolves whichever machine reads it."""
+    lock = tomllib.loads((root / "Cargo.lock").read_text())
+    versions: dict[str, set[str]] = {}
+    for package in lock["package"]:
+        versions.setdefault(package["name"], set()).add(package["version"])
+    return versions
+
+
+def named(line: str) -> tuple[str, str | None]:
+    """The package a dependency line names, and the version it asks for (`None` when it names a
+    path, which is the workspace's whichever architecture builds it)."""
+    key = json.loads(line.split(" = ", 1)[0])
+    package = PACKAGE.search(line)
+    version = VERSION.search(line)
+    return (package.group(1) if package else key), (version.group(1) if version else None)
+
+
+def stale(root: Path, text: str) -> list[tuple[str, str]]:
+    """Each table of `text` for an architecture this machine does not resolve that names a package
+    or version the workspace at `root` no longer has, and what it names: (architecture, problem).
+    Only a write resolves such a table again, so `--check` fails here rather than compare a table
+    this machine rewrote against the one it kept. Cargo.lock is one for every architecture, so this
+    is the same check everywhere and needs no cargo run."""
+    have = lock_versions(root)
+    headers = {header(arch, kind): arch for arch in TARGETS for kind in ("dependencies", "build-dependencies")}
+    out = []
+    for section, body in sections(text).items():
+        arch = headers.get(section)
+        if arch is None or arch == ARCH:
             continue
-        meta = json.loads(subprocess.run(
-            ["cargo", "metadata", "--offline", "--format-version", "1", "--filter-platform", target],
-            cwd=root, check=True, capture_output=True, text=True).stdout)
-        packages = {p["id"]: p for p in meta["packages"]}
-        out[arch] = set(lines(packages, set(meta["workspace_members"]), root, lambda *_: ()))
+        for line in body.splitlines(keepends=True):
+            name, version = named(line)
+            if name not in have:
+                out.append((arch, f"names {name}, which the workspace no longer has"))
+            elif version is not None and version not in have[name]:
+                out.append((arch, f"names {name} {version}, which Cargo.lock no longer resolves "
+                                  f"({', '.join(sorted(have[name]))})"))
     return out
 
 
@@ -257,11 +292,11 @@ def manifest(root: Path, current: str) -> str:
     """The manifest --write writes on this machine's architecture: `current`'s, with this
     architecture's tables resolved again in the workspace at `root`, workspace-unify depending
     there only on what tools/ci/package_features.py names (`seeded`), so that what it enabled
-    before never counts as resolved. The other
-    architecture's tables keep theirs, but for the source of each package, which is the
-    workspace's whichever target builds it: each architecture is resolved on a machine of its own,
-    as cargo resolves a build with no `--target`, as the cargo families run it. Leaves `root` as
-    it found it."""
+    before never counts as resolved. The other architecture's tables keep the features that
+    architecture resolved, which only its own machine can compute; what a package is, its path or
+    version, is the workspace's whichever architecture builds it, so their lines take this
+    architecture's and a version the lock moved is written for both rather than dropped. Leaves
+    `root` as it found it."""
     anchor = root / DIR.relative_to(ROOT) / "Cargo.toml"
     before = anchor.read_text() if anchor.exists() else None
     lock = (root / "Cargo.lock").read_text()
@@ -270,7 +305,6 @@ def manifest(root: Path, current: str) -> str:
     try:
         anchor.write_text(seeded(root.resolve()))
         built, host = resolved(root.resolve(), TARGETS[ARCH])
-        kept = still_there(root.resolve())
     finally:
         if before is not None:
             anchor.write_text(before)
@@ -278,20 +312,34 @@ def manifest(root: Path, current: str) -> str:
     # Only the tables it writes: any other is from an older layout of this file.
     known = {header(arch, kind) for arch in TARGETS for kind in ("dependencies", "build-dependencies")}
     tables = {h: body for h, body in sections(current).items() if h in known}
-    # A package has one source in the workspace, whichever target builds it: cargo refuses a
-    # manifest that names it by path for one and from the registry for another. This
-    # architecture's resolution has the current one (a crate the workspace patches by path is that
-    # path there too), so the other architecture's lines take it, keeping the features that
-    # architecture resolved.
-    sources = {key: source_of(line) for key, line in {**built, **host}.items()}
-    # The other architecture's, as resolved there, less what the workspace no longer has.
-    for arch, keys in kept.items():
+    # Cargo refuses a manifest that names a package by path for one architecture and from the
+    # registry for another, or one crate and version under two names, so the other architecture's
+    # lines take this architecture's line for the package and keep their own features. A package
+    # the lock resolves at one version has one line for every architecture; one at several (two
+    # majors, say) resolves apart, and this architecture's version is not the other's to take.
+    versions = lock_versions(root)
+    by_name = {named(line)[0]: line for line in {**built, **host}.values()}
+    for arch in TARGETS:
+        if arch == ARCH:
+            continue
         for kind in ("dependencies", "build-dependencies"):
-            if header(arch, kind) in tables:
-                tables[header(arch, kind)] = "".join(
-                    with_source(line, sources[key]) if key in sources else line
-                    for line in tables[header(arch, kind)].splitlines(keepends=True)
-                    if (key := json.loads(line.split(" = ", 1)[0])) in keys)
+            section = header(arch, kind)
+            if section not in tables:
+                continue
+            kept = []
+            for line in tables[section].splitlines(keepends=True):
+                name, version = named(line)
+                features = FEATURES.search(line)
+                if name not in versions:
+                    # A line for a package the workspace no longer has keeps cargo from loading it.
+                    continue
+                if name in by_name and features and len(versions[name]) == 1:
+                    kept.append(with_features(by_name[name], features.group(2)))
+                elif version is not None and len(versions[name]) == 1 and version not in versions[name]:
+                    kept.append(retargeted(line, name, next(iter(versions[name]))))
+                else:
+                    kept.append(line)
+            tables[section] = "".join(kept)
     tables[header(ARCH, "dependencies")] = "".join(built[k] for k in sorted(built))
     tables[header(ARCH, "build-dependencies")] = "".join(host[k] for k in sorted(host))
     text = HEADER + EMPTY.replace("[features]", 'build = "build.rs"\n\n[features]', 1)
@@ -327,6 +375,17 @@ def main() -> int:
     mode.add_argument("--check", action="store_true")
     args = ap.parse_args()
     have = (DIR / "Cargo.toml").read_text() if (DIR / "Cargo.toml").exists() else ""
+    # A table for an architecture this machine does not resolve that names a version the lock no
+    # longer has: --write here leaves its lines as they are, since only that machine resolves their
+    # features again, so this machine's check fails rather than report a file both agree with.
+    if args.check:
+        problems = stale(ROOT, have)
+        if problems:
+            for arch, problem in problems:
+                print(f"crates/dev/{NAME}'s {arch} table {problem}: run "
+                      f"'python3 tools/ci/workspace_unify.py --write' on {arch} and commit the "
+                      "result.", file=sys.stderr)
+            return 1
     # Resolve in a copy of the tree, never in it: resolving rewrites workspace-unify's manifest,
     # and a run cut short there, or a second run reading it meanwhile, would take the seeded
     # manifest for the current one and lose the other architecture's tables, which only a machine
@@ -357,7 +416,7 @@ def main() -> int:
     if have != want or text("main.rs") != MAIN or text("build.rs") != BUILD:
         with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
             f.write(want)
-        print(f"crates/dev/{NAME} is stale: a member's features changed. Run "
+        print(f"crates/dev/{NAME} is stale: the workspace's features and versions changed. Run "
               f"'python3 tools/ci/workspace_unify.py --write' and commit the result "
               f"(what it would write: {f.name}).", file=sys.stderr)
         subprocess.run(["diff", "-u", str(DIR / "Cargo.toml"), f.name], check=False)
