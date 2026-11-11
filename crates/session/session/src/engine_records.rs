@@ -22,6 +22,7 @@ use ui::record::workspace::WorkspaceRecords;
 use ui::record::{RecordId, RecordOwners, RecordStore, RecordSync};
 
 use crate::engine::{Engine, SealKeys};
+use crate::engine_write::{Writing, Written};
 
 /// The session's copies of the workspaces' records, replicated with the engine. Cloning shares
 /// them.
@@ -38,7 +39,7 @@ struct Inner {
     /// The store of each app's records in each workspace, by workspace and app, as handed out.
     stores: RefCell<BTreeMap<(String, String), RecordStore>>,
     /// Each record's replication with the engine, by workspace, app and wire record.
-    replicas: RefCell<HashMap<(String, String, String), Replica>>,
+    replicas: RefCell<HashMap<RecordKey, Replica>>,
     /// The workspaces whose records moved in the engine, told as each one does.
     moved: RefCell<Option<mpsc::Receiver<String>>>,
     /// The stores, by workspace and app, the session wrote to since their changes were last
@@ -49,10 +50,16 @@ struct Inner {
     unread: RefCell<BTreeSet<(String, String)>>,
     /// Set while the engine's copy of a record is kept in the store: no write of the session's.
     keeping: Cell<bool>,
+    /// The writes under way, by workspace, app and wire record, with the heads each one writes up
+    /// to: a record is written again once its write is done.
+    writing: RefCell<HashMap<RecordKey, (Writing, Vec<automerge::ChangeHash>)>>,
     /// Wakes the session's loop when the session wrote to a record, so the write reaches the
     /// engine on the next pass.
     wake: tilo_service::Wake,
 }
+
+/// A record, by workspace, app and wire record.
+type RecordKey = (String, String, String);
 
 /// One record as the engine and this copy hold it.
 struct Replica {
@@ -87,6 +94,7 @@ impl EngineRecords {
                 written: RefCell::default(),
                 unread: RefCell::default(),
                 keeping: Cell::default(),
+                writing: RefCell::default(),
                 wake,
             }
         }))
@@ -157,7 +165,8 @@ impl EngineRecords {
 }
 
 impl Drop for Inner {
-    /// What the session changed and no pass wrote yet still reaches the workspace.
+    /// What the session changed and no pass wrote yet still reaches the workspace, as far as this
+    /// device's custody signs it at once.
     fn drop(&mut self) {
         self.write(true);
     }
@@ -309,7 +318,9 @@ impl Inner {
         let Some(engine) = self.engine.borrow().clone() else {
             return;
         };
-        let written = std::mem::take(&mut *self.written.borrow_mut());
+        // What a write that is done leaves to write is written on this pass.
+        let mut written = std::mem::take(&mut *self.written.borrow_mut());
+        written.extend(self.settle_writes());
         let mut unwritten = BTreeSet::new();
         let stores: Vec<((String, String), RecordStore)> = self
             .stores
@@ -325,6 +336,11 @@ impl Inner {
             for checkout in store.open_records() {
                 let record = checkout.id.route().to_owned();
                 let key = (workspace.clone(), app.clone(), record.clone());
+                // One write of a record at a time: the next takes what it leaves.
+                if self.writing.borrow().contains_key(&key) {
+                    unwritten.insert((workspace.clone(), app.clone()));
+                    continue;
+                }
                 let mut replicas = self.replicas.borrow_mut();
                 // A record the engine holds is written once its copy was read here: one this copy
                 // never read is founded by this write, never over what the workspace holds.
@@ -332,7 +348,7 @@ impl Inner {
                     unwritten.insert((workspace.clone(), app.clone()));
                     continue;
                 }
-                let replica = replicas.entry(key).or_insert_with(|| Replica {
+                let replica = replicas.entry(key.clone()).or_insert_with(|| Replica {
                     sync: RecordSync::new(),
                     revision: None,
                 });
@@ -367,35 +383,78 @@ impl Inner {
                         }
                     }
                 };
-                // The desktop's custody answers at once: its key is this process's own.
-                match pollster::block_on(engine.write_record(
-                    room,
-                    (&app, &record),
-                    &changes,
+                let mut writing = Writing::start(
+                    Arc::clone(&engine),
+                    Arc::clone(&self.wake),
+                    (room, app.clone(), record.clone()),
+                    changes,
                     founding,
-                    sealed.as_ref(),
-                )) {
-                    Ok(write) => {
-                        if let Some(replica) = self.replicas.borrow_mut().get_mut(&(
-                            workspace.clone(),
-                            app.clone(),
-                            record.clone(),
-                        )) {
-                            replica.sync.advance(next.heads);
-                        }
-                        if let Some(apps) = self.apps.borrow().as_ref() {
-                            apps.deliver_write(&workspace, write);
+                    sealed,
+                );
+                match writing.done() {
+                    Some(written) => {
+                        if !self.written(&key, written, next.heads) {
+                            unwritten.insert((workspace.clone(), app.clone()));
                         }
                     }
-                    Err(error) => {
-                        tracing::warn!(%error, %workspace, %app, %record, "the workspace took no write");
-                        unwritten.insert((workspace.clone(), app.clone()));
+                    None => {
+                        self.writing.borrow_mut().insert(key, (writing, next.heads));
                     }
                 }
             }
         }
         // What the workspace did not take yet is written again on the next pass.
         self.written.borrow_mut().extend(unwritten);
+    }
+
+    /// Take what the writes under way came to: the stores, by workspace and app, whose writes are
+    /// done, to write what the session wrote since.
+    fn settle_writes(&self) -> BTreeSet<(String, String)> {
+        let done: Vec<_> = self
+            .writing
+            .borrow_mut()
+            .iter_mut()
+            .filter_map(|(key, (writing, _))| Some((key.clone(), writing.done()?)))
+            .collect();
+        let mut again = BTreeSet::new();
+        for (key, written) in done {
+            let Some((_, heads)) = self.writing.borrow_mut().remove(&key) else {
+                continue;
+            };
+            // Taken or not, the record is written again from where its copy stands.
+            self.written(&key, written, heads);
+            again.insert((key.0, key.1));
+        }
+        again
+    }
+
+    /// Take what the write of `key` up to `heads` came to: the record's copy here stands at what
+    /// the workspace took, and this device's apps hear it. Answers whether it took it.
+    fn written(
+        &self,
+        (workspace, app, record): &RecordKey,
+        written: Written,
+        heads: Vec<automerge::ChangeHash>,
+    ) -> bool {
+        match written {
+            Ok(write) => {
+                if let Some(replica) = self.replicas.borrow_mut().get_mut(&(
+                    workspace.clone(),
+                    app.clone(),
+                    record.clone(),
+                )) {
+                    replica.sync.advance(heads);
+                }
+                if let Some(apps) = self.apps.borrow().as_ref() {
+                    apps.deliver_write(workspace, write);
+                }
+                true
+            }
+            Err(error) => {
+                tracing::warn!(%error, %workspace, %app, %record, "the workspace took no write");
+                false
+            }
+        }
     }
 }
 

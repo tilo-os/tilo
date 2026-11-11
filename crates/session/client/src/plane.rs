@@ -373,11 +373,6 @@ pub enum Cmd {
     /// Commit the frames of one write to a route, in order ([`Outbox::write`]). A
     /// [`crate::Link`] holds them in its engine, readable at once, and says the route alone.
     Write(DocumentRoute, Vec<Vec<u8>>),
-    /// Seal a route's documents with this cipher from now on.
-    InstallCipher(
-        DocumentRoute,
-        Box<dyn tilo_peer_state::document_frame::ContentCipher>,
-    ),
     /// Hold these keys as a route's channel keys, as if a participant had admitted this session to
     /// the channel: for an application endpoint of a device that takes part in it.
     InstallChannelKeys(DocumentRoute, channel_crypto::ChannelContentKeys),

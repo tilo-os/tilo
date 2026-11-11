@@ -10,7 +10,7 @@
 //!    ([`Engine::found`]): its governance is new, its only member the person, as its owner, and
 //!    its channels get keys of their own the first time a record of it is sealed.
 //! 2. Every record the source holds here is read whole, with its history, and written into the
-//!    branch as its founding write ([`Engine::found_record`]), forked under a writer of its own and
+//!    branch as its founding write ([`Engine::write_record`]), forked under a writer of its own and
 //!    naming the branch as its workspace ([`ui::record::transfer::branch`]). A record an app keeps on
 //!    this device too is the same document there: the local copy's changes are merged in first,
 //!    and the branch's local copy is the very document the branch's engine holds.
@@ -245,7 +245,14 @@ impl Held for Engine {
         } else {
             Some(seal_keys(self, workspace, app, record)?)
         };
-        pollster::block_on(self.found_record(workspace, (app, record), changes, sealed.as_ref()))
+        pollster::block_on(self.write_record(
+            workspace,
+            (app, record),
+            changes,
+            true,
+            sealed.as_ref(),
+        ))
+        .map(|_| ())
     }
 }
 
@@ -1190,12 +1197,14 @@ mod tests {
             record: &str,
             changes: &[u8],
         ) -> Result<(), String> {
-            pollster::block_on(self.engine.found_record(
+            pollster::block_on(self.engine.write_record(
                 workspace,
                 (app, record),
                 changes,
+                true,
                 Some(&self.unit(workspace, app, record)),
             ))
+            .map(|_| ())
         }
     }
 

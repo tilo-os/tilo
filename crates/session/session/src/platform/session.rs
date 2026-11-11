@@ -1480,7 +1480,10 @@ impl Session {
             folder_import: RefCell::new(None),
             sync,
             engine,
-            desktops: crate::shared_desktop::SharedDesktops::new(std::sync::Arc::clone(&notes)),
+            desktops: crate::shared_desktop::SharedDesktops::new(
+                std::sync::Arc::clone(&notes),
+                options.wake.clone(),
+            ),
             notes,
             membership_fed: Cell::new(None),
             _channels: channels,

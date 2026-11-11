@@ -20,7 +20,6 @@ tilo_automerge_isolate::test_worker!();
 
 use collab_types::{DocumentMutation, document_channel_id};
 use tilo_app::prelude::*;
-use tilo_peer_state::document_frame::ContentCipher;
 use tilo_relay::member_limits::MemberLimitsConfig;
 use tilo_relay_protocol::refusal::{PLAIN_TOO_FAST, plain_reason};
 use tilo_session_client::{Cmd, Event, Link, Outbox};
@@ -56,34 +55,6 @@ impl ResourceApp for BoardApp {
 
     fn view(cx: &mut ViewCx<Board>) -> Element {
         Box::new(cx.text(|board| board.notes.len().to_string()))
-    }
-}
-
-/// The channel's content keys, as its creator holds them.
-struct Keys(channel_crypto::ChannelContentKeys);
-
-impl ContentCipher for Keys {
-    fn seal(
-        &mut self,
-        artifact: collab_types::ArtifactId,
-        retention: collab_types::ContentRetention,
-        cleartext: &[u8],
-    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
-        self.0
-            .seal_content(artifact, retention, cleartext)
-            .map_err(|error| error.to_string())
-    }
-
-    fn open(
-        &mut self,
-        artifact: collab_types::ArtifactId,
-        metadata: &collab_types::EncryptionMetadata,
-        payload: &[u8],
-    ) -> Result<Vec<u8>, String> {
-        self.0
-            .open_content(artifact, metadata, payload)
-            .map(|plaintext| plaintext.to_vec())
-            .map_err(|error| error.to_string())
     }
 }
 
@@ -214,9 +185,9 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
         workspace(),
     )
     .await;
-    peer.send(Cmd::InstallCipher(
+    peer.send(Cmd::InstallChannelKeys(
         route.clone(),
-        Box::new(Keys(creator.content_keys().unwrap())),
+        creator.content_keys().unwrap(),
     ))
     .unwrap();
 

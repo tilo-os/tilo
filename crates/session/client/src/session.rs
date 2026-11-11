@@ -35,7 +35,7 @@ use tokio::sync::mpsc;
 
 use crate::custody::{PeerRecord, PeerStore};
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::document_frame::{Ciphers, DocumentRoute};
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::LinkError;
 use tilo_relay_session::RelayClient;
 
@@ -251,7 +251,6 @@ pub fn start_session(
         placing: BTreeMap::new(),
         planes: plane::Planes::default(),
         record,
-        ciphers: Ciphers::new(),
         channels,
         governance: HostGovernance::default(),
         outbound_due: false,
@@ -376,7 +375,6 @@ struct Task {
     /// ([`crate::session::plane`]).
     planes: plane::Planes,
     record: PeerRecord,
-    ciphers: Ciphers,
     /// This device's side of the workspaces' encrypted channels: the engine every participant runs,
     /// here as a reader that asks for access and follows the participants' commits.
     channels: tilo_channels::ChannelKeyAccess,
@@ -386,8 +384,8 @@ struct Task {
     channel_state: crate::custody::StoredChannels,
     /// Every route this session opened, and the keys it holds for it.
     route_keys: BTreeMap<DocumentRoute, RouteKeys>,
-    /// Keys installed since the session last acted on them.
-    new_keys: Vec<(DocumentRoute, channel_crypto::ChannelContentKeys)>,
+    /// Routes whose keys arrived since the session last acted on them.
+    new_keys: Vec<DocumentRoute>,
     /// The channels' generation the keys were last read at.
     keys_generation: u64,
     /// Documents refused, with the last reason, for the diagnostics.
@@ -1335,20 +1333,13 @@ impl Task {
                 self.kept.insert(workspace_id, kept);
                 true
             }
-            Command::Client(Cmd::InstallCipher(route, cipher)) => {
-                self.ciphers.insert(route.clone(), cipher);
-                self.release_live(&route);
-                true
-            }
-            Command::Client(Cmd::InstallChannelKeys(route, keys)) => {
-                // Settled with the next channel changes, the same way as
-                // keys the channel's own governance hands this session. The
-                // channel's records are sealed with them, and so is a call on
-                // one of them while this device holds no channel state of its
-                // own.
-                self.route_keys
-                    .insert(route.clone(), RouteKeys::Handed(keys.clone()));
-                self.new_keys.push((route, keys));
+            Command::Client(Cmd::InstallChannelKeys(route, _)) => {
+                // The engine holds them already ([`crate::Link`] hands them over): settled with
+                // the next channel changes, the same way as keys the channel's own governance
+                // hands this session. The channel's records are sealed with them, and so is a
+                // call on one of them while this device holds no channel state of its own.
+                self.route_keys.insert(route.clone(), RouteKeys::Handed);
+                self.new_keys.push(route);
                 true
             }
             Command::Client(Cmd::OpenRoute(route)) => {
@@ -1715,42 +1706,48 @@ impl Task {
 
     /// Seal canonical live `frame` of `workspace_id` with the content cipher
     /// of the record it names. A frame naming no record is never sent.
-    fn seal_live(&mut self, workspace_id: u64, frame: &[u8]) -> Sealing {
+    fn seal_live(&self, workspace_id: u64, frame: &[u8]) -> Sealing {
         let Some(frame) = tilo_relay_protocol::live::LiveFrame::decode(frame).ok() else {
             return Sealing::Dropped;
         };
         let Some((_, _, record)) = frame.seal_tags() else {
             return Sealing::Dropped;
         };
-        let cipher = self.ciphers.iter_mut().find_map(|(route, cipher)| {
+        let keys = self.keyed_routes().find_map(|route| {
             let names = tilo_relay_protocol::live::LiveRecord {
                 app: route.app_id.clone(),
                 record: route.record.clone(),
             };
-            (names == *record && route.workspace_id().ok() == Some(workspace_id)).then_some(cipher)
+            (names == *record && route.workspace_id().ok() == Some(workspace_id))
+                .then(|| self.keys_of(route))
+                .flatten()
         });
-        let Some(cipher) = cipher else {
+        let Some(keys) = keys else {
             return Sealing::NoKeys(record.clone());
         };
         tilo_relay_protocol::live::SealedLiveFrame::seal(
             &frame,
-            |artifact, retention, cleartext| cipher.seal(artifact, retention, cleartext),
+            |artifact, retention, cleartext| {
+                keys.seal_content(artifact, retention, cleartext)
+                    .map_err(|error| error.to_string())
+            },
         )
         .map_or(Sealing::Dropped, Sealing::Sealed)
     }
 
     /// Open sealed live `frame` of `workspace_id` with the content cipher of
     /// its channel into the canonical frame.
-    fn open_live(&mut self, workspace_id: u64, frame: &[u8]) -> Opening {
+    fn open_live(&self, workspace_id: u64, frame: &[u8]) -> Opening {
         let Ok(sealed) = tilo_relay_protocol::live::SealedLiveFrame::decode(frame) else {
             return Opening::Dropped;
         };
         let channel = sealed.channel_id();
-        let bound = self.ciphers.iter_mut().find_map(|(route, cipher)| {
+        let bound = self.keyed_routes().find_map(|route| {
             (unit(route) == channel && route.workspace_id().ok() == Some(workspace_id))
-                .then_some((route, cipher))
+                .then(|| Some((route, self.keys_of(route)?)))
+                .flatten()
         });
-        let Some((route, cipher)) = bound else {
+        let Some((route, keys)) = bound else {
             return Opening::NoKeys(sealed.channel);
         };
         sealed
@@ -1760,7 +1757,11 @@ impl Task {
                     app: route.app_id.clone(),
                     record: route.record.clone(),
                 },
-                |artifact, metadata, payload| cipher.open(artifact, metadata, payload),
+                |artifact, metadata, payload| {
+                    keys.open_content(artifact, metadata, payload)
+                        .map(|plaintext| plaintext.to_vec())
+                        .map_err(|error| error.to_string())
+                },
             )
             .ok()
             .and_then(|frame| frame.encode().ok())
@@ -1810,8 +1811,7 @@ impl Task {
             self.route_keys.insert(route.clone(), RouteKeys::Waiting);
         }
         // A channel taken up now asks for access in this pass.
-        if matches!(self.route_keys.get(route), Some(RouteKeys::Waiting))
-            && !self.read_keys(route, tilo_clock::Instant::now())
+        if matches!(self.route_keys.get(route), Some(RouteKeys::Waiting)) && !self.read_keys(route)
         {
             self.pump_channels(false);
         }
@@ -1823,53 +1823,43 @@ impl Task {
     fn pump_channels(&mut self, all: bool) {
         let now = tilo_clock::Instant::now();
         if all {
-            self.read_all_keys(now);
+            self.read_all_keys();
         }
         self.channels.pump_at(&self.governance, now);
         if self.channels.generation() != self.keys_generation {
-            self.read_all_keys(now);
+            self.read_all_keys();
         }
     }
 
-    fn read_all_keys(&mut self, now: tilo_clock::Instant) {
+    fn read_all_keys(&mut self) {
         self.keys_generation = self.channels.generation();
         let routes: Vec<DocumentRoute> = self
             .route_keys
             .iter()
-            .filter(|(_, keys)| !matches!(keys, RouteKeys::Handed(_)))
+            .filter(|(_, keys)| !matches!(keys, RouteKeys::Handed))
             .map(|(route, _)| route.clone())
             .collect();
         for route in routes {
-            self.read_keys(&route, now);
+            self.read_keys(&route);
         }
     }
 
-    /// Take up `route`'s keys when the channels hold newer ones than the
+    /// Take up `route`'s keys when the engine holds newer ones than the
     /// session; answers whether the route has keys.
-    fn read_keys(&mut self, route: &DocumentRoute, now: tilo_clock::Instant) -> bool {
-        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
+    fn read_keys(&mut self, route: &DocumentRoute) -> bool {
+        if self.keys_of(route).is_none() {
             return false;
-        };
-        let named = collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str());
-        let (unit, access, _) = self.channels.record_access(workspace, &named, now);
-        let tilo_channels::ChannelAccess::Ready(keys) = access else {
-            return false;
-        };
-        let change = self.channels.channel_change(unit);
+        }
+        let change = self.channels.channel_change(unit(route));
         let installed = match self.route_keys.get(route) {
-            Some(RouteKeys::Engine { change: held, .. }) => *held == change,
-            Some(RouteKeys::Handed(_)) => true,
+            Some(RouteKeys::Engine(held)) => *held == change,
+            Some(RouteKeys::Handed) => true,
             Some(RouteKeys::Waiting) | None => false,
         };
         if !installed {
-            self.route_keys.insert(
-                route.clone(),
-                RouteKeys::Engine {
-                    change,
-                    keys: keys.clone(),
-                },
-            );
-            self.new_keys.push((route.clone(), keys));
+            self.route_keys
+                .insert(route.clone(), RouteKeys::Engine(change));
+            self.new_keys.push(route.clone());
         }
         true
     }
@@ -1908,23 +1898,10 @@ impl Task {
             delivered &= self.send_governance(client);
         }
         loop {
-            for (route, keys) in std::mem::take(&mut self.new_keys) {
+            for route in std::mem::take(&mut self.new_keys) {
                 if let Ok(workspace_id) = route.workspace_id() {
                     self.planes_due.insert(workspace_id);
                 }
-                // What this session reads the route's writes with, its replica's readers read
-                // them with.
-                if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) {
-                    self.engine.hand_keys(
-                        workspace,
-                        collab_types::ChannelRoute::new(&route.app_id, &route.record),
-                        keys.clone(),
-                    );
-                }
-                self.ciphers.insert(
-                    route.clone(),
-                    Box::new(tilo_peer_state::document_frame::KeysCipher(keys)),
-                );
                 self.release_live(&route);
                 // What the replica holds sealed for these keys opens now.
                 self.landed(&route, None);
@@ -1949,8 +1926,8 @@ impl Task {
         for (route, keys) in &self.route_keys {
             let state = match keys {
                 RouteKeys::Waiting => "waiting",
-                RouteKeys::Engine { .. } => "ready",
-                RouteKeys::Handed(_) => "handed",
+                RouteKeys::Engine(_) => "ready",
+                RouteKeys::Handed => "handed",
             };
             let _ = write!(
                 channels,
@@ -2006,25 +1983,36 @@ fn open_channels(
     })
 }
 
-/// The keys this session holds for a route it opened.
+/// Where the keys of a route this session opened stand: the engine holds them
+/// ([`Task::keys_of`]).
 enum RouteKeys {
     /// No keys yet.
     Waiting,
-    /// The keys the channels hold, as of the channel's `change`.
-    Engine {
-        change: u64,
-        keys: channel_crypto::ChannelContentKeys,
-    },
-    /// Keys a host device handed over for a record whose group this device
+    /// The channels hold keys, as of the channel's change.
+    Engine(u64),
+    /// A host device handed over the keys of a record whose group this device
     /// is not admitted to itself: the workspace's own keys for the record.
-    Handed(channel_crypto::ChannelContentKeys),
+    Handed,
 }
 
-impl RouteKeys {
-    fn keys(&self) -> Option<&channel_crypto::ChannelContentKeys> {
-        match self {
-            Self::Waiting => None,
-            Self::Engine { keys, .. } | Self::Handed(keys) => Some(keys),
+impl Task {
+    /// The routes this session holds keys of.
+    fn keyed_routes(&self) -> impl Iterator<Item = &DocumentRoute> {
+        self.route_keys
+            .iter()
+            .filter(|(_, keys)| !matches!(keys, RouteKeys::Waiting))
+            .map(|(route, _)| route)
+    }
+
+    /// The keys this device seals and opens `route`'s content with, as its engine holds them.
+    fn keys_of(&self, route: &DocumentRoute) -> Option<channel_crypto::ChannelContentKeys> {
+        let workspace = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)?;
+        match self
+            .engine
+            .seal_keys(workspace, &route.app_id, &route.record)
+        {
+            Ok(crate::engine::SealKeys::Here(keys)) => Some(keys),
+            _ => None,
         }
     }
 }

@@ -8,8 +8,7 @@ use std::collections::BTreeMap;
 
 use channel_crypto::ChannelContentKeys;
 use collab_types::{
-    ContentRetention, DocumentFrame, DocumentMutation, DocumentMutationKind, EncryptionMetadata,
-    SignedOp, document_artifact_id,
+    DocumentFrame, DocumentMutation, DocumentMutationKind, SignedOp, document_artifact_id,
 };
 use neighbour_wire::NeighbourMsg;
 
@@ -57,108 +56,6 @@ impl DocumentRoute {
         document_artifact_id(&self.app_id, &self.cluster_id, &self.record)
     }
 }
-
-/// End-to-end content encryption of one route (the browser as a
-/// `channel-crypto` member device).
-pub trait ContentCipher: Send {
-    /// Seal one cleartext document frame.
-    fn seal(
-        &mut self,
-        artifact: collab_types::ArtifactId,
-        retention: ContentRetention,
-        cleartext: &[u8],
-    ) -> Result<(EncryptionMetadata, Vec<u8>), String>;
-
-    /// Open one sealed payload.
-    fn open(
-        &mut self,
-        artifact: collab_types::ArtifactId,
-        metadata: &EncryptionMetadata,
-        payload: &[u8],
-    ) -> Result<Vec<u8>, String>;
-
-    /// Whether this member holds the key of content-key `epoch`. A payload
-    /// of an epoch it does not hold yet (sealed by a member admitted after
-    /// this one last caught up) waits for the keys instead of being refused.
-    fn holds_epoch(&self, _epoch: u64) -> bool {
-        true
-    }
-}
-
-impl std::fmt::Debug for dyn ContentCipher {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ContentCipher")
-    }
-}
-
-/// A read-only adapter over content keys the caller already owns.
-/// It cannot seal a document, enroll a device, or obtain missing keys.
-#[must_use]
-pub fn content_key_reader(keys: ChannelContentKeys) -> Box<dyn ContentCipher> {
-    Box::new(ContentKeyReader(KeysCipher(keys)))
-}
-
-/// A route's content keys as a cipher that seals and opens.
-pub struct KeysCipher(pub ChannelContentKeys);
-
-impl ContentCipher for KeysCipher {
-    fn holds_epoch(&self, epoch: u64) -> bool {
-        self.0.holds_epoch(epoch)
-    }
-
-    fn seal(
-        &mut self,
-        artifact: collab_types::ArtifactId,
-        retention: ContentRetention,
-        cleartext: &[u8],
-    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-        self.0
-            .seal_content(artifact, retention, cleartext)
-            .map_err(|error| error.to_string())
-    }
-
-    fn open(
-        &mut self,
-        artifact: collab_types::ArtifactId,
-        metadata: &EncryptionMetadata,
-        payload: &[u8],
-    ) -> Result<Vec<u8>, String> {
-        self.0
-            .open_content(artifact, metadata, payload)
-            .map(|plaintext| plaintext.to_vec())
-            .map_err(|error| error.to_string())
-    }
-}
-
-struct ContentKeyReader(KeysCipher);
-
-impl ContentCipher for ContentKeyReader {
-    fn seal(
-        &mut self,
-        _artifact: collab_types::ArtifactId,
-        _retention: ContentRetention,
-        _cleartext: &[u8],
-    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-        Err("a content-key reader cannot seal documents".into())
-    }
-
-    fn open(
-        &mut self,
-        artifact: collab_types::ArtifactId,
-        metadata: &EncryptionMetadata,
-        payload: &[u8],
-    ) -> Result<Vec<u8>, String> {
-        self.0.open(artifact, metadata, payload)
-    }
-
-    fn holds_epoch(&self, epoch: u64) -> bool {
-        self.0.holds_epoch(epoch)
-    }
-}
-
-/// The installed content ciphers, by route. A route without one is
-/// cleartext.
-pub type Ciphers = std::collections::BTreeMap<DocumentRoute, Box<dyn ContentCipher>>;
 
 /// Why a document envelope was not produced or accepted.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -312,8 +209,9 @@ pub fn claimed_changes(body: &[u8]) -> Vec<[u8; 32]> {
 
 /// Open one inbound host delta, a document its workspace's governance admitted
 /// from `author`, the device the host stamped from its authenticated
-/// connection. Returns `Ok(None)` for traffic that is not an application
-/// document (shell tree, governance, continuity).
+/// connection, sealed content with its route's `keys`. Returns `Ok(None)` for
+/// traffic that is not an application document (shell tree, governance,
+/// continuity).
 ///
 /// # Errors
 ///
@@ -321,7 +219,7 @@ pub fn claimed_changes(body: &[u8]) -> Vec<[u8; 32]> {
 pub fn open_frame(
     body: &[u8],
     author: [u8; 32],
-    ciphers: &mut Ciphers,
+    keys: Option<&ChannelContentKeys>,
 ) -> Result<Option<OpenedDocument>, DocumentError> {
     let Ok(NeighbourMsg::AppDocument {
         app_id,
@@ -340,17 +238,16 @@ pub fn open_frame(
     };
     let decrypted_payload = match envelope.encryption {
         Some(metadata) => {
-            let cipher = ciphers
-                .get_mut(&route)
-                .ok_or_else(|| DocumentError::Payload("route has no content key".into()))?;
+            let keys =
+                keys.ok_or_else(|| DocumentError::Payload("route has no content key".into()))?;
             // A key holder's compaction of the record's sealed history
             // carries its sealed snapshot inside, and opens like one.
             let ciphertext = collab_types::sealed_ciphertext(&envelope)
                 .map_err(|error| DocumentError::Payload(error.to_string()))?;
             Some(
-                cipher
-                    .open(route.artifact(), &metadata, &ciphertext)
-                    .map_err(DocumentError::Payload)?,
+                keys.open_content(route.artifact(), &metadata, &ciphertext)
+                    .map_err(|error| DocumentError::Payload(error.to_string()))?
+                    .to_vec(),
             )
         }
         None => None,
@@ -418,44 +315,6 @@ mod tests {
     use tilo_automerge::ApplyIncoming as _;
 
     #[test]
-    fn a_content_key_reader_opens_existing_content_but_cannot_seal() {
-        let dir = tempfile::tempdir().unwrap();
-        let channel = collab_types::document_channel_id("app", "room", "record");
-        let creator = channel_crypto::ChannelPeer::create_now(
-            Some(std::sync::Arc::new(channel_crypto::Files::new(dir.path()))),
-            channel,
-            Box::new(ed25519_dalek::SigningKey::from_bytes(&[7; 32])),
-            &channel_crypto::VaultKey::new([8; 32]),
-        )
-        .unwrap();
-        let keys = creator.content_keys().unwrap();
-        let artifact = collab_types::ArtifactId::new();
-        let (metadata, payload) = keys
-            .seal_content(artifact, ContentRetention::Delta, b"existing content")
-            .unwrap();
-        let mut reader = content_key_reader(keys);
-        assert!(reader.holds_epoch(metadata.epoch));
-        assert_eq!(
-            reader.open(artifact, &metadata, &payload).unwrap(),
-            b"existing content"
-        );
-        assert!(
-            reader
-                .open(collab_types::ArtifactId::new(), &metadata, &payload)
-                .is_err()
-        );
-        assert_eq!(
-            reader
-                .seal(artifact, ContentRetention::Delta, b"attempted edit")
-                .unwrap_err(),
-            "a content-key reader cannot seal documents"
-        );
-    }
-
-    /// A key holder (a workspace's governing node) compacts a record's sealed
-    /// history into one sealed snapshot wrapped in a compaction; the page
-    /// opens it as that snapshot.
-    #[test]
     fn a_sealed_compaction_opens_as_its_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let route = DocumentRoute {
@@ -479,7 +338,7 @@ mod tests {
         let (metadata, ciphertext) = keys
             .seal_content(
                 route.artifact(),
-                ContentRetention::Checkpoint,
+                collab_types::ContentRetention::Checkpoint,
                 &snapshot.encode().unwrap(),
             )
             .unwrap();
@@ -510,13 +369,11 @@ mod tests {
             peer: neighbour_wire::peer_handle(author.as_bytes()),
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id.clone(),
-            record_id: route.record.clone(),
+            record_id: route.record,
             envelope: Box::new(op),
         })
         .unwrap();
-        let mut ciphers = Ciphers::new();
-        ciphers.insert(route, content_key_reader(keys));
-        let opened = open_frame(&body, *author.as_bytes(), &mut ciphers)
+        let opened = open_frame(&body, *author.as_bytes(), Some(&keys))
             .unwrap()
             .unwrap();
         assert_eq!(opened.mutation(), Some(snapshot));

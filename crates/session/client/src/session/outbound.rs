@@ -26,7 +26,7 @@ impl Task {
             return;
         }
         self.open_channel(route);
-        if self.ciphers.contains_key(route) {
+        if self.keys_of(route).is_some() {
             self.outbound_due = true;
         } else {
             self.persist_channels(true);
@@ -45,7 +45,7 @@ impl Task {
             .held_writes()
             .lock()
             .keys()
-            .filter(|route| self.ciphers.contains_key(*route))
+            .filter(|route| self.keys_of(route).is_some())
             .cloned()
             .collect();
         for route in ready {
@@ -103,7 +103,7 @@ impl Task {
         if whole && room < frames.len() {
             return (Vec::new(), 0);
         }
-        let Some(cipher) = self.ciphers.get_mut(route) else {
+        let Some(keys) = self.keys_of(route) else {
             self.fail("signature-rejected", "the route's channel keys went away");
             return (Vec::new(), frames.len());
         };
@@ -118,11 +118,12 @@ impl Task {
                 .zip(0..)
                 .map(|(frame, drafted)| {
                     let mut seal = |plaintext: &[u8]| {
-                        cipher.seal(
+                        keys.seal_content(
                             artifact,
                             collab_types::ContentRetention::of_frame(plaintext),
                             plaintext,
                         )
+                        .map_err(|error| error.to_string())
                     };
                     let op = view.peer().draft_write(
                         (&route.app_id, &route.record),

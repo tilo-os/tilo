@@ -191,6 +191,7 @@ pub mod drives;
 mod emoji;
 #[cfg(target_os = "linux")]
 mod engine_records;
+mod engine_write;
 #[cfg(target_os = "linux")]
 mod env;
 #[cfg(target_os = "linux")]

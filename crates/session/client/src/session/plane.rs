@@ -505,12 +505,7 @@ impl Task {
             // does for any record, and joins once they have.
             let route = route(&workspace);
             self.open_channel(&route);
-            let Some(keys) = self
-                .route_keys
-                .get(&route)
-                .and_then(super::RouteKeys::keys)
-                .cloned()
-            else {
+            let Some(keys) = self.keys_of(&route) else {
                 continue;
             };
             let Some(participants) = self.replicas.participants(&route) else {
