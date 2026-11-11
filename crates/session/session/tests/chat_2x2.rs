@@ -89,13 +89,13 @@ impl Studio {
             device.chat().wait_for_contact(&bob_key);
         }
         Self {
-            site,
-            ada,
-            bob,
             ada_laptop,
             ada_phone,
             bob_laptop,
             bob_phone,
+            ada,
+            bob,
+            site,
         }
     }
 
