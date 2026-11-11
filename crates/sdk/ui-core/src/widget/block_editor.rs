@@ -8520,27 +8520,32 @@ impl BlockEditor {
             let list_item_pair = is_list_item[i]
                 && i.checked_sub(1)
                     .is_some_and(|previous| is_list_item[previous]);
+            let rhythm = &theme.tokens.spacing.rhythm;
             let paragraph_gap = if self.compact_paragraph_spacing {
-                theme.tokens.spacing.s1
+                rhythm.tight
             } else {
-                theme.tokens.spacing.s2
+                rhythm.related
             };
             stack_box.margin_top = if i == 0 || b.soft_break || continues_code_block {
                 0.0
             } else if heading_above || around_embed {
-                // A heading opens its section, and an embed stands apart from the text on
-                // either side: both take the gap between groups.
-                theme.tokens.spacing.s6 * theme.text_scale
+                // The gap between groups keeps a heading off the line above it and an embed off
+                // the text on either side.
+                rhythm.group * theme.text_scale
             } else if against_surface {
-                theme.tokens.spacing.s4 * theme.text_scale
+                // A surface a block paints of its own reaches past its box, so it stands a
+                // section gap from the text around it.
+                rhythm.section * theme.text_scale
             } else if heading_below {
-                theme.tokens.spacing.s3 * theme.text_scale
+                // What a heading opens stands at the closest gap the rhythm has: the distance
+                // from the heading down to it is a third of the distance up to the heading.
+                rhythm.tight * theme.text_scale
             } else if list_item_pair {
                 paragraph_gap / 2.0 * theme.text_scale
             } else if compact_paragraph_pair {
-                theme.tokens.spacing.s1 * theme.text_scale
+                rhythm.tight * theme.text_scale
             } else {
-                theme.tokens.spacing.s2 * theme.text_scale
+                rhythm.related * theme.text_scale
             };
             if is_formula_end.get(i).copied().unwrap_or(false) {
                 stack_box.min = if formula_descriptor(&b.kind)
