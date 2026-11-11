@@ -1128,6 +1128,7 @@ answer-why-unknown-app = No app here opens it.
 answer-why-not-opened = It was stopped before a window appeared.
 answer-why-cannot-start = Apps cannot be started right now.
 peer-window-elsewhere = Open on another device. Share the window there to see it on this one.
+peer-window-on-device = Open on { $device }. Share the window there to see it on this one.
 # A chord of the desktop's a browser page has no surface for: it says so,
 # rather than doing nothing.
 answer-capture-not-in-browser = Screenshots and recordings run in Tilo on a computer

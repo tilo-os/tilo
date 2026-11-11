@@ -140,6 +140,33 @@ mod tests {
         assert_eq!(german.1, "Design · 3 Änderungen von 2 Personen");
     }
 
+    /// A window open on another device names the device in every language, and the name is a
+    /// person's text: what it holds is shown as it is, never read as the catalogue's own syntax.
+    #[test]
+    fn a_window_open_elsewhere_names_its_device_in_every_locale() {
+        let on = |device: &str| t_args("peer-window-on-device", &[("device", device.into())]);
+        let english = (on("Ada's laptop"), on("{ $app } { -brand }"));
+        ui::i18n::I18nManager::set_locale("de-DE");
+        let german = (on("Adas Laptop"), t("peer-window-elsewhere"));
+        ui::i18n::I18nManager::set_locale("en-US");
+        assert_eq!(
+            english.0,
+            "Open on Ada's laptop. Share the window there to see it on this one."
+        );
+        assert_eq!(
+            english.1,
+            "Open on { $app } { -brand }. Share the window there to see it on this one."
+        );
+        assert_eq!(
+            german.0,
+            "Auf Adas Laptop geöffnet. Teile das Fenster dort, um es auf diesem Gerät zu sehen."
+        );
+        assert_eq!(
+            german.1,
+            "Auf einem anderen Gerät geöffnet. Teile das Fenster dort, um es auf diesem zu sehen."
+        );
+    }
+
     #[test]
     fn german_desktops_resolve_german_copy() {
         let english = t("workspace-menu-rename");
