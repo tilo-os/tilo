@@ -1202,3 +1202,21 @@ fn its_palette_lists_its_own_resources_and_actions() {
         }
     }
 }
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// name of the app and its copy come from `locales/de-DE.ftl`, never from the
+/// English source catalogue beside it.
+#[test]
+fn a_german_window_reads_the_tasks_catalogue() {
+    let catalog = &tasks::locales::CATALOG;
+    assert!(
+        catalog.languages().contains(&"de-DE"),
+        "the app ships German among {:?}",
+        catalog.languages()
+    );
+    catalog.set_locale("de-DE");
+    assert_eq!(catalog.t("tasks-title"), "Aufgaben");
+    assert_eq!(catalog.t("tasks-new-issue"), "Neue Aufgabe");
+    catalog.set_locale("en-US");
+    assert_eq!(catalog.t("tasks-title"), "Tasks");
+}
