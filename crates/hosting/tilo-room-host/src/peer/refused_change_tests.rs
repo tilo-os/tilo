@@ -284,7 +284,7 @@ impl Doors {
             admin: None,
             fetch: None,
             agents: &self.agents,
-            environments: Box::leak(Box::default()),
+            environments: &self.environments,
             positions: None,
             compactor: None,
             member_limits: None,
