@@ -2994,9 +2994,7 @@ impl Widget for EditorView {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         let mut node = ui::a11y::AccessNode::new(ui::a11y::Role::Document)
-            .with_name(ui::i18n::I18nManager::lookup_plain(
-                "code-editor-a11y-document",
-            ))
+            .with_name(crate::resource::CATALOG.t("code-editor-a11y-document"))
             .with_state(
                 ui::a11y::AccessState::new()
                     .focusable(true)

@@ -1373,9 +1373,7 @@ impl VideoEditorApp {
                 ui::widget::SplitOrientation::Vertical,
                 ui::widget::SplitRatio::new(PREVIEW_SHARE).with_bounds(0.3, 0.8),
             )
-            .with_label(ui::i18n::I18nManager::lookup_plain(
-                "video-editor-a11y-resize",
-            )),
+            .with_label(crate::resource::CATALOG.t("video-editor-a11y-resize")),
             selection: Selection::default(),
             selected_media: None,
             export: ExportSettings::default(),

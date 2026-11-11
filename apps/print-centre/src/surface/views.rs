@@ -211,7 +211,7 @@ pub(super) fn loading_view() -> El {
             copy("Looking for printers, scanners and unfinished documents."),
             Box::new(
                 ProgressBar::indeterminate()
-                    .with_label(ui::i18n::I18nManager::lookup_plain("print-centre-loading")),
+                    .with_label(crate::locales::CATALOG.t("print-centre-loading")),
             ),
         ])))
 }
@@ -826,14 +826,13 @@ pub(super) fn discovery_view(
     tx: &Door,
 ) -> El {
     let body: El = match result {
-        None => {
-            section(vec![
-                copy("Looking for printers on your network."),
-                Box::new(ProgressBar::indeterminate().with_label(
-                    ui::i18n::I18nManager::lookup_plain("print-centre-finding-printers"),
-                )),
-            ])
-        }
+        None => section(vec![
+            copy("Looking for printers on your network."),
+            Box::new(
+                ProgressBar::indeterminate()
+                    .with_label(crate::locales::CATALOG.t("print-centre-finding-printers")),
+            ),
+        ]),
         Some(Ok(printers)) if printers.is_empty() => section(vec![
             copy(
                 "No printers found. Make sure the printer is awake and connected to the same network, then search again.",
@@ -904,9 +903,7 @@ fn printer_picker(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Dro
         .collect::<Vec<_>>();
     let mut picker = Dropdown::new(Vec::new(), "")
         .with_id("print-centre.print.printer")
-        .with_placeholder(&ui::i18n::I18nManager::lookup_plain(
-            "print-centre-choose-printer",
-        ));
+        .with_placeholder(&crate::locales::CATALOG.t("print-centre-choose-printer"));
     picker.set_value_options(options);
     if let Some(selected) = selected {
         picker.set_selected(selected);
@@ -941,34 +938,35 @@ fn document_card(filename: &str, preview: &PrintPreview, tx: &Door) -> El {
         PrintPreview::Ready { page, pages, .. } => (*page, *pages),
         _ => (0, 0),
     };
-    let preview_widget: El =
-        match preview {
-            PrintPreview::Ready {
-                rgba,
-                width,
-                height,
-                ..
-            } => Box::new(
-                Container::new()
-                    .with_height(300.0)
-                    .with_no_padding()
-                    .with_child(Box::new(
-                        Image::from_rgba(rgba.clone(), *width, *height)
-                            .filling()
-                            .with_alt(format!("Preview of {filename}")),
-                    )),
-            ),
-            PrintPreview::Loading => Box::new(Container::new().with_height(138.0).with_child(
-                Box::new(ProgressBar::indeterminate().with_label(
-                    ui::i18n::I18nManager::lookup_plain("print-centre-preparing-preview"),
+    let preview_widget: El = match preview {
+        PrintPreview::Ready {
+            rgba,
+            width,
+            height,
+            ..
+        } => Box::new(
+            Container::new()
+                .with_height(300.0)
+                .with_no_padding()
+                .with_child(Box::new(
+                    Image::from_rgba(rgba.clone(), *width, *height)
+                        .filling()
+                        .with_alt(format!("Preview of {filename}")),
                 )),
-            )),
-            PrintPreview::Unavailable => Box::new(
-                bare_column()
-                    .push(copy("Preview unavailable"))
-                    .push(muted("The original document is unchanged.")),
-            ),
-        };
+        ),
+        PrintPreview::Loading => Box::new(
+            Container::new()
+                .with_height(138.0)
+                .with_child(Box::new(ProgressBar::indeterminate().with_label(
+                    crate::locales::CATALOG.t("print-centre-preparing-preview"),
+                ))),
+        ),
+        PrintPreview::Unavailable => Box::new(
+            bare_column()
+                .push(copy("Preview unavailable"))
+                .push(muted("The original document is unchanged.")),
+        ),
+    };
     let body = if pages > 1 {
         let shown = page.min(pages.saturating_sub(1));
         // The count keeps its own line above the pager: a card this narrow
@@ -1028,9 +1026,7 @@ fn print_settings(picker: Dropdown, form: &PrintForm<'_>, tx: &Door) -> Form {
                 "Pages",
                 TextInput::from_state(form.range)
                     .with_id("print-centre.print.pages")
-                    .with_placeholder(ui::i18n::I18nManager::lookup_plain(
-                        "print-centre-all-pages",
-                    ))
+                    .with_placeholder(crate::locales::CATALOG.t("print-centre-all-pages"))
                     .with_accessible_name(crate::locales::CATALOG.t("print-centre-a11y-pages")),
             )
             .with_help("Print some of the pages, as in 3-5 or 1, 4, 9. Leave it empty for all."),

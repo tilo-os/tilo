@@ -109,10 +109,8 @@ impl ConvertPage {
             from,
             to,
             field: TextInput::local()
-                .with_placeholder(ui::i18n::I18nManager::lookup_plain("calculator-amount"))
-                .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
-                    "calculator-amount-to-convert",
-                ))
+                .with_placeholder(crate::resource::CATALOG.t("calculator-amount"))
+                .with_accessible_name(crate::resource::CATALOG.t("calculator-amount-to-convert"))
                 .with_id("calculator.amount"),
             copied: None,
             area: Rect::ZERO,
@@ -631,9 +629,7 @@ impl crate::app::CalculatorApp {
         let page = self.convert_page();
         let mut children = Vec::new();
         let mut amount = AccessNode::new(Role::TextInput)
-            .with_name(ui::i18n::I18nManager::lookup_plain(
-                "calculator-amount-to-convert",
-            ))
+            .with_name(crate::resource::CATALOG.t("calculator-amount-to-convert"))
             .with_value(page.amount().to_owned())
             .with_action_target(ConvertPage::semantic_target(&ConvertAction::Focus))
             .with_state(AccessState::new().focusable(true));
@@ -662,7 +658,7 @@ impl crate::app::CalculatorApp {
             .chain(std::iter::once({
                 let target = ConvertAction::Currency;
                 let mut node = AccessNode::new(Role::RadioButton)
-                    .with_name(ui::i18n::I18nManager::lookup_plain("calculator-currency"))
+                    .with_name(crate::resource::CATALOG.t("calculator-currency"))
                     .with_action_target(ConvertPage::semantic_target(&target))
                     .with_state(AccessState::new().focusable(true).checked(page.currency));
                 if let Some(bounds) = page.control_rect(&target) {
@@ -673,7 +669,7 @@ impl crate::app::CalculatorApp {
             .collect();
         children.push(
             AccessNode::new(Role::Group)
-                .with_name(ui::i18n::I18nManager::lookup_plain("calculator-quantity"))
+                .with_name(crate::resource::CATALOG.t("calculator-quantity"))
                 .with_hashed_key("calculator.convert.quantities")
                 .with_children(quantities),
         );
@@ -717,12 +713,8 @@ impl crate::app::CalculatorApp {
                 .with_hashed_key("calculator.convert.result"),
         );
         AccessNode::new(Role::Group)
-            .with_name(ui::i18n::I18nManager::lookup_plain(
-                "calculator-unit-conversion",
-            ))
-            .with_description(ui::i18n::I18nManager::lookup_plain(
-                "calculator-unit-conversion-description",
-            ))
+            .with_name(crate::resource::CATALOG.t("calculator-unit-conversion"))
+            .with_description(crate::resource::CATALOG.t("calculator-unit-conversion-description"))
             .with_hashed_key("calculator.convert")
             .with_children(children)
     }

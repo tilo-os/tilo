@@ -783,9 +783,7 @@ fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDia
         TextInput::from_state(&draft.source)
             .with_id("firewall-rule-source")
             .with_kind(TextInputKind::Path)
-            .with_placeholder(ui::i18n::I18nManager::lookup_plain(
-                "firewall-source-anywhere",
-            )),
+            .with_placeholder(crate::locales::CATALOG.t("firewall-source-anywhere")),
     );
     fields.push(match &draft.source_error {
         Some(error) => source.with_error(error),

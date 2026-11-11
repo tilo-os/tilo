@@ -1617,9 +1617,7 @@ impl Widget for TypstApp {
         Some(
             AccessNode::new(Role::Document)
                 .with_name(crate::resource::CATALOG.t("typst-a11y-window"))
-                .with_description(ui::i18n::I18nManager::lookup_plain(
-                    "typst-a11y-window-description",
-                ))
+                .with_description(crate::resource::CATALOG.t("typst-a11y-window-description"))
                 .with_state(AccessState::new().focusable(true))
                 .with_children(children),
         )

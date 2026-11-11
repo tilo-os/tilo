@@ -332,17 +332,11 @@ fn input(shared: &Shared, field: DraftField, value: &str) -> TextInput {
         DraftField::Password => input.with_secret(true),
         DraftField::Notes => input
             .with_min_lines(4)
-            .with_placeholder(ui::i18n::I18nManager::lookup_plain("passwords-add-note")),
-        DraftField::Tags => {
-            input.with_placeholder(ui::i18n::I18nManager::lookup_plain("passwords-tags-hint"))
-        }
-        DraftField::CustomFields => {
-            input
-                .with_min_lines(3)
-                .with_placeholder(ui::i18n::I18nManager::lookup_plain(
-                    "passwords-custom-fields-hint",
-                ))
-        }
+            .with_placeholder(crate::CATALOG.t("passwords-add-note")),
+        DraftField::Tags => input.with_placeholder(crate::CATALOG.t("passwords-tags-hint")),
+        DraftField::CustomFields => input
+            .with_min_lines(3)
+            .with_placeholder(crate::CATALOG.t("passwords-custom-fields-hint")),
     };
     input
         .with_initial_value(value)
@@ -881,9 +875,7 @@ fn export_dialog(acknowledged: bool, reminded: bool, requests: &Requests) -> Mod
     let ack = {
         let requests = Rc::clone(requests);
         Checkbox::from_state(&ui::LocalState::new(acknowledged))
-            .with_label(ui::i18n::I18nManager::lookup_plain(
-                "passwords-export-acknowledge",
-            ))
+            .with_label(crate::CATALOG.t("passwords-export-acknowledge"))
             .on_view("passwords-export-acknowledge", move |on| {
                 requests.borrow_mut().push(Request::Acknowledge(on));
             })

@@ -571,7 +571,7 @@ impl Widget for ContactList {
         };
         Some(
             AccessNode::new(Role::List)
-                .with_name(ui::i18n::I18nManager::lookup_plain("contacts-title"))
+                .with_name(crate::account_editor::CATALOG.t("contacts-title"))
                 .with_bounds(self.rect)
                 .with_children(children),
         )

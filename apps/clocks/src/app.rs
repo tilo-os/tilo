@@ -69,20 +69,20 @@ pub(crate) fn next_ring(
     now: chrono::DateTime<chrono::Local>,
 ) -> String {
     if !alarm.enabled {
-        return ui::i18n::I18nManager::lookup_plain("clocks-alert-off");
+        return crate::locales::CATALOG.t("clocks-alert-off");
     }
     let Some(next) = crate::schedule::next_occurrence(alarm, None, now) else {
-        return ui::i18n::I18nManager::lookup_plain("clocks-no-next-ring");
+        return crate::locales::CATALOG.t("clocks-no-next-ring");
     };
     let today = now.date_naive();
     let day = if next.date_naive() == today {
-        ui::i18n::I18nManager::lookup_plain("clocks-today")
+        crate::locales::CATALOG.t("clocks-today")
     } else if next.date_naive() == today.succ_opt().unwrap_or(today) {
-        ui::i18n::I18nManager::lookup_plain("clocks-tomorrow")
+        crate::locales::CATALOG.t("clocks-tomorrow")
     } else {
         ui::format::weekday_short(next.date_naive().weekday())
     };
-    ui::i18n::I18nManager::format(
+    crate::locales::CATALOG.t_args(
         "clocks-next-ring",
         &[
             ("day", ui::i18n::ArgValue::Text(day)),
@@ -174,7 +174,7 @@ fn custom_timer_duration_seconds(hours: &str, minutes: &str, seconds: &str) -> O
 
 pub(crate) fn repeat_summary(days: &BTreeSet<WeekdayKey>) -> String {
     if days.is_empty() {
-        return ui::i18n::I18nManager::lookup_plain("clocks-once");
+        return crate::locales::CATALOG.t("clocks-once");
     }
     WeekdayKey::ALL
         .into_iter()
@@ -189,7 +189,7 @@ pub(crate) fn repeat_summary(days: &BTreeSet<WeekdayKey>) -> String {
 pub(crate) fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> (String, Vec<Fact>) {
     let Ok(zone) = zone.parse::<chrono_tz::Tz>() else {
         return (
-            ui::i18n::I18nManager::lookup_plain("clocks-time-unavailable"),
+            crate::locales::CATALOG.t("clocks-time-unavailable"),
             Vec::new(),
         );
     };
@@ -213,21 +213,21 @@ pub(crate) fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> (String, Vec<
 /// How far a place is ahead of or behind here, in words.
 fn offset_from_here(seconds: i32) -> String {
     if seconds == 0 {
-        return ui::i18n::I18nManager::lookup_plain("clocks-same-time");
+        return crate::locales::CATALOG.t("clocks-same-time");
     }
     let minutes = seconds.unsigned_abs() / 60;
     let (hours, minutes) = (minutes / 60, minutes % 60);
     let amount = match (hours, minutes) {
-        (0, minutes) => ui::i18n::I18nManager::format(
+        (0, minutes) => crate::locales::CATALOG.t_args(
             "clocks-minutes",
             &[("minutes", ui::i18n::ArgValue::Number(f64::from(minutes)))],
         ),
-        (1, 0) => ui::i18n::I18nManager::lookup_plain("clocks-one-hour"),
-        (hours, 0) => ui::i18n::I18nManager::format(
+        (1, 0) => crate::locales::CATALOG.t("clocks-one-hour"),
+        (hours, 0) => crate::locales::CATALOG.t_args(
             "clocks-hours",
             &[("hours", ui::i18n::ArgValue::Number(f64::from(hours)))],
         ),
-        (hours, minutes) => ui::i18n::I18nManager::format(
+        (hours, minutes) => crate::locales::CATALOG.t_args(
             "clocks-hours-minutes",
             &[
                 ("hours", ui::i18n::ArgValue::Number(f64::from(hours))),
@@ -236,12 +236,12 @@ fn offset_from_here(seconds: i32) -> String {
         ),
     };
     if seconds > 0 {
-        ui::i18n::I18nManager::format(
+        crate::locales::CATALOG.t_args(
             "clocks-ahead",
             &[("amount", ui::i18n::ArgValue::Text(amount))],
         )
     } else {
-        ui::i18n::I18nManager::format(
+        crate::locales::CATALOG.t_args(
             "clocks-behind",
             &[("amount", ui::i18n::ArgValue::Text(amount))],
         )
@@ -389,7 +389,7 @@ fn world_clock_list(state: &ui::LocalState<Shown>, controls: &Controls) -> Model
                 .with_rhythm(ui::tokens::Rhythm::Related);
             if s.clocks.world_clocks.is_empty() {
                 col = col.push(Box::new(
-                    Text::new(&ui::i18n::I18nManager::lookup_plain("clocks-world-empty")).dimmed(),
+                    Text::new(&crate::locales::CATALOG.t("clocks-world-empty")).dimmed(),
                 ));
             }
             for (id, clock) in s.clocks.world_clocks.iter() {
@@ -411,7 +411,7 @@ fn world_clock_list(state: &ui::LocalState<Shown>, controls: &Controls) -> Model
                         list_controls.button(
                             Button::new(
                                 &format!("clocks.world.{id}.remove"),
-                                &ui::i18n::I18nManager::lookup_plain("clocks-remove"),
+                                &crate::locales::CATALOG.t("clocks-remove"),
                             )
                             .control_size(ui::widget::ControlSize::Large),
                             Clocks::REMOVE_WORLD_CLOCK.with(id.clone()),
@@ -435,11 +435,11 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
             // stands beside it, and under it once the window is narrow.
             .push(Box::new(
                 Columns::new(Box::new(clock_card(
-                    &ui::i18n::I18nManager::lookup_plain("clocks-add-city"),
+                    &crate::locales::CATALOG.t("clocks-add-city"),
                     Box::new(choices),
                 )))
                 .aside(Box::new(clock_card(
-                    &ui::i18n::I18nManager::lookup_plain("clocks-here"),
+                    &crate::locales::CATALOG.t("clocks-here"),
                     Box::new(ModelView::from_state_by(
                         state,
                         |s| (s.clone(), minute(s)),
@@ -485,7 +485,7 @@ fn repeat_control(selection: &ui::LocalState<BTreeSet<WeekdayKey>>, id: &'static
         ui::widget::ToggleGroup::multiple_from_state(days, selection)
             .control_size(ui::widget::ControlSize::Large)
             .with_id(id)
-            .with_accessible_name(ui::i18n::I18nManager::lookup_plain("clocks-repeat-on")),
+            .with_accessible_name(crate::locales::CATALOG.t("clocks-repeat-on")),
     )
 }
 
@@ -517,7 +517,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
             .with_rhythm(ui::tokens::Rhythm::Related);
         if s.clocks.alarms.is_empty() {
             col = col.push(Box::new(
-                Text::new(&ui::i18n::I18nManager::lookup_plain("clocks-alarms-empty")).dimmed(),
+                Text::new(&crate::locales::CATALOG.t("clocks-alarms-empty")).dimmed(),
             ));
         }
         let mut alarms: Vec<_> = s.clocks.alarms.iter().collect();
@@ -537,16 +537,16 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                                 .with_role(ui::TextRole::LargeTitle),
                         ))
                         .push(Box::new(
-                            Text::new(&ui::i18n::I18nManager::format(
+                            Text::new(&crate::locales::CATALOG.t_args(
                                 "clocks-repeat-currently",
                                 &[
                                     ("repeat", ui::i18n::ArgValue::Text(repeat.clone())),
                                     (
                                         "state",
                                         ui::i18n::ArgValue::Text(if alarm.enabled {
-                                            ui::i18n::I18nManager::lookup_plain("clocks-on")
+                                            crate::locales::CATALOG.t("clocks-on")
                                         } else {
-                                            ui::i18n::I18nManager::lookup_plain("clocks-alert-off")
+                                            crate::locales::CATALOG.t("clocks-alert-off")
                                         }),
                                     ),
                                 ],
@@ -568,7 +568,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                     let weekdays = alarm.weekdays();
                     Button::new(
                         &format!("clocks.alarm.{id}.edit"),
-                        &ui::i18n::I18nManager::lookup_plain("clocks-edit"),
+                        &crate::locales::CATALOG.t("clocks-edit"),
                     )
                     .control_size(ui::widget::ControlSize::Large)
                     .on_view(move || {
@@ -592,7 +592,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                     list_controls.button(
                         Button::new(
                             &format!("clocks.alarm.{id}.remove"),
-                            &ui::i18n::I18nManager::lookup_plain("clocks-remove"),
+                            &crate::locales::CATALOG.t("clocks-remove"),
                         )
                         .control_size(ui::widget::ControlSize::Large),
                         Clocks::REMOVE_ALARM.with(id.clone()),
@@ -627,7 +627,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
             let save_editing = editing.clone();
             let cancel_editing = editing;
             Box::new(clock_card(
-                &ui::i18n::I18nManager::lookup_plain("clocks-edit-alarm"),
+                &crate::locales::CATALOG.t("clocks-edit-alarm"),
                 Box::new(
                     Column::new()
                         .with_no_padding()
@@ -636,26 +636,24 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                             TextInput::from_state(&edit_label)
                                 .with_id("clocks.alarm.edit.label")
                                 .with_kind(TextInputKind::Name)
-                                .with_placeholder(ui::i18n::I18nManager::lookup_plain(
-                                    "clocks-alarm-label-placeholder",
-                                )),
+                                .with_placeholder(
+                                    crate::locales::CATALOG.t("clocks-alarm-label-placeholder"),
+                                ),
                         ))
                         .push(Box::new(
-                            Text::new(&ui::i18n::I18nManager::lookup_plain("clocks-field-time"))
+                            Text::new(&crate::locales::CATALOG.t("clocks-field-time"))
                                 .with_heading_level(3),
                         ))
                         .push(Box::new(
                             TimePicker::from_state(&edit_time)
                                 .with_id("clocks.alarm.edit.time")
-                                .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
-                                    "clocks-alarm-time",
-                                )),
+                                .with_accessible_name(
+                                    crate::locales::CATALOG.t("clocks-alarm-time"),
+                                ),
                         ))
                         .push(Box::new(
-                            Text::new(&ui::i18n::I18nManager::lookup_plain(
-                                "clocks-field-repeat-days",
-                            ))
-                            .with_heading_level(3),
+                            Text::new(&crate::locales::CATALOG.t("clocks-field-repeat-days"))
+                                .with_heading_level(3),
                         ))
                         .push(repeat_control(&edit_repeat, "clocks.alarm.edit.repeat"))
                         .push(Box::new(
@@ -663,7 +661,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                                 .with_padding_rhythm(None, None)
                                 .push(primary_button(
                                     "clocks.alarm.edit.save",
-                                    &ui::i18n::I18nManager::lookup_plain("clocks-save-changes"),
+                                    &crate::locales::CATALOG.t("clocks-save-changes"),
                                     move || {
                                         let time = save_time.get();
                                         save.submit(Clocks::EDIT_ALARM.with((
@@ -678,7 +676,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                                 ))
                                 .push(button(
                                     "clocks.alarm.edit.cancel",
-                                    &ui::i18n::I18nManager::lookup_plain("clocks-cancel"),
+                                    &crate::locales::CATALOG.t("clocks-cancel"),
                                     move || {
                                         cancel_editing.set(None);
                                     },
@@ -694,7 +692,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
             .push(Box::new(list))
             .push(Box::new(editor))
             .push(Box::new(clock_card(
-                &ui::i18n::I18nManager::lookup_plain("clocks-new-alarm"),
+                &crate::locales::CATALOG.t("clocks-new-alarm"),
                 Box::new(
                     Column::new()
                         .with_no_padding()
@@ -703,35 +701,32 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                             TextInput::from_state(&draft_label)
                                 .with_id("clocks.alarm.label")
                                 .with_kind(TextInputKind::Name)
-                                .with_placeholder(ui::i18n::I18nManager::lookup_plain(
-                                    "clocks-alarm-label-placeholder",
-                                )),
+                                .with_placeholder(
+                                    crate::locales::CATALOG.t("clocks-alarm-label-placeholder"),
+                                ),
                         ))
                         .push(Box::new(
-                            Text::new(&ui::i18n::I18nManager::lookup_plain("clocks-field-time"))
+                            Text::new(&crate::locales::CATALOG.t("clocks-field-time"))
                                 .with_heading_level(3),
                         ))
                         .push(Box::new(
                             TimePicker::from_state(&draft)
                                 .with_id("clocks.alarm.time")
-                                .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
-                                    "clocks-alarm-time",
-                                )),
+                                .with_accessible_name(
+                                    crate::locales::CATALOG.t("clocks-alarm-time"),
+                                ),
                         ))
                         .push(Box::new(
-                            Text::new(&ui::i18n::I18nManager::lookup_plain("clocks-time-hint"))
-                                .dimmed(),
+                            Text::new(&crate::locales::CATALOG.t("clocks-time-hint")).dimmed(),
                         ))
                         .push(Box::new(
-                            Text::new(&ui::i18n::I18nManager::lookup_plain(
-                                "clocks-field-repeat-days",
-                            ))
-                            .with_heading_level(3),
+                            Text::new(&crate::locales::CATALOG.t("clocks-field-repeat-days"))
+                                .with_heading_level(3),
                         ))
                         .push(repeat_control(&draft_repeat, "clocks.alarm.repeat"))
                         .push(primary_button(
                             "clocks.alarm.add",
-                            &ui::i18n::I18nManager::lookup_plain("clocks-add-alarm-label"),
+                            &crate::locales::CATALOG.t("clocks-add-alarm-label"),
                             move || {
                                 let time = add_draft.get();
                                 add.submit(Clocks::ADD_ALARM.with((
@@ -795,9 +790,9 @@ fn timer_card(
         Clocks::RESUME_TIMER.with(id.clone())
     };
     let float_label = if floating {
-        &ui::i18n::I18nManager::lookup_plain("clocks-hide-floating")
+        &crate::locales::CATALOG.t("clocks-hide-floating")
     } else {
-        &ui::i18n::I18nManager::lookup_plain("clocks-float-timer")
+        &crate::locales::CATALOG.t("clocks-float-timer")
     };
     Box::new(clock_card(
         &timer.label,
@@ -815,11 +810,11 @@ fn timer_card(
                         .push(Box::new(Spacer::new()))
                         .push(Box::new(
                             Text::new(&if running {
-                                ui::i18n::I18nManager::lookup_plain("clocks-running")
+                                crate::locales::CATALOG.t("clocks-running")
                             } else if finished {
-                                ui::i18n::I18nManager::lookup_plain("clocks-done")
+                                crate::locales::CATALOG.t("clocks-done")
                             } else {
-                                ui::i18n::I18nManager::lookup_plain("clocks-paused")
+                                crate::locales::CATALOG.t("clocks-paused")
                             })
                             .dimmed(),
                         )),
@@ -832,7 +827,7 @@ fn timer_card(
                         .push(Box::new(
                             controls.button(
                                 Button::new(&format!("clocks.timer.{id}.add-minute"), "+1 min")
-                                    .with_accessible_name(&ui::i18n::I18nManager::format(
+                                    .with_accessible_name(&crate::locales::CATALOG.t_args(
                                         "clocks-add-minute-to",
                                         &[("name", ui::i18n::ArgValue::Text(timer.label.clone()))],
                                     ))
@@ -845,11 +840,11 @@ fn timer_card(
                                 Button::new(
                                     &format!("clocks.timer.{id}.toggle"),
                                     &if running {
-                                        ui::i18n::I18nManager::lookup_plain("clocks-pause")
+                                        crate::locales::CATALOG.t("clocks-pause")
                                     } else if finished {
-                                        ui::i18n::I18nManager::lookup_plain("clocks-restart")
+                                        crate::locales::CATALOG.t("clocks-restart")
                                     } else {
-                                        ui::i18n::I18nManager::lookup_plain("clocks-resume")
+                                        crate::locales::CATALOG.t("clocks-resume")
                                     },
                                 )
                                 .with_icon(if running { Icon::Pause } else { Icon::Play })
@@ -878,12 +873,10 @@ fn timer_card(
                             controls.button(
                                 Button::new(&format!("clocks.timer.{id}.remove"), "")
                                     .with_icon(Icon::Trash2)
-                                    .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(
-                                        "clocks-remove-timer-name",
-                                    ))
-                                    .tooltip(ui::i18n::I18nManager::lookup_plain(
-                                        "clocks-remove-timer-name",
-                                    ))
+                                    .with_accessible_name(
+                                        &crate::locales::CATALOG.t("clocks-remove-timer-name"),
+                                    )
+                                    .tooltip(crate::locales::CATALOG.t("clocks-remove-timer-name"))
                                     .role(ui::widget::ButtonRole::Destructive)
                                     .control_size(ui::widget::ControlSize::Large),
                                 Clocks::REMOVE_TIMER.with(id.clone()),
@@ -1029,26 +1022,22 @@ fn timers_screen(
                     TextInput::from_state(&custom_label)
                         .with_id("clocks.timer.custom.label")
                         .with_kind(TextInputKind::Name)
-                        .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
-                            "clocks-timer-label-name",
-                        ))
-                        .with_placeholder(ui::i18n::I18nManager::lookup_plain(
-                            "clocks-timer-label-placeholder",
-                        )),
+                        .with_accessible_name(crate::locales::CATALOG.t("clocks-timer-label-name"))
+                        .with_placeholder(
+                            crate::locales::CATALOG.t("clocks-timer-label-placeholder"),
+                        ),
                 ))
                 .push(Box::new(duration_fields))
                 .push(primary_button(
                     "clocks.timer.custom.add",
-                    &ui::i18n::I18nManager::lookup_plain("clocks-start-timer"),
+                    &crate::locales::CATALOG.t("clocks-start-timer"),
                     move || {
                         let Some(secs) = custom_timer_duration_seconds(
                             &add_hours.get().to_string(),
                             &add_minutes.get().to_string(),
                             &add_seconds.get().to_string(),
                         ) else {
-                            add_error.set(Some(ui::i18n::I18nManager::lookup_plain(
-                                "clocks-duration-hint",
-                            )));
+                            add_error.set(Some(crate::locales::CATALOG.t("clocks-duration-hint")));
                             return;
                         };
                         if secs > 0 {
@@ -1059,9 +1048,8 @@ fn timers_screen(
                             add_label.set(String::new());
                             add_error.set(None);
                         } else {
-                            add_error.set(Some(ui::i18n::I18nManager::lookup_plain(
-                                "clocks-duration-positive",
-                            )));
+                            add_error
+                                .set(Some(crate::locales::CATALOG.t("clocks-duration-positive")));
                         }
                     },
                 ))
@@ -1076,7 +1064,7 @@ fn timers_screen(
                 .with_intrinsic_height()
                 .with_rhythm(ui::tokens::Rhythm::Related)
                 .push(Box::new(
-                    Text::new(&ui::i18n::I18nManager::lookup_plain("clocks-timers-empty")).dimmed(),
+                    Text::new(&crate::locales::CATALOG.t("clocks-timers-empty")).dimmed(),
                 ))
                 .push(Box::new(presets)),
         ),
@@ -1128,9 +1116,9 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                                 Button::new(
                                     "clocks.stopwatch.toggle",
                                     &if running {
-                                        ui::i18n::I18nManager::lookup_plain("clocks-pause")
+                                        crate::locales::CATALOG.t("clocks-pause")
                                     } else {
-                                        ui::i18n::I18nManager::lookup_plain("clocks-start")
+                                        crate::locales::CATALOG.t("clocks-start")
                                     },
                                 )
                                 .role(ui::widget::ButtonRole::Primary)
@@ -1148,7 +1136,7 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                                 .button(
                                     Button::new(
                                         "clocks.stopwatch.lap",
-                                        &ui::i18n::I18nManager::lookup_plain("clocks-lap-button"),
+                                        &crate::locales::CATALOG.t("clocks-lap-button"),
                                     )
                                     .control_size(ui::widget::ControlSize::Large),
                                     Clocks::LAP.invoke(),
@@ -1160,7 +1148,7 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                                 .button(
                                     Button::new(
                                         "clocks.stopwatch.reset",
-                                        &ui::i18n::I18nManager::lookup_plain("clocks-reset"),
+                                        &crate::locales::CATALOG.t("clocks-reset"),
                                     )
                                     .control_size(ui::widget::ControlSize::Large),
                                     Clocks::RESET_STOPWATCH.invoke(),
@@ -1216,7 +1204,7 @@ pub(crate) const SECTIONS: [(usize, &str, Icon); 4] = [
 
 /// What the window's bar names for the open section.
 pub(crate) fn section_title(mode: usize) -> String {
-    ui::i18n::I18nManager::lookup_plain(match mode {
+    crate::locales::CATALOG.t(match mode {
         WORLD => "clocks-section-world-clocks",
         ALARMS => "clocks-section-alarms",
         STOPWATCH => "clocks-section-stopwatch",
@@ -1265,39 +1253,36 @@ fn surface(
                                         let dismiss = notice_controls.effect(
                                             Button::new(
                                                 "clocks.notice.dismiss",
-                                                &ui::i18n::I18nManager::lookup_plain(
-                                                    "clocks-dismiss",
-                                                ),
+                                                &crate::locales::CATALOG.t("clocks-dismiss"),
                                             )
                                             .control_size(ui::widget::ControlSize::Large),
                                             &ClocksEffect::DismissNotice,
                                         );
                                         match alarm {
-                                        Some(alarm) => Box::new(
-                                            Row::new()
-                                                .with_padding_rhythm(None, None)
-                                                .push(Box::new(dismiss))
-                                                .push(Box::new(
-                                                    notice_controls.effect(
-                                                        Button::new(
-                                                            "clocks.notice.snooze",
-                                                            &ui::i18n::I18nManager::lookup_plain(
-                                                                "clocks-snooze",
+                                            Some(alarm) => Box::new(
+                                                Row::new()
+                                                    .with_padding_rhythm(None, None)
+                                                    .push(Box::new(dismiss))
+                                                    .push(Box::new(
+                                                        notice_controls.effect(
+                                                            Button::new(
+                                                                "clocks.notice.snooze",
+                                                                &crate::locales::CATALOG
+                                                                    .t("clocks-snooze"),
+                                                            )
+                                                            .control_size(
+                                                                ui::widget::ControlSize::Large,
                                                             ),
-                                                        )
-                                                        .control_size(
-                                                            ui::widget::ControlSize::Large,
+                                                            &ClocksEffect::SnoozeAlarm {
+                                                                alarm: alarm.as_str().to_owned(),
+                                                                minutes: SNOOZE_MINUTES,
+                                                            },
                                                         ),
-                                                        &ClocksEffect::SnoozeAlarm {
-                                                            alarm: alarm.as_str().to_owned(),
-                                                            minutes: SNOOZE_MINUTES,
-                                                        },
-                                                    ),
-                                                )),
-                                        )
-                                            as Element,
-                                        None => Box::new(dismiss) as Element,
-                                    }
+                                                    )),
+                                            )
+                                                as Element,
+                                            None => Box::new(dismiss) as Element,
+                                        }
                                     }),
                             ),
                         ))),
@@ -1319,12 +1304,12 @@ fn surface(
         SECTIONS
             .iter()
             .map(|(id, label, icon)| {
-                ui::widget::NavItem::new(id.to_string(), ui::i18n::I18nManager::lookup_plain(label))
+                ui::widget::NavItem::new(id.to_string(), crate::locales::CATALOG.t(label))
                     .icon(*icon)
             })
             .collect(),
     )])
-    .with_accessible_name(ui::i18n::I18nManager::lookup_plain("clocks-title"))
+    .with_accessible_name(crate::locales::CATALOG.t("clocks-title"))
     .bind_selection(selection)
     .on_view("clocks.screens", move |id| {
         if let Ok(mode) = id.parse::<usize>() {

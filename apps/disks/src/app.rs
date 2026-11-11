@@ -1197,7 +1197,7 @@ impl ui::widget::Decorator for DisksApp {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Politeness, Role};
         let mut root = AccessNode::new(Role::Window)
-            .with_name(ui::i18n::I18nManager::lookup_plain("disks-title"))
+            .with_name(crate::locales::CATALOG.t("disks-title"))
             .with_bounds(self.shell.get_rect());
         let status = self.store.borrow().status.clone();
         if !status.is_empty() {
@@ -1494,7 +1494,7 @@ mod tests {
             Framed::harness_mut(&mut app)
                 .inspection_json()
                 .unwrap()
-                .contains(&ui::i18n::I18nManager::lookup_plain("arriving-loading")),
+                .contains(&crate::locales::CATALOG.t("arriving-loading")),
             "the opening page says the drives are on their way"
         );
         app.state().show_reading(Ok(Topology::sample()));
