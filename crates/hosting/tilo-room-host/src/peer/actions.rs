@@ -327,6 +327,34 @@ pub(super) fn handle_host_action(
             reason: "this host serves no host operations".into(),
         });
     };
+    // One of the host's own operations changes what it keeps for a person as
+    // theirs: it spends their change budget, as a change in one of their
+    // workspaces does, and is refused before it runs, saying when the budget
+    // admits the next one. Only a person's own devices and keys are answered
+    // here, so a server key spends the owner budget its certificate names and
+    // any other device the guest's, as a workspace's change standing sees them.
+    if matches!(
+        request.message,
+        tilo_actions::remote::RemoteActionMessage::Invoke(_)
+    ) && let Some(crate::member_limits::Limited::Changes { retry_after }) =
+        super::over_change_limit(
+            peer,
+            session,
+            if peer.cert.capabilities.server_key {
+                crate::member_limits::Standing::Owner
+            } else {
+                crate::member_limits::Standing::Guest
+            },
+        )
+    {
+        return refused(ActionHostError::Unavailable {
+            reason: format!(
+                "{}: {}",
+                tilo_relay_protocol::refusal::BACKPRESSURE,
+                tilo_relay_protocol::refusal::too_many_changes(retry_after)
+            ),
+        });
+    }
     let caller = match session_caller(peer, session) {
         Ok(caller) => caller,
         Err((_, detail)) => {
