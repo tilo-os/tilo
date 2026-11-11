@@ -862,8 +862,8 @@ fn attach_loop_clipboard(event_loop: &ActiveEventLoop) {
 /// Close the loop's clipboard: the loop is done and hands its connection to no window after it.
 /// Its workers are torn down off this thread, retaining the display.
 fn close_loop_clipboard() {
-    let attachment = LOOP_CLIPBOARD.with(|slot| slot.borrow_mut().take());
-    drop(attachment);
+    // Taking the guard lets it go here; a target that attaches no clipboard holds none to take.
+    let _ = LOOP_CLIPBOARD.with(|slot| slot.borrow_mut().take());
 }
 
 fn take_early_event_loop() -> Option<EventLoop<UserEvent>> {
