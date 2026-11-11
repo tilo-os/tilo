@@ -92,7 +92,10 @@ view desktop_frame(
 view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bool) {
     ui.WindowFrame(name: place_title(p), focused: focused, lists_actions: lists, fill) {
         controls: {
-            frame_buttons(a, p)
+            row(gap: .tight, align: .center) {
+                place_handle(p)
+                frame_buttons(a, p)
+            }
         }
         body: {
             place_view(p, fill)

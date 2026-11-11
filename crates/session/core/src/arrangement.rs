@@ -232,6 +232,11 @@ pub enum ArrangementAction {
     /// Pin the place `place` (`pinned`), so an agent's arrangement leaves it alone (shell.md §5),
     /// or unpin it.
     Pin { place: u64, pinned: bool },
+    /// Stand the place `place` at `(x, y)` canvas pixels, keeping every other place where it is:
+    /// what a drag that let a place go on the canvas runs (`canvas.md` §6, "moving a window is one
+    /// arranging action", shell.md §2 `move`). The place's strip takes the point; nothing else
+    /// changes. Appended last: existing encodings are unchanged.
+    Position { place: u64, x: i64, y: i64 },
     /// Stand the resource `resource` on the canvas as its view `view`
     /// (empty for its primary published view), at `(x, y)` canvas pixels.
     /// The place is the new entry `place`, alone in its own strip `strip`,
@@ -898,19 +903,28 @@ impl Arrangement {
             self.place_of(beside)
         };
         let surface = self.surface_at()?;
-        // The point the new place stands at: the anchor's own place, so the free space nearest it
-        // keeps a gap from it and never covers it (`Arrangement::free_place_near`). With no anchor
-        // the place comes to the canvas' origin, as a place made by `place` without a point does.
-        let at = anchor
-            .and_then(|place| {
-                self.handle.read(|tree| {
-                    let (workspace, row, group, _) = locate(tree, place)?;
-                    let held = tree.workspaces.get(workspace)?;
-                    let id = held.strips.get(row)?.window_groups.get(group)?.id;
-                    held.arrangement.place_of(id)
-                })
+        // Where the new place stands: the free space next to the anchor (`free_place_next_to`),
+        // its trailing side first, then below it, then further down the two columns the anchor
+        // starts. The point handed to the place action is free already, so the action's own
+        // `free_place_near` keeps it as it is. With no anchor the place comes to the canvas'
+        // origin, as a place made by `place` without a point does. Opening several things beside
+        // one anchor therefore runs right, then down, never over the anchor or over each other,
+        // and never above or to the left of it (`shell.md` §3, "a place next to where it came
+        // from").
+        let (width, height) = (clamp_side(DEFAULT_WIDTH), clamp_side(DEFAULT_HEIGHT));
+        let at = anchor.and_then(|place| {
+            self.handle.read(|tree| {
+                let (workspace, row, group, _) = locate(tree, place)?;
+                let held = tree.workspaces.get(workspace)?;
+                let id = held.strips.get(row)?.window_groups.get(group)?.id;
+                let subject = held.arrangement.place_of(id)?;
+                let free = held
+                    .arrangement
+                    .free_place_next_to(subject, width, height, None);
+                Some((i64::from(free.x), i64::from(free.y)))
             })
-            .map_or((0, 0), |place| (place.right(), i64::from(place.y)));
+        });
+        let (x, y) = at.map_or((0, 0), |at| at);
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
             row: surface.row,
@@ -918,8 +932,8 @@ impl Arrangement {
             place: surface.place,
             resource: resource.to_owned(),
             view: view.to_owned(),
-            x: at.0,
-            y: at.1,
+            x,
+            y,
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
             float: None,
@@ -1342,6 +1356,27 @@ fn change(
             };
             let changed = tab.pinned != *pinned;
             tab.pinned = *pinned;
+            Ok(changed)
+        }
+        ArrangementAction::Position { place, x, y } => {
+            let Some((workspace, row, group, _)) = locate(tree, *place) else {
+                return Err("that place is not in the arrangement".into());
+            };
+            let Some(id) = tree
+                .workspaces
+                .get(workspace)
+                .and_then(|held| held.strips.get(row))
+                .and_then(|row| row.window_groups.get(group))
+                .map(|group| group.id)
+            else {
+                return Err("that place is not in the arrangement".into());
+            };
+            let Some(held) = tree.workspaces.get_mut(workspace) else {
+                return Err("that place is not in the arrangement".into());
+            };
+            let changed = held
+                .arrangement
+                .set_position(id, clamp_coord(*x), clamp_coord(*y));
             Ok(changed)
         }
         // Resolved into a `Place` at invocation, where the system's search and what is published
@@ -1769,6 +1804,7 @@ fn verb(action: &ArrangementAction) -> &'static str {
         ArrangementAction::Close { .. } => "close",
         ArrangementAction::Activate { .. } => "activate",
         ArrangementAction::Pin { .. } => "pin",
+        ArrangementAction::Position { .. } => "position",
         ArrangementAction::Place { .. } | ArrangementAction::PlaceFound { .. } => "place",
         ArrangementAction::Open { .. } => "open",
         ArrangementAction::Float { .. } => "float",
@@ -1840,6 +1876,7 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
     let closed = key.to_owned();
     let moved = key.to_owned();
     let in_front = key.to_owned();
+    let positioned = key.to_owned();
     vec![
         action(
             "pin",
@@ -1852,6 +1889,19 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
             move |args| ArrangementAction::Pin {
                 place: count_of(&pinned),
                 pinned: args.boolean("pinned").unwrap_or(true),
+            },
+        ),
+        action(
+            "position",
+            "Stand a place at a point on the canvas, as a drag that let it go there",
+            vec![
+                required("x", ParamType::Integer, "Its canvas x"),
+                required("y", ParamType::Integer, "Its canvas y"),
+            ],
+            move |args| ArrangementAction::Position {
+                place: count_of(&positioned),
+                x: args.integer("x").unwrap_or_default(),
+                y: args.integer("y").unwrap_or_default(),
             },
         ),
         action("close", "Close a place", Vec::new(), move |_| {

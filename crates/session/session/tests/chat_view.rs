@@ -1020,3 +1020,94 @@ fn typing_in_the_ask_conversations_composer_posts_on_enter_and_draws_the_text_on
     });
     common::shot(&mut session, "ask-composer-second.png");
 }
+
+/// A place's own handle, dragged (`shell.md` §8.1, "Dropping on the composer"; §3, "a place next
+/// to where it came from"): the shell's framed canvas draws a place's bar as a drag source
+/// carrying the place's resource, so a resource on the canvas reaches a composer as any other
+/// does. The live run's failure was the converse: the shell's places were no source at all, so
+/// dragging a Tasks place onto the composer did nothing. This drags a note's place handle onto
+/// the composer and reads the channel's own draft: the resource it carries is attached, exactly
+/// as a chip's or a search hit's is.
+#[test]
+fn a_places_handle_dragged_onto_the_composer_attaches_what_it_shows() {
+    let _settled = ui::motion::testing::settled();
+    let root = common::private_home();
+    let mut session = common::seeded_session(root.path());
+    common::until(&mut session, "the canvas", |session| {
+        common::on_screen(session, common::CANVAS_ENTRY).is_some()
+    });
+    // A note's editor on the canvas: the resource a place shows, drawn by the notes app's own
+    // view through the shell's frame. The handle in that frame's bar carries it.
+    let note = place(&mut session, "tl:so.tilo.lang.notes:root");
+    let title = session
+        .service_resources()
+        .into_iter()
+        .find(|spec| spec.id.as_str() == "tl:so.tilo.lang.notes:root")
+        .map(|spec| spec.label.clone())
+        .unwrap_or_else(|| "Notes".to_owned());
+    common::until(&mut session, "the note's editor on the canvas", |session| {
+        common::on_screen(session, &title).is_some()
+    });
+    // The place's handle stands in the frame's bar, named `Move place`.
+    let handle = common::on_screen(&session, "Move place").unwrap_or_else(|| {
+        panic!(
+            "the place's handle stands on screen: {:?}",
+            session.accessible_labels()
+        )
+    });
+    // The conversation the person asks in, its composer a drop target under the place.
+    common::press(&mut session, common::CANVAS_ENTRY);
+    common::type_text(&mut session, "look at this");
+    press_enter(&mut session);
+    let placed = common::wait_for(&mut session, "the conversation placed", |session| {
+        common::places(session)
+            .into_iter()
+            .find(|place| place.record.starts_with("chat.workspace/channels/"))
+    });
+    let address = placed.record;
+    // The composer's field stands on screen, drawn by Chat's own `page` in the conversation's
+    // place: the drop target the handle is let go over.
+    let field = common::wait_for(&mut session, "the composer's field", |session| {
+        session
+            .shell_text_bounds("Message #")
+            .or_else(|| session.shell_control("Send"))
+    });
+    let socket = root.path().join("test-control.sock");
+    let (fx, fy, fw, fh) = field;
+    let answer = common::control(
+        &mut session,
+        &socket,
+        &json!({
+            "op": "drag",
+            "x_from": handle.0 + handle.2 / 2.0,
+            "y_from": handle.1 + handle.3 / 2.0,
+            "x_to": fx + fw / 2.0,
+            "y_to": fy + fh / 2.0,
+        }),
+    );
+    assert_eq!(answer, json!({"ok": {}}), "the drag is taken");
+    // The draft's chip names the note: the drop ran Chat's `attach` with the resource the handle
+    // carried, as a chip dragged from any other view does.
+    common::until(&mut session, "the draft's chip", |session| {
+        session
+            .read(&address)
+            .and_then(|reading| {
+                reading["draft"]["resource"]["id"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .as_deref()
+            == Some("tl:so.tilo.lang.notes:root")
+    });
+    let reading = session
+        .read(&address)
+        .unwrap_or_else(|| panic!("the session serves the channel's reading: {address}"));
+    assert_eq!(
+        reading["draft"]["resource"]["id"].as_str(),
+        Some("tl:so.tilo.lang.notes:root"),
+        "the place's handle carried the resource it shows: {reading}; the shell refused {:?}",
+        session.shell_refusals()
+    );
+    shot(&mut session, root.path(), "handle-onto-composer.png");
+    assert!(note > 0, "the note's place stood on the canvas");
+}

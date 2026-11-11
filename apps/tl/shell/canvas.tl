@@ -48,11 +48,27 @@ view canvas(a: Arrangement, name: Text, framed: Bool) {
     }
 }
 
-/// Puts a resource dropped on the canvas where it was let go: the drag carries the resource and
-/// the canvas point it landed at, and the placement is the system's own (`session.place`, the
-/// action an agent's `place_at` runs), attributed and undone as one step of the person's.
-action place_dropped(target: host.Resource, at: List<Int>) (label: "Place it here") {
-    session.place(resource: target, x: at.at(0) ?? 0, y: at.at(1) ?? 0)
+/// Puts a resource dropped on the canvas where it was let go. A place that already stands on the
+/// canvas — the place whose handle was dragged — moves to the point it was let go at, through
+/// its own `position` action, so a drag that ends on the canvas moves the place and never stands
+/// a second one. Any other resource — a message's attachment, a search hit, a row of another
+/// view — is placed at that point through the system's own `place`, which is what an agent's
+/// `place_at` runs. Either is one arranging step of the person's, attributed and undoable.
+action place_dropped(target: host.Resource, at: List<Int>) (label: "Move it here") {
+    let x = at.at(0) ?? 0
+    let y = at.at(1) ?? 0
+    if let held = place_showing(target.id()) {
+        session.position(place: the_place(held.key), x: x, y: y)
+    } else {
+        session.place(resource: target, x: x, y: y)
+    }
+}
+
+/// The place standing on the canvas that shows the resource `record`, if one does: what a drag
+/// that ended on the canvas moves rather than placing a second time.
+fn place_showing(record: Text) -> Option<ArrangementPlace> {
+    let a = arrangement
+    a.places.find(p -> p.record == record)
 }
 
 /// How wide a strip's places stand on the canvas: the width the record keeps for it, so a window
@@ -80,13 +96,35 @@ fn pin_x(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace) -> Int {
 /// windows stand in, its controls at the end of the bar), and its resource's view composed
 /// inside, filling it, or the well its window shows in (shell.md §8). The toolbar stands
 /// outside it.
+///
+/// The handle stands in the frame's bar with the shell's controls: a `ui.DragSource` carrying
+/// the place's resource. Picked up there and let go over a composer, it attaches what the place
+/// shows to that draft (shell.md §8.1, "Dropping on the composer"); let go over the canvas, the
+/// map reports the drop and the place stands where it was let go. The body is never a source: a
+/// press inside it stays the app's, so what a place shows — a field, a row, a message — takes
+/// input as it always did.
 view framed_place(a: Arrangement, p: ArrangementPlace) {
     ui.WindowFrame(name: place_title(p), fill) {
         controls: {
-            place_controls(a, p)
+            row(gap: .tight, align: .center) {
+                place_handle(p)
+                place_controls(a, p)
+            }
         }
         body: {
             place_content(p)
+        }
+    }
+}
+
+/// A place's handle: the bar a person picks the place up by, carrying the resource the place
+/// shows. It draws a hand and nothing else, and a press that does not travel does nothing, so
+/// the handle is the bar's and the body under it is the app's. A place showing no resource the
+/// store holds (a foreign window) has no handle: there is nothing to carry.
+view place_handle(p: ArrangementPlace) {
+    if let r = placed_resource(p.record) {
+        ui.DragSource(r.id(), title: place_title(p)) {
+            ui.Button("Move place", icon: .hand, icon_only: true, role: .bar)
         }
     }
 }
