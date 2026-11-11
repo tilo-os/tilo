@@ -65,7 +65,7 @@ use crate::workspaces::{ContentKeeper, RecordWrite, Workspaces};
 use tilo_content::WorkspaceStores;
 
 /// The app whose record a workspace's tree is.
-const FILES_APP: &str = fs::tree_record::FILES_APP;
+const FILES_APP: &str = fs_protocol::tree::FILES_APP;
 /// How often the trees of workspaces written to since the last pass are read:
 /// a workspace takes many writes a second, and one pass sees their files.
 const READ_EVERY: Duration = Duration::from_secs(2);

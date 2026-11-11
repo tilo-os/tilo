@@ -26,6 +26,10 @@ use crate::files::{FileNameV1, FileNodeKind, FileRecordId};
 /// The kind of record a workspace's tree is.
 pub const TREE_KIND: &str = "files.tree";
 
+/// The app whose record a workspace's tree is: it declares the kind, and a
+/// host that keeps the tree reads it as that app's record.
+pub const FILES_APP: &str = <FilesTree as SharedRecord>::OWNER;
+
 /// The map of node objects, at the document's root.
 pub const NODES_KEY: &str = "nodes";
 /// The node id of the tree's root.

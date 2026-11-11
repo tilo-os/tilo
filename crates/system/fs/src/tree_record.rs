@@ -46,7 +46,7 @@ use crate::namespace::Namespace;
 
 /// The app whose person record a workspace's tree is: it declares the kind,
 /// and the daemon is its endpoint.
-pub const FILES_APP: &str = "so.tilo.file-explorer";
+pub use fs_protocol::tree::FILES_APP;
 
 /// How long the writer waits before dialing the session again after its
 /// connection ended: the session may restart under a daemon that outlives it.
