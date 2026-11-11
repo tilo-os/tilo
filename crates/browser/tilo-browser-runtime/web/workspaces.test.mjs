@@ -634,7 +634,7 @@ const memoryStore = () => {
 const seed = (store, list) => store.setItem('tilo-entered-workspaces', JSON.stringify(list));
 const kept = (origin, room, extra = {}) => ({origin, room, hostDevice: HOST, ...extra});
 
-/** The runtime's rules of the list (tilo-session-host's `entered`, tested
+/** The runtime's rules of the list (tilo-session-client's `entered`, tested
  * there), answering what each was asked with `answer`. */
 const rules = answer => {
   const asked = [];

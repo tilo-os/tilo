@@ -23,9 +23,9 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
-#[path = "../../../session/host/tests/support/participant.rs"]
+#[path = "../../../session/client/tests/support/participant.rs"]
 mod participant;
-#[path = "../../../session/host/tests/support/mod.rs"]
+#[path = "../../../session/client/tests/support/mod.rs"]
 pub(crate) mod support;
 
 #[cfg(test)]
@@ -125,7 +125,7 @@ use tilo_actions::{
 };
 use tilo_agent_participant::{ModelChoice, Replica, ReplicaActor, Seed, record_provider};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_session_host::Host;
+use tilo_relay_client::Host;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use harness::hosted::{Hosted, Options};

@@ -34,7 +34,7 @@ use tilo_actions::remote::{ActorPlace, Caller, RemoteActionTarget};
 use tilo_actions::{InteractionPhase, InvocationId};
 use tilo_relay_protocol::host_voice::HostWords;
 use tilo_relay_protocol::live::LiveRecord;
-use tilo_session_host::narration;
+use tilo_session_client::narration;
 
 use super::{CatalogueQuery, InvokeRequest, Outcome, invoke_arguments, record_of as route_of};
 

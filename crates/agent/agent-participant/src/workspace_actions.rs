@@ -95,7 +95,7 @@ use tilo_actions::{
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::room_workspace_id;
-use tilo_session_host::{MemoryPeerStore, PeerConfig};
+use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::RevocationList;
 use ui::permissions::policy::{ActionKind, Answer, TreePath};
 
@@ -856,7 +856,7 @@ impl Workspace {
         shared: &Arc<Shared>,
     ) -> Result<Self, String> {
         let _runtime = member.runtime.enter();
-        let peer = tilo_session_host::start_session(
+        let peer = tilo_session_client::start_session(
             PeerConfig {
                 host: member.endpoint.host.clone(),
                 cert: member.endpoint.host_cert.clone(),

@@ -50,7 +50,7 @@ use tilo_relay_client::Host;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
-use tilo_session_host::{MemoryPeerStore, PeerConfig};
+use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::directory::{ListingAction, Status};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
@@ -335,7 +335,7 @@ fn host_info(
 /// session a member's browser runs.
 fn page(room: &Room, member: &Member) -> Link {
     let _entered = room.runtime.enter();
-    let page = tilo_session_host::start_session(
+    let page = tilo_session_client::start_session(
         PeerConfig {
             host: room.host.clone(),
             cert: member.cert.clone(),

@@ -80,9 +80,8 @@ web-sys = { version = "=0.3.85", features = [
     "HtmlVideoElement",
     "console",
 ] }
-# The certified peer over iroh, its live codec and the toolkit transport.
-tilo-session-host = { version = "0.1.0", path = "../../session/host", features = ["toolkit"] }
-tilo-session-client = { version = "0.1.0", path = "../../session/client" }
+# The certified peer over WebTransport, its live plane and the participant's client.
+tilo-session-client = { version = "0.1.0", path = "../../session/client", features = ["toolkit"] }
 # The identity layer's device side: certification, pairing, the sign-in proof.
 tilo-relay-client = { version = "0.1.0", path = "../../hosting/tilo-relay-client", features = ["dial"] }
 tilo-peer-state = { version = "0.1.0", path = "../../collab/tilo-peer-state" }

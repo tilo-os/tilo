@@ -1,7 +1,7 @@
 /**
  * Getting into the workspace a link names, before anything about its target is
  * read. Which way, and the next when one fails, is the runtime's to say (the
- * rules every device takes, tilo-session-host's `way_in`); the page takes it
+ * rules every device takes, tilo-session-client's `way_in`); the page takes it
  * and says what happened. In the order the rules try them:
  * 1. the person's own desktop (`/me`) is this browser's, with no peer,
  *    once the home's door let them in where it gates (`ownDesktop`);

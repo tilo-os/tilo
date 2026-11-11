@@ -1,6 +1,6 @@
 //! The refusals a host sends, as they travel: `host_refusals.json` holds
 //! each `ActionHostError` as JSON carries it, with its code and the words it
-//! says, and every caller's reading of them (`tilo-session-host`'s `HostRefusal`) is
+//! says, and every caller's reading of them (`tilo-session-client`'s `HostRefusal`) is
 //! tested against the same file.
 
 use serde_json::Value;

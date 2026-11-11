@@ -36,7 +36,7 @@ use tilo_relay_client::login::{PairingLink, SignIn, door_at, sign_in};
 use tilo_relay_client::login_code;
 use tilo_relay_protocol::login_code::{self as protocol, Claimed, Report, Resolved, Step};
 use tilo_relay_protocol::web::API_PREFIX;
-use tilo_session_host::device::Device as Entered;
+use tilo_session_client::device::Device as Entered;
 
 use crate::agent::{self, Agent, Tool};
 

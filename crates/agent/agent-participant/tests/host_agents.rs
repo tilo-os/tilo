@@ -30,9 +30,9 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
-#[path = "../../../session/host/tests/support/participant.rs"]
+#[path = "../../../session/client/tests/support/participant.rs"]
 mod participant;
-#[path = "../../../session/host/tests/support/mod.rs"]
+#[path = "../../../session/client/tests/support/mod.rs"]
 mod support;
 
 mod common;

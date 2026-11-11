@@ -13,7 +13,7 @@
 //!   presence and history, so this side carries the lines.
 //! - **A dedicated host** (a relay) hosts it: the key opens a session with the
 //!   host as one of the person's devices and enters the workspace as every
-//!   device does ([`tilo_session_host::device::Device::enter_workspace`]): the
+//!   device does ([`tilo_session_client::device::Device::enter_workspace`]): the
 //!   host invites it in on that session and it redeems the invitation there.
 //!   The agent surface ([`crate::mcp::McpServer`]) runs here over the host's
 //!   actions.
@@ -27,9 +27,9 @@ use iroh::Endpoint;
 use serde_json::Value;
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_relay_session::workspaces::WorkspaceHostAddress;
+use tilo_session_client::PeerConfig;
+use tilo_session_client::device::Device;
 use tilo_session_core::remote::SessionActions;
-use tilo_session_host::PeerConfig;
-use tilo_session_host::device::Device;
 use tilo_user_identity::DeviceCert;
 
 use crate::mcp::{McpServer, Surface};

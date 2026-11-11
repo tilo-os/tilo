@@ -5,7 +5,7 @@ import {CustodyError} from './device-custody.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
 // Which way in, and the next one when a way fails, are the runtime's rules
-// (tilo-session-host's `way_in`, tested there). These tests hold the page to
+// (tilo-session-client's `way_in`, tested there). These tests hold the page to
 // taking the way it is answered, and to telling the runtime what it knows.
 
 const room = {kind: 'room', host: 'https://ada.tilo.cloud', room: '6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90'};

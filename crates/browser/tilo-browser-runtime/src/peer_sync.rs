@@ -246,7 +246,7 @@ pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceC
             outgoing: std::sync::Arc::new(handle.clone()),
             arrived,
             enrolled,
-            saying: Some(tilo_session_host::saying(handle)),
+            saying: Some(tilo_session_client::saying(handle)),
         },
         Device {
             publisher,
@@ -445,7 +445,7 @@ pub(crate) fn hear(peer: u32, workspace_id: u64, from: [u8; 32], body: &[u8]) {
 
 /// Take semantic work `from` narrated on a record's live stream in `workspace_id` (`event`):
 /// admitted only from a member here that this page's board knows as an agent
-/// ([`tilo_session_host::narration::admit`]), and held for the mounts that draw the workspace,
+/// ([`tilo_session_client::narration::admit`]), and held for the mounts that draw the workspace,
 /// whose next frame shows it. Work from anyone else, or that does not hold, is dropped.
 pub(crate) fn narrated(
     peer: u32,
@@ -461,7 +461,7 @@ pub(crate) fn narrated(
             return false;
         };
         let here = page.client.members(&workspace);
-        let Some(interaction) = tilo_session_host::narration::admit(&here, from, event) else {
+        let Some(interaction) = tilo_session_client::narration::admit(&here, from, event) else {
             return false;
         };
         let held = page.interactions.entry(workspace).or_default();

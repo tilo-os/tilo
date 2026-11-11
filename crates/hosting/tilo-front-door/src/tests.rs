@@ -1091,7 +1091,7 @@ fn a_busy_relay_answers_rate_limited_with_its_wait() {
             tilo_relay_protocol::refusal::too_many_changes(std::time::Duration::from_millis(480))
         ),
     };
-    let relay = relay::RelayError::from(tilo_session_host::device::HostRefusal::of(&busy));
+    let relay = relay::RelayError::from(tilo_session_client::device::HostRefusal::of(&busy));
     assert_eq!(
         relay,
         relay::RelayError::RateLimited {

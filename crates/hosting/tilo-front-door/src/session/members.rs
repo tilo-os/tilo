@@ -25,7 +25,7 @@ use crate::account::{Outcome, answer, failed, refused};
 use base64::Engine as _;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::RemoteActionTarget;
-use tilo_session_host::device::HostRefusal;
+use tilo_session_client::device::HostRefusal;
 
 /// The path of a workspace's people.
 pub const ROOT: &str = "workspace/members";

@@ -5,7 +5,7 @@
  * address, joining a workspace, and a member's approval of their own
  * device. Everything after goes over one iroh session to the host, through
  * the packet relay the host names (a page holds no UDP socket), the same
- * session a native device holds (`tilo-session-host` in wasm):
+ * session a native device holds (`tilo-session-client` in wasm):
  *
  * - durable documents: signed commits from a persisted outbox, acknowledged
  *   in host order, replayed after every reconnect;

@@ -128,7 +128,6 @@ tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-rt.workspace = true
 # `tilo mcp`'s agent says its word on the person's session as a client of the workspace's board.
 tilo-session-client = { path = "../../session/client" }
-tilo-session-host = { path = "../../session/host" }
 tilo-session-core = { path = "../../session/core" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

@@ -11,7 +11,7 @@
 //! the agent. Around each action it publishes presence — the record it
 //! focuses, where in it the action left it (the record's own item and
 //! position, [`ConfinedReplica::presence`]), and its own view of itself as an
-//! agent with its label, colour and activity ([`tilo_session_host::saying`]) — so every
+//! agent with its label, colour and activity ([`tilo_session_client::saying`]) — so every
 //! participant's window draws it there as it draws any collaborator. Other
 //! participants' presence arrives the same way and is readable through
 //! [`AgentParticipant::remote_members`].
@@ -37,9 +37,10 @@ use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_live::presence::KEEPALIVE_MS;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_client::Host;
 use tilo_relay_protocol::agents::{AgentStatus, AgentStep, TaskState};
 use tilo_relay_protocol::live::{LiveAnchor, LiveRecord};
-use tilo_session_host::{Host, MemoryPeerStore, PeerConfig};
+use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::DeviceCert;
 
 pub mod actions;
@@ -391,7 +392,7 @@ impl AgentParticipant {
         control: Arc<AgentControl>,
         catalogue: AppCatalogue,
         planner: Box<dyn Planner>,
-        store: Arc<dyn tilo_session_host::PeerStore>,
+        store: Arc<dyn tilo_session_client::PeerStore>,
     ) -> Result<Self, String> {
         let workspace_id = tilo_relay_protocol::room_workspace_id(&config.workspace)
             .map_err(|_| "the workspace is not a uuid".to_string())?;
@@ -410,7 +411,7 @@ impl AgentParticipant {
             );
         let planning = planning::Planning::start(planner, Arc::clone(&control))?;
         let (peer, events) = join(&config, &identity, workspace_id, store, &control)?;
-        let presence = tilo_session_host::saying::enter(
+        let presence = tilo_session_client::saying::enter(
             &peer,
             &identity.cert,
             &identity.delegation.label,
@@ -2337,10 +2338,10 @@ fn join(
     config: &ParticipantConfig,
     identity: &AgentIdentity,
     workspace_id: u64,
-    store: Arc<dyn tilo_session_host::PeerStore>,
+    store: Arc<dyn tilo_session_client::PeerStore>,
     control: &Arc<AgentControl>,
 ) -> Result<(Link, Events), String> {
-    let peer = tilo_session_host::start_session(
+    let peer = tilo_session_client::start_session(
         PeerConfig::member(
             config.host.clone(),
             identity.cert.clone(),

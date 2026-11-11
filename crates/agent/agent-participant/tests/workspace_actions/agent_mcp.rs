@@ -66,7 +66,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     // as `tilo login` does, and serves the projection over its session.
     let agent = Browser::open(&hosted, &computer, &host).await;
     // Its session runs the agent, as `tilo login` makes it say.
-    let _ = tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {
@@ -383,7 +383,7 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     // Its session runs the agent, as `tilo login` makes it say.
-    let _ = tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {
@@ -507,7 +507,7 @@ async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     // Its session runs the agent, as `tilo login` makes it say.
-    let _ = tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {
@@ -691,7 +691,7 @@ async fn leaves_who_is_here(ending: Ending) {
         panic!("a key names a person")
     };
     let agent = Browser::open(&hosted, &computer, &host).await;
-    tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code")
+    tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code")
         .await
         .expect("the computer's session is the agent's run");
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
@@ -802,7 +802,7 @@ async fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
     let mut seen = std::collections::BTreeSet::new();
     for run in 0..4 {
         let agent = Browser::open(&hosted, &computer, &host).await;
-        tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code")
+        tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code")
             .await
             .expect("the computer's session is the agent's run");
         let actions =
@@ -879,7 +879,7 @@ async fn a_quiet_agent_stays_while_its_session_lasts() {
     let mut runs = Vec::new();
     for run in 0..2 {
         let agent = Browser::open(&hosted, &computer, &host).await;
-        tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code")
+        tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code")
             .await
             .expect("the computer's session is the agent's run");
         let actions =
@@ -965,7 +965,7 @@ async fn an_agent_is_present_waiting_as_soon_as_it_connects() {
     };
 
     let agent = Browser::open(&hosted, &computer, &host).await;
-    tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code")
+    tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code")
         .await
         .expect("the computer's session is the agent's run");
     let connected = Instant::now();

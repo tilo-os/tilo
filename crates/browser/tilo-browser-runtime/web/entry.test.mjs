@@ -4,7 +4,7 @@ import {WORKSPACE_DOCUMENT_WAIT_MS, boot, chosenRoute, configureFeedback, initia
 import {UNAVAILABLE, openTarget, untilSnapshot, untilViewable, viewInvocation} from './open-target.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
-/** The runtime's way in (tilo-session-host's `way_in`, tested there),
+/** The runtime's way in (tilo-session-client's `way_in`, tested there),
  * answering the ways this page's scenario takes, in turn and again for each
  * entry. */
 const entering = (...ways) => {

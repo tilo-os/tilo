@@ -32,9 +32,9 @@
               driven on the test's own thread (the agent's apps are not Send)"
 )]
 
-#[path = "../../../session/host/tests/support/participant.rs"]
+#[path = "../../../session/client/tests/support/participant.rs"]
 mod participant;
-#[path = "../../../session/host/tests/support/mod.rs"]
+#[path = "../../../session/client/tests/support/mod.rs"]
 mod support;
 
 mod common;
@@ -66,6 +66,7 @@ use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig};
 use tilo_relay_client::Approver;
+use tilo_relay_client::certify;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentStatus, AgentsStatus, CANCEL_TASK_ACTION, MESSAGE_ACTION, PAUSE_ACTION,
     RESUME_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE, TaskState,
@@ -73,7 +74,6 @@ use tilo_relay_protocol::agents::{
 };
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_session_core::remote::Heard;
-use tilo_session_host::certify;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, UserIdentity,
     issue_device_cert,

@@ -19,7 +19,7 @@
  * Everything in it is checked before the page shows anything, and nothing is
  * signed until the person presses Allow: then this browser's device key,
  * certified by the person's own root for this answer, proves them to the
- * service (`tilo-session-host`'s `sign_in_proof`), and — where the service
+ * service (`tilo-session-client`'s `sign_in_proof`), and — where the service
  * asked for it — the root certifies the key the service generated for the
  * agent's grant, reaching what the card shows: a service that asked for all
  * of the person's workspaces lets them hold the agent to one of the ones this

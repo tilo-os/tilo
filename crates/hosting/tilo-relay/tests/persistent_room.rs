@@ -511,8 +511,8 @@ fn page(
     cert: tilo_user_identity::DeviceCert,
     host_cert: &tilo_user_identity::DeviceCert,
 ) -> tilo_session_client::Link {
-    tilo_session_host::start_session(
-        tilo_session_host::PeerConfig {
+    tilo_session_client::start_session(
+        tilo_session_client::PeerConfig {
             host,
             cert,
             host_cert: host_cert.clone(),
@@ -520,7 +520,7 @@ fn page(
             entering: None,
         },
         std::sync::Arc::new(key),
-        std::sync::Arc::new(tilo_session_host::MemoryPeerStore::default()),
+        std::sync::Arc::new(tilo_session_client::MemoryPeerStore::default()),
     )
 }
 
@@ -546,13 +546,13 @@ async fn enter_through_door(
     workspace: &str,
     (device, cert): (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
     name: &str,
-) -> Result<tilo_relay_client::login::Admission, tilo_session_host::device::HostRefusal> {
+) -> Result<tilo_relay_client::login::Admission, tilo_session_client::device::HostRefusal> {
     let info = tilo_relay_client::https::host_info(&Plain(plain))
         .await
         .unwrap();
     let host_cert = info.host_cert.clone();
-    let session = tilo_session_host::start_session(
-        tilo_session_host::PeerConfig {
+    let session = tilo_session_client::start_session(
+        tilo_session_client::PeerConfig {
             host: host_of(info),
             cert: cert.clone(),
             host_cert,
@@ -565,9 +565,9 @@ async fn enter_through_door(
             }),
         },
         std::sync::Arc::new(device.clone()),
-        std::sync::Arc::new(tilo_session_host::MemoryPeerStore::default()),
+        std::sync::Arc::new(tilo_session_client::MemoryPeerStore::default()),
     );
-    let answered = tilo_session_host::device::entered(&session).await;
+    let answered = tilo_session_client::device::entered(&session).await;
     session.close();
     answered
 }

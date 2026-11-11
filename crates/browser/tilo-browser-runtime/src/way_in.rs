@@ -1,8 +1,8 @@
 //! Which way the page takes into the workspace a link names, by the rules every device takes
-//! ([`tilo_session_host::way_in`]). The page hands over what the link carries and what it knows of
+//! ([`tilo_session_client::way_in`]). The page hands over what the link carries and what it knows of
 //! the host, as JSON, and takes the way answered (kebab-case, as [`way_in::Way`] names it).
 
-use tilo_session_host::way_in::{self, Failed, Here, Link};
+use tilo_session_client::way_in::{self, Failed, Here, Link};
 use wasm_bindgen::prelude::*;
 
 use crate::peer::js_error;

@@ -63,15 +63,15 @@ async fn main() -> Result<(), String> {
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root)
             .map_err(|error| error.to_string())?;
-        let held = tilo_session_host::device::Held {
+        let held = tilo_session_client::device::Held {
             cert,
             host_cert: Some(info.host_cert.clone()),
         };
-        let (cert, entering) = tilo_session_host::device::door_entry(
+        let (cert, entering) = tilo_session_client::device::door_entry(
             &info.host_cert,
             &workspace,
             &device,
-            tilo_session_host::device::Entering {
+            tilo_session_client::device::Entering {
                 held: Some(&held),
                 root: None,
                 label: &name,
@@ -81,18 +81,18 @@ async fn main() -> Result<(), String> {
         )
         .await
         .map_err(|refused| format!("{name}: {}", refused.message))?;
-        let session = tilo_session_host::start_session(
-            tilo_session_host::PeerConfig {
-                host: tilo_session_host::Host::published(&address),
+        let session = tilo_session_client::start_session(
+            tilo_session_client::PeerConfig {
+                host: tilo_relay_client::Host::published(&address),
                 cert,
                 host_cert: info.host_cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
                 entering: Some(entering),
             },
             Arc::new(device),
-            Arc::new(tilo_session_host::MemoryPeerStore::default()),
+            Arc::new(tilo_session_client::MemoryPeerStore::default()),
         );
-        let entered = tilo_session_host::device::entered(&session).await;
+        let entered = tilo_session_client::device::entered(&session).await;
         session.close();
         entered.map_err(|refused| format!("{name} was not admitted: {}", refused.message))?;
         joined = number;

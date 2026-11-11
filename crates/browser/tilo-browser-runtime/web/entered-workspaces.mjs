@@ -7,7 +7,7 @@
  * one that another host now answers for is forgotten rather than offered
  * (`forgetGoneWorkspaces`). Remembering grants nothing: opening one is the
  * workspace's own admission again. How the list changes is the rule every
- * device keeps it by (`tilo-session-host`'s `entered`, through the runtime);
+ * device keeps it by (`tilo-session-client`'s `entered`, through the runtime);
  * this module reads and writes it in the browser's storage.
  *
  * Reading needs no runtime, which is why it is a module of its own:

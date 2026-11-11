@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_relay_client::CertifyError;
 use tilo_relay_client::https::{self, Origin};
-use tilo_session_host::PeerConfig;
-use tilo_session_host::device::{Device, HostRefusal};
+use tilo_session_client::PeerConfig;
+use tilo_session_client::device::{Device, HostRefusal};
 
 /// How long entering a workspace may take.
 const ENTERING: Duration = Duration::from_secs(30);
@@ -195,7 +195,7 @@ impl Relay {
         connection
             .device
             .ask_host(
-                tilo_session_host::session::HOST_ITSELF,
+                tilo_session_client::session::HOST_ITSELF,
                 host_account::target(host_account::ACCOUNT),
                 Map::new(),
                 "tilo front door",

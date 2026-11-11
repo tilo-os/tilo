@@ -24,9 +24,9 @@ use tilo_actions::remote::{
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
+use tilo_session_client::PeerConfig;
+use tilo_session_client::device::Device;
 use tilo_session_core::remote::SessionActions;
-use tilo_session_host::PeerConfig;
-use tilo_session_host::device::Device;
 
 use crate::engine::Engine;
 

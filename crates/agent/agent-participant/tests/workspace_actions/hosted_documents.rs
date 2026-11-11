@@ -369,7 +369,7 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
     // person's page is open.
     let agent = Browser::open(&hosted, &computer, &host).await;
     // Its session runs the agent, as `tilo login` makes it say.
-    let _ = tilo_session_host::device::run_as_agent(&agent.peer, RUN_LABEL).await;
+    let _ = tilo_session_client::device::run_as_agent(&agent.peer, RUN_LABEL).await;
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {

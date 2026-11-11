@@ -60,7 +60,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
       return JSON.stringify({kind: 'invitation', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor', expiresAtNs: '9',
         members: 4, inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
     },
-    /** The shared rule of how a device comes back (tilo-session-host's
+    /** The shared rule of how a device comes back (tilo-session-client's
      * `reconnecting`, tested there), as far as these tests lean on it. */
     reconnectCertificate(kept, admitted, hostCert, withRoot) {
       const same = (a, b) => !a || !b || (String(a.user_public_key) === String(b.user_public_key)
@@ -600,7 +600,7 @@ test('a device the workspace let go asks to join again under the certificate it 
   // The workspace keeps the certificate of every device it admitted, also once
   // its person was removed or pruned after an absence, and refuses the same
   // device under another one. Whether the kept one still serves is the shared
-  // entry's to say (tilo-session-host's `entering_certificate`); the page
+  // entry's to say (tilo-session-client's `entering_certificate`); the page
   // hands it over exactly as kept.
   const runtime = fakeRuntime();
   const {values, handles, desktop, namespaces} = profileFakes(runtime);

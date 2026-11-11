@@ -172,7 +172,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [("package(tilo-session) and binary(lounge_e2e)",
                   {"host": 'cfg(target_os = "linux")'}),
-                 ("package(tilo-session-host) and binary(lounge_fresh_page)",
+                 ("package(tilo-session-client) and binary(lounge_fresh_page)",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the relay for the lounge's tests",
             )
@@ -185,7 +185,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "page-bundle"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-session-host) and (binary(passkey_root) or binary(node_workspace))",
+                [("package(tilo-session-client) and (binary(passkey_root) or binary(node_workspace))",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the page bundle its page tests run against",
             )
@@ -199,9 +199,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(rules, {"all()": ["test-runtime", "headless-audio"],
                                  "package(tilo-session) and binary(chat_2x2)": "chat-siblings",
                                  "package(tilo-session) and binary(lounge_e2e)": "lounge-siblings",
-                                 "package(tilo-session-host) and binary(lounge_fresh_page)":
+                                 "package(tilo-session-client) and binary(lounge_fresh_page)":
                                      "lounge-siblings",
-                                 "package(tilo-session-host) and (binary(passkey_root) or "
+                                 "package(tilo-session-client) and (binary(passkey_root) or "
                                  "binary(node_workspace))": "page-bundle",
                                  "package(tilo-ntfs-helper)": "ntfs-fixtures"})
 

@@ -87,7 +87,7 @@ class BuilderCandidates(unittest.TestCase):
         for binary in ('carriers', 'passkey_root', 'node_workspace', 'voice_browsers'):
             self.assertIn(f'binary({binary})', script)
             self.assertIn(f'--test {binary}', script)
-            self.assertTrue((ROOT / f'crates/session/host/tests/{binary}.rs').is_file())
+            self.assertTrue((ROOT / f'crates/session/client/tests/{binary}.rs').is_file())
         participant = (ROOT / 'crates/agent/agent-participant/tests/host_agents.rs').read_text()
         for test in ('the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart',
                      'a_browser_sees_every_task_of_an_agent_live_and_after_a_reload',
@@ -109,7 +109,7 @@ class BuilderCandidates(unittest.TestCase):
             (work / 'tools/ci/nextest.sh').write_text(
                 'printf "%s\\n" "$*" >> calls\n'
                 '[[ "$*" != *"$FAIL_PACKAGE"* ]]\n')
-            for failure in ('none', 'tilo-session-host', 'tilo-agent-participant'):
+            for failure in ('none', 'tilo-session-client', 'tilo-agent-participant'):
                 with self.subTest(failure=failure):
                     (work / 'calls').unlink(missing_ok=True)
                     result = subprocess.run(['bash', '-c', stubs + script], cwd=work,
@@ -118,7 +118,7 @@ class BuilderCandidates(unittest.TestCase):
                                             text=True, capture_output=True)
                     self.assertEqual(result.returncode == 0, failure == 'none', result.stderr)
                     calls = (work / 'calls').read_text().splitlines()
-                    self.assertEqual(len(calls), 1 if failure == 'tilo-session-host' else 2)
+                    self.assertEqual(len(calls), 1 if failure == 'tilo-session-client' else 2)
                     for call in calls:
                         self.assertIn('cargo nextest run --locked --profile ci --no-tests=fail', call)
             with self.subTest(failure='another browser'):

@@ -1299,9 +1299,8 @@ doc = false
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-service" = { path = "../../../crates/session/service", default-features = false, features = [] }
 "tilo-session" = { path = "../../../crates/session/session", default-features = false, features = [] }
-"tilo-session-client" = { path = "../../../crates/session/client", default-features = false, features = [] }
+"tilo-session-client" = { path = "../../../crates/session/client", default-features = false, features = ["default", "toolkit"] }
 "tilo-session-core" = { path = "../../../crates/session/core", default-features = false, features = [] }
-"tilo-session-host" = { path = "../../../crates/session/host", default-features = false, features = ["default", "toolkit"] }
 "tilo-session-logging" = { path = "../../../crates/session/session-logging", default-features = false, features = [] }
 "tilo-session-power" = { path = "../../../crates/session/power-service", default-features = false, features = [] }
 "tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
@@ -3738,7 +3737,6 @@ doc = false
 "tilo-boot-signin" = { path = "../../../crates/system/boot-signin", default-features = false, features = [] }
 "tilo-bot-directory" = { path = "../../../crates/packaging/bot-directory", default-features = false, features = [] }
 "tilo-browser-compute" = { path = "../../../crates/browser/tilo-browser-compute", default-features = false, features = [] }
-"tilo-session-host" = { path = "../../../crates/session/host", features = ["toolkit"] }
 "tilo-browser-runtime" = { path = "../../../crates/browser/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../../crates/platform/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }

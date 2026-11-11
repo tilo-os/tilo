@@ -362,7 +362,7 @@ pub async fn enter_page(
     token: Option<&[u8]>,
 ) -> Value {
     use tilo_relay_protocol::workspaces::JoinReply;
-    use tilo_session_host::device::{Entering, Held, entered, invitation_entry};
+    use tilo_session_client::device::{Entering, Held, entered, invitation_entry};
     let client = tilo_net::Client::builder().build().unwrap();
     let host = tilo_relay_client::https::Origin::new(&client, &on_relay.relay);
     let offer = tilo_relay_client::https::invitation(&host, invitation)
@@ -391,16 +391,16 @@ pub async fn enter_page(
     .await
     .unwrap();
     let address = info.address.expect("the relay takes device sessions");
-    let session = tilo_session_host::start_session(
-        tilo_session_host::PeerConfig {
-            host: tilo_session_host::Host::published(&address),
+    let session = tilo_session_client::start_session(
+        tilo_session_client::PeerConfig {
+            host: tilo_relay_client::Host::published(&address),
             cert: page.cert.clone(),
             host_cert: info.host_cert,
             revocations: tilo_user_identity::RevocationList::new(),
             entering: Some(entering),
         },
         Arc::new(page.key.clone()),
-        Arc::new(tilo_session_host::MemoryPeerStore::default()),
+        Arc::new(tilo_session_client::MemoryPeerStore::default()),
     );
     let admitted = entered(&session)
         .await

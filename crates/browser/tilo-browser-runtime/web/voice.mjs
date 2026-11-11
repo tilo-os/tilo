@@ -1,6 +1,6 @@
 /**
  * A browser participant in a call: its voice and its pictures on the
- * workspace's live plane (`tilo-session-host` `session/plane.rs`).
+ * workspace's live plane (`tilo-session-client` `session/plane.rs`).
  *
  * The page is a member of the call's channel and holds its content keys, so
  * it seals what its microphone and camera make itself and opens what the

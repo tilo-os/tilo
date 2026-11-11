@@ -66,7 +66,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       calls.push(['sealed', base, host, invitation]);
       return SEALED;
     },
-    // The rules of the list are the runtime's (tilo-session-host's `entered`,
+    // The rules of the list are the runtime's (tilo-session-client's `entered`,
     // tested there); these keep only what the page's steps here rely on.
     forgetGoneWorkspaces: (list, origin, hostDevice) => {
       const all = JSON.parse(list);

@@ -50,7 +50,7 @@ use tilo_relay_client::Host;
 use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, door_path};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 use tilo_session::{Options, Session};
-use tilo_session_host::{MemoryPeerStore, PeerConfig};
+use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::{Listing, ListingAction, Status};
 
@@ -1189,7 +1189,7 @@ impl LoungeHost {
         };
         let page = {
             let _entered = runtime.enter();
-            let page = tilo_session_host::start_session(
+            let page = tilo_session_client::start_session(
                 PeerConfig {
                     host: Host::at(self.relay.node_addr()),
                     cert: self.page_device.clone(),

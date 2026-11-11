@@ -17,9 +17,9 @@ mod common;
 
 tilo_agent_participant::app_worker!();
 tilo_automerge_isolate::test_worker!();
-#[path = "../../../session/host/tests/support/participant.rs"]
+#[path = "../../../session/client/tests/support/participant.rs"]
 mod participant;
-#[path = "../../../session/host/tests/support/mod.rs"]
+#[path = "../../../session/client/tests/support/mod.rs"]
 mod support;
 
 use std::sync::{Arc, Mutex};

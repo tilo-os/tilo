@@ -31,11 +31,11 @@ use tilo_actions::remote::{
 };
 
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_client::Host;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentsStatus, STATUS_ACTION, SUPERVISOR_RESOURCE,
 };
 use tilo_session_core::remote::Heard;
-use tilo_session_host::Host;
 
 use super::hosted::Hosted;
 use crate::support::{Device, WORKSPACE, admitted_to, ready, start_peer};
@@ -171,7 +171,7 @@ impl Page {
             )) = tilo_relay_protocol::live::LiveFrame::decode(frame)
         {
             let here = self.here();
-            if let Some(work) = tilo_session_host::narration::admit(&here, *from, &event) {
+            if let Some(work) = tilo_session_client::narration::admit(&here, *from, &event) {
                 self.narrated.push((record, work));
             }
         }

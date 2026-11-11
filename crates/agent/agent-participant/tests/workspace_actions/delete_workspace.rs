@@ -165,20 +165,20 @@ async fn only_member_hears_deleted(
     let client = tilo_net::Client::builder().build().unwrap();
     let host = tilo_relay_client::https::Origin::new(&client, &on_relay.relay);
     assert!(
-        tilo_session_host::workspace_deleted(&host, workspace)
+        tilo_relay_client::https::workspace_deleted(&host, workspace)
             .await
             .unwrap(),
         "the host's address says the workspace was deleted"
     );
     // The device settles what it remembered by that answer: forgotten.
     let host_device = hex::encode(on_relay.host.cert.device_public_key);
-    let place = tilo_session_host::entered::Place {
+    let place = tilo_session_client::entered::Place {
         origin: on_relay.relay.clone(),
         room: workspace.to_owned(),
     };
-    let remembered = tilo_session_host::entered::remember(
+    let remembered = tilo_session_client::entered::remember(
         Vec::new(),
-        tilo_session_host::entered::Entered {
+        tilo_session_client::entered::Entered {
             origin: place.origin.clone(),
             room: place.room.clone(),
             host_device: host_device.clone(),
@@ -186,13 +186,13 @@ async fn only_member_hears_deleted(
             unavailable: false,
         },
     );
-    let (changed, settled) = tilo_session_host::entered::settle_failed(
+    let (changed, settled) = tilo_session_client::entered::settle_failed(
         remembered.entered,
         &place,
         Some(&host_device),
         true,
     );
-    assert_eq!(settled, tilo_session_host::entered::Settled::Deleted);
+    assert_eq!(settled, tilo_session_client::entered::Settled::Deleted);
     assert!(changed.entered.is_empty(), "{changed:?}");
     assert_eq!(changed.unchoose, [place]);
 }

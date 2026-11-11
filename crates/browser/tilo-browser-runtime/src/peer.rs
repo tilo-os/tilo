@@ -1,4 +1,4 @@
-//! The page's certified peer: `tilo_session_host` behind wasm-bindgen for
+//! The page's certified peer: `tilo_session_client` behind wasm-bindgen for
 //! `web/peer.mjs`, reaching the host over HTTPS only.
 //!
 //! The device key stays in custody (`web/device-custody.mjs`): either a
@@ -31,16 +31,15 @@ use serde::{Deserialize, Serialize};
 use tilo_channels::VAULT_SECRET_APP as CHANNEL_VAULT_APP;
 use tilo_live::live::Track;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_client::https::{HttpClient, HttpFuture};
 use tilo_relay_client::{Answer, AnswerFuture};
+use tilo_relay_client::{DeviceSigner, Host, SignError, SignFuture};
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
 use tilo_relay_protocol::web::{PageHost, PageHostAddress};
 use tilo_session::sync::{Cmd, Event, Outbox};
+use tilo_session_client::device::{Device, HostRefusal};
 use tilo_session_client::{Events, FailureSubject, Link, LocalState};
-use tilo_session_host::device::{Device, HostRefusal};
-use tilo_session_host::{
-    DeviceSigner, Host, HttpClient, HttpFuture, PeerConfig, PeerRecord, PeerStore, SignError,
-    SignFuture,
-};
+use tilo_session_client::{PeerConfig, PeerRecord, PeerStore};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -677,7 +676,7 @@ pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<S
 
 /// Which certificate the page's session starts with as it comes back to the host whose own
 /// certificate is `hostCert` (JSON), through the one rule every device keeps
-/// ([`tilo_session_host::device::reconnecting`]): `kept` is the `{cert, hostCert}` this device
+/// ([`tilo_session_client::device::reconnecting`]): `kept` is the `{cert, hostCert}` this device
 /// kept, `admitted` the one an entry just admitted it under, and `withRoot` whether the page holds
 /// the person's root to certify anew. Answers `admitted`, `adopt-host`, `kept`, `certify` or
 /// `host-changed`. Kept text that is no certificate is no certificate kept.
@@ -692,7 +691,7 @@ pub fn reconnect_certificate(
     host_cert: &str,
     with_root: bool,
 ) -> Result<String, JsError> {
-    use tilo_session_host::device::{Held, reconnecting};
+    use tilo_session_client::device::{Held, reconnecting};
     let host: DeviceCert = serde_json::from_str(host_cert).map_err(js_error)?;
     let kept: Option<Held> = kept.and_then(|text| serde_json::from_str(&text).ok());
     let admitted: Option<Held> = admitted
@@ -729,7 +728,7 @@ struct Accepting {
 
 /// What this page's device (`custody`) enters the workspace `invitation` (its signed bytes)
 /// admits into with, on the host whose certificate is `hostCert` (JSON), through the one entry
-/// every device takes ([`tilo_session_host::device::invitation_entry`]): the certificate it enters
+/// every device takes ([`tilo_session_client::device::invitation_entry`]): the certificate it enters
 /// under (the one it holds from that host where it still serves, else one the person's root
 /// `root` certifies now) and the entry the session it starts asks for as it opens, carrying the
 /// invitation and `options.admissionToken`. `options` is [`Accepting`] JSON. Resolves to
@@ -748,7 +747,7 @@ pub async fn invitation_entry(
     root: JsValue,
     options: String,
 ) -> Result<String, JsValue> {
-    use tilo_session_host::device::{Entering, Held};
+    use tilo_session_client::device::{Entering, Held};
     let options: Accepting = serde_json::from_str(&options).map_err(js_error)?;
     let held: Option<Held> = options
         .held
@@ -763,7 +762,7 @@ pub async fn invitation_entry(
     } else {
         Some(PageSigner::from_js(&root)?)
     };
-    let (cert, entering) = tilo_session_host::device::invitation_entry(
+    let (cert, entering) = tilo_session_client::device::invitation_entry(
         &host_cert,
         &invitation,
         &device,
@@ -786,7 +785,7 @@ pub async fn invitation_entry(
 
 /// What this page's device (`custody`) enters `workspace` through its door with, on the host whose
 /// certificate is `hostCert` (JSON), through the one entry every device takes
-/// ([`tilo_session_host::device::door_entry`]): the certificate it enters under (the one it holds
+/// ([`tilo_session_client::device::door_entry`]): the certificate it enters under (the one it holds
 /// from that host where it still serves, else one the person's root `root` certifies now) and the
 /// entry the session it starts asks for as it opens. `options` is [`Accepting`] JSON. Resolves to
 /// `{certificate: {cert, hostCert}, entering}` JSON; [`WasmPeer::start`] takes both, and the host's
@@ -803,7 +802,7 @@ pub async fn door_entry(
     root: JsValue,
     options: String,
 ) -> Result<String, JsValue> {
-    use tilo_session_host::device::{Entering, Held};
+    use tilo_session_client::device::{Entering, Held};
     let options: Accepting = serde_json::from_str(&options).map_err(js_error)?;
     let held: Option<Held> = options
         .held
@@ -818,7 +817,7 @@ pub async fn door_entry(
     } else {
         Some(PageSigner::from_js(&root)?)
     };
-    let (cert, entering) = tilo_session_host::device::door_entry(
+    let (cert, entering) = tilo_session_client::device::door_entry(
         &host_cert,
         &workspace,
         &device,
@@ -967,7 +966,7 @@ pub struct PairingHost(PairingReach);
 /// Where a page's pairing commands reach the host.
 enum PairingReach {
     /// Over the session the page already holds with the host.
-    Session(tilo_session_host::SessionMemberHost),
+    Session(tilo_session_client::SessionMemberHost),
     /// From an endpoint bound for pairing alone: the page holds no session
     /// with this host yet.
     Own(tilo_relay_client::MemberApprover),
@@ -1685,7 +1684,7 @@ impl WasmPeer {
         let owner_cert = config.host_cert.clone();
         let display_name = config.display_name;
         let revocations = own_revocations(config.revocations, &config.cert)?;
-        let handle = tilo_session_host::start_session(
+        let handle = tilo_session_client::start_session(
             PeerConfig {
                 host: dialled(config.address),
                 cert: config.cert,
@@ -1874,7 +1873,7 @@ impl WasmPeer {
     /// person's root custody the page holds: over this session, with no
     /// connection of its own.
     pub fn pairing(&self) -> PairingHost {
-        PairingHost(PairingReach::Session(tilo_session_host::member_host(
+        PairingHost(PairingReach::Session(tilo_session_client::member_host(
             &self.handle,
         )))
     }
@@ -1892,7 +1891,7 @@ impl WasmPeer {
 
     #[wasm_bindgen(js_name = preAdmit)]
     pub async fn pre_admit(&self, root: JsValue, options: String) -> Result<String, JsError> {
-        use tilo_session_host::DeviceSigner as _;
+        use tilo_relay_client::DeviceSigner as _;
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Options {

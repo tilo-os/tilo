@@ -246,7 +246,7 @@ fn kept_content(
         if cluster != workspace {
             return None;
         }
-        tilo_session_host::surfaces::read(app, hash).or_else(|| {
+        tilo_session_client::surfaces::read(app, hash).or_else(|| {
             let joined = replica_of(id)?;
             let joined = joined.try_borrow().ok()?;
             let open = joined.open_records().any(|(open, _)| open == app);

@@ -20,7 +20,7 @@ test-support = ["tilo-room-host/test-support"]
 # Agents on the host: `dev --agents` / `run --agents` run an agent supervisor
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
-agents = ["web", "tilo-room-host/agents", "dep:tilo-agent-participant", "dep:tilo-session-host", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:legacy-vm", "dep:tilo-host-account"]
+agents = ["web", "tilo-room-host/agents", "dep:tilo-agent-participant", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:legacy-vm", "dep:tilo-host-account"]
 web = ["tilo-room-host/web", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac"]
 
 [[bin]]
@@ -200,7 +200,6 @@ tilo-workspace-emoji = { path = "../../platform/tilo-workspace-emoji", optional 
 # The room's default record id, the one members' first windows open.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
 # Read existing signed document envelopes through the shared, read-only cipher.
-tilo-session-host = { path = "../../session/host", optional = true }
 tilo-session-client = { path = "../../session/client", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
