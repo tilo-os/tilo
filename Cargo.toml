@@ -1074,6 +1074,64 @@ opt-level = 3
 [profile.test.package.swash]
 opt-level = 3
 
+# Every device in a workspace's channel group follows each commit that admits
+# someone: MLS works through the group's ratchet tree and writes the whole group
+# state, so in a group of hundreds each commit costs a member some milliseconds
+# optimised and ten times that unoptimised. A test with hundreds of member
+# devices in one process (the crowded entry) spends its run on that.
+[profile.dev.package.openmls]
+opt-level = 3
+[profile.test.package.openmls]
+opt-level = 3
+[profile.dev.package.openmls_traits]
+opt-level = 3
+[profile.test.package.openmls_traits]
+opt-level = 3
+[profile.dev.package.openmls_memory_storage]
+opt-level = 3
+[profile.test.package.openmls_memory_storage]
+opt-level = 3
+[profile.dev.package.openmls_rust_crypto]
+opt-level = 3
+[profile.test.package.openmls_rust_crypto]
+opt-level = 3
+[profile.dev.package.openmls_basic_credential]
+opt-level = 3
+[profile.test.package.openmls_basic_credential]
+opt-level = 3
+[profile.dev.package.tls_codec]
+opt-level = 3
+[profile.test.package.tls_codec]
+opt-level = 3
+[profile.dev.package.hpke-rs]
+opt-level = 3
+[profile.test.package.hpke-rs]
+opt-level = 3
+[profile.dev.package.hpke-rs-crypto]
+opt-level = 3
+[profile.test.package.hpke-rs-crypto]
+opt-level = 3
+[profile.dev.package.hpke-rs-rust-crypto]
+opt-level = 3
+[profile.test.package.hpke-rs-rust-crypto]
+opt-level = 3
+[profile.dev.package.x25519-dalek]
+opt-level = 3
+[profile.test.package.x25519-dalek]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.test.package.chacha20]
+opt-level = 3
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+[profile.test.package.chacha20poly1305]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+[profile.test.package.poly1305]
+opt-level = 3
+
 # Same reason for the hot paths the tilo-ui tests profile as dominant in a debug
 # build: shader translation (naga) for every renderer, deflate and hashing for
 # large documents and PNG captures, font parsing and shaping, and QR encoding.
