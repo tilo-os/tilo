@@ -79,10 +79,15 @@ fn installed() -> Option<Keyer> {
 /// One key open on the stack of widgets being drawn.
 struct Open {
     key: u64,
-    /// How many children have been keyed under it so far, for a child drawn
-    /// without an index of its own.
+    /// The next free slot for a child drawn without an index of its own.
     children: usize,
+    /// Where this widget's children's claimed slots start in [`USED`].
+    used_from: usize,
 }
+
+/// A slot a child took under a parent in a frame, and the key it made
+/// ([`SLOTS`]).
+type SlotEntry = (usize, u64);
 
 /// A scroll region a keyed widget drew this frame ([`Widget::primary_vertical_scroll`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -116,6 +121,10 @@ impl DrawnScroll {
 thread_local! {
     static KEYER: std::cell::Cell<Option<Keyer>> = const { std::cell::Cell::new(None) };
     static OPEN: RefCell<Vec<Open>> = const { RefCell::new(Vec::new()) };
+    /// The slots the open widgets' children claimed this frame, as one stack
+    /// of ranges matching [`OPEN`]: a parent's are those from its `used_from`
+    /// on, and its children's follow.
+    static USED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     /// The widgets at the root of the frame keyed so far.
     /// By the scene they draw into and their type: a widget drawn at the
     /// root of another scene (a measuring pass, a drag's picture), or one
@@ -128,6 +137,10 @@ thread_local! {
     /// The key each widget drew under, by address and type, kept the same
     /// way.
     static DRAWN: RefCell<HashMap<(usize, &'static str), u64>> = RefCell::new(HashMap::new());
+    /// The slot each child took under its parent last frame, by the parent's
+    /// key and the child's identity ([`claim_slot`]), kept the same way.
+    static SLOTS: RefCell<HashMap<(u64, (usize, &'static str)), SlotEntry>> =
+        RefCell::new(HashMap::new());
     /// The single-line fields keyed widgets left to the host, by key, kept
     /// the same way.
     static FIELDS: RefCell<HashMap<u64, DrawnField>> = RefCell::new(HashMap::new());
@@ -238,6 +251,7 @@ pub fn begin_frame() {
 fn begin_frame_keys() {
     ROOTS.with_borrow_mut(HashMap::clear);
     OPEN.with_borrow_mut(Vec::clear);
+    USED.with_borrow_mut(Vec::clear);
 }
 
 /// Forget the scroll regions and widgets whose keys `scene` (a whole frame)
@@ -255,6 +269,9 @@ pub fn retain_shown(scene: &Scene) {
         .collect();
     SCROLLS.with_borrow_mut(|scrolls| scrolls.retain(|key, _| shown.contains(key)));
     DRAWN.with_borrow_mut(|drawn| drawn.retain(|_, key| shown.contains(key)));
+    // A child this frame did not draw is one a parent skipped: the slot it
+    // had says nothing about where its siblings go now.
+    SLOTS.with_borrow_mut(|slots| slots.retain(|_, (_, key)| shown.contains(key)));
     FIELDS.with_borrow_mut(|fields| fields.retain(|key, _| shown.contains(key)));
     PICTURES.with_borrow_mut(|pictures| pictures.retain(|key| shown.contains(key)));
 }
@@ -342,6 +359,48 @@ struct Described<'a> {
     region: Option<crate::widget::PrimaryScrollRegion>,
 }
 
+/// Whether `slot` is one of `used`, which is nearly always ascending: a
+/// container passes its children's places in order, so a slot past the last
+/// is free without looking.
+fn taken(used: &[usize], slot: usize) -> bool {
+    used.last().is_some_and(|&last| slot <= last) && used.contains(&slot)
+}
+
+/// The slot a child takes under the parent `parent`, whose children have
+/// claimed `used[from..]` so far and whose next free slot is `next`.
+///
+/// A container that knows a child's place among its children says it
+/// (`index`); one that does not gets a place that stays put anyway: the slot
+/// the child had under the same parent last frame when that slot is still
+/// free, else the first free slot from `next` on. So a container that leaves
+/// a child undrawn without saying so — a list showing one page of its rows, a
+/// panel hiding a section — does not renumber the children after it, and the
+/// elements the page keeps for them, with their selection and focus, stay.
+fn claim_slot(
+    parent: u64,
+    index: Option<usize>,
+    identity: (usize, &'static str),
+    used: &mut Vec<usize>,
+    from: usize,
+    next: &mut usize,
+) -> usize {
+    let remembered = index.or_else(|| {
+        SLOTS
+            .with_borrow(|slots| slots.get(&(parent, identity)).map(|entry| entry.0))
+            .filter(|slot| !taken(&used[from..], *slot))
+    });
+    let slot = remembered.unwrap_or_else(|| {
+        let mut slot = *next;
+        while taken(&used[from..], slot) {
+            slot = slot.saturating_add(1);
+        }
+        slot
+    });
+    *next = (*next).max(slot.saturating_add(1));
+    used.push(slot);
+    slot
+}
+
 fn begin_described(
     scene: &mut Scene,
     widget: &Described<'_>,
@@ -354,22 +413,32 @@ fn begin_described(
     // settled on the second pass) numbers its roots as once.
     let fresh = scene.encoding().resources.marks.is_empty();
     let (key, ancestors) = OPEN.with_borrow_mut(|open| {
-        let (parent, slot) = match open.last_mut() {
-            Some(parent) => {
-                let slot = index.unwrap_or(parent.children);
-                parent.children = slot.saturating_add(1);
+        let (parent, slot) = USED.with_borrow_mut(|used| {
+            if let Some(parent) = open.last_mut() {
+                let from = parent.used_from;
+                let slot = claim_slot(
+                    parent.key,
+                    index,
+                    widget.identity,
+                    used,
+                    from,
+                    &mut parent.children,
+                );
                 (parent.key, slot)
+            } else {
+                // The root of the frame is the parent of what draws first; a
+                // widget drawn into another scene, or one of another type,
+                // counts as a root of its own.
+                ROOTS.with_borrow_mut(|roots| {
+                    if fresh {
+                        roots.retain(|(drawn_into, _), _| *drawn_into != scene_id);
+                    }
+                    let count = roots.entry((scene_id, widget.identity.1)).or_default();
+                    let slot = claim_slot(0, index, widget.identity, used, 0, count);
+                    (0, slot)
+                })
             }
-            None => ROOTS.with_borrow_mut(|roots| {
-                if fresh {
-                    roots.retain(|(drawn_into, _), _| *drawn_into != scene_id);
-                }
-                let count = roots.entry((scene_id, widget.identity.1)).or_default();
-                let slot = index.unwrap_or(*count);
-                *count = slot.saturating_add(1);
-                (0, slot)
-            }),
-        };
+        });
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         parent.hash(&mut hasher);
         if let Some(id) = widget.test_id {
@@ -379,8 +448,16 @@ fn begin_described(
             widget.identity.1.hash(&mut hasher);
         }
         let key = hasher.finish();
+        SLOTS.with_borrow_mut(|slots| {
+            slots.insert((parent, widget.identity), (slot, key));
+        });
         let ancestors: Vec<u64> = open.iter().map(|open| open.key).collect();
-        open.push(Open { key, children: 0 });
+        let used_from = USED.with_borrow(Vec::len);
+        open.push(Open {
+            key,
+            children: 0,
+            used_from,
+        });
         (key, ancestors)
     });
     DRAWN.with_borrow_mut(|drawn| {
@@ -453,7 +530,9 @@ pub fn end_widget(scene: &mut Scene, begun: Begun) {
 
 fn end_keys(scene: &mut Scene) {
     OPEN.with_borrow_mut(|open| {
-        open.pop();
+        if let Some(closed) = open.pop() {
+            USED.with_borrow_mut(|used| used.truncate(closed.used_from));
+        }
     });
     scene.encoding_mut().encode_mark(MarkKind::End);
 }
@@ -483,7 +562,14 @@ pub fn begin_item(scene: &mut Scene, key: u64, origin: Affine) -> Begun {
 }
 
 fn begin_item_keys(scene: &mut Scene, key: u64, origin: Affine) {
-    OPEN.with_borrow_mut(|open| open.push(Open { key, children: 0 }));
+    let used_from = USED.with_borrow(Vec::len);
+    OPEN.with_borrow_mut(|open| {
+        open.push(Open {
+            key,
+            children: 0,
+            used_from,
+        });
+    });
     mark(scene, key, origin);
 }
 
