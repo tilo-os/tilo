@@ -178,6 +178,14 @@ CHROME=/usr/lib64/chromium-browser/chromium-browser \
   node crates/browser/tilo-web-desktop/scripts/agent-shell.mjs --build
 ```
 
+On a machine with a GPU, headless Chrome still draws WebGPU with SwiftShader
+unless told otherwise: `TILO_CHROME_ARGS="--enable-gpu --use-angle=vulkan
+--enable-features=Vulkan --ignore-gpu-blocklist"` gives it the GPU (on a laptop
+with two, `VK_DRIVER_FILES` picks the one Vulkan sees). A relay built on another
+machine finds no font catalog of its own; `TILO_FONT_CATALOG` names one
+(`python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope
+fixtures` prints it).
+
 `--build` builds the relay (features `web,agents`), the CLI and the bundle;
 the shots then arrive in `target/look/agent-shell`. A recording needs ffmpeg or
 gst-launch-1.0 (the build container has the latter); without either, the
