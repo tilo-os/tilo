@@ -85,11 +85,20 @@ impl OwnerCommitService for NativeOwnerCommits {
             .opened_owner("native durable owner unavailable")?
             .health()
     }
-    /// A document write commits through [`Self::commit_local_document`].
+    /// An effect's receipt; a document write commits through
+    /// [`Self::commit_local_document`].
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
-        if matches!(request.operation, CommitOperation::Document { .. }) {
-            let committed = self.commit_local_document(request, None);
-            return Box::pin(async move { Ok(committed.await?.1) });
+        match &request.operation {
+            CommitOperation::EffectReceipt { .. } => {}
+            CommitOperation::Document { .. } => {
+                let committed = self.commit_local_document(request, None);
+                return Box::pin(async move { Ok(committed.await?.1) });
+            }
+            _ => {
+                return Box::pin(std::future::ready(Err(
+                    "unsupported native owner commit family".into(),
+                )));
+            }
         }
         let custody = Arc::clone(&self.custody);
         let writes = self.writes.clone();
@@ -98,18 +107,12 @@ impl OwnerCommitService for NativeOwnerCommits {
                 .resolve_owner()
                 .map_err(|error| format!("native durable owner unavailable: {error}"))?;
             let room = WorkspaceId::parse(&request.workspace).ok_or("invalid native room")?;
-            let now = std::time::SystemTime::now();
-            if !matches!(request.operation, CommitOperation::EffectReceipt { .. }) {
-                custody.check_custody(&owner, room)?;
-                let receipt = owner.commit_document(request, now)?;
-                custody.schedule_publication(room);
-                return Ok(receipt);
-            }
             // A receipt is this device's own, recorded in its person's slice
             // of the workspace with its own key and published as its own
             // change.
             let key = custody.signing_key(&owner, room)?;
-            let receipt = owner.commit_effect_receipt(&request, &key, now)?;
+            let receipt =
+                owner.commit_effect_receipt(&request, &key, std::time::SystemTime::now())?;
             custody.schedule_publication(room);
             Ok(receipt)
         }))
