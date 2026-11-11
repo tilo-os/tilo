@@ -876,3 +876,21 @@ test('a field that only moved is left alone: its scroll is not read and its valu
   bridge.update(tree(10,'Paragraph one!',5));
   assert.deepEqual([field.selectionStart,field.selectionEnd],[5,5],'a new selection is still set');
 });
+
+test('a moved field with the same text and selection does not count its text again',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
+  const tree=(y,focus=3,value='Paragraph one: words')=>({root:{path:'note',semantics:{semantic_key:'block',role:'MultilineTextInput',value,text_selection:{anchor:focus,focus},bounds:{x0:0,y0:y,x1:400,y1:y+40}}}});
+  bridge.update(tree(100));
+  // Turning the tree's byte offsets into the field's characters walks the
+  // text grapheme by grapheme: once per field per update while a view
+  // scrolls was most of what the mirror cost.
+  const segment=Intl.Segmenter.prototype.segment;let walks=0;
+  Intl.Segmenter.prototype.segment=function(...a){walks++;return segment.apply(this,a);};
+  try{
+    for(let y=90;y>0;y-=10)bridge.update(tree(y));
+    assert.equal(walks,0,'only moved: nothing counted');
+    bridge.update(tree(10,5));
+    assert.ok(walks>0,'a new selection is counted');
+    assert.deepEqual([root.children[0].selectionStart,root.children[0].selectionEnd],[5,5]);
+  }finally{Intl.Segmenter.prototype.segment=segment;}
+});

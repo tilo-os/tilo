@@ -170,6 +170,8 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     if(!authorized(element)||!currentComposition(element)){restoreCanonical(element);return false;}
     if(!act(element,'value',element.value)){restoreCanonical(element);return false;}
     element.tiloState.canonicalValue=element.value;
+    // The selection counted was counted in the value before this edit.
+    element.tiloState.selectionBytes=undefined;
     element.tiloState.lastSelection=null;
     dispatchSelection(element);return true;
   }
@@ -441,10 +443,18 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
         // Already shown.
       }else if(editable){
         const state=element.tiloState;
-        const selection=node.text_selection?[
-          graphemeIndexFromByteOffset(value,node.text_selection.anchor),
-          graphemeIndexFromByteOffset(value,node.text_selection.focus),
-        ]:null;
+        // The tree's selection is in bytes of the value; the field's in its
+        // characters. The same bytes of the same value are the selection
+        // already counted: counting walks the whole text, and a scroll asks
+        // it of every field on screen.
+        const bytes=node.text_selection?[node.text_selection.anchor,node.text_selection.focus]:null;
+        const counted=state.canonicalValue===value&&(bytes===state.selectionBytes
+          ||(bytes&&state.selectionBytes&&bytes[0]===state.selectionBytes[0]&&bytes[1]===state.selectionBytes[1]));
+        const selection=counted?state.canonicalSelection:bytes&&[
+          graphemeIndexFromByteOffset(value,bytes[0]),
+          graphemeIndexFromByteOffset(value,bytes[1]),
+        ];
+        state.selectionBytes=bytes;
         // A node that changed only where it is drawn (a scroll moves every
         // field on screen) still shows its value and selection: reading the
         // field's scroll to keep it, and setting them again, laid the page
