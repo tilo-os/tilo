@@ -1761,7 +1761,7 @@ impl Workspaces {
         &self,
         workspace: &str,
         device: &DeviceCert,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(Vec<u8>, crate::peer::GovernanceCertificates)> {
         let workspace = self.workspace(workspace).await.ok()?;
         let workspace = workspace.lock().await;
         member_bootstrap(
@@ -2788,13 +2788,20 @@ pub(crate) fn member_bootstrap(
     workspace_id: u64,
     generation: u64,
     device: &DeviceCert,
-) -> Option<Vec<u8>> {
+) -> Option<(Vec<u8>, crate::peer::GovernanceCertificates)> {
     use tilo_peer_state::join::{
         JoinBootstrap, JoinTransportResponse, MemberRole, OwnerBootstrapV1,
     };
+    let now = SystemTime::now();
     let role = peer
-        .permissions(device.device_public_key, SystemTime::now())
+        .permissions(device.device_public_key, now)
         .map_or(collab_types::Role::Viewer, |authority| authority.role);
+    // The replay after the bootstrap carries the workspace's governance, and
+    // with it every member's certificate: the roster names only what the
+    // device holds before that governance, or could not take from it.
+    let certified_roster =
+        peer.roster_beside_governance(&[device.device_public_key, host.device_public_key], now);
+    let certified = crate::peer::GovernanceCertificates::new(&certified_roster, peer.revocations());
     let answer = match role {
         collab_types::Role::Owner => {
             JoinTransportResponse::OwnerMembershipComplete(OwnerBootstrapV1 {
@@ -2803,7 +2810,7 @@ pub(crate) fn member_bootstrap(
                 room: peer.workspace_id().to_owned(),
                 workspace_id,
                 host: host.clone(),
-                certified_roster: peer.certificates(),
+                certified_roster,
                 revocations: peer.revocations(),
                 records: Vec::new(),
                 governance_messages: Vec::new(),
@@ -2823,14 +2830,14 @@ pub(crate) fn member_bootstrap(
             room: peer.workspace_id().to_owned(),
             workspace_id,
             host: host.clone(),
-            certified_roster: peer.certificates(),
+            certified_roster,
             revocations: peer.revocations(),
             records: Vec::new(),
             governance_messages: Vec::new(),
             generation,
         }),
     };
-    postcard::to_stdvec(&answer).ok()
+    Some((postcard::to_stdvec(&answer).ok()?, certified))
 }
 
 /// How a member's write reached the governor, which decides whether the host

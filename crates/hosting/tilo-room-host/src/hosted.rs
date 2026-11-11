@@ -474,7 +474,11 @@ pub(crate) struct HostedReplica {
 impl HostedReplica {
     /// The membership answer `device` builds its replica of the workspace from
     /// ([`crate::workspaces::member_bootstrap`]).
-    pub(crate) fn bootstrap(&self, workspace_id: u64, device: &DeviceCert) -> Option<Vec<u8>> {
+    pub(crate) fn bootstrap(
+        &self,
+        workspace_id: u64,
+        device: &DeviceCert,
+    ) -> Option<(Vec<u8>, crate::peer::GovernanceCertificates)> {
         let peer = self.peer.lock_recover();
         crate::workspaces::member_bootstrap(
             &peer,

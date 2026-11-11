@@ -48,6 +48,7 @@ use delivery::{
     STATE_RUN, SessionCoding, delivery_room, encode_charged, write_presence, write_state_deliveries,
 };
 use fanout::{LiveFanout, LiveFrame, live_budget};
+pub(crate) use replay::GovernanceCertificates;
 use replay::{
     ReplayCatchup, ReplayWrite, ResumeLog, authorize_state_frame, authorize_state_recipient,
     finish_replay_write, resume_record,

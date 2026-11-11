@@ -307,12 +307,14 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
 
     // Publishing only queues the frames for the host. Until it retains the
     // genesis, the workspace's replay names no governor and reads as ungoverned,
-    // so let a fresh member's replay prove all three are held first.
+    // so let a fresh member's replay prove both are held first. The laptop's
+    // identity hello is not replayed: the workspace's governance carries its
+    // certificate, and a newcomer takes it from there.
     let observer = enrol(&root, "observer", DeviceCapabilities::member());
     let observer_session = session(&host, &root, &observer).await;
-    let (mut hello, mut genesis, mut sealed) = (false, false, false);
+    let (mut genesis, mut sealed) = (false, false);
     let retained_by = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
-    while !(hello && genesis && sealed) {
+    while !(genesis && sealed) {
         let inbound = tokio::time::timeout_at(retained_by, observer_session.recv())
             .await
             .expect("the host to retain the laptop's frames")
@@ -324,7 +326,9 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
             continue;
         }
         match postcard::from_bytes::<NeighbourMsg>(&data) {
-            Ok(NeighbourMsg::IdentityHello { .. }) => hello = true,
+            Ok(NeighbourMsg::IdentityHello { .. }) => {
+                panic!("the laptop's hello was replayed beside the governance carrying it");
+            }
             Ok(NeighbourMsg::MlsGovernance { .. }) => genesis = true,
             Ok(NeighbourMsg::AppDocument { .. }) => sealed = true,
             _ => {}

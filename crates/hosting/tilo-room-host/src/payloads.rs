@@ -131,6 +131,19 @@ pub trait ShellPayloads: Send + Sync + 'static {
         false
     }
 
+    /// The certificate and revocations `body` introduces a device with, when
+    /// it is a device's identity hello. The default, for an adapter that
+    /// knows no identity hellos, is `None`: every device is sent the body.
+    fn identity(
+        &self,
+        _body: &[u8],
+    ) -> Option<(
+        tilo_user_identity::DeviceCert,
+        Vec<tilo_user_identity::RevocationEntry>,
+    )> {
+        None
+    }
+
     /// An upper bound on the memory one decoded body holds beyond its bytes,
     /// for the store's bounded-work accounting.
     fn decoded_overhead(&self) -> usize;

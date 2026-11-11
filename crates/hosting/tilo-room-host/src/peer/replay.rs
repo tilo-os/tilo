@@ -132,6 +132,7 @@ pub(super) async fn authorize_state_recipient(
 async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
     workspace_id: u64,
     ws: &SharedWorkspace,
+    catchup: &ReplayCatchup,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     write: &mut W,
@@ -160,9 +161,10 @@ async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
         }
         None => hosted.and_then(|replica| replica.bootstrap(workspace_id, &peer.cert)),
     };
-    let Some(bootstrap) = bootstrap else {
+    let Some((bootstrap, certified)) = bootstrap else {
         return Ok(());
     };
+    let _ = catchup.certified.set(certified);
     let envelope = Envelope::WorkspaceBootstrap {
         workspace_id,
         bootstrap,
@@ -172,6 +174,47 @@ async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
         .write_all(&encode_charged(&envelope, session, false)?)
         .await?;
     Ok(())
+}
+
+/// What a subscriber holds of its workspace's members' certificates beside
+/// the governance its replay carries: the roster its bootstrap named, and the
+/// revocations the governance carries. Every other member device's
+/// certificate the device takes from that governance
+/// ([`tilo_peer_state::StatePeer::governance_certifies`]), or refuses: an
+/// identity hello of a device outside the roster tells it nothing it takes,
+/// unless it brings a revocation the governance lacks. Every member device's
+/// hello is retained, of devices long gone too, so a replay that sent them
+/// all sent a crowd's certificates twice.
+#[derive(Debug, Default)]
+pub(crate) struct GovernanceCertificates {
+    roster: std::collections::BTreeSet<[u8; 32]>,
+    revocations: Vec<tilo_user_identity::RevocationEntry>,
+}
+
+impl GovernanceCertificates {
+    /// For a device whose bootstrap names `roster` and `revocations`.
+    pub(crate) fn new(
+        roster: &[tilo_user_identity::DeviceCert],
+        revocations: Vec<tilo_user_identity::RevocationEntry>,
+    ) -> Self {
+        Self {
+            roster: roster.iter().map(|cert| cert.device_public_key).collect(),
+            revocations,
+        }
+    }
+
+    /// Whether an identity hello of `cert` with `revocations` tells the
+    /// device nothing it would take.
+    fn carries(
+        &self,
+        cert: &tilo_user_identity::DeviceCert,
+        revocations: &[tilo_user_identity::RevocationEntry],
+    ) -> bool {
+        !self.roster.contains(&cert.device_public_key)
+            && revocations
+                .iter()
+                .all(|entry| self.revocations.contains(entry))
+    }
 }
 
 /// Frames addressed to a replaying device that wait for the replay's next
@@ -225,7 +268,11 @@ impl ReplayFilter {
     ///   ahead of its batches ([`ReplayCatchup::address`]);
     /// - a device's request to be admitted to a channel's group, for a
     ///   device that admits no one ([`Envelope::ChannelReader`]): every
-    ///   member's is retained, so it would be one per member.
+    ///   member's is retained, so it would be one per member;
+    /// - a device's identity hello that says nothing the workspace's
+    ///   governance, which the replay carries, does not
+    ///   ([`GovernanceCertificates`]): every member device's is retained,
+    ///   those of devices long gone too.
     fn leaves_out(&self, frame: &Envelope, catchup: &ReplayCatchup) -> bool {
         if self.every_frame {
             return false;
@@ -238,6 +285,11 @@ impl ReplayFilter {
         };
         if self.channel_reader && self.payloads.asks_admission(body) {
             return true;
+        }
+        if let Some(certified) = catchup.certified.get()
+            && let Some((cert, revocations)) = self.payloads.identity(body)
+        {
+            return certified.carries(&cert, &revocations);
         }
         match self.payloads.audience(body) {
             Some(audience) if !audience.contains(&self.device) => true,
@@ -287,7 +339,7 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             authority: &ticket.authority,
             catchup: &catchup,
         };
-        write_bootstrap(workspace_id, &ws, peer, session, write).await?;
+        write_bootstrap(workspace_id, &ws, &catchup, peer, session, write).await?;
         let replaying = crate::timing::start();
         let replayed_frames = drive_replay(run, handle, peer, session, write).await?;
         crate::timing::event("join.replay_total", replaying, replayed_frames);
@@ -795,6 +847,10 @@ pub(super) struct ReplayCatchup {
     /// device the door just admitted asked for them in its entry, and its
     /// Welcome may still be on its way ([`crate::peer::Arriving`]).
     keys_due: std::sync::Mutex<Option<tokio::time::Instant>>,
+    /// What the workspace's governance, which this replay carries, tells the
+    /// device of its members' certificates ([`GovernanceCertificates`]), as
+    /// its bootstrap read it.
+    certified: std::sync::OnceLock<GovernanceCertificates>,
 }
 impl ReplayCatchup {
     pub(super) const ACTIVE: u8 = 0;
@@ -812,6 +868,7 @@ impl ReplayCatchup {
             written: std::sync::Mutex::new(Vec::new()),
             addressed_wake: tokio::sync::Notify::new(),
             keys_due: std::sync::Mutex::new(None),
+            certified: std::sync::OnceLock::new(),
         }
     }
 

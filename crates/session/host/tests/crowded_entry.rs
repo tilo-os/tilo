@@ -866,7 +866,7 @@ const WEB_ROUND_TRIPS: f64 = 3.25;
 /// in its Welcome, the commits after it, the governance and the 300 members'
 /// parts of the desktop. Every member's page holds the keys, as in the Lounge,
 /// so each of those channel frames works through a group of 300. The quick
-/// entry shows in 1.1 to 1.25 s on the builder.
+/// entry shows in 0.9 to 1.05 s on the builder.
 ///
 /// Nothing here waits on a clock: a guest whose certificate was issued a
 /// moment before its entry is in the workspace's channel group at once, so
@@ -894,7 +894,7 @@ const COMPUTE: Duration = Duration::from_millis(1_500);
 ///   connection, so no challenge of the host's comes first) and has the
 ///   guest's first requests right behind it: 0.5;
 /// - the host's answer and the replay of governance and the desktop behind
-///   it, about 0.8 MB for a crowd of 300 that all hold the keys (see
+///   it, about 0.7 MB for a crowd of 300 that all hold the keys (see
 ///   [`MAX_BYTES`]), from a 256 KiB initial window rather than QUIC's 14 KB:
 ///   2.
 ///
@@ -905,23 +905,25 @@ const COMPUTE: Duration = Duration::from_millis(1_500);
 /// about three and a half; at 400 ms the desktop shows in about 2.7 s.
 const RELAYED_ROUND_TRIPS: f64 = 3.5;
 
-/// What a fresh guest may receive before its desktop shows, 0.75 to 0.84 MB
+/// What a fresh guest may receive before its desktop shows, 0.6 to 0.72 MB
 /// for 300 members who all hold the keys: its Welcome first, once (about
-/// 65 KB, the group's ratchet tree of 300), then the workspace's bootstrap (its
-/// member roster, about 140 KB), its governance (a compressed base of about
-/// 260 KB with the changes since, which a host starts over once they weigh
-/// half the base, so between one and one and a half times the base: how many
-/// changes a guest meets depends on how the crowd's admissions fell into
-/// changes, which is what moves the total from run to run), each member
-/// device's hello (about 70 KB) and the shared desktop, whose members' parts
-/// are compacted into its checkpoint as they come (0.2 to 0.35 MB). The Lounge
-/// is public, so the members' records (3.5 MB here) and its chat (0.3 MB in
-/// its newest part) come only when the guest opens them, and a page, which
-/// admits no one to a channel's group, is sent no member's request to be
-/// admitted to one. Governance sent twice or uncompressed, any of those
-/// records or the chat sent with the desktop, or the Welcome sent again
-/// crosses this.
-const MAX_BYTES: u64 = 900_000;
+/// 65 KB, the group's ratchet tree of 300), then the workspace's bootstrap
+/// (under 1 KB: its roster names only the guest and the host, as the
+/// governance carries every member's certificate), its governance (a
+/// compressed base of about 275 KB with the changes since, which a host starts
+/// over once they weigh half the base, so between one and one and a half times
+/// the base: how many changes a guest meets depends on how the crowd's
+/// admissions fell into changes, which is what moves the total from run to
+/// run) and the shared desktop, whose members' parts are compacted into its
+/// checkpoint as they come (about 0.14 MB). No member device's identity hello
+/// comes: the governance carries what each says. The Lounge is public, so the
+/// members' records (3.5 MB here) and its chat (0.3 MB in its newest part)
+/// come only when the guest opens them, and a page, which admits no one to a
+/// channel's group, is sent no member's request to be admitted to one.
+/// Governance sent twice or uncompressed, the members' certificates or hellos
+/// sent again beside it, any of those records or the chat sent with the
+/// desktop, or the Welcome sent again crosses this.
+const MAX_BYTES: u64 = 800_000;
 
 /// One guest's entry, as it went.
 struct Entry {

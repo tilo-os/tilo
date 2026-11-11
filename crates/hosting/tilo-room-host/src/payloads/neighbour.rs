@@ -112,6 +112,21 @@ impl ShellPayloads for NeighbourPayloads {
         NeighbourMsg::is_access_request(body)
     }
 
+    fn identity(
+        &self,
+        body: &[u8],
+    ) -> Option<(
+        tilo_user_identity::DeviceCert,
+        Vec<tilo_user_identity::RevocationEntry>,
+    )> {
+        match postcard::from_bytes::<NeighbourMsg>(body).ok()? {
+            NeighbourMsg::IdentityHello {
+                cert, revocations, ..
+            } => Some((*cert, revocations)),
+            _ => None,
+        }
+    }
+
     fn decoded_overhead(&self) -> usize {
         std::mem::size_of::<NeighbourMsg>()
     }

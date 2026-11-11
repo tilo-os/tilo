@@ -851,6 +851,62 @@ impl StatePeer {
             .map(|cert| cert.as_ref().clone())
             .collect()
     }
+
+    /// Whether a replica that takes in this peer's governance at `now` holds
+    /// `cert` from that governance alone: an identity row lists the device
+    /// with this very certificate, the import takes the row (the owner's
+    /// device, an admitted device or a member's), and the certificate is
+    /// valid at `now`, as the import checks a certificate it did not hold.
+    /// A newcomer is then sent the certificate once, in the governance,
+    /// rather than again beside it in its bootstrap's roster or its device's
+    /// identity hello.
+    #[must_use]
+    pub fn governance_certifies(&self, cert: &DeviceCert, now: SystemTime) -> bool {
+        let Some(doc) = self.core.workspace_doc.as_ref() else {
+            return false;
+        };
+        let key = hex::encode(cert.device_public_key);
+        let Some(Ok(identity)) = doc.identities().get(&key) else {
+            return false;
+        };
+        if identity.device_cert != *cert
+            || doc
+                .identity_certificates()
+                .get(&key)
+                .is_none_or(|verified| verified.current_typed(now_ns(now)).is_err())
+        {
+            return false;
+        }
+        let person = hex::encode(cert.user_public_key);
+        let policy = doc.policy();
+        cert.user_public_key == self.core.owner
+            || identity.has_admission()
+            || policy.members.contains_key(&person)
+            || policy.damaged.members.contains(&person)
+    }
+
+    /// The certificates a replica built from a join answer needs beside this
+    /// peer's governance: every certificate this peer holds that the
+    /// governance does not carry on its own ([`Self::governance_certifies`]),
+    /// and always those of `kept`, the device the answer is for and the host
+    /// that answers, and this peer's governing device's, which a replica
+    /// holds before any governance arrives. In a workspace of hundreds the
+    /// roster repeated every member's certificate the governance after it
+    /// carries.
+    #[must_use]
+    pub fn roster_beside_governance(&self, kept: &[[u8; 32]], now: SystemTime) -> Vec<DeviceCert> {
+        self.core
+            .certificates
+            .values()
+            .map(AsRef::as_ref)
+            .filter(|cert| {
+                kept.contains(&cert.device_public_key)
+                    || cert.device_public_key == self.core.origin
+                    || !self.governance_certifies(cert, now)
+            })
+            .cloned()
+            .collect()
+    }
     pub fn revocations(&self) -> Vec<tilo_user_identity::RevocationEntry> {
         let mut entries = self.core.revocations.iter().cloned().collect::<Vec<_>>();
         entries.sort_by_key(|entry| entry.revoked_device_public_key);
@@ -3888,6 +3944,9 @@ mod held_queue_tests;
 #[cfg(test)]
 #[path = "state/joined_tests.rs"]
 mod joined_tests;
+#[cfg(test)]
+#[path = "state/roster_beside_governance_tests.rs"]
+mod roster_beside_governance_tests;
 #[cfg(test)]
 #[path = "state/sealed_compaction_tests.rs"]
 mod sealed_compaction_tests;
