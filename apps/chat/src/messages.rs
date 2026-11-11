@@ -1072,7 +1072,6 @@ impl Messages {
     }
 
     /// The messages the chat record kept in itself, which no part holds.
-    #[must_use]
     pub fn kept(&self) -> impl Iterator<Item = (&Id, &Message)> + '_ {
         self.kept.iter()
     }
