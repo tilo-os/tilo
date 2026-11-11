@@ -208,8 +208,9 @@ impl SlotRow {
     /// The window is maximized: its maximize control shows restore.
     #[cfg(feature = "native")]
     pub(crate) fn set_maximized(&mut self, maximized: bool) {
-        if self.controls_state.maximized != maximized {
-            self.controls_state.maximized = maximized;
+        let resize = crate::widget::window_controls::Resize::of(maximized, false);
+        if self.controls_state.resize != resize {
+            self.controls_state.resize = resize;
             self.repaint = true;
         }
     }
@@ -768,7 +769,7 @@ impl SlotRow {
             nodes.push(
                 crate::a11y::AccessNode::new(crate::a11y::Role::Button)
                     .with_name(crate::i18n::I18nManager::lookup_plain(
-                        control.name_key(self.controls_state.maximized),
+                        control.name_key(self.controls_state.resize),
                     ))
                     .with_action_target(control.target())
                     .with_bounds(rect)

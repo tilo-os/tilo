@@ -85,11 +85,38 @@ pub struct WindowControls {
 pub struct ControlsState {
     pub hovered: Option<WindowControl>,
     pub pressed: Option<WindowControl>,
-    pub maximized: bool,
+    pub resize: Resize,
     /// How far each control's hover ring has come in, by control
     /// ([`WindowControl::index`]): on the toolkit's spring, so a ring
     /// fades in and out rather than appearing and vanishing.
     pub lifts: [f32; 3],
+}
+
+/// What the maximize control does for where the window stands now.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Resize {
+    /// The window takes the whole strip.
+    #[default]
+    Maximize,
+    /// The maximized window takes its width back.
+    Restore,
+    /// The window floating over the desk goes back into its strip, where it stood.
+    Snap,
+}
+
+impl Resize {
+    /// What the control does for a window that is `maximized` or `floating`: a floating window is
+    /// never maximized, it snaps back.
+    #[must_use]
+    pub fn of(maximized: bool, floating: bool) -> Self {
+        if floating {
+            Resize::Snap
+        } else if maximized {
+            Resize::Restore
+        } else {
+            Resize::Maximize
+        }
+    }
 }
 
 impl WindowControl {
@@ -106,12 +133,25 @@ impl WindowControl {
     /// The control's name in the window's locale: what a screen reader says
     /// and an agent presses it by.
     #[must_use]
-    pub fn name_key(self, maximized: bool) -> &'static str {
-        match self {
-            WindowControl::Minimize => "host-window-minimize",
-            WindowControl::Maximize if maximized => "host-window-restore",
-            WindowControl::Maximize => "host-window-maximize",
-            WindowControl::Close => "host-window-close",
+    pub fn name_key(self, resize: Resize) -> &'static str {
+        match (self, resize) {
+            (WindowControl::Minimize, _) => "host-window-minimize",
+            (WindowControl::Maximize, Resize::Maximize) => "host-window-maximize",
+            (WindowControl::Maximize, Resize::Restore) => "host-window-restore",
+            (WindowControl::Maximize, Resize::Snap) => "host-window-snap",
+            (WindowControl::Close, _) => "host-window-close",
+        }
+    }
+
+    /// The control's glyph.
+    #[must_use]
+    pub fn icon(self, resize: Resize) -> icons::Icon {
+        match (self, resize) {
+            (WindowControl::Minimize, _) => icons::Icon::Minus,
+            (WindowControl::Maximize, Resize::Maximize) => icons::Icon::Maximize2,
+            (WindowControl::Maximize, Resize::Restore) => icons::Icon::Minimize2,
+            (WindowControl::Maximize, Resize::Snap) => icons::Icon::Columns2,
+            (WindowControl::Close, _) => icons::Icon::X,
         }
     }
 
@@ -316,12 +356,7 @@ impl WindowControls {
             // Lit at once under a press; otherwise as far in as the spring
             // has brought it — coming in, or going out from where it was.
             let ring = if pressed { 1.0 } else { lift };
-            let glyph = match control {
-                WindowControl::Minimize => icons::Icon::Minus,
-                WindowControl::Maximize if state.maximized => icons::Icon::Minimize2,
-                WindowControl::Maximize => icons::Icon::Maximize2,
-                WindowControl::Close => icons::Icon::X,
-            };
+            let glyph = control.icon(state.resize);
             let glyph_box = match control {
                 WindowControl::Close => square_at(rect.center(), CLOSE_GLYPH_PX),
                 WindowControl::Minimize | WindowControl::Maximize => {

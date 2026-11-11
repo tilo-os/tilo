@@ -47,7 +47,7 @@ impl WindowGroup {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.bar.set_maximized(self.maximized);
+        self.bar.set_resize(self.resize());
         self.bar
             .set_group_focused(self.focused || self.search_active);
         // The bar's menus stay inside the window.

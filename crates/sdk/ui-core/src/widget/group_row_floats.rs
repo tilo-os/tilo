@@ -162,8 +162,21 @@ impl GroupRow {
 
     /// Where a float the person moved or let go goes, once: drained by the
     /// host and kept in the workspace's record.
+    /// A floating window whose snap control was pressed goes back into its strip where it stood.
     pub fn take_pending_float(&mut self) -> Option<FloatAsk> {
-        self.pending_float.take()
+        self.pending_float.take().or_else(|| {
+            self.groups
+                .iter_mut()
+                .find_map(|group| group.take_pending_snap().then_some(group.id))
+                .map(|group| FloatAsk::Snap { group })
+        })
+    }
+
+    /// Tell each window whether it floats, so its controls offer what a float does.
+    pub(super) fn mark_floating(&mut self) {
+        for group in &mut self.groups {
+            group.set_floating(self.floats.contains_key(&group.id));
+        }
     }
 
     /// The style of the window at `i` when it floats, over its `own`: absolute

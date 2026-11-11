@@ -4632,6 +4632,7 @@ impl Widget for GroupRow {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         // A floating window is laid out at its own rect, never in the flow
         // of a lane or canvas: what the strip measures stays its own.
+        self.mark_floating();
         let floating = self.floating_flags();
         // Portable hosts learn their width here. Rebuild provisional widths
         // in the same bounded settlement, including a same-viewport root swap.

@@ -231,6 +231,9 @@ pub struct WindowGroup {
     /// or hides the lit edge.
     grip_dirty: bool,
     pub maximized: bool,
+    /// Floating over the desk: the maximize control snaps it back ([`Self::take_pending_snap`]).
+    floating: bool,
+    pending_snap: bool,
     pub search_active: bool,
     /// The active group of the active strip, set by the shell each frame.
     /// Consumed by the active [`TileHost`], which paints the signal on
@@ -476,6 +479,8 @@ impl WindowGroup {
             size_label_fade: None,
             grip_dirty: false,
             maximized: false,
+            floating: false,
+            pending_snap: false,
             search_active: false,
             focused: false,
             chrome_motion: crate::tokens::EffectiveMotion::default(),
@@ -2569,10 +2574,7 @@ impl WindowGroup {
         // rect on the window motion, as Super+M from the same place would
         // not (a shortcut lands).
         if let Some(_id) = self.bar.take_max() {
-            self.begin_rect_spring_from_current();
-            self.maximized = !self.maximized;
-            self.style_dirty = true;
-            self.pending_maximize_change = Some(self.maximized);
+            self.press_resize();
             handled = true;
         }
 

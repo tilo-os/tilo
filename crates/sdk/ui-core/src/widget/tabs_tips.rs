@@ -46,22 +46,14 @@ impl TabBar {
             ));
         }
         let control = self.controls.hit(point)?;
-        let (rect, key) = match control {
-            crate::widget::window_controls::WindowControl::Maximize => (
-                self.controls.maximize,
-                if self.maximized {
-                    "host-window-restore"
-                } else {
-                    "host-window-maximize"
-                },
-            ),
-            crate::widget::window_controls::WindowControl::Close => {
-                (self.controls.close, "host-window-close")
-            }
-            crate::widget::window_controls::WindowControl::Minimize => {
-                (self.controls.minimize, "host-window-minimize")
-            }
+        let rect = match control {
+            crate::widget::window_controls::WindowControl::Maximize => self.controls.maximize,
+            crate::widget::window_controls::WindowControl::Close => self.controls.close,
+            crate::widget::window_controls::WindowControl::Minimize => self.controls.minimize,
         };
-        Some((rect, crate::i18n::I18nManager::lookup_plain(key)))
+        Some((
+            rect,
+            crate::i18n::I18nManager::lookup_plain(control.name_key(self.resize)),
+        ))
     }
 }

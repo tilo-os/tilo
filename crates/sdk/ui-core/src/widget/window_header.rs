@@ -449,17 +449,17 @@ impl RowControl {
         }
     }
 
-    /// What a person reads for it, named as the bar names the same function. `maximized` says which
+    /// What a person reads for it, named as the bar names the same function. `resize` says which
     /// way the maximize control acts.
-    pub(crate) fn name(self, maximized: bool) -> String {
+    pub(crate) fn name(self, resize: crate::widget::window_controls::Resize) -> String {
         use crate::widget::window_controls::WindowControl;
         match self {
             RowControl::NewTab => crate::widget::tabs::NEW_TAB.to_owned(),
             RowControl::Maximize => {
-                crate::i18n::I18nManager::lookup_plain(WindowControl::Maximize.name_key(maximized))
+                crate::i18n::I18nManager::lookup_plain(WindowControl::Maximize.name_key(resize))
             }
             RowControl::Close => {
-                crate::i18n::I18nManager::lookup_plain(WindowControl::Close.name_key(maximized))
+                crate::i18n::I18nManager::lookup_plain(WindowControl::Close.name_key(resize))
             }
         }
     }

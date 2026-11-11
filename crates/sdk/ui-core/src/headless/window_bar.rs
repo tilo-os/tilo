@@ -706,15 +706,11 @@ impl FrameHarness {
             if rect.area() <= 0.0 {
                 continue;
             }
-            let icon = match control {
-                WindowControl::Minimize => crate::icons::Icon::Minus,
-                WindowControl::Maximize => crate::icons::Icon::Maximize2,
-                WindowControl::Close => crate::icons::Icon::X,
-            };
+            let resize = crate::widget::window_controls::Resize::Maximize;
             out.push(
                 BarControl::new(slot, control.target(), rect)
-                    .named(lookup(control.name_key(false)))
-                    .icon(Some(icon.name().to_owned())),
+                    .named(lookup(control.name_key(resize)))
+                    .icon(Some(control.icon(resize).name().to_owned())),
             );
         }
         out

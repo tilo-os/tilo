@@ -494,8 +494,9 @@ pub struct TabBar {
     /// Each window control's hover tint, by control index: it comes at once and fades over the fast
     /// duration, so a sweeping pointer leaves no trail.
     control_lifts: [crate::motion::Feedback; 3],
-    /// The window is maximized: its maximize control shows restore.
-    maximized: bool,
+    /// What the window's maximize control does where the window stands: restore while maximized,
+    /// snap back while floating.
+    resize: super::window_controls::Resize,
     /// Whether the window showed several tabs at the last layout, and since when: the tabs' bodies
     /// grow in, or fade back into a plain title.
     tabbed: bool,
@@ -679,7 +680,7 @@ impl TabBar {
                 crate::motion::Feedback::default(),
                 crate::motion::Feedback::default(),
             ],
-            maximized: false,
+            resize: super::window_controls::Resize::Maximize,
             tabbed,
             tabbed_changed_at: None,
             toolbars: HashMap::new(),
@@ -785,13 +786,14 @@ impl TabBar {
         first.x0 + PILL_PAD_X + ICON_W + TOOLBAR_LEAD_GAP
     }
 
-    /// The window is maximized, so its maximize control offers restore.
-    pub fn set_maximized(&mut self, maximized: bool) {
-        if self.maximized == maximized {
+    /// What the window's maximize control offers where the window stands: restore while it is
+    /// maximized, snap back while it floats.
+    pub fn set_resize(&mut self, resize: super::window_controls::Resize) {
+        if self.resize == resize {
             return;
         }
         self.touch();
-        self.maximized = maximized;
+        self.resize = resize;
     }
 
     /// A window bar showing a single tab: the tab is the window's title, with
@@ -1285,16 +1287,10 @@ impl TabBar {
             ("maximize", WindowControl::Maximize, self.controls.maximize),
             ("close", WindowControl::Close, self.controls.close),
         ] {
-            let icon = match control {
-                WindowControl::Minimize => icons::Icon::Minus,
-                WindowControl::Maximize if self.maximized => icons::Icon::Minimize2,
-                WindowControl::Maximize => icons::Icon::Maximize2,
-                WindowControl::Close => icons::Icon::X,
-            };
             push(
                 BarControl::new(slot, control.target(), rect)
-                    .named(lookup(control.name_key(self.maximized)))
-                    .icon(Some(icon.name().to_owned())),
+                    .named(lookup(control.name_key(self.resize)))
+                    .icon(Some(control.icon(self.resize).name().to_owned())),
             );
         }
         BarLayout {
@@ -4696,11 +4692,9 @@ impl Widget for TabBar {
             }
             tab_children.push(button(
                 Role::Button,
-                crate::i18n::I18nManager::lookup_plain(if self.maximized {
-                    "host-window-restore"
-                } else {
-                    "host-window-maximize"
-                }),
+                crate::i18n::I18nManager::lookup_plain(
+                    super::window_controls::WindowControl::Maximize.name_key(self.resize),
+                ),
                 WINDOW_MAXIMIZE_TARGET,
                 self.controls.maximize,
             ));

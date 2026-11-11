@@ -295,3 +295,43 @@ fn a_float_covers_the_windows_under_it_once_it_has_arrived() {
          {cover:?} against {card:?}"
     );
 }
+
+#[test]
+fn a_floating_window_s_maximize_control_snaps_it_back_where_it_stood() {
+    let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+    let at = Rect::new(120.0, 60.0, 760.0, 540.0);
+    row.set_floats(floats(&[(200, at)]));
+    let (mut row, taffy, root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
+    assert_eq!(
+        row.groups[1].resize(),
+        crate::widget::window_controls::Resize::Snap,
+        "a floating window's maximize control offers to snap it back"
+    );
+    assert_eq!(
+        row.groups[0].resize(),
+        crate::widget::window_controls::Resize::Maximize,
+        "a window in its strip keeps maximize"
+    );
+    let control = row.groups[1]
+        .presentation_bounds()
+        .maximize
+        .expect("the float's bar shows its controls");
+    press_at(&mut row, &taffy, root, control.center());
+    release(&mut row, &taffy, root);
+
+    assert_eq!(
+        row.take_pending_float(),
+        Some(FloatAsk::Snap { group: 200 }),
+        "one press snaps the float back"
+    );
+    assert!(
+        !row.groups[1].maximized && row.groups[1].take_pending_maximize_change().is_none(),
+        "the press never maximizes a float"
+    );
+    assert_eq!(
+        row.groups.iter().map(|group| group.id).collect::<Vec<_>>(),
+        [100, 200, 300],
+        "it goes back to the place in its strip it floated from"
+    );
+    assert_eq!(row.take_pending_float(), None, "the snap is asked once");
+}
