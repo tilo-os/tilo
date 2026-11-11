@@ -936,3 +936,79 @@ async fn a_quiet_agent_stays_while_its_session_lasts() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// An agent is present from the moment its `tilo mcp` connects, before it
+/// asks anything: the host says its run waiting, and the run's first request
+/// moves that same entry on to what it does, rather than a second one
+/// appearing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_is_present_waiting_as_soon_as_it_connects() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
+    let state = support::scratch_dir();
+    let hosted = start(&root, &host, state.path()).await;
+    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let _sheets = browser.create(SHEETS);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
+        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+    ) else {
+        panic!("a key names a person")
+    };
+
+    let agent = Browser::open(&hosted, &computer, &host).await;
+    tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code")
+        .await
+        .expect("the computer's session is the agent's run");
+    let connected = Instant::now();
+    loop {
+        let listed = runs_listed(&mut browser, &host);
+        if let [run] = listed.as_slice() {
+            assert_eq!(
+                run.activity.as_deref(),
+                Some("Waiting"),
+                "an agent that has asked nothing is waiting: {run:?}"
+            );
+            break;
+        }
+        assert!(
+            connected.elapsed() < COMES_BACK_WITHIN,
+            "the page never listed the connected agent before its first request: {listed:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
+    let server = McpServer::new(actions, WORKSPACE.into(), person)
+        .with_surface(Surface::Agent)
+        .with_agent_run("run-0", "Claude Code");
+    let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
+    assert!(!failed, "the agent lists the workspace");
+    let asked = Instant::now();
+    loop {
+        let listed = runs_listed(&mut browser, &host);
+        assert!(
+            listed.len() <= 1,
+            "the run's first request moves its entry on: {listed:?}"
+        );
+        if listed
+            .first()
+            .is_some_and(|run| run.activity.as_deref() != Some("Waiting"))
+        {
+            break;
+        }
+        assert!(
+            asked.elapsed() < COMES_BACK_WITHIN,
+            "the agent still reads waiting after its first request: {listed:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    agent.peer.close();
+}

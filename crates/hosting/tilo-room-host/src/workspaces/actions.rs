@@ -1894,6 +1894,12 @@ impl AppServingPlane for GovernedPlane {
         }
     }
 
+    fn run_arrived(&self, workspace_id: u64, caller: &Caller) {
+        if let Some(apps) = self.apps.as_ref() {
+            apps.run_arrived(workspace_id, caller);
+        }
+    }
+
     fn tracks(&self, workspace_id: u64) -> bool {
         self.apps
             .as_ref()

@@ -436,7 +436,7 @@ fn serve_locally(
 /// Who `peer` acts as: the person on their own device, the agent that
 /// device handed this session to ([`SessionCtx::agent`]), or the agent or bot
 /// whose live delegation that device carries.
-fn session_caller(
+pub(super) fn session_caller(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
 ) -> Result<tilo_actions::remote::Caller, (UnavailableReason, &'static str)> {

@@ -210,6 +210,9 @@ enum Job {
         length: u64,
         done: Completer<Result<tilo_actions::remote::ContentGetAnswer, ActionHostError>>,
     },
+    /// An agent's run connected to a workspace and has asked nothing yet:
+    /// it is present there, waiting ([`run_voice`]).
+    Arrived { workspace_id: u64, caller: Caller },
     /// A workspace requests wait to be joined to changed: those it joined
     /// run.
     Joined(u64),
@@ -224,6 +227,7 @@ impl Job {
             Self::Catalogue { .. } => "catalogue",
             Self::Invoke { .. } => "invoke",
             Self::Ran(_) => "ran",
+            Self::Arrived { .. } => "arrived",
             Self::Content { .. } => "content",
             Self::ContentGet { .. } => "content-get",
             Self::Joined(_) => "joined",
@@ -237,7 +241,8 @@ impl Job {
             Self::Catalogue { workspace_id, .. }
             | Self::Invoke { workspace_id, .. }
             | Self::Content { workspace_id, .. }
-            | Self::ContentGet { workspace_id, .. } => Some(*workspace_id),
+            | Self::ContentGet { workspace_id, .. }
+            | Self::Arrived { workspace_id, .. } => Some(*workspace_id),
             Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
         }
     }
@@ -254,6 +259,7 @@ impl Job {
             | Self::Ran(_)
             | Self::Content { .. }
             | Self::ContentGet { .. }
+            | Self::Arrived { .. }
             | Self::Joined(_)
             | Self::Forget(_) => Keys::Joined,
         }
@@ -335,6 +341,20 @@ impl WorkspaceActions {
         if let Some(jobs) = self.shared.jobs.lock_recover().as_ref() {
             let _ = jobs.send((Instant::now(), Job::Forget(workspace_id)));
         }
+    }
+
+    /// `caller`'s session became an agent's run in `workspace_id`: the run is
+    /// present there from now on, waiting, before its first request, as the
+    /// host speaks for the runs it executes ([`run_voice`]). Nothing for a
+    /// caller in no run.
+    pub fn run_arrived(&self, workspace_id: u64, caller: &Caller) {
+        if caller.agent_run().is_none() {
+            return;
+        }
+        let _ = self.submit(Job::Arrived {
+            workspace_id,
+            caller: caller.clone(),
+        });
     }
 
     /// Stop the service thread; later requests are refused as unavailable.
@@ -1467,6 +1487,10 @@ impl Worker {
                     done,
                 } => done.complete(self.invoke(workspace_id, invocation)),
                 Job::Ran(ended) => self.ran(&ended),
+                Job::Arrived {
+                    workspace_id,
+                    caller,
+                } => self.voice_arrived(workspace_id, &caller),
                 Job::Joined(workspace_id) => self.resume(workspace_id),
                 Job::Forget(workspace_id) => self.forget(workspace_id),
                 Job::Content {
@@ -2888,121 +2912,4 @@ fn log_outcome(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{GaveUp, Needs, sealed_for};
-    use std::collections::{BTreeMap, HashSet};
-    use tilo_peer_state::document_frame::DocumentRoute;
-    use tilo_session_host::session::RouteStatus;
-
-    const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
-    const OTHER_WORKSPACE: &str = "0b7f1d2e-5a6c-4d3b-8e9f-a0b1c2d3e4f5";
-
-    fn route(workspace: &str, app: &str, record: &str) -> DocumentRoute {
-        DocumentRoute {
-            app_id: app.into(),
-            cluster_id: workspace.into(),
-            record: record.into(),
-        }
-    }
-
-    fn sealed(awaiting: usize) -> RouteStatus {
-        RouteStatus {
-            awaiting_keys: awaiting,
-            ..RouteStatus::default()
-        }
-    }
-
-    /// A failure the caller may ask again is not the invocation's answer; one
-    /// that is, is, and the same id keeps saying it.
-    #[test]
-    fn a_retryable_failure_leaves_the_id_free_to_run_again() {
-        let failure = |retryable| super::ActionFailure {
-            code: "commit_failed".into(),
-            message: "the host did not save the change: the workspace refused the change: \
-                      workspace membership changed"
-                .into(),
-            details: None,
-            retryable,
-        };
-        assert!(
-            !super::settles(&failure(true)),
-            "asking again runs it again, over the session the workspace holds now"
-        );
-        assert!(
-            super::settles(&failure(false)),
-            "a failure of its own is its answer"
-        );
-    }
-
-    #[test]
-    fn a_request_waits_only_for_the_keys_of_what_it_reads() {
-        let workspace = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
-        let a = route(WORKSPACE, "so.tilo.sheets", "a");
-        let b = route(WORKSPACE, "so.tilo.sheets", "b");
-        let elsewhere = route(OTHER_WORKSPACE, "so.tilo.sheets", "a");
-        let mut routes = BTreeMap::new();
-        routes.insert(a, sealed(0));
-        routes.insert(b.clone(), sealed(3));
-        routes.insert(elsewhere, sealed(1));
-        let act = |record| Needs::Act {
-            app_id: "so.tilo.sheets",
-            record,
-        };
-        let read = |record| Needs::Read {
-            app_id: "so.tilo.sheets",
-            record,
-        };
-        let fresh = GaveUp::default();
-
-        assert!(
-            sealed_for(&routes, workspace, act("a"), &fresh).is_empty(),
-            "another record's missing keys never hold back this one"
-        );
-        assert!(sealed_for(&routes, workspace, read("a"), &fresh).is_empty());
-        assert_eq!(
-            sealed_for(&routes, workspace, act("b"), &fresh),
-            std::slice::from_ref(&b)
-        );
-        assert_eq!(
-            sealed_for(&routes, workspace, read("b"), &fresh),
-            std::slice::from_ref(&b)
-        );
-        assert!(
-            sealed_for(
-                &routes,
-                workspace,
-                Needs::Act {
-                    app_id: "so.tilo.slides",
-                    record: "b"
-                },
-                &fresh
-            )
-            .is_empty(),
-            "a record is named by its app and id together"
-        );
-        assert_eq!(
-            sealed_for(&routes, workspace, Needs::Workspace, &fresh),
-            std::slice::from_ref(&b),
-            "the first listing waits for this workspace's sealed records only"
-        );
-        assert!(sealed_for(&routes, workspace, Needs::Joined, &fresh).is_empty());
-
-        let waited = GaveUp {
-            listed: true,
-            records: HashSet::from([b.clone()]),
-        };
-        assert!(
-            sealed_for(&routes, workspace, Needs::Workspace, &waited).is_empty(),
-            "later listings wait for nothing"
-        );
-        assert!(
-            sealed_for(&routes, workspace, read("b"), &waited).is_empty(),
-            "a listing waits for the same missing keys once"
-        );
-        assert_eq!(
-            sealed_for(&routes, workspace, act("b"), &waited),
-            [b],
-            "acting on a record always waits for its keys"
-        );
-    }
-}
+mod tests;

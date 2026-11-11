@@ -120,6 +120,13 @@ pub mod lines {
             .unwrap_or_default()
     }
 
+    /// Connected, and asked nothing yet: an agent thinking, or waiting on
+    /// its person.
+    #[must_use]
+    pub fn waiting() -> String {
+        "Waiting".to_owned()
+    }
+
     /// Looking at the apps, or at the one `app` names.
     #[must_use]
     pub fn looking(app: Option<&str>) -> String {

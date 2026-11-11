@@ -8,9 +8,14 @@ use crate::auth::AuthenticatedPeer;
 use crate::transport::Envelope;
 
 /// Make this session a run of the agent `label` names, asked as `request_id`.
+/// The run is present from now on in the workspace the session entered last
+/// (`subscribed`), the one a device enters for its agent just before it says
+/// so: a person sees the agent there as soon as it connected, not only from
+/// its first request.
 pub(super) fn handle_agent_run(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
+    subscribed: &[u64],
     request_id: u64,
     label: &str,
 ) -> Envelope {
@@ -25,6 +30,11 @@ pub(super) fn handle_agent_run(
         // The person's agent door lists the run while it lasts.
         if let (Some(admin), Some(stop)) = (session.admin, session.stop) {
             admin.note_agent(&peer.cert, label, stop);
+        }
+        if let (Some(plane), Some(&workspace_id)) = (session.app_serving, subscribed.last())
+            && let Ok(caller) = super::actions::session_caller(peer, session)
+        {
+            plane.run_arrived(workspace_id, &caller);
         }
         None
     } else {

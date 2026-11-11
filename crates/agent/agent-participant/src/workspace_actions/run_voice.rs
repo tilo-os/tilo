@@ -18,7 +18,9 @@
 //! ([`PeerHandle::say_for_run`]): a host that is no member of the plane holds
 //! none of its keys, and needs none to speak for its runs.
 //!
-//! A run stays present while its session lasts, however long it goes without
+//! A run is present from the moment its session says it is one
+//! ([`RunVoices::arrived`]), waiting until it asks something, and stays
+//! present while its session lasts, however long it goes without
 //! acting (an agent thinking, or waiting on its person, is still there): its
 //! word is restated at the presence keep-alive, and it leaves once the
 //! session that is the run ended.
@@ -157,6 +159,27 @@ impl RunVoices {
         voice.say(peer, workspace_id, &run, Instant::now());
     }
 
+    /// `caller`'s run connected to the workspace `cluster` and has asked
+    /// nothing yet: it is present, waiting. A run already present keeps what
+    /// it is at. Nothing for a caller in no run.
+    pub(super) fn arrived(
+        &mut self,
+        (peer, workspace_id, cluster): (&PeerHandle, u64, &str),
+        caller: &Caller,
+    ) {
+        let present = caller
+            .agent_run()
+            .is_some_and(|run| self.runs.contains_key(&(workspace_id, run.id)));
+        if present {
+            return;
+        }
+        let Some((run, voice)) = self.voice(peer, (workspace_id, cluster), caller) else {
+            return;
+        };
+        voice.activity = Some(narration::lines::waiting());
+        voice.say(peer, workspace_id, &run, Instant::now());
+    }
+
     /// `caller`'s run's voice in the workspace, present from now on: it
     /// arrives the first time. `None` for a caller in no run.
     fn voice(
@@ -288,6 +311,19 @@ impl super::Worker {
             phase,
             left_at,
         );
+    }
+
+    /// Say `caller`'s run present in `workspace_id`, waiting: it connected
+    /// and has asked nothing yet ([`run_voice`]).
+    pub(super) fn voice_arrived(&mut self, workspace_id: u64, caller: &Caller) {
+        let Some(workspace) = self.workspaces.get(&workspace_id) else {
+            return;
+        };
+        let Some(cluster) = workspace.cluster_id(workspace_id) else {
+            return;
+        };
+        self.voices
+            .arrived((&workspace.peer, workspace_id, &cluster), caller);
     }
 
     /// Say `caller`'s run reading the catalogue `query` asks: looking at the
