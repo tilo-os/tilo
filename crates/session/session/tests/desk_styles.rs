@@ -352,7 +352,17 @@ fn omit_module(store: &std::path::Path, app: &str) {
         tilolang_tilo::runtime::Meta::from_wasm(&stripped).is_some(),
         "the stripped module still carries its metadata"
     );
+    // The store keeps an installed payload read-only, as a view of what it holds: the damage is
+    // written under the file's own mode lifted for the write, and the mode is put back, so the
+    // store holds what a damaged install leaves whoever runs the test.
+    let kept = std::fs::metadata(&path)
+        .expect("the installed module's mode reads")
+        .permissions();
+    let mut writable = kept.clone();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut writable, 0o644);
+    std::fs::set_permissions(&path, writable).expect("the installed module opens for the write");
     std::fs::write(&path, &stripped).expect("the stripped module is written");
+    std::fs::set_permissions(&path, kept).expect("the installed module's mode is put back");
 }
 
 /// `wasm`'s header and its custom sections alone: every code, type, export and function
