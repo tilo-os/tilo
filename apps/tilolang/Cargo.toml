@@ -116,6 +116,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 # A hosted app's window against the tilolang host running its instance (`tests/hosted.rs`).
 tilolang-host = { path = "../../crates/platform/tilolang-host" }
 collaboration = { version = "0.1.0", path = "../../crates/collab/collaboration", features = ["test-support", "broker-transport", "native"] }
+collab-types = { version = "0.1.0", path = "../../crates/collab/collab-types" }
 automerge.workspace = true
 uuid.workspace = true
 

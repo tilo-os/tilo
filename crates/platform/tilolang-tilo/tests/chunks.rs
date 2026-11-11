@@ -1090,3 +1090,61 @@ fn a_card_added_to_a_big_board_costs_what_one_added_to_a_small_board_costs() {
     }
     assert!(misses.is_empty(), "{}", misses.join("\n"));
 }
+
+/// A window whose record the framework keeps as one document — no chunk above the record's own is
+/// held apart — keeps a card added past a full run: the door writes it into that document, and the
+/// board reads it there, in its place after the others, in the window and once opened again.
+#[test]
+fn a_card_added_past_a_full_run_of_a_record_kept_as_one_document_is_kept() {
+    let (earlier, mut docs, meta, root, ids) = board();
+    drop(earlier);
+    let mut cards = fill_bulk(&mut docs, &meta, &root, first_run());
+    let mut record = docs.doc(chunk::FIRST).clone();
+    let open = |record: &AutoCommit| {
+        let host = Host::open(
+            Opening {
+                record: Some(record),
+                chunks: None,
+                index_dir: None,
+                device: None,
+            },
+            Principal::new("ada"),
+            || None,
+        )
+        .unwrap();
+        host.load_builtin(BOARD, &ids).unwrap();
+        host.wait_index();
+        host
+    };
+    let host = open(&record);
+    assert_eq!(cards_in(&host, &meta, &root), cards);
+
+    let add = act(
+        &host,
+        &meta,
+        ("Board", &root),
+        "add",
+        json!({ "text": "one more" }),
+    );
+    assert!(
+        add.edits
+            .iter()
+            .any(|edit| edit.chunk() == Some(chunk::FIRST + 1)),
+        "the card goes past the full run"
+    );
+    cards.push(made(&add));
+    apply_recorded(&mut record, &add);
+    host.sync_from(&record);
+    host.wait_index();
+    assert_eq!(
+        cards_in(&host, &meta, &root),
+        cards,
+        "the window reads the card"
+    );
+    drop(host);
+    assert_eq!(
+        cards_in(&open(&record), &meta, &root),
+        cards,
+        "and so does a window opened on the record again"
+    );
+}

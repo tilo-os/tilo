@@ -22898,6 +22898,7 @@ name = "tilolang-app"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "collab-types",
  "collaboration",
  "libc",
  "mail",

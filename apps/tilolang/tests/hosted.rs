@@ -42,6 +42,9 @@ use tilolang_tilo::runtime::store::Store as _;
 use ui::headless::FrameHarness;
 use ui::widget::Widget;
 
+#[path = "hosted/chunks.rs"]
+mod chunks;
+
 #[path = "hosted/cost.rs"]
 mod cost;
 
@@ -418,7 +421,7 @@ struct Session {
     /// What wakes the host when its work off the frame is ready to be taken in.
     woken: Arc<Woken>,
     /// The broker's end of the instance's connection.
-    _broker: Box<dyn std::any::Any>,
+    broker: Box<dyn std::any::Any>,
 }
 
 impl Session {
@@ -660,8 +663,15 @@ impl Session {
             window: window(HostedWindow::over(theirs)),
             sent,
             woken,
-            _broker: broker,
+            broker,
         }
+    }
+
+    /// What the broker delivers to the instance's connection next.
+    fn inbox(&self) -> &Inbox {
+        self.broker
+            .downcast_ref::<Inbox>()
+            .expect("the broker's end holds the connection's inbox")
     }
 
     /// Forget the requests the instance sent so far.
