@@ -346,7 +346,7 @@ impl WorkspaceStore {
         v2: &Path,
         changed: Option<std::time::SystemTime>,
     ) -> Result<(), StoreError> {
-        let entries = match fs::read_dir(&v2) {
+        let entries = match fs::read_dir(v2) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error.into()),
