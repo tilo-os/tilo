@@ -11,7 +11,8 @@
 
 use tilo_paint_stream::snapshot::{CHOICE_BOX, CHOICE_MARK, convert};
 use tilo_paint_stream::{
-    Anchor, BlobRef, Color, Frame, Item, LayerId, Patch, PatchError, Point, ROOT, Rect, decode, encode,
+    Anchor, BlobRef, Color, Frame, Item, LayerId, Patch, PatchError, Point, ROOT, Rect, decode,
+    encode,
 };
 
 const VIEWPORT: Point = Point { x: 800.0, y: 600.0 };
