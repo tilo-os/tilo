@@ -58,6 +58,10 @@ pub(crate) struct SemanticsGate {
     structure: u64,
     ime: u64,
     requested: bool,
+    /// The last input that could move things on screen was a wheel: until a
+    /// key, a press or a touch, the caret's line moving on screen is the
+    /// content scrolling under it, not the caret going to another line.
+    scrolling: bool,
 }
 
 impl SemanticsGate {
@@ -71,7 +75,27 @@ impl SemanticsGate {
             structure: 0,
             ime: 0,
             requested: false,
+            scrolling: false,
         }
+    }
+    /// Read an input the mount took: a wheel scrolls what the caret is in, a
+    /// key, a press or a touch may move the caret itself.
+    pub(crate) fn note_input(&mut self, event: &ui::winit::event::WindowEvent) {
+        use ui::winit::event::WindowEvent;
+        match event {
+            WindowEvent::MouseWheel { .. } => self.scrolling = true,
+            WindowEvent::KeyboardInput { .. }
+            | WindowEvent::Ime(_)
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::Touch(_) => self.scrolling = false,
+            _ => {}
+        }
+    }
+    /// Whether the IME window `ime` (its signature) stands on another line
+    /// than the tree the host holds says, as a reader must hear at once. While
+    /// a wheel scrolls, the line moves with the content and waits like it.
+    fn ime_moved(&self, ime: u64) -> bool {
+        ime != self.ime && !self.scrolling
     }
     /// The host wants the full tree with the next status even if unchanged.
     pub(crate) fn request(&mut self) {
@@ -109,7 +133,7 @@ impl SemanticsGate {
             return false;
         }
         let soon = now.checked_add(AFTER_FRAME).unwrap_or(now);
-        let urgent = self.requested || ime_signature(ime) != self.ime;
+        let urgent = self.requested || self.ime_moved(ime_signature(ime));
         let at = match self.schedule.window_end(now) {
             Some(end) if !urgent => end.max(soon),
             _ => soon,
@@ -126,7 +150,7 @@ impl SemanticsGate {
         ime: Option<&ImeWindowState>,
         now: ui::time::Instant,
     ) -> bool {
-        if self.requested || self.last.is_none() || ime_signature(ime) != self.ime {
+        if self.requested || self.last.is_none() || self.ime_moved(ime_signature(ime)) {
             return false;
         }
         self.schedule.hold(now);
@@ -149,7 +173,7 @@ impl SemanticsGate {
         ime: Option<&ImeWindowState>,
         now: ui::time::Instant,
     ) -> bool {
-        if self.requested || self.last.is_none() || ime_signature(ime) != self.ime {
+        if self.requested || self.last.is_none() || self.ime_moved(ime_signature(ime)) {
             return false;
         }
         self.schedule.defer(now).is_some()
@@ -165,7 +189,7 @@ impl SemanticsGate {
     ) -> bool {
         !self.requested
             && self.last.is_some()
-            && ime_signature(ime) == self.ime
+            && !self.ime_moved(ime_signature(ime))
             && self.schedule.nothing_due(now)
     }
     /// The status members a delivery from the last [`Self::decide`] adds,
@@ -200,7 +224,7 @@ impl SemanticsGate {
             self.schedule.clear_due();
             return SemanticsDecision::Unchanged;
         }
-        let forced = requested || structure != self.structure || ime != self.ime;
+        let forced = requested || structure != self.structure || self.ime_moved(ime);
         if forced {
             self.schedule.mark_published(now);
         } else if let PublicationDecision::Deferred(due) = self.schedule.decide(now) {
@@ -497,10 +521,24 @@ mod tests {
         // After the first tree, a delivery is the patch to the last one: the
         // edited field alone.
         let patch = std::str::from_utf8(gate.text()).unwrap();
-        assert!(
-            patch.starts_with(r#""semanticsPatch":{"base":1,"keyboard_focus_owner":"/Column/TextInput[0]","seq":2,"viewport":[100,100],"ops":[{"p":["root",0,"s"],"own":{"#),
+        // Read as the page reads it: the members, in whatever order the
+        // build's JSON writer puts them.
+        let members: serde_json::Value = serde_json::from_str(&format!("{{{patch}}}")).unwrap();
+        let head = &members["semanticsPatch"];
+        assert_eq!(head["base"], 1, "{patch}");
+        assert_eq!(head["seq"], 2, "{patch}");
+        assert_eq!(
+            head["keyboard_focus_owner"], "/Column/TextInput[0]",
             "{patch}"
         );
+        assert_eq!(head["viewport"], serde_json::json!([100, 100]), "{patch}");
+        assert_eq!(head["ops"].as_array().map(Vec::len), Some(1), "{patch}");
+        assert_eq!(
+            head["ops"][0]["p"],
+            serde_json::json!(["root", 0, "s"]),
+            "{patch}"
+        );
+        assert!(head["ops"][0]["own"].is_object(), "{patch}");
         assert!(patch.contains(r#""value":"abcd""#), "{patch}");
         assert!(!patch.contains("TextInput[1]"), "{patch}");
         assert_eq!(gate.due(), None);
@@ -588,6 +626,41 @@ mod tests {
             gate.decide(tree(&["abcd", ""], 0), Some(&ime(0, 36)), ms(60)),
             SemanticsDecision::Deliver { forced: true }
         );
+    }
+
+    #[test]
+    fn a_scroll_carrying_the_caret_line_waits_like_any_move_until_the_caret_moves() {
+        let t0 = ui::time::Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let wheel = ui::winit::event::WindowEvent::MouseWheel {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            delta: ui::winit::event::MouseScrollDelta::PixelDelta(
+                ui::winit::dpi::PhysicalPosition::new(0.0, 40.0),
+            ),
+            phase: ui::winit::event::TouchPhase::Moved,
+        };
+        let mut gate = window();
+        gate.decide(tree(&["a"], 0), Some(&ime(10, 200)), ms(0));
+        // A wheel scrolls the note under the caret: its line moves on screen
+        // on every frame, but nothing about it changed for a reader.
+        gate.note_input(&wheel);
+        for (step, at) in [10, 20, 30, 40].into_iter().enumerate() {
+            let y = 200 - 40 * u32::try_from(step + 1).unwrap();
+            assert!(
+                gate.defer_unbuilt(Some(&ime(10, y)), ms(at)),
+                "a scrolled frame waits for the window"
+            );
+        }
+        assert_eq!(gate.due(), Some(ms(100)));
+        assert_eq!(
+            gate.decide(tree(&["a"], 0), Some(&ime(10, 40)), ms(100)),
+            SemanticsDecision::Unchanged
+        );
+        // A key moves the caret to another line: a reader hears it at once.
+        gate.note_input(&ui::synthetic_input::named_key(
+            ui::winit::keyboard::NamedKey::ArrowDown,
+        ));
+        assert!(!gate.defer_unbuilt(Some(&ime(10, 56)), ms(110)));
     }
 
     #[test]

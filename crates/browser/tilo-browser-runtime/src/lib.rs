@@ -248,9 +248,15 @@ mod rooms;
 // The workspaces this browser entered, by the rules every device keeps them by.
 #[cfg(target_arch = "wasm32")]
 mod entered;
-// Which way the page takes into the workspace a link names, by the rules every device takes.
-#[cfg(target_arch = "wasm32")]
-#[cfg(target_arch = "wasm32")]
+// When a status carries the semantics tree: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser publishes statuses; the host runs its tests"
+    )
+)]
 mod semantics_status;
 #[cfg(target_arch = "wasm32")]
 mod settings;
@@ -258,7 +264,14 @@ mod settings;
 pub(crate) mod shell;
 #[cfg(target_arch = "wasm32")]
 mod storage;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser throttles statuses; the host runs its tests"
+    )
+)]
 mod throttle;
 #[cfg(target_arch = "wasm32")]
 mod video_pictures;
