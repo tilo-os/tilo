@@ -50,10 +50,10 @@ mod opened_records;
 mod plane;
 mod voice;
 
+pub use agent_run::AgentRunCompletion;
 use connect::Dial;
 #[cfg(test)]
 use connect::{connect, iroh_link_error};
-pub use agent_run::AgentRunCompletion;
 pub use entry::Entry;
 pub use entry::EntryCompletion;
 use entry::{Refusal, refusal};
