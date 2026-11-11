@@ -584,7 +584,9 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     const focusInRecovery=[...recoverySurfaces].some(surface=>surface.contains?.(active));
     if(canonicalFocus&&active!==canonicalFocus&&focusInMount&&!focusWasManaged&&!focusInRecovery){
       setActiveDescendant(active,activeItem??canonicalFocus);
-    }else if(canonicalFocus&&active!==canonicalFocus&&(!active||active===document.body||focusWasManaged)){
+    // A person selecting the painted text natively keeps the page's focus
+    // where the selection put it: moving it would empty the selection.
+    }else if(canonicalFocus&&active!==canonicalFocus&&(!active||active===document.body||focusWasManaged)&&!host?.holdsSelection?.()){
       clearActiveDescendant();
       canonicalFocus.tiloState.reconcilingFocus=true;
       try{canonicalFocus.focus({preventScroll:true});}finally{canonicalFocus.tiloState.reconcilingFocus=false;}

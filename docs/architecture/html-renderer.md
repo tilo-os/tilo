@@ -82,7 +82,26 @@ transparent, as the input surface. Nothing changes for a mount without
    `prefers-color-scheme` while the person has chosen neither in their
    settings, and changes with it.
 
-6. **Images and gradients.** An image is handed to the page once, as its
+6. **The HTML layer is the hit target** (`web/dom-input.mjs`). The canvas
+   lies under the layer, where winit listens, and the page forwards what it
+   does not handle itself as the same pointer events, without bubbling:
+   - a wheel over a scroll container that can still move moves it in the
+     wheel event itself, so the next frame shows it; any other wheel goes
+     to the runtime;
+   - a touch that lands on a scroll container pans it natively, with the
+     browser's momentum and overscroll. The runtime hears the touch begin
+     and end, so a tap is still a tap, and a pan the browser takes over
+     ends in a cancel, so the runtime never drags what the browser
+     scrolls. Elsewhere a touch is the runtime's (`touch-action: none`);
+   - a press is the runtime's, as on the canvas: its own focus change and
+     selection are prevented, or the page's focus would leave the runtime's
+     editor for the page and the semantic mirror would take it;
+   - `__tiloDom.selectText(true)` hands presses to the page for native
+     selection; while the person makes or holds one, neither the host nor
+     the semantic mirror moves the focus, and the copy shortcut is the
+     browser's;
+   - the runtime's cursor, set on the canvas, shows on the layer.
+7. **Images and gradients.** An image is handed to the page once, as its
    pixels under an id, and shown as a `<canvas>` placed by the image's own
    matrix and clipped to what the scene draws it into; both sides forget an
    image no frame showed for a while. A linear, radial (one centre) or sweep
@@ -163,6 +182,23 @@ Against the targets:
   is unchanged (1.1 – 1.2 % at 1280 px, 4.5 % at 390 px).
 - **Light and dark** follow the emulated `prefers-color-scheme` in the
   HTML runs with no Tilo setting given.
+- **With the HTML layer as the hit target** (two runs, each with the canvas
+  and plain DOM in the same run, the builder otherwise quiet):
+
+  | | HTML | WebGPU canvas | Plain DOM |
+  |---|---|---|---|
+  | typing p50 / p90, 1280 px | 14.7 – 15.8 / 29.7 – 39.5 ms | 253 – 264 / 489 – 535 ms | 2.0 – 2.2 / 2.8 – 4.3 ms |
+  | wheel p50 / p90, 1280 px | 30.7 – 36.6 / 54.5 – 72.0 ms | 64.8 – 69.1 / 620 – 631 ms | 20.8 – 21.1 / 26.8 – 29.2 ms |
+  | typing p50, 390 px | 17.5 – 19.6 ms | — | — |
+  | wheel p50, 390 px | 22.1 – 27.2 ms | — | — |
+  | touch pan of the note, 390 px | 280 px for a 260 px drag, native | — | — |
+
+  The wheel median is about one frame above plain DOM and above the run
+  with the canvas as the hit target (16.6 ms); the work per scroll frame
+  is the same (99 writes, 14 new elements, 1.3 ms in the presenter).
+  Pixel parity is unchanged (1.2 % at 1280 px, 4.5 % at 390 px). A tap
+  opens the note as on the canvas: an earlier difference at 390 px was a
+  passing "Saved" notice caught in one screenshot and not the other.
 - **Size with `dom` off:** keying every widget leaves the desktop bundle's
   start module (as the `sdk-web-size` check builds it,
   `tools/web/html-renderer/size.sh`) at 20,295,058 bytes against 20,281,659
@@ -185,25 +221,13 @@ Against the targets:
   `draw_child_at`) shifts the keys of the children after it, which is
   correct but rewrites more; and calls inside a macro's expansion are not
   always linted, so the decorator's forwarding draw is allowed by name.
-- **The HTML layer as the hit target (on branch
-  `html-renderer-hit-target`, not on main).** The layer takes every pointer
-  and forwards what the page does not handle to the canvas
-  (`web/dom-input.mjs`): wheels and touches over a scroll container stay
-  native, presses go to the runtime with the press's own focus change and
-  selection prevented, and the host keeps the focus while the person holds
-  a native selection. What it showed in the harness:
-  - a touch drag over the note pans its container natively (280 px for a
-    260 px drag, momentum included), which the canvas path cannot;
-  - but the 390 px run opened the note in a different state than the
-    canvas (title selected for editing instead of saved), so a tap reaches
-    the app differently under touch emulation, and wheel p50 rose to 40–44
-    ms in runs that shared the builder with a full build (not yet
-    re-measured on a quiet machine);
-  - a semantic element hosted in the painted layer must never take focus:
-    the press's default focus change put it there, and re-hosting it during
-    a frame blurred it inside a runtime callback.
-  The native selection after typing still comes back empty in both modes.
-  Fix the tap and re-measure before it lands.
+- **Native selection after typing.** The host and the semantic mirror no
+  longer take the focus back while the person selects (it used to empty
+  the selection 30 ms into the drag), but a drag over the painted text in
+  `selectText` mode still leaves the selection collapsed at the press: the
+  selection does not follow the pointer across the absolutely placed
+  spans. Paragraph grouping (below) gives the browser one text flow per
+  block to select in, and is the next thing to try.
 - **Canvas islands.** Images and box gradients are done (above). A
   widget that declares itself a picture, or a subtree with too many ops,
   should still become one `<canvas>` rasterized by `tilo-cpu-raster` (or

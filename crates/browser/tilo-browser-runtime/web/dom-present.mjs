@@ -221,6 +221,8 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
         node = element(id, 'span');
         set(node, 'white-space', 'pre');
         set(node, 'pointer-events', 'auto');
+        // The runtime's cursor, which the layer shows, not the text's own.
+        set(node, 'cursor', 'inherit');
         set(node, 'font-family', `"${family}"`);
         set(node, 'font-size', px(size));
         set(node, 'line-height', '1');
@@ -267,6 +269,9 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
             set(node, 'overscroll-behavior', 'contain');
             set(node, 'scrollbar-width', 'none');
             set(node, 'pointer-events', 'auto');
+            // A touch pans it as a page's would; the layer around it takes
+            // no gesture of its own.
+            set(node, 'touch-action', 'pan-x pan-y');
             // Children stand where they lie in the content, which the
             // container then scrolls by the widget's offset.
             origin = [x, y - region.offset];
@@ -274,6 +279,7 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
           } else {
             set(node, 'overflow', 'hidden');
             set(node, 'pointer-events', 'none');
+            set(node, 'touch-action', 'auto');
             node.tiloRegion = undefined;
           }
         }
@@ -363,21 +369,26 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
         if (!element.tiloForeign) {
           element.tiloForeign = true;
           // In the painted layer it must stay unseen, as the mirror's own
-          // layer keeps it.
+          // layer keeps it: no pointer lands on it (the painted layer is the
+          // page's hit target, and the pointer is the runtime's), and it
+          // stays out of a selection of the painted text.
           element.style.opacity = '0';
+          element.style.pointerEvents = 'none';
+          if (element.localName !== 'textarea' && element.localName !== 'input') element.style.userSelect = 'none';
         }
         hosted.set(key, {element});
       },
       release(key) { hosted.delete(key); },
     },
     // The scroll container under the page point `x`, `y` that can still move
-    // by `dy`, innermost first.
+    // by `dy` (by any amount for a `dy` of 0), innermost first.
     scrollerAt(x, y, dy) {
       let found;
       for (const node of scrollers.values()) {
         const r = node.getBoundingClientRect();
         if (x < r.left || x >= r.right || y < r.top || y >= r.bottom) continue;
-        const room = dy > 0 ? node.scrollHeight - node.clientHeight - node.scrollTop : node.scrollTop;
+        const room = dy > 0 ? node.scrollHeight - node.clientHeight - node.scrollTop
+          : dy < 0 ? node.scrollTop : node.scrollHeight - node.clientHeight;
         if (room <= 0) continue;
         if (!found || found.contains(node)) found = node;
       }

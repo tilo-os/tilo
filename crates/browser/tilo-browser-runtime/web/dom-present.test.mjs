@@ -112,6 +112,7 @@ test('a semantic element lives in the element of the widget it describes', () =>
   assert.ok(button, 'hosted in the painted widget');
   assert.equal(button.getAttribute('aria-label'), 'Save');
   assert.equal(button.style.left, '0px', 'placed from the widget\'s origin');
+  assert.equal(button.style.pointerEvents, 'none', 'the pointer is the runtime\'s');
   assert.equal(mirror.children.length, 0);
   // The next frame keeps it there, ahead of what is painted.
   frame(presenter, [['k', 'aa', 10, 20, 1], box(10, 20), box(12, 22), ['ke']]);

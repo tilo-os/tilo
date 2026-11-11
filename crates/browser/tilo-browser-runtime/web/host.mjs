@@ -17,6 +17,7 @@ import {fetchPersonProfile,followPhotos,photoPixels} from './profile-photos.mjs'
 import {createPresentedSource} from './panorama.mjs';
 import {createSemanticPresentation} from './semantic-presentation.mjs';
 import {createDomPresenter} from './dom-present.mjs';
+import {createDomInput} from './dom-input.mjs';
 export {createPanorama} from './panorama.mjs';
 import {createNativeCatalogueBridge, invokeMembershipAction} from './native-catalogue.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
@@ -208,21 +209,25 @@ export async function mountDesktop(target,options={}) {
   const status=createHostStatus(commandStatus);
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
   // Shown as HTML (`dom: true`): the frames are built as elements in a layer
-  // under the canvas, which stays the input surface but shows nothing. A
-  // wheel over one of the layer's scroll containers scrolls it natively
-  // (below); `selectText(true)` lets the pointer through to the layer, where
-  // the browser's own text selection works on the real text.
-  let domPresenter;
+  // over the canvas, which shows nothing and stays where winit listens. The
+  // layer is the hit target: the browser scrolls, pans and selects what it
+  // can natively, and the rest goes on to the canvas (dom-input.mjs).
+  // `selectText(true)` keeps every pointer on the page, for native text
+  // selection alone.
+  let domPresenter,domInput,selectOnly=false;
   if(options.dom){
     const domLayer=document.createElement('div');domLayer.className='tilo-dom';
-    domLayer.style.cssText='position:absolute;inset:0;overflow:hidden;contain:strict;user-select:text;-webkit-user-select:text;';
-    canvas.style.cssText+='position:absolute;inset:0;opacity:0;';
-    surface.prepend(domLayer);
+    domLayer.style.cssText='position:absolute;inset:0;overflow:hidden;contain:strict;user-select:text;-webkit-user-select:text;touch-action:none;';
+    canvas.style.cssText+='position:absolute;inset:0;opacity:0;pointer-events:none;';
+    canvas.after(domLayer);
     domPresenter=createDomPresenter(domLayer,{onFrame:options.onDomFrame,onScroll:(key,offset)=>{
       if(id===undefined||closed)return;
       try{runtime.dom_scrolled(id,key,offset);}catch(error){report({domScroll:String(error)});}
     }});
-    globalThis.__tiloDom={stats:domPresenter.stats,layer:domLayer,selectText:on=>{canvas.style.pointerEvents=on?'none':'';}};
+    domInput=createDomInput({layer:domLayer,canvas,scrollerAt:domPresenter.scrollerAt,native:()=>selectOnly||!active()});
+    // The semantic mirror leaves the focus alone while the person selects.
+    domPresenter.host.holdsSelection=domInput.holdsSelection;
+    globalThis.__tiloDom={stats:domPresenter.stats,layer:domLayer,selectText:on=>{selectOnly=on;}};
   }
   const fillScreen=createScreenFill(surface,{canvas,observe:globalThis.ResizeObserver});
   let id,storage,closed=false,crashed=false,composing=false,pasteShift=false,lastState,readyResolve,readyReject,persistenceFailed=false;
@@ -295,18 +300,11 @@ export async function mountDesktop(target,options={}) {
     blur:owner=>{inputScope.capture();if(active())semanticKeys?.blur(owner);},
   },inputScope,domPresenter?.host);
   const listeners=new AbortController();const on=(node,type,fn,opts={})=>node.addEventListener(type,fn,{...opts,signal:listeners.signal});
-  // A wheel over a scroll container of the HTML layer moves that container,
-  // as on any page: the browser shows the move at once, and the widget hears
-  // of it through the container's scroll (`dom_scrolled`). Anything else is
-  // the canvas's, which hands it to the runtime.
-  if(domPresenter)on(surface,'wheel',event=>{
-    if(event.ctrlKey||!active())return;
-    const dy=event.deltaMode===1?event.deltaY*40:event.deltaMode===2?event.deltaY*surface.clientHeight:event.deltaY;
-    const scroller=dy&&domPresenter.scrollerAt(event.clientX,event.clientY,dy);
-    if(!scroller)return;
-    event.preventDefault();event.stopPropagation();
-    scroller.scrollTop+=dy;
-  },{capture:true,passive:false});
+  // A person holding a selection of the HTML layer's text keeps it: the
+  // copy shortcut is the browser's, which copies it.
+  if(domInput)on(surface,'keydown',event=>{
+    if((event.ctrlKey||event.metaKey)&&!event.altKey&&event.key.toLowerCase()==='c'&&domInput.holdsSelection())event.stopPropagation();
+  },{capture:true});
   if(globalThis.ResizeObserver){const resized=new ResizeObserver(([entry])=>{canvasCssSize=[entry.contentRect.width,entry.contentRect.height];placeSemantics();});resized.observe(canvas);listeners.signal.addEventListener('abort',()=>resized.disconnect());}
   const editorListeners=[];
   function onEditor(type,fn,opts={}){
@@ -415,7 +413,8 @@ export async function mountDesktop(target,options={}) {
     if(ime){
       editor.style.left=`${ime.x}px`;editor.style.top=`${ime.y}px`;editor.style.height=`${Math.max(1,ime.height)}px`;
       applyEditorHints(editor,ime.hints);
-      if(document.activeElement===canvas)editor.focus({preventScroll:true});
+      // A native selection of the HTML layer's text would go with the focus.
+      if(document.activeElement===canvas&&!domInput?.holdsSelection())editor.focus({preventScroll:true});
     }else if(document.activeElement===editor){canvas.focus({preventScroll:true});}
     observeLocalActivation();
     if(state.phase==='presented'){readyResolve();void persist().catch(()=>{});void loadAssets();}

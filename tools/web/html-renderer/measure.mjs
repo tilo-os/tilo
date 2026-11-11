@@ -175,12 +175,20 @@ async function run({page, render, width, height, dark = false, shot, interact = 
       await sleep(1500);
       const item = await tab.evaluate(FIND('Field notes'));
       result.seedItem = item;
+      // Every input event the tap that opens the note raises, in order: on
+      // the canvas (what the runtime hears) and on the page.
+      await tab.evaluate(`(() => { const log = window.__tapEvents = []; const canvas = document.querySelector('canvas');
+        for (const type of ['pointerdown','pointerup','pointercancel','mousedown','mouseup','click','dblclick','touchstart','touchend','contextmenu','focusin']) {
+          addEventListener(type, e => log.push([type, e.isTrusted ? 'page' : 'synthetic', e.target?.localName, e.pointerType ?? '']), {capture: true});
+          canvas?.addEventListener(type, e => { if (!e.isTrusted) log.push([type, 'canvas', e.pointerType ?? '']); });
+        } return true; })()`);
       if (item) {
         for (const type of ['mousePressed', 'mouseReleased']) {
           await tab.send('Input.dispatchMouseEvent', {type, x: item[0], y: item[1], button: 'left', clickCount: 1});
         }
         await sleep(1500);
       }
+      result.tapEvents = await tab.evaluate('JSON.stringify(window.__tapEvents ?? [])').then(JSON.parse);
       result.dom = await tab.evaluate('JSON.stringify(window.renderMarks.dom?.meta ?? null)').then(JSON.parse);
       result.domElements = await tab.evaluate('document.querySelectorAll(".tilo-dom *").length');
       result.domTexts = await tab.evaluate('document.querySelectorAll(".tilo-dom span").length');
@@ -236,18 +244,49 @@ async function run({page, render, width, height, dark = false, shot, interact = 
         // The browser's own selection over the real text: the canvas lets
         // the pointer through, and a drag selects as on any page.
         await tab.evaluate('window.__tiloDom.selectText(true)');
-        const spans = await tab.evaluate(`JSON.stringify([...document.querySelectorAll('.tilo-dom span')].filter(s => /Paragraph/.test(s.textContent)).slice(1, 3).map(s => { const r = s.getBoundingClientRect(); return [r.left, r.top + r.height / 2, r.right]; }))`).then(JSON.parse);
+        await tab.evaluate(`(() => { const log = window.__selectLog = []; document.addEventListener('selectionchange', () => log.push(['change', String(getSelection()).length, getSelection().anchorNode?.parentElement?.localName ?? getSelection().anchorNode?.localName ?? null, performance.now() | 0])); for (const t of ['mousedown','mouseup','focusin','focusout']) addEventListener(t, e => log.push([t, e.target?.localName, e.defaultPrevented, performance.now() | 0]), {capture: true}); return true; })()`);
+        const spans = await tab.evaluate(`JSON.stringify([...document.querySelectorAll('.tilo-dom span')].filter(s => { if (!/Paragraph/.test(s.textContent)) return false; const r = s.getBoundingClientRect(); return document.elementFromPoint(r.left + 4, r.top + r.height / 2) === s && document.elementFromPoint(r.right - 4, r.top + r.height / 2) === s; }).slice(1, 3).map(s => { const r = s.getBoundingClientRect(); return [r.left, r.top + r.height / 2, r.right]; }))`).then(JSON.parse);
         if (spans.length === 2) {
           await tab.send('Input.dispatchMouseEvent', {type: 'mousePressed', x: spans[0][0] + 2, y: spans[0][1], button: 'left', clickCount: 1});
           for (let k = 1; k <= 8; k++) await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: spans[0][0] + (spans[1][2] - spans[0][0]) * k / 8, y: spans[0][1] + (spans[1][1] - spans[0][1]) * k / 8, button: 'left', buttons: 1});
           await tab.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x: spans[1][2] - 2, y: spans[1][1], button: 'left', clickCount: 1});
           await sleep(200);
           result.nativeSelection = await tab.evaluate('getSelection().toString()');
+          result.selectLog = await tab.evaluate('JSON.stringify(window.__selectLog.slice(0, 40))').then(JSON.parse);
+          result.selectSpans = spans;
           if (shot) writeFileSync(join(out, shot.replace('.png', '-selected.png')), await tab.screenshot());
         }
         await tab.evaluate('window.__tiloDom.selectText(false)');
+        // The same drag with the layer as the hit target, the editor having
+        // had the keyboard: the selection stays, and the focus with it.
+        await tab.evaluate('getSelection().removeAllRanges()');
+        if (spans.length === 2) {
+          await tab.send('Input.dispatchMouseEvent', {type: 'mousePressed', x: spans[0][0] + 2, y: spans[0][1], button: 'left', clickCount: 1});
+          for (let k = 1; k <= 8; k++) await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: spans[0][0] + (spans[1][2] - spans[0][0]) * k / 8, y: spans[0][1] + (spans[1][1] - spans[0][1]) * k / 8, button: 'left', buttons: 1});
+          await tab.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x: spans[1][2] - 2, y: spans[1][1], button: 'left', clickCount: 1});
+          await sleep(400);
+          result.selectionAsTarget = await tab.evaluate('JSON.stringify({text: getSelection().toString(), focus: document.activeElement?.localName})').then(JSON.parse);
+          await tab.evaluate('getSelection().removeAllRanges()');
+        }
         result.accessibility = await tab.evaluate(ACCESSIBILITY).then(JSON.parse);
         result.semanticMirror = await tab.evaluate(`JSON.stringify({textareas: document.querySelectorAll('[data-tilo-semantic] , textarea').length, buttons: document.querySelectorAll('button[data-tilo-semantic]').length, roles: [...new Set([...document.querySelectorAll('[data-tilo-semantic][role]')].map(e => e.getAttribute('role')))]})`).then(JSON.parse);
+      }
+      if (render === 'dom' && width < 500) {
+        // A touch drag over the note pans its scroll container natively.
+        await tab.evaluate(`(() => { const pan = window.__pan = {moves: [], scrolls: [], top: () => [...document.querySelectorAll('.tilo-dom div')].filter(d => d.style.overflowY === 'auto').reduce((sum, d) => sum + d.scrollTop, 0)};
+          pan.before = pan.top();
+          addEventListener('touchmove', () => pan.moves.push(performance.now()), {capture: true, passive: true});
+          addEventListener('scroll', () => pan.scrolls.push(performance.now()), {capture: true, passive: true});
+          return true; })()`);
+        const x = width / 2, from = height * 0.7, to = height * 0.35, steps = 12;
+        await tab.send('Input.dispatchTouchEvent', {type: 'touchStart', touchPoints: [{x, y: from}]});
+        for (let k = 1; k <= steps; k++) {
+          await tab.send('Input.dispatchTouchEvent', {type: 'touchMove', touchPoints: [{x, y: from + (to - from) * k / steps}]});
+          await sleep(16);
+        }
+        await tab.send('Input.dispatchTouchEvent', {type: 'touchEnd', touchPoints: []});
+        await sleep(600);
+        result.touchPan = await tab.evaluate(`JSON.stringify((() => { const pan = window.__pan; return {moved: pan.top() - pan.before, firstScrollMs: pan.scrolls.length && pan.moves.length ? pan.scrolls[0] - pan.moves[0] : null, scrollEvents: pan.scrolls.length}; })())`).then(JSON.parse);
       }
       if (page === 'notes.html') result.domAfter = await tab.evaluate('JSON.stringify(window.renderMarks.dom ?? null)').then(JSON.parse);
     }
@@ -271,6 +310,22 @@ if (process.env.QUICK) {
   await run({page: 'notes.html', render: 'dom', width: 1280, height: 800, interact: false});
   results.push(await run({page: 'notes.html', render: 'dom', width: 1280, height: 800, shot: 'quick-dom-1280.png', interact: false}));
   writeFileSync(join(out, 'quick.json'), JSON.stringify(results, null, 1));
+  process.exit(0);
+}
+// SELECT=1: only the interactive wide HTML run, for selection.
+if (process.env.SELECT) {
+  await run({page: 'notes.html', render: 'dom', width: 1280, height: 800, interact: false});
+  results.push(await run({page: 'notes.html', render: 'dom', width: 1280, height: 800, shot: 'notes-dom-1280.png'}));
+  writeFileSync(join(out, 'select.json'), JSON.stringify(results, null, 1));
+  process.exit(0);
+}
+// PHONE=1: only the phone-width pair, HTML and canvas, for a quick look at
+// what a tap does there.
+if (process.env.PHONE) {
+  await run({page: 'notes.html', render: 'dom', width: 390, height: 844, interact: false});
+  results.push(await run({page: 'notes.html', render: 'dom', width: 390, height: 844, shot: 'notes-dom-390.png', interact: false}));
+  results.push(await run({page: 'notes.html', render: 'gpu', width: 390, height: 844, shot: 'notes-gpu-390.png', interact: false}));
+  writeFileSync(join(out, 'phone.json'), JSON.stringify(results, null, 1));
   process.exit(0);
 }
 // The server compresses each file on its first request; a throwaway load
