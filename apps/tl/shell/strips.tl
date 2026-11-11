@@ -291,7 +291,7 @@ view window_controls(
     let subject = placed_resource(shown?.record ?? "")
     row(gap: .tight, align: .center) {
         ui.MenuButton(
-            window_name(shown),
+            "This window",
             icon: .more_horizontal,
             icon_only: true,
             role: .plain,
