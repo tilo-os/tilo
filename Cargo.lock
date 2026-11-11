@@ -20029,6 +20029,7 @@ dependencies = [
  "tilo-relay-session",
  "tilo-room-host",
  "tilo-rt",
+ "tilo-session-client",
  "tilo-test-env",
  "tilo-ui",
  "tilo-unlock-protocol",

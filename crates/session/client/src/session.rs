@@ -271,7 +271,7 @@ pub fn start_session(
         opened_routes: BTreeSet::new(),
         when_opened: BTreeSet::new(),
         barriers: Vec::new(),
-        sent: BTreeMap::new(),
+        sending: BTreeMap::new(),
         awaiting_surface: BTreeMap::new(),
         surfaces_arrived: false,
         compactions: Vec::new(),
@@ -426,16 +426,8 @@ struct Task {
     /// Each waits for the writes that were in this device's custody when it was called, and
     /// completes with the host's refusal of any of them.
     barriers: Vec<(BTreeSet<[u8; 32]>, Option<String>, Completion)>,
-    /// The writes in custody this connection sent its host, by the op it sent each as: the
-    /// workspace, the custody entry and its route.
-    sent: BTreeMap<
-        [u8; 16],
-        (
-            tilo_desktop_model::WorkspaceId,
-            [u8; 32],
-            Option<DocumentRoute>,
-        ),
-    >,
+    /// What this connection sent its host of each workspace's custody.
+    sending: BTreeMap<tilo_desktop_model::WorkspaceId, crate::custody::Sending>,
     /// Writes the owner holds for an app surface this page does not have, by that surface: the
     /// routes the host replays once it arrived.
     awaiting_surface: BTreeMap<[u8; 32], (u64, DocumentRoute)>,
@@ -1539,7 +1531,7 @@ impl Task {
         // What this page recorded while it was away is owed again, oldest
         // first: as much as the transport takes now, the rest as the host's
         // answers make room ([`Self::send_custody`]).
-        self.sent.clear();
+        self.sending.clear();
         for workspace_id in self.workspaces.clone() {
             if !self.send_custody(workspace_id, client) {
                 break;
@@ -2072,13 +2064,6 @@ fn identity_hello(
         delta: CoeditPayload::Checkpoint { channel, body }.encode().ok()?,
         signature: [0; 64],
     })
-}
-
-/// The record a write in custody names, for its health.
-fn route_of(payload: &CoeditPayload) -> Option<DocumentRoute> {
-    let (CoeditPayload::Checkpoint { body, .. } | CoeditPayload::RetainedDelta { body, .. }) =
-        payload;
-    DocumentRoute::of_message(&postcard::from_bytes(body).ok()?)
 }
 
 /// The reply `frame` carries, or the refusal a page shows when it does not

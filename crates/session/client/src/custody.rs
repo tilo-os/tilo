@@ -296,10 +296,156 @@ impl Custody for SessionCustody {
     }
 }
 
+/// One write in a device's custody of a workspace, as it leaves for the workspace's host.
+pub struct Outgoing<'a> {
+    /// The custody entry it is.
+    pub id: [u8; 32],
+    /// The signed frame, exactly as committed.
+    pub bytes: &'a [u8],
+    /// The record channel it writes.
+    pub channel: [u8; 32],
+    /// Whether it appends to the record or stands as its whole.
+    pub retention: neighbour_wire::Retention,
+}
+
+/// What one connection to a workspace's host has sent of this device's custody of it: each
+/// write leaves once per connection, oldest first, and stays in custody until the host's
+/// answer retires it. A new connection starts with a new one, and sends everything again.
+#[derive(Default)]
+pub struct Sending {
+    sent: std::collections::BTreeSet<[u8; 32]>,
+}
+
+impl Sending {
+    /// Send each write of `workspace`'s custody in `owner` that may leave now and this
+    /// connection has not sent, through `send`, once `authorize` accepted the custody as it
+    /// stands. A write still in custody that may not leave now stays sent.
+    ///
+    /// Returns whether the transport took everything: `false` once `send` took no more.
+    ///
+    /// # Errors
+    /// The custody cannot be read, or `authorize` refused it.
+    pub fn drive(
+        &mut self,
+        owner: &NativeWorkspaceOwner,
+        workspace: WorkspaceId,
+        authorize: impl FnOnce(&tilo_peer_state::owner::NativeCommittedView) -> Result<(), String>,
+        send: impl FnMut(Outgoing<'_>) -> bool,
+    ) -> Result<bool, String> {
+        owner.with_outgoing(workspace, web_time::SystemTime::now(), |view, outgoing| {
+            authorize(view)?;
+            Ok(self.pass(
+                outgoing.queued(),
+                outgoing.entries().map(|entry| Outgoing {
+                    id: entry.id(),
+                    bytes: entry.bytes(),
+                    channel: entry.channel(),
+                    retention: entry.retention(),
+                }),
+                send,
+            ))
+        })
+    }
+
+    /// Send each of `writes` this connection has not sent; `queued` is every write still in
+    /// custody, sendable now or not.
+    fn pass<'a>(
+        &mut self,
+        queued: impl Iterator<Item = [u8; 32]>,
+        writes: impl Iterator<Item = Outgoing<'a>>,
+        mut send: impl FnMut(Outgoing<'a>) -> bool,
+    ) -> bool {
+        let queued: std::collections::BTreeSet<_> = queued.collect();
+        self.sent.retain(|id| queued.contains(id));
+        for write in writes {
+            let id = write.id;
+            if self.sent.contains(&id) {
+                continue;
+            }
+            if !send(write) {
+                return false;
+            }
+            self.sent.insert(id);
+        }
+        true
+    }
+
+    /// The write this connection sent whose id begins with `prefix`, taken out of what it sent:
+    /// the host answered it.
+    pub fn answered(&mut self, prefix: &[u8]) -> Option<[u8; 32]> {
+        let id = *self.sent.iter().find(|id| id.starts_with(prefix))?;
+        self.sent.remove(&id);
+        Some(id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tilo_channels::ChannelState as _;
+
+    fn write(id: u8) -> Outgoing<'static> {
+        Outgoing {
+            id: [id; 32],
+            bytes: b"exact signed bytes",
+            channel: [2; 32],
+            retention: neighbour_wire::Retention::Delta,
+        }
+    }
+
+    #[test]
+    fn a_connection_sends_each_write_once_and_a_new_one_sends_it_again() {
+        let mut sending = Sending::default();
+        let queued = || std::iter::once([1; 32]);
+        assert!(!sending.pass(queued(), std::iter::once(write(1)), |_| false));
+        let mut sent = 0;
+        for _ in 0..2 {
+            assert!(sending.pass(queued(), std::iter::once(write(1)), |taken| {
+                assert_eq!(taken.bytes, b"exact signed bytes");
+                sent += 1;
+                true
+            }));
+        }
+        assert_eq!(
+            sent, 1,
+            "a write the transport took leaves once per connection"
+        );
+        assert!(
+            Sending::default().pass(queued(), std::iter::once(write(1)), |_| {
+                sent += 1;
+                true
+            })
+        );
+        assert_eq!(sent, 2, "the next connection sends it again");
+        sending.pass(std::iter::empty(), std::iter::empty(), |_| {
+            panic!("retired")
+        });
+        assert!(sending.sent.is_empty(), "what left custody is forgotten");
+    }
+
+    #[test]
+    fn a_write_held_back_while_in_custody_is_not_sent_twice() {
+        let mut sending = Sending::default();
+        let mut sent = 0;
+        let mut count = |_: Outgoing<'_>| {
+            sent += 1;
+            true
+        };
+        sending.pass(
+            std::iter::once([3; 32]),
+            std::iter::once(write(3)),
+            &mut count,
+        );
+        sending.pass(std::iter::once([3; 32]), std::iter::empty(), &mut count);
+        sending.pass(
+            std::iter::once([3; 32]),
+            std::iter::once(write(3)),
+            &mut count,
+        );
+        assert_eq!(sent, 1);
+        assert_eq!(sending.answered(&[3; 16]), Some([3; 32]));
+        assert_eq!(sending.answered(&[3; 16]), None, "an answer is taken once");
+    }
 
     #[test]
     fn channel_state_and_held_edits_survive_reopen() -> Result<(), Box<dyn std::error::Error>> {

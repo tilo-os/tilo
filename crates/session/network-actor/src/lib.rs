@@ -4273,7 +4273,6 @@ fn spawn_direct_pump(
     ws: u64,
     linked: tilo_peer_state::owner::session::Linked,
     link: Arc<tilo_peer_state::direct::DirectSync>,
-    scope: Arc<native_ingress::Scope>,
     tx: mpsc::Sender<InternalEvent>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -4324,8 +4323,6 @@ fn spawn_direct_pump(
                 }
             }
         }
-        // Fence already queued evidence before notifying the actor of closure.
-        scope.close();
         let _ = tx
             .send(InternalEvent::NativeLinkClosed { ws, deleted })
             .await;

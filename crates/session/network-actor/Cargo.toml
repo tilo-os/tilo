@@ -47,6 +47,7 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-room-host = { path = "../../hosting/tilo-room-host" }
 tilo-rt.workspace = true
+tilo-session-client = { path = "../client" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-window-share = { path = "../window-share" }
