@@ -1,5 +1,7 @@
-//! `tilo mcp`: the agent's MCP server over stdio, as the device `tilo login`
-//! made of this computer.
+//! `tilo mcp`: the agent's MCP server over stdio. On a Tilo desktop it is
+//! the desktop's own agent door (`agent.sock`), which the person admits the
+//! agent at; elsewhere it serves as the device `tilo login` made of this
+//! computer.
 //!
 //! What it serves is the runtime's own projection of a workspace
 //! ([`tilo_runtime::mcp::McpServer`], the agent surface: `tilo_ls`,
@@ -62,7 +64,8 @@ impl Drop for Session {
 
 /// What the server holds: the device, and its session once entered.
 struct Serving {
-    device: Option<(SigningKey, Device)>,
+    /// This computer's login, or why there is none to enter with.
+    device: Result<(SigningKey, Device), String>,
     /// The agent run every invocation of this connection belongs to.
     run: String,
     session: tokio::sync::Mutex<Option<Arc<Session>>>,
@@ -72,9 +75,7 @@ impl Serving {
     /// The device's session, entering the workspace when it is not in it
     /// yet; why not, when it cannot.
     async fn session(&self) -> Result<Arc<Session>, String> {
-        let Some((key, device)) = &self.device else {
-            return Err(NOT_LOGGED_IN.to_owned());
-        };
+        let (key, device) = self.device.as_ref().map_err(Clone::clone)?;
         let mut held = self.session.lock().await;
         if let Some(session) = held.as_ref() {
             return Ok(Arc::clone(session));
@@ -142,8 +143,21 @@ fn open(entered: Entered, device: &Device, run: &str) -> Result<Session, String>
     })
 }
 
-/// `tilo mcp`.
+/// `tilo mcp`: on a Tilo desktop, the desktop's own agent door, which asks the person to let the
+/// agent in; elsewhere, this computer's login, entering the person's workspace wherever it is
+/// hosted.
 pub fn serve() -> Result<ExitCode> {
+    let device = match tilo_runtime::session_door::desktop_door() {
+        Ok(Some(door)) => {
+            tilo_runtime::session_door::bridge(&door)?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        Ok(None) => crate::login::load(&crate::login::device_dir()?)?
+            .ok_or_else(|| NOT_LOGGED_IN.to_owned()),
+        // A desktop whose door is not open yet (its first login is not complete) is no computer
+        // that needs a login: the agent hears what it waits for.
+        Err(error) => Err(error.to_string()),
+    };
     // The agent's connection goes where `tilo login` went: a host whose
     // certificate only a test trusts is reached the same way here.
     crate::login::trust_test_certificates()?;
@@ -151,7 +165,7 @@ pub fn serve() -> Result<ExitCode> {
         .enable_all()
         .build()?;
     let serving = Arc::new(Serving {
-        device: crate::login::load(&crate::login::device_dir()?)?,
+        device,
         run: hex::encode(rand::random::<[u8; 8]>()),
         session: tokio::sync::Mutex::new(None),
     });
@@ -273,7 +287,7 @@ mod tests {
 
     fn serving() -> Serving {
         Serving {
-            device: None,
+            device: Err(NOT_LOGGED_IN.to_owned()),
             run: "run".into(),
             session: tokio::sync::Mutex::new(None),
         }
@@ -283,6 +297,36 @@ mod tests {
         answer(serving, line)
             .await
             .map(|answer| serde_json::from_str(&answer).unwrap())
+    }
+
+    /// A Tilo desktop whose door is not open yet (its first login is not complete) is no computer
+    /// that needs `tilo login`: the agent hears what it waits for, never "not logged in".
+    #[tokio::test]
+    async fn a_desktop_whose_door_is_not_open_yet_never_says_not_logged_in() {
+        let waiting = tilo_runtime::session_door::route(
+            false,
+            None,
+            true,
+            Some("/run/user/1000/tilo-session/agent.sock".into()),
+            |_| false,
+        )
+        .unwrap_err()
+        .to_string();
+        let serving = Serving {
+            device: Err(waiting.clone()),
+            run: "run".into(),
+            session: tokio::sync::Mutex::new(None),
+        };
+        let init = ask(
+            &serving,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+        )
+        .await
+        .unwrap();
+        let said = init["result"]["instructions"].as_str().unwrap();
+        assert_eq!(said, waiting);
+        assert!(!said.contains("not logged in"), "{said}");
+        assert!(said.contains("first login"), "{said}");
     }
 
     #[tokio::test]
