@@ -45,7 +45,7 @@ Everything listens on `127.0.0.1`. Ports start at `TILO_SH_PORT_BASE`
 | --- | --- | --- |
 | Lounge relay (room host and relay) | `eu1.tilo.sh` and `live-eu1.tilo.sh`, image `lounge` | `tilo-relay` through the image's entrypoint (`os/containers/tilo-lounge/entrypoint.sh`), laid out by the image's own context script, behind production's Caddy and Caddyfile at `https://127.0.0.1:24100` and `https://127.0.0.1:24106` |
 | Front door (MCP, `/v1`, keys, OAuth) | `mcp.tilo.sh`, image `front-door` | `tilo-front-door` at `http://localhost:24110` |
-| Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's desktop bundle, laid out and precompressed as the image does it, at `http://localhost:24120`; `/releases/latest` serves this checkout's `tilo` command |
+| Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's desktop bundle, laid out and precompressed as the image does it, on `127.0.0.1:24121` behind the same Caddy, which serves it as Cloudflare serves tilo.sh (HTTPS and HTTP/2) at `https://127.0.0.1:24120`; `/releases/latest` serves this checkout's `tilo` command |
 | Linux VM host (Firecracker) | `tilo-sh-vm-host`, image `vm-host` | with `--images`, the image as root (through `sudo`) where the machine has `/dev/kvm`; otherwise, and always natively, skipped with the reason |
 | Hosted browser | in the workspace's own VM, on the VM host | with the VM host: the relay places it there (docs/hosted-browser.md), and `t test tilo-sh-local-vm` holds it to what it must be |
 | Discord | discord.com | `stack.sh up --discord` starts `crates/dev/fake-discord` and points the Lounge's Discord sign-in and bridge at it |
@@ -65,11 +65,24 @@ does not know how to move stops the start.
 ### What differs from production, and why
 
 - **TLS.** In production, Cloudflare terminates TLS. Locally, Caddy's own
-  local CA signs the relay's certificate. The front door and the relay get
-  that CA in the trust bundle at the fixed path Tilo's binaries read. The
-  door and the site are plain HTTP on `http://localhost`. That is a
-  development origin the door, the sign-in page and the `tilo` command
-  already accept, so clients need no CA to reach them.
+  local CA signs the relay's and the site's certificates. The front door and
+  the relay get that CA in the trust bundle at the fixed path Tilo's binaries
+  read. The door is plain HTTP on `http://localhost`, a development origin
+  the door, the sign-in page and the `tilo` command already accept.
+- **The site is HTTPS on an address.** Caddy plays Cloudflare's edge in
+  front of the web entry, so the page arrives over HTTP/2, as it does from
+  tilo.sh; over plain HTTP a browser falls back to HTTP/1.1's six
+  connections and the page's modules take a second longer at a 70 ms round
+  trip, which skews any entry-speed measurement. It is `127.0.0.1`, not
+  `localhost`, because a browser keeps the site's HSTS header per host name:
+  on `localhost` it would then refuse the door's plain HTTP. On an address a
+  browser cannot register a passkey, so passkeys are not tried here.
+- **Trusting the local CA.** `stack.sh browser` and the headless checks run
+  Chromium with `--ignore-certificate-errors`, which also keeps the browser
+  from recording HSTS. To use another browser profile, import
+  `local-ca.pem` from the stack's state (`stack.sh env` prints its path as
+  `TILO_TEST_CA_FILE`) as a trusted authority. `stack.sh down --wipe`
+  deletes the CA, so a new one needs importing after it.
 - **The live plane** is behind the same Caddy, at `https://127.0.0.1:24106`
   (production: `live-eu1.tilo.sh`). The relay's own endpoint uses it as its
   home relay. That endpoint trusts the local CA through the bundle, as every

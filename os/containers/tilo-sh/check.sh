@@ -64,7 +64,7 @@ base=${TILO_SH_PORT_BASE:-24100}
 work=${1:-$state/check}
 mkdir -p "$work"
 find "$work" -mindepth 1 -delete
-site=http://localhost:$((base + 20))
+site=https://127.0.0.1:$((base + 20))
 relay=https://127.0.0.1:$base
 door=http://localhost:$((base + 10))
 began=$SECONDS

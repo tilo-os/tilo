@@ -60,8 +60,9 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
   door      the front door: MCP, /v1, keys and OAuth,
             http://localhost:BASE+10 (mcp.tilo.sh)
   web       the web entry (its entrypoint and Caddyfile serving the desktop
-            bundle): the site, /sign-in, /install.sh, /releases,
-            http://localhost:BASE+20 (tilo.sh)
+            bundle): the site, /sign-in, /install.sh, /releases, on
+            127.0.0.1:BASE+21 behind tls, which serves it as Cloudflare
+            serves tilo.sh (HTTPS, HTTP/2): https://127.0.0.1:BASE+20
   vm-host   the VM host image (Firecracker): a workspace's Linux programs and
             its Browser run in its VM here, and the relay places it on this
             host. It is privileged, so it runs as root over its own state
@@ -108,7 +109,8 @@ live_port=$((base + 6))        # Caddy: the live plane's origin (live-eu1.tilo.s
 caddy_http_port=$((base + 7))  # Caddy's HTTP port, which serves nothing here
 link_port=$((base + 8))        # the relay's WebTransport listener, UDP: how pages reach it
 door_port=$((base + 10))       # the front door (mcp.tilo.sh)
-site_port=$((base + 20))       # the web entry (tilo.sh)
+site_port=$((base + 20))       # Caddy: the site's public origin (tilo.sh, Cloudflare's edge)
+web_port=$((base + 21))        # the web entry's own plain listener (8080), behind it
 releases_port=$((base + 22))   # this checkout's tilo command, as the site's /releases serves it
 discord_rest_port=$((base + 40))
 discord_gateway_port=$((base + 41))
@@ -117,7 +119,12 @@ discord_control_port=$((base + 42))
 relay_origin=https://127.0.0.1:$relay_port
 live_origin=https://127.0.0.1:$live_port
 door_origin=http://localhost:$door_port
-site_origin=http://localhost:$site_port
+# HTTPS, as tilo.sh is: a browser speaks HTTP/2 only over TLS, and over
+# HTTP/1.1's six connections the page's modules arrive far later than they do
+# from production. An address, not localhost: the site's HSTS header, which a
+# browser trusting the local CA would keep for localhost, would then turn the
+# door's plain http://localhost into an https:// one it does not answer.
+site_origin=https://127.0.0.1:$site_port
 
 state=${TILO_SH_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tilo-sh-local}
 prefix=tilo-sh-local
@@ -720,7 +727,8 @@ start_native_tls() {
   { private_env tls "$(dirname "$caddy")"
     printf '%s\n' "XDG_DATA_HOME=$state/tls" "XDG_CONFIG_HOME=$state/tls/config" \
       "TILO_SH_RELAY_PORT=$relay_port" "TILO_SH_LIVE_PORT=$live_port" "TILO_SH_PACKET_PORT=$packet_port" \
-      "TILO_SH_ROUTES_PORT=$routes_port" "TILO_SH_PLAIN_PORT=$plain_port" "TILO_SH_CADDY_HTTP_PORT=$caddy_http_port"
+      "TILO_SH_ROUTES_PORT=$routes_port" "TILO_SH_PLAIN_PORT=$plain_port" "TILO_SH_CADDY_HTTP_PORT=$caddy_http_port" \
+      "TILO_SH_SITE_PORT=$site_port" "TILO_SH_WEB_PORT=$web_port"
   } > "$runs/tls.env"
   # Caddy makes the CA the bundle takes in, so it starts before there is one.
   [[ -f $state/trust-bundle.pem ]] || cat "$ca_path" > "$state/trust-bundle.pem"
@@ -773,7 +781,7 @@ start_native_web() {
     # The image's paths and port, here (entrypoint.sh).
     printf '%s\n' "TILO_WEB_SITE=$native/web/site" "TILO_WEB_INSTALL=$native/web/install" \
       "TILO_WEB_RUN=$runs/web/entry" "TILO_WEB_CADDYFILE=$container/Caddyfile" \
-      TILO_WEB_BIND=127.0.0.1 "TILO_WEB_PORT=$site_port"
+      TILO_WEB_BIND=127.0.0.1 "TILO_WEB_PORT=$web_port"
     web_env "$room" "$info"
   } > "$runs/web.env"
   run_native web "$native/web" sh "$container/entrypoint.sh"
@@ -848,7 +856,7 @@ up_native() {
   wait_for 'door (its health check)' "http://127.0.0.1:$door_port/health" 60
   start_native_releases
   start_native_web "$room"
-  wait_for 'web (its health check)' "$site_origin/healthz" 60
+  wait_for 'web (its health check)' "$site_origin/healthz" 60 --cacert "$state/local-ca.pem"
 }
 
 restart() {
@@ -874,7 +882,7 @@ restart() {
       stop_native web
       lay_out_web
       start_native_web "$(cat "$state/relay/lounge/room-id")"
-      wait_for 'web (its health check)' "$site_origin/healthz" 60 ;;
+      wait_for 'web (its health check)' "$site_origin/healthz" 60 --cacert "$state/local-ca.pem" ;;
     tls)
       start_native_tls
       wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 60 --cacert "$state/local-ca.pem" ;;
@@ -1001,7 +1009,8 @@ up_images() {
     --env "TILO_SH_RELAY_PORT=$relay_port" \
     --env "TILO_SH_LIVE_PORT=$live_port" --env "TILO_SH_PACKET_PORT=$packet_port" \
     --env "TILO_SH_ROUTES_PORT=$routes_port" --env "TILO_SH_PLAIN_PORT=$plain_port" \
---env "TILO_SH_CADDY_HTTP_PORT=$caddy_http_port" \
+    --env "TILO_SH_CADDY_HTTP_PORT=$caddy_http_port" \
+    --env "TILO_SH_SITE_PORT=$site_port" --env "TILO_SH_WEB_PORT=$web_port" \
     -v "$state/tls/Caddyfile:/etc/caddy/Caddyfile:ro,Z" \
     -v "$state/tls/caddy:/data/caddy:Z" -v "$state/tls/config:/config:Z" \
     "$caddy_image" caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
@@ -1039,16 +1048,16 @@ up_images() {
   wait_for 'door (its health check)' "http://127.0.0.1:$door_port/health" 60
 
   # The web entry: its image listens on 8080 alone, so it gets its own
-  # network, published on the site's port, from which it reaches the relay's
+  # network, published on the port tls serves the site from, from which it reaches the relay's
   # plain listener (its shelf) and the releases on this machine's loopback.
   start_releases
   local web_args=() info
   info=$(page_host "$lounge") || die 'the relay did not say who it is (tilo-relay page-host)'
   mapfile -d '' web_args < <(web_env "$room" "$info" | env_args)
-  start web --network "pasta:-T,$plain_port,-T,$releases_port" -p "127.0.0.1:$site_port:8080" \
+  start web --network "pasta:-T,$plain_port,-T,$releases_port" -p "127.0.0.1:$web_port:8080" \
     --read-only --tmpfs /tmp --user 10001 \
     "${web_args[@]}" "$web"
-  wait_for 'web (its health check)' "$site_origin/healthz" 60
+  wait_for 'web (its health check)' "$site_origin/healthz" 60 --cacert "$state/local-ca.pem"
 
 }
 
@@ -1166,7 +1175,7 @@ browser() {
   [[ -x $chrome ]] || die 'no Chromium: set CHROME, or install Playwright'"'"'s (bunx playwright install chromium)'
   local profile
   profile=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/tilo-sh-browser.XXXXXX")
-  say "a fresh visitor on $site_origin (profile $profile; the relay's local certificate is accepted)"
+  say "a fresh visitor on $site_origin (profile $profile; the stack's local certificate is accepted)"
   "$chrome" --user-data-dir="$profile" --no-first-run --ignore-certificate-errors "$site_origin" "${@}"
 }
 
