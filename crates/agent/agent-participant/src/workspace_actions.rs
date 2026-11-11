@@ -1851,9 +1851,6 @@ impl Worker {
         }
         routes
             .into_iter()
-            // A part of a chain is held beside the record that keeps it, and
-            // is never an app of its own there.
-            .filter(|route| !is_part(&route.record))
             .filter(|route| self.catalogue.get(&route.app_id).is_some())
             .collect()
     }
