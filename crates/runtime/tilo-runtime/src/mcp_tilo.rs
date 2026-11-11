@@ -1179,13 +1179,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// The provider of the app `app` (an id) a task's invocation goes to, starting the app in
     /// the workspace when none of it runs yet: the task invokes the app's own door, and the
-    /// workspace opens it.
+    /// workspace starts it without a window.
     async fn provider_of(&self, app: &str, known: &mut Providers) -> Result<Addressed, String> {
         if let Some(found) = known.get(app) {
             return Ok(found.clone());
         }
         let found = Addressed {
-            provider: self.opened_provider(app, Some(PROGRAM_WAIT_MS)).await?,
+            provider: self.started_provider(app, Some(PROGRAM_WAIT_MS)).await?,
             app_id: Some(app.to_owned()),
         };
         known.insert(app.to_owned(), found.clone());
@@ -2033,8 +2033,8 @@ mod tests {
         });
         let reply = run(server.undo_steps(false)).expect("the step is taken back");
         assert!(!reply.failed, "{}", reply.text);
-        // Neither app ran: the workspace started each, and its undo went to the instance it
-        // started, on the record the app keeps its steps in.
+        // Neither app ran: the workspace started each without a window, and its undo went to
+        // the instance it started, on the record the app keeps its steps in.
         assert_eq!(host.opened(), ["so.tilo.chat", "so.tilo.tasks"]);
         assert_eq!(
             host.invoked(),
@@ -2045,7 +2045,7 @@ mod tests {
                         "{}so.tilo.chat",
                         tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
                     ),
-                    tilo_actions::remote::APPLICATION_OPEN_ACTION.to_owned(),
+                    tilo_actions::remote::APPLICATION_START_ACTION.to_owned(),
                     json!({}),
                 ),
                 (
@@ -2060,7 +2060,7 @@ mod tests {
                         "{}so.tilo.tasks",
                         tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
                     ),
-                    tilo_actions::remote::APPLICATION_OPEN_ACTION.to_owned(),
+                    tilo_actions::remote::APPLICATION_START_ACTION.to_owned(),
                     json!({}),
                 ),
                 (

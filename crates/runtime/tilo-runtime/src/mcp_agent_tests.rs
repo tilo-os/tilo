@@ -965,6 +965,8 @@ impl ActionHost for Notes {
         let long = *self.long.lock().unwrap();
         let update = match action.as_str() {
             "slow" => InvocationUpdate::Accepted { invocation: *id },
+            // The workspace's start of Notes names the instance it started.
+            "start" => succeeded(Some(json!({"peer_id": 1}))),
             "rename" if !arguments.contains_key("title") => {
                 failed("invalid_arguments", "argument `title` is required")
             }
@@ -1920,6 +1922,27 @@ fn an_installed_app_is_started_by_its_path_and_then_listed() {
             "{text}"
         );
         assert!(text.contains("Todo/  notes.page"), "{text}");
+        // One of the app's own actions, or `#start`, starts it first without
+        // a window: the workspace is asked to start it, never to open it.
+        for (path, said) in [
+            ("notes#read", "Groceries"),
+            ("notes#start", "ok: notes is running"),
+        ] {
+            let host = Notes::new(false);
+            let (text, failed) = tool(&agent(&host), "tilo_do", json!({ "path": path })).await;
+            assert!(!failed && text.contains(said), "{text}");
+            let asked = host.invoked.lock().unwrap().clone();
+            let target = &asked[0].target;
+            assert_eq!(
+                (target.provider.as_str(), target.address.action.as_str()),
+                (WORKSPACE, "start")
+            );
+            assert!(
+                asked
+                    .iter()
+                    .all(|request| request.target.address.action != "open")
+            );
+        }
         // Not the app's own action on an app that is not running.
         let host = Notes::new(false);
         let (text, failed) = tool(

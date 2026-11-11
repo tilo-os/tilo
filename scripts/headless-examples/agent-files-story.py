@@ -8,13 +8,16 @@ nothing is clicked or typed for it. Each claim is read back off the disk, the
 apps' published state or the desk, never off the agent's own reply.
 
   start    Files is not running: the agent names it as the listing does
-           (`files`), and running one of its actions starts it first
+           (`files`), and running one of its actions starts it first,
+           without a window: the desk shows no window of Files or Chat while
+           the agent works in them
   find     the agent finds what it renames in what Files publishes: the
            folder's entries, and the device Files' changes are carried out on
   rename   `files.folder#rename` renames a file of the seeded folder: the new
            name is on disk, and Files' document holds the change, settled
-  share    the file goes to a conversation in Chat through Chat's `send`, the
-           one action the window's send box sends with
+  share    the agent starts Chat (`chat#start`) and the file goes to one of
+           its conversations through Chat's `send`, the one action the
+           window's send box sends with
   quiet    do not disturb is turned on through the session's own action, and
            the desk holds it
 
@@ -103,6 +106,16 @@ def call(agent: "ra.Agent", tool: str, args: dict,
     return text, failed
 
 
+def no_window_of(session: "ra.Session", app: str) -> bool:
+    """Whether a process of `app` runs and the desk shows no window of it."""
+    ident = ra.app_id(app)
+    try:
+        ra.until(f"{ident} to run", lambda: bool(session.processes(ident)), 30, 0.25)
+    except ra.Failed:
+        return False
+    return not any(window.get("app_id") == ident for window in session.windows())
+
+
 def files_home(session: "ra.Session") -> Path:
     """The folder a Files window opens on: the person's home."""
     home = session.state / "home"
@@ -153,10 +166,8 @@ def main() -> int:
               and "installed but not running" in text, text.splitlines()[0] if text else "")
         text, failed = call(agent, "tilo_do", {"path": "files#read", "wait_ms": 30000}, session)
         check("Files' read answers its document", not failed and '"places"' in text, text[:120])
-        try:
-            check("Files runs with its window on the desk", session.answering("files", 30))
-        except ra.Failed as error:
-            check("Files runs with its window on the desk", False, str(error))
+        check("Files runs, with no window on the desk", no_window_of(session, "files"),
+              json.dumps(session.windows()))
 
         print("\n[find] the folder and the device, from what Files publishes")
         text, failed = call(agent, "tilo_ls", {"path": "files"})
@@ -191,7 +202,7 @@ def main() -> int:
 
         print("\n[share] the file goes to a conversation through Chat's send")
         reference = put(agent, BODY.encode())
-        text, failed = call(agent, "tilo_do", {"path": "chat#open", "wait_ms": 30000}, session)
+        text, failed = call(agent, "tilo_do", {"path": "chat#start", "wait_ms": 30000}, session)
         channel = re.search(r"^(\S+)/\s+chat\.workspace\.channels", text, re.M)
         check("Chat lists a conversation to share into", not failed and bool(channel), text[:120])
         conversation = channel.group(1) if channel else ""
@@ -205,6 +216,9 @@ def main() -> int:
         check("Chat's send takes the file into the conversation", not failed
               and '"accepted":true' in text.replace(" ", ""), text[:200])
         session.snapshot(shots / "shared.png")
+        check("neither Files nor Chat got a window on the desk",
+              no_window_of(session, "files") and no_window_of(session, "chat"),
+              json.dumps(session.windows()))
 
         print("\n[quiet] do not disturb, through the session's own action")
         # The bar's bell, as the desk names it: "Notifications silenced".

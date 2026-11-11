@@ -2551,14 +2551,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             AppRef::Installed { opens: false, .. } => {
                 Err(Self::not_running_note(&parsed.app, false))
             }
-            AppRef::Installed { .. }
-                if action == tilo_actions::remote::APPLICATION_OPEN_ACTION
-                    || !parsed.segments.is_empty() =>
-            {
+            AppRef::Installed { .. } if starts_app(action) || !parsed.segments.is_empty() => {
                 Ok(None)
             }
             AppRef::Installed { app_id, .. } => {
-                let provider = self.opened_provider(&app_id, wait_ms).await?;
+                let provider = self.started_provider(&app_id, wait_ms).await?;
                 Ok(Some((app_id, provider, true)))
             }
             AppRef::Running {
@@ -2659,7 +2656,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             let opens = parsed.segments.is_empty() && arguments.is_empty();
             match self.pick_action_in(&action, &resolved).await {
                 Ok(found) => found,
-                Err(_) if opens && action == tilo_actions::remote::APPLICATION_OPEN_ACTION => {
+                Err(_) if opens && starts_app(&action) => {
                     return Ok(self.running(&resolved.app_id).await);
                 }
                 Err(error) => return Err(format!("{error}; tilo_ls {} lists them", resolved.path)),
@@ -2777,7 +2774,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .find(|found| found.address.resource == node.id && found.address.action == action))
     }
 
-    /// `notes#open`: start an installed app, then say what is in it.
+    /// `notes#open` (or `notes#start`, without a window): start an installed app, then say
+    /// what is in it.
     async fn launch(
         &self,
         parsed: &ParsedPath,
@@ -2787,11 +2785,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         invocation: Option<String>,
         wait_ms: Option<u64>,
     ) -> Result<(Value, Reply), String> {
-        if !parsed.segments.is_empty() || action != tilo_actions::remote::APPLICATION_OPEN_ACTION {
+        if !parsed.segments.is_empty() || !starts_app(action) {
             return Err(Self::not_running_note(&parsed.app, true));
         }
         let value = self
-            .open_in_workspace(app_id, arguments, invocation, wait_ms)
+            .app_in_workspace(app_id, action, arguments, invocation, wait_ms)
             .await?;
         if outcome(&value).failed {
             let reply = outcome(&value);
@@ -2833,11 +2831,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         reply
     }
 
-    /// The workspace's `open` of the app `app_id`, with `arguments` for the files it opens
-    /// there: the workspace's answer, which names the instance it started at [`super::OPENED_PEER`].
-    async fn open_in_workspace(
+    /// The workspace's `action` (its `open` or its `start`) of the app `app_id`, with
+    /// `arguments` for the files it opens there: the workspace's answer, which names the
+    /// instance it started at [`super::OPENED_PEER`].
+    async fn app_in_workspace(
         &self,
         app_id: &str,
+        action: &str,
         arguments: serde_json::Map<String, Value>,
         invocation: Option<String>,
         wait_ms: Option<u64>,
@@ -2853,7 +2853,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 "{}{app_id}",
                 tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
             ),
-            action: tilo_actions::remote::APPLICATION_OPEN_ACTION.to_owned(),
+            action: action.to_owned(),
             arguments,
             invocation_id: invocation,
             wait_ms,
@@ -2862,8 +2862,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// The provider of a running instance of the installed app `app_id`, starting the app in
-    /// the workspace when none runs yet: where an invocation of the app's own door goes.
-    async fn opened_provider(&self, app_id: &str, wait_ms: Option<u64>) -> Result<String, String> {
+    /// the workspace when none runs yet, without a window: where an invocation of the app's own
+    /// door goes. The step shows nothing, so nothing is opened for it.
+    async fn started_provider(&self, app_id: &str, wait_ms: Option<u64>) -> Result<String, String> {
         match self.app_ref(app_id).await? {
             AppRef::Running { provider, .. } => Ok(provider),
             AppRef::Installed { app_id, opens } => {
@@ -2871,35 +2872,31 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     return Err(Self::may_not_open(&app_id));
                 }
                 let value = self
-                    .open_in_workspace(&app_id, serde_json::Map::new(), None, wait_ms)
+                    .app_in_workspace(
+                        &app_id,
+                        tilo_actions::remote::APPLICATION_START_ACTION,
+                        serde_json::Map::new(),
+                        None,
+                        wait_ms,
+                    )
                     .await?;
                 if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
-                    return Err(format!("{app_id} did not open: {}", outcome(&value).text));
+                    return Err(format!("{app_id} did not start: {}", outcome(&value).text));
                 }
-                if let Some(error) = value.pointer("/opened/error").and_then(Value::as_str) {
-                    return Err(format!("{app_id} did not open: {error}"));
-                }
-                // The instance the workspace started, as it names it; a workspace naming none
-                // lets the caller find it among the running ones.
-                if let Some(peer) = value.pointer(super::OPENED_PEER).and_then(Value::as_u64) {
-                    return Ok(peer.to_string());
-                }
-                // A host serving the workspace's records names the record it
-                // opened the app on.
-                if let Some(provider) = value
-                    .pointer("/update/output/value/provider")
-                    .and_then(Value::as_str)
-                    .filter(|provider| tilo_actions::remote::is_record_provider(provider))
-                {
-                    return Ok(provider.to_owned());
-                }
-                let (_, running) = self.providers().await?;
-                running
-                    .iter()
-                    .rev()
-                    .find(|(_, instance)| instance["app_id"].as_str() == Some(app_id.as_str()))
-                    .map(|(peer, _)| peer.clone())
-                    .ok_or_else(|| format!("{app_id} opened, but no instance of it runs"))
+                // The instance the workspace started, as it names it; a host serving the
+                // workspace's records names the record it started the app on.
+                value
+                    .pointer(super::OPENED_PEER)
+                    .and_then(Value::as_u64)
+                    .map(|peer| peer.to_string())
+                    .or_else(|| {
+                        value
+                            .pointer("/update/output/value/provider")
+                            .and_then(Value::as_str)
+                            .filter(|provider| tilo_actions::remote::is_record_provider(provider))
+                            .map(str::to_owned)
+                    })
+                    .ok_or_else(|| format!("{app_id} started, but named no instance of it"))
             }
         }
     }
@@ -2924,6 +2921,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         reply.structured = link::linked(&mut reply, typed, link);
         Ok(reply)
     }
+}
+
+/// Whether `action`, named on an app itself, starts it: `open` shows it in a window, `start`
+/// runs it without one.
+fn starts_app(action: &str) -> bool {
+    action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+        || action == tilo_actions::remote::APPLICATION_START_ACTION
 }
 
 /// The one window `instance` (a provider an `open` or `tilo_ls` named) among `running`, which
