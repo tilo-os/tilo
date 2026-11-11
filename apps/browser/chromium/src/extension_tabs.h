@@ -2227,7 +2227,41 @@ class ExtensionTabs {
   // sign-in out of sight goes on.
   static constexpr int kSignInTurnMs = 20000;
   static constexpr int64_t kSignInOutOfSightMs = 60000;
-
+  // How long the page's execution contexts are given to be reported after
+  // `Runtime.enable` answers, and how many times an empty report is asked
+  // again: Chromium answers the call before it reports the contexts, and
+  // reports them once per enable, so a look that came back empty is taken again
+  // from a domain turned off and on.
+  static constexpr int kContextLooks = 4;
+  static constexpr int kContextLookMs = 15;
+  using ContextsDone = std::function<void(const std::vector<CefRefPtr<CefDictionaryValue>>&)>;
+  // The tab's page as its inspector reports it: every frame's execution
+  // contexts, the page's own and each extension world's. With `keep`, the
+  // inspector is already reporting for someone else and is left reporting.
+  void Contexts(CefRefPtr<TabInspector> inspector, bool keep, ContextsDone then, int look = 0) {
+    inspector->Collect(true);
+    inspector->Call("Runtime.enable", nullptr, [this, inspector, keep, then, look](bool, CefRefPtr<CefDictionaryValue>) {
+      std::weak_ptr<bool> alive = alive_;
+      CefPostDelayedTask(TID_UI, base::BindOnce([](ExtensionTabs* self, std::weak_ptr<bool> alive, CefRefPtr<TabInspector> inspector, bool keep, ContextsDone then, int look) {
+        if (alive.expired()) return;
+        self->ContextsLook(inspector, keep, std::move(then), look);
+      }, this, alive, inspector, keep, then, look), kContextLookMs);
+    });
+  }
+  // What the contexts came to: every one of them, or one more look for a page
+  // whose reports are still on their way.
+  void ContextsLook(CefRefPtr<TabInspector> inspector, bool keep, const ContextsDone& then, int look) {
+    if (inspector->contexts().empty() && look < kContextLooks) {
+      if (keep) { Contexts(inspector, keep, then, look + 1); return; }
+      inspector->Call("Runtime.disable", nullptr, [this, inspector, keep, then, look](bool, CefRefPtr<CefDictionaryValue>) {
+        Contexts(inspector, keep, then, look + 1);
+      });
+      return;
+    }
+    inspector->Collect(false);
+    if (!keep) inspector->Call("Runtime.disable", nullptr, [](bool, CefRefPtr<CefDictionaryValue>) {});
+    then(inspector->contexts());
+  }
   // The extension's isolated world in the tab's main frame, where its
   // content scripts run: 0 when it has none there. `then` runs with the
   // world, the main frame and whether the inspector must stop reporting.
@@ -2243,19 +2277,16 @@ class ExtensionTabs {
       auto tree = ok && result ? result->GetDictionary("frameTree") : nullptr;
       const std::string frame = tree ? StringOf(tree->GetDictionary("frame"), "id") : std::string();
       if (frame.empty()) { then(0, "", ""); return; }
-      inspector->Collect(true);
-      inspector->Call("Runtime.enable", nullptr, [this, inspector, extension, keep, frame, then](bool, CefRefPtr<CefDictionaryValue>) {
+      Contexts(inspector, keep, [extension, frame, then](const std::vector<CefRefPtr<CefDictionaryValue>>& contexts) {
         int world = 0;
         std::string name;
-        for (const auto& context : inspector->contexts()) {
+        for (const auto& context : contexts) {
           auto aux = context->GetDictionary("auxData");
           if (ContentScriptWorld(context, extension) && StringOf(aux, "frameId") == frame) {
             world = IntOf(context, "id").value_or(0);
             name = StringOf(context, "name");
           }
         }
-        inspector->Collect(false);
-        if (!keep) inspector->Call("Runtime.disable", nullptr, [](bool, CefRefPtr<CefDictionaryValue>) {});
         then(world, frame, name);
       });
     });
@@ -2657,11 +2688,8 @@ class ExtensionTabs {
       };
       walk(ok && result ? result->GetDictionary("frameTree") : nullptr, "");
       if (frames.empty()) { then({}); return; }
-      inspector->Collect(true);
-      inspector->Call("Runtime.enable", nullptr, [this, inspector, extension, keep, key, main_only, query, frames, then](bool, CefRefPtr<CefDictionaryValue>) mutable {
-        for (const auto& context : inspector->contexts()) Place(frames, context, extension, "", false);
-        inspector->Collect(false);
-        if (!keep) inspector->Call("Runtime.disable", nullptr, [](bool, CefRefPtr<CefDictionaryValue>) {});
+      Contexts(inspector, keep, [this, inspector, extension, key, main_only, query, frames, then](const std::vector<CefRefPtr<CefDictionaryValue>>& contexts) mutable {
+        for (const auto& context : contexts) Place(frames, context, extension, "", false);
         auto local = std::make_shared<std::vector<Frame>>(std::move(frames));
         auto onward = [this, extension, key, main_only, query, local, then] {
           if (main_only || Reached(*local, query)) { then(*local); return; }
