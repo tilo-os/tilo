@@ -852,3 +852,27 @@ test('the mirror rewrites only the elements of nodes a patch changed',()=>{
   const find=(element,label)=>element.getAttribute?.('aria-label')===label?element:element.children.map(child=>find(child,label)).find(Boolean);
   assert.equal(find(root,'Message').dataset.tiloFocused,'true','focus stays on the composer');
 });
+
+test('a field that only moved is left alone: its scroll is not read and its value and selection not set again',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
+  const tree=(y,value='Paragraph one',focus=3)=>({root:{path:'note',semantics:{semantic_key:'block',role:'MultilineTextInput',value,text_selection:{anchor:focus,focus},bounds:{x0:0,y0:y,x1:400,y1:y+40}}}});
+  bridge.update(tree(100));
+  const field=root.children[0];
+  // Reading a field's scroll makes the browser lay the page out first; set
+  // again, its value or selection makes it do so once more. A scroll moves
+  // every field on screen, so each of these is a layout per field per frame.
+  let touched=0;
+  const watch=name=>{let held=field[name];Object.defineProperty(field,name,{get(){touched++;return held;},set(v){touched++;held=v;},configurable:true});};
+  for(const name of ['scrollLeft','scrollTop','value'])watch(name);
+  const setSelectionRange=field.setSelectionRange.bind(field);field.setSelectionRange=(...a)=>{touched++;setSelectionRange(...a);};
+  for(let y=90;y>0;y-=10)bridge.update(tree(y));
+  const reads=touched;
+  assert.equal(field.style.top,'10px','the field follows where it is drawn');
+  // Reading `value` to compare is no layout; only scroll and writes are.
+  assert.ok(reads<=9,`a moved field was touched ${reads} times across 9 moves`);
+  touched=0;
+  bridge.update(tree(10,'Paragraph one!',3));
+  assert.equal(field.value,'Paragraph one!','a new value is still shown');
+  bridge.update(tree(10,'Paragraph one!',5));
+  assert.deepEqual([field.selectionStart,field.selectionEnd],[5,5],'a new selection is still set');
+});

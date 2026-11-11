@@ -441,12 +441,20 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
         // Already shown.
       }else if(editable){
         const state=element.tiloState;
-        state.canonicalValue=value;
-        state.canonicalSelection=node.text_selection?[
+        const selection=node.text_selection?[
           graphemeIndexFromByteOffset(value,node.text_selection.anchor),
           graphemeIndexFromByteOffset(value,node.text_selection.focus),
         ]:null;
-        if(!state.composing){
+        // A node that changed only where it is drawn (a scroll moves every
+        // field on screen) still shows its value and selection: reading the
+        // field's scroll to keep it, and setting them again, laid the page
+        // out once per field on every frame of a scroll.
+        const sameSelection=selection===state.canonicalSelection
+          ||(selection&&state.canonicalSelection&&selection[0]===state.canonicalSelection[0]&&selection[1]===state.canonicalSelection[1]);
+        const unchanged=!state.composing&&state.canonicalValue===value&&sameSelection&&element.value===value&&shown(state);
+        state.canonicalValue=value;
+        state.canonicalSelection=selection;
+        if(!state.composing&&!unchanged){
           const scroll=[element.scrollLeft,element.scrollTop];
           if(element.value!==value)element.value=value;
           if(state.canonicalSelection){
@@ -508,7 +516,10 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       }else if(pendingFocus.remainingSnapshots>0){pendingFocus.remainingSnapshots--;awaitingFocus=true;}
       else pendingFocus=undefined;
     }
-    for(const element of elements.values())element.dataset.tiloFocused=String(element===canonicalFocus);
+    for(const element of elements.values()){
+      const focused=String(element===canonicalFocus);
+      if(element.dataset.tiloFocused!==focused)element.dataset.tiloFocused=focused;
+    }
     // Focus stays on the control; the item the keyboard is on inside it is
     // its active descendant, announced without moving focus.
     const activeItem=canonicalFocus&&activeCandidates.find(candidate=>candidate.tiloAncestors.includes(canonicalFocus.tiloState.key));
