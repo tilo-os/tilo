@@ -325,8 +325,8 @@ impl Widget for UndoButton {
         self.rect
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        Some(self.tooltip.as_str())
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        Some(std::borrow::Cow::Borrowed(self.tooltip.as_str()))
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

@@ -1055,8 +1055,8 @@ impl Widget for TimeZoneGlobe {
             .then_some(winit::window::CursorIcon::Grab)
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip.as_deref()
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.tooltip.as_deref().map(std::borrow::Cow::Borrowed)
     }
 
     fn is_focusable(&self) -> bool {

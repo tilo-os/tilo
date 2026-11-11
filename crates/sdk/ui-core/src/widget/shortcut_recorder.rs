@@ -444,8 +444,9 @@ impl Widget for ShortcutRecorder {
             .contains(point)
             .then_some(winit::window::CursorIcon::Pointer)
     }
-    fn tooltip(&self) -> Option<&str> {
-        self.invalid.then_some("Shortcut unavailable")
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.invalid
+            .then_some(std::borrow::Cow::Borrowed("Shortcut unavailable"))
     }
     fn is_focusable(&self) -> bool {
         true

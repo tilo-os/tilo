@@ -2645,8 +2645,8 @@ impl Widget for Button {
 
     /// Returns the raw string (a fluent key or plain text); the host
     /// resolves i18n and renders.
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip.as_deref()
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.tooltip.as_deref().map(std::borrow::Cow::Borrowed)
     }
 
     fn get_rect(&self) -> Rect {

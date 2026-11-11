@@ -1809,7 +1809,11 @@ pub trait Widget {
     /// hit-tested like [`cursor_shape`](Self::cursor_shape) so containers
     /// need not forward it. An icon-only control should also use this as
     /// its accessible name.
-    fn tooltip(&self) -> Option<&str> {
+    ///
+    /// The text as the person reads it: source copy borrowed from the
+    /// widget, a translated sentence resolved from the catalogue when it
+    /// says something the catalogue words ([`crate::i18n`]).
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
         None
     }
 
@@ -1829,7 +1833,7 @@ pub trait Widget {
         }
         self.tooltip()
             .filter(|tooltip| !tooltip.is_empty())
-            .map(|tooltip| (rect, tooltip.to_owned()))
+            .map(|tooltip| (rect, tooltip.into_owned()))
     }
 
     fn is_focusable(&self) -> bool {

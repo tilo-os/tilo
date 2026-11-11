@@ -318,8 +318,9 @@ impl Widget for RevealToggle {
         self.rect
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.enabled.then(|| self.label())
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.enabled
+            .then(|| std::borrow::Cow::Borrowed(self.label()))
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

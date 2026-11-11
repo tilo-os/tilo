@@ -493,7 +493,7 @@ decorator_trait! {
         fn cursor_shape(point: vello::kurbo::Point) -> Option<winit::window::CursorIcon>;
         fn claims_raw_touch(point: vello::kurbo::Point) -> bool;
         fn touch_claim(point: vello::kurbo::Point) -> crate::interaction::TouchClaim;
-        fn tooltip() -> Option<&str>;
+        fn tooltip() -> Option<std::borrow::Cow<'_, str>>;
         fn tooltip_side() -> crate::widget::tooltip::TooltipSide;
         fn tooltip_target_at(point: vello::kurbo::Point) -> Option<(vello::kurbo::Rect, String)>;
         fn is_focusable() -> bool;

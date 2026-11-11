@@ -124,7 +124,7 @@ impl<W: Widget + 'static> Placed<W> {
                 }
             }
             (widget.get_rect().contains(point))
-                .then(|| widget.tooltip().map(str::to_owned))
+                .then(|| widget.tooltip().map(std::borrow::Cow::into_owned))
                 .flatten()
         }
         find(self.visible()?, point)

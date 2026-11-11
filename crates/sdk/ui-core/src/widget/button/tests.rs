@@ -431,7 +431,7 @@ fn intrinsic_buttons_remeasure_and_size_from_their_control_size() {
     fn icon_only_buttons_are_square_named_and_plain() {
         let button = Button::icon_only("close", crate::icons::Icon::X, "Close");
         assert_eq!(button.role, ButtonRole::Plain);
-        assert_eq!(Widget::tooltip(&button), Some("Close"));
+        assert_eq!(Widget::tooltip(&button).as_deref(), Some("Close"));
         assert_eq!(
             Widget::accessibility(&button).unwrap().name.as_deref(),
             Some("Close")
@@ -1588,7 +1588,7 @@ fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
         let b = Button::new("id", "")
             .with_icon(crate::icons::Icon::Search)
             .tooltip("Search");
-        assert_eq!(Widget::tooltip(&b), Some("Search"));
+        assert_eq!(Widget::tooltip(&b).as_deref(), Some("Search"));
         let plain = Button::new("id", "Save");
         assert_eq!(Widget::tooltip(&plain), None, "no tooltip unless attached");
     }
@@ -1607,7 +1607,7 @@ fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
             "compaction never makes an icon-only control silent"
         );
         assert_eq!(
-            Widget::tooltip(&button),
+            Widget::tooltip(&button).as_deref(),
             Some("Publish this document now"),
             "the authored tooltip survives compaction"
         );
@@ -1624,7 +1624,10 @@ fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
             Some("Publish document"),
             "the name the app stated still says it after expansion"
         );
-        assert_eq!(Widget::tooltip(&button), Some("Publish this document now"));
+        assert_eq!(
+            Widget::tooltip(&button).as_deref(),
+            Some("Publish this document now")
+        );
     }
 
     fn icon_only_tooltip_doubles_as_accessible_name() {

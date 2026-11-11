@@ -231,8 +231,11 @@ impl Widget for IconWidget {
         "IconWidget"
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.description.as_deref().filter(|it| !it.is_empty())
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.description
+            .as_deref()
+            .filter(|it| !it.is_empty())
+            .map(std::borrow::Cow::Borrowed)
     }
 
     /// A leaf sized by the theme: layout is settled once the first
@@ -323,7 +326,7 @@ mod tests {
     fn an_icon_says_what_it_means_on_hover() {
         let mut w = IconWidget::new(Icon::WifiOff).describing("Mail: no route to host");
         w.rect = Rect::new(0.0, 0.0, 20.0, 20.0);
-        assert_eq!(w.tooltip(), Some("Mail: no route to host"));
+        assert_eq!(w.tooltip().as_deref(), Some("Mail: no route to host"));
         assert_eq!(
             w.tooltip_target_at(vello::kurbo::Point::new(10.0, 10.0)),
             Some((w.rect, "Mail: no route to host".to_owned()))

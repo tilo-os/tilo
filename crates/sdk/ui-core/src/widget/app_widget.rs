@@ -1071,7 +1071,7 @@ mod component_adapter {
         fn cursor_shape(&self, point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
             self.in_root(|root| root.cursor_shape(point)).flatten()
         }
-        fn tooltip(&self) -> Option<&str> {
+        fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
             self.in_root(|root| root.tooltip()).flatten()
         }
         fn set_focus(&mut self, focused: bool) {
