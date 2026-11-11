@@ -125,8 +125,8 @@ fn payload_with(widget: &BrowserWidget, id: &str, args: &serde_json::Value) -> V
 }
 
 /// The payload of the page's `answer` (`send-held-request` or
-/// `keep-held-request`) to the held request `held`, as a caller sends it: of
-/// the answers the page publishes, the one bound to that id.
+/// `keep-held-request`) to the hold the window numbers `held`, as a caller
+/// sends it: of the answers the page publishes, the one bound to that number.
 fn answer_payload(widget: &BrowserWidget, answer: &str, held: u32) -> Vec<u8> {
     let wanted = held.to_string();
     let stated = serde_json::json!({ "id": wanted });
@@ -381,7 +381,7 @@ fn a_hold_one_departure_names_does_not_answer_another() {
         .collect();
     assert_eq!(
         named,
-        ["4", "5"],
+        ["1", "2"],
         "each wait names the departure it answers"
     );
 }
@@ -442,7 +442,7 @@ fn a_request_the_page_sends_on_its_own_is_published_and_answered() {
         send.type_mut().label
     );
     let encoded = send
-        .build_json(serde_json::json!({"id": "4"}).as_object().expect("an id"))
+        .build_json(serde_json::json!({"id": "1"}).as_object().expect("an id"))
         .expect("the answer names the held request");
     let answer = ui::tilo_actions::InvocationId::new();
     widget
@@ -472,7 +472,7 @@ fn a_download_is_held_like_every_other_departure_the_page_starts() {
         "the question names the file the person would keep: {label}"
     );
     let encoded = send
-        .build_json(serde_json::json!({"id": "9"}).as_object().expect("an id"))
+        .build_json(serde_json::json!({"id": "1"}).as_object().expect("an id"))
         .expect("the answer names the download");
     let answer = ui::tilo_actions::InvocationId::new();
     widget
@@ -743,7 +743,7 @@ fn whoever_answers_a_published_hold_is_named_with_the_answer() {
     };
     hold(4, "https://orders.example");
     widget.sync(&doc, &root);
-    let keep = answer_payload(&widget, "keep-held-request", 4);
+    let keep = answer_payload(&widget, "keep-held-request", 1);
     widget
         .admit_for(
             ui::tilo_actions::InvocationId::new(),
@@ -754,7 +754,7 @@ fn whoever_answers_a_published_hold_is_named_with_the_answer() {
     engine.push_event(WebViewEvent::HeldRequestClosed { id: 4 });
     hold(5, "https://pay.example");
     widget.sync(&doc, &root);
-    let send = answer_payload(&widget, "send-held-request", 5);
+    let send = answer_payload(&widget, "send-held-request", 2);
     widget
         .admit(
             ui::tilo_actions::InvocationId::new(),
@@ -786,7 +786,7 @@ fn whoever_answers_a_held_download_is_named_with_the_answer() {
         name: "return.pdf".into(),
     });
     widget.sync(&doc, &root);
-    let keep = answer_payload(&widget, "keep-held-request", 9);
+    let keep = answer_payload(&widget, "keep-held-request", 1);
     widget
         .admit_for(
             ui::tilo_actions::InvocationId::new(),
@@ -874,5 +874,107 @@ fn a_hold_beyond_those_the_window_asks_about_is_turned_away_at_once() {
             (30, false, AnsweredBy::TooMany)
         ],
         "each is answered as one too many, which the tab's record sets down"
+    );
+}
+
+/// Every answer the page publishes to what the window holds: the id each
+/// states, with what it says would leave.
+fn published_answers(widget: &BrowserWidget) -> Vec<(String, String)> {
+    page_resource(widget)
+        .actions
+        .into_iter()
+        .filter(|action| action.id == "send-held-request")
+        .filter_map(|mut action| {
+            let stated = action
+                .params()
+                .iter()
+                .find(|param| param.name == "id")?
+                .choices
+                .first()?
+                .to_string();
+            Some((stated, action.type_mut().label.clone()))
+        })
+        .collect()
+}
+
+/// The engine counts the requests it holds and the downloads its pages offer
+/// apart, so a request and a download may carry one number. They are two
+/// holds: each is published and answered under a name of its own, and neither
+/// an answer nor an ending meant for one reaches the other.
+#[test]
+fn a_request_and_a_download_of_one_number_are_two_holds() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://shop.example/order");
+    let mut request = HeldRequest::new(1, HeldKind::Request);
+    request.method = "POST".into();
+    request.origin = "https://orders.example".into();
+    engine.hold(request);
+    engine.push_event(WebViewEvent::NativeDownloadRequested {
+        id: 1,
+        url: "https://files.example/return.pdf".into(),
+        name: "return.pdf".into(),
+    });
+    widget.sync(&doc, &root);
+    let waiting = published_answers(&widget);
+    assert_eq!(waiting.len(), 2, "both wait for the person: {waiting:?}");
+    let named = |what: &str| -> u32 {
+        waiting
+            .iter()
+            .find(|(_, label)| label.contains(what))
+            .unwrap_or_else(|| panic!("{what} waits: {waiting:?}"))
+            .0
+            .parse()
+            .expect("a hold is named by a number")
+    };
+    let (posted, offered) = (named("orders.example"), named("return.pdf"));
+    assert_ne!(posted, offered, "one name never answers two holds");
+    let downloads_answered = |engine: &TestEngine| {
+        engine
+            .commands()
+            .into_iter()
+            .filter(|command| matches!(command, WebViewCommand::DownloadDecision { .. }))
+            .count()
+    };
+    // The person keeps the page as it is for the request: the download is
+    // not discarded with it.
+    let keep = answer_payload(&widget, "keep-held-request", posted);
+    widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            effect_operation(&keep),
+        )
+        .expect("the answer is accepted");
+    assert_eq!(held_answers(&engine), vec![(1, false)]);
+    assert_eq!(downloads_answered(&engine), 0, "the download still waits");
+    // The engine says the request is over: the download of the same number
+    // is not over with it.
+    engine.push_event(WebViewEvent::HeldRequestClosed { id: 1 });
+    widget.sync(&doc, &root);
+    let left = published_answers(&widget);
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert!(left[0].1.contains("return.pdf"), "{left:?}");
+    // And the download is saved by its own answer.
+    let send = answer_payload(&widget, "send-held-request", offered);
+    widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            effect_operation(&send),
+        )
+        .expect("the answer is accepted");
+    assert!(
+        engine.commands().into_iter().any(|command| matches!(
+            command,
+            WebViewCommand::DownloadDecision {
+                id: 1,
+                allow: true,
+                ..
+            }
+        )),
+        "the download's own decision saves it"
+    );
+    assert_eq!(
+        held_answers(&engine),
+        vec![(1, false)],
+        "and the request is not answered a second time"
     );
 }

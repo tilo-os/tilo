@@ -27,6 +27,12 @@
 //! caller the truth while it can still act on it. The engine ends a hold no
 //! app answers at a deadline of its own, a little after this window's.
 //!
+//! The engine counts the requests it holds and the downloads its pages offer
+//! apart, so a request and a download may carry one number. A hold is named
+//! here by which of the two it is with that number ([`HeldKey`]), and what the
+//! page publishes for an answer is a number of this window's own, one per
+//! hold: an answer or an ending meant for one hold never reaches another.
+//!
 //! The tab's record says all of it ([`crate::page_record`]). The engine sets
 //! down that a departure was held, under the actor whose action reached it,
 //! and how it ended: let leave, kept, or dropped unanswered. It cannot know
@@ -42,7 +48,7 @@
 //! - nobody, when the window dropped it at its own deadline.
 
 use ui::tilo_actions::{ActionInvoker, InvocationId};
-use ui::webview::{AnsweredBy, HeldRequest, PageActor};
+use ui::webview::{AnsweredBy, HeldKind, HeldRequest, PageActor};
 
 use super::{BrowserWidget, WebViewCommand, action_failed};
 
@@ -65,10 +71,38 @@ const MAX_SHOWN_FILE: usize = 120;
 /// [`DoorError::ConfirmationRequired`]: ui::tilo_actions::DoorError::ConfirmationRequired
 pub(crate) const NEEDS_PERSON: &str = ui::tilo_actions::remote::CONFIRMATION_REQUIRED_CODE;
 
+/// What the engine names one hold by. It counts the requests it holds and the
+/// downloads its pages offer apart, so the number alone names nothing: which
+/// of the two a hold is is part of its name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HeldKey {
+    /// A form submission, navigation or request the engine holds, by the id
+    /// its report carried and its answer names.
+    Request(u32),
+    /// A download the page offered, by the engine's id of that download.
+    Download(u32),
+}
+
+impl HeldKey {
+    /// What the engine names `request` by.
+    fn of(request: &HeldRequest) -> Self {
+        if request.kind == HeldKind::Download {
+            Self::Download(request.id)
+        } else {
+            Self::Request(request.id)
+        }
+    }
+}
+
 /// One request the page is not allowed to send yet.
 #[derive(Clone)]
 pub(crate) struct Held {
     pub(crate) request: HeldRequest,
+    /// What the engine names it by.
+    key: HeldKey,
+    /// What this window names it by: the number its published answers state.
+    /// One number is one hold, whatever the engine calls it.
+    number: u32,
     /// The file a download would save, when the engine named it: the person
     /// is told which one they allow.
     file: Option<String>,
@@ -92,6 +126,11 @@ impl Held {
         }
     }
 
+    /// The number this window names it by, which its answers state.
+    pub(crate) const fn number(&self) -> u32 {
+        self.number
+    }
+
     /// Whether the person answered, rather than it waiting.
     pub(crate) const fn answered(&self) -> bool {
         self.allowed || self.releasing.is_some()
@@ -100,8 +139,8 @@ impl Held {
 
 /// What the window did with a request the engine reported holding.
 pub(crate) enum Taken {
-    /// It waits for the person.
-    Held,
+    /// It waits for the person, under this number of the window's.
+    Held(u32),
     /// Nothing: the window holds it already, or it is no request the engine
     /// could have reported.
     Known,
@@ -113,6 +152,8 @@ pub(crate) enum Taken {
 #[derive(Default)]
 pub(crate) struct Holds {
     held: Vec<Held>,
+    /// The number the window gave the hold it took last.
+    last: u32,
     /// What the invocations that released a hold are answered, once the
     /// engine said their departure is over, until each is read. They are not
     /// the tab's one answer: another actor's action may hold the tab by then.
@@ -123,28 +164,37 @@ impl Holds {
     /// Hold `request`, or say why not: the engine reports one request once,
     /// and the window asks the person about [`MAX_HELD`] at once.
     pub(crate) fn hold(&mut self, request: HeldRequest, file: Option<String>) -> Taken {
-        if !request.valid() || self.held.iter().any(|held| held.request.id == request.id) {
+        let key = HeldKey::of(&request);
+        if !request.valid() || self.held.iter().any(|held| held.key == key) {
             return Taken::Known;
         }
         let waiting = self.held.iter().filter(|held| !held.answered()).count();
         if waiting >= MAX_HELD {
             return Taken::TooMany;
         }
+        // The next number no hold of this window still has.
+        let mut number = self.last.checked_add(1).unwrap_or(1);
+        while self.held.iter().any(|held| held.number == number) {
+            number = number.checked_add(1).unwrap_or(1);
+        }
+        self.last = number;
         self.held.push(Held {
             request,
+            key,
+            number,
             file,
             asked: None,
             releasing: None,
             until: std::time::Instant::now() + HELD_WAIT,
             allowed: false,
         });
-        Taken::Held
+        Taken::Held(number)
     }
 
     /// The hold `invocation`'s run reached: its answer to its caller names it,
     /// and its allow releases it.
-    pub(crate) fn asked_by(&mut self, id: u32, invocation: InvocationId) {
-        if let Some(held) = self.held.iter_mut().find(|held| held.request.id == id) {
+    pub(crate) fn asked_by(&mut self, key: HeldKey, invocation: InvocationId) {
+        if let Some(held) = self.held.iter_mut().find(|held| held.key == key) {
             held.asked = Some(invocation);
         }
     }
@@ -152,10 +202,7 @@ impl Holds {
     /// Take the hold `invocation`'s run reached, to release it: the same
     /// invocation is run again because the person allowed it, and the page
     /// action it named is not run a second time.
-    pub(crate) fn release_for(
-        &mut self,
-        invocation: InvocationId,
-    ) -> Option<(u32, ui::webview::HeldKind)> {
+    pub(crate) fn release_for(&mut self, invocation: InvocationId) -> Option<HeldKey> {
         let held = self
             .held
             .iter_mut()
@@ -165,22 +212,23 @@ impl Holds {
         }
         held.releasing = Some(invocation);
         held.allowed = true;
-        Some((held.request.id, held.request.kind))
+        Some(held.key)
     }
 
-    /// The hold the person answered themselves. `None` when it is not waiting.
+    /// The hold the window numbers `number`, which somebody answered
+    /// themselves. `None` when it is not waiting.
     /// It stays until the engine says it is over, so the answer names what
     /// it was for; a download's outcome is the download's own, and nothing
     /// closes it here.
-    pub(crate) fn answered(&mut self, id: u32, allow: bool) -> Option<Held> {
+    pub(crate) fn answered(&mut self, number: u32, allow: bool) -> Option<Held> {
         let found = self
             .held
             .iter()
-            .position(|held| held.request.id == id && !held.answered())?;
+            .position(|held| held.number == number && !held.answered())?;
         let held = self.held.get_mut(found)?;
         held.allowed = allow;
         let answer = held.clone();
-        if answer.request.kind == ui::webview::HeldKind::Download {
+        if matches!(answer.key, HeldKey::Download(_)) {
             self.held.remove(found);
         }
         Some(answer)
@@ -207,9 +255,9 @@ impl Holds {
         Some(self.answers.remove(found))
     }
 
-    /// The engine says `id` is over: released, dropped, or its page went.
-    pub(crate) fn closed(&mut self, id: u32) -> Option<Held> {
-        let found = self.held.iter().position(|held| held.request.id == id)?;
+    /// The engine says `key` is over: released, dropped, or its page went.
+    pub(crate) fn closed(&mut self, key: HeldKey) -> Option<Held> {
+        let found = self.held.iter().position(|held| held.key == key)?;
         Some(self.held.remove(found))
     }
 
@@ -245,11 +293,11 @@ impl BrowserWidget {
     /// What the person is asked about `request`, whose run reached it: the
     /// action answers that it needs them, and their allow releases it.
     pub(crate) fn hold_asked(&mut self, request: &HeldRequest) {
-        match self.holds.hold(request.clone(), None) {
-            Taken::Held => {}
+        let number = match self.holds.hold(request.clone(), None) {
+            Taken::Held(number) => number,
             Taken::Known => return,
             Taken::TooMany => return self.turn_away(request),
-        }
+        };
         self.structure_dirty = true;
         let Some(operation) = self.page_operation.take() else {
             // Nothing called for it: the page posted on its own, and the
@@ -260,13 +308,14 @@ impl BrowserWidget {
         // A form's action that reached it answered nothing of its form: the
         // person's allow releases the departure, and no answer is to come.
         self.forms.take_run(operation.invocation);
-        self.holds.asked_by(request.id, operation.invocation);
+        self.holds
+            .asked_by(HeldKey::of(request), operation.invocation);
         self.page_operation_result = Some(action_failed(
             operation.invocation,
             NEEDS_PERSON,
             format!("{}: the person has to allow this", request.describing()),
             Some(serde_json::json!({
-                "held": request.id,
+                "held": number,
                 "kind": request.kind.as_str(),
                 "method": request.method,
                 "origin": request.origin,
@@ -280,7 +329,7 @@ impl BrowserWidget {
     /// leaves and nothing stays paused, and the action whose run reached it
     /// is told why, instead of being left to think the page took it.
     fn turn_away(&mut self, request: &HeldRequest) {
-        self.release_held(request.id, request.kind, false, AnsweredBy::TooMany);
+        self.release_held(HeldKey::of(request), false, AnsweredBy::TooMany);
         let Some(operation) = self.page_operation.take() else {
             return;
         };
@@ -324,14 +373,14 @@ impl BrowserWidget {
         allow: bool,
         invoker: Option<&ActionInvoker>,
     ) -> Result<serde_json::Value, String> {
-        let id: u32 = id.parse().map_err(|_| {
-            "a held request is named by the id the page's request carries".to_string()
+        let number: u32 = id.parse().map_err(|_| {
+            "a held request is named by the number the page publishes it under".to_string()
         })?;
-        let Some(held) = self.holds.answered(id, allow) else {
+        let Some(held) = self.holds.answered(number, allow) else {
             return Err("the page is not waiting on that any more".into());
         };
         let by = self.answering(invoker);
-        self.release_held(held.request.id, held.request.kind, allow, by);
+        self.release_held(held.key, allow, by);
         self.structure_dirty = true;
         Ok(serde_json::json!({
             "kind": held.request.kind.as_str(),
@@ -341,31 +390,23 @@ impl BrowserWidget {
         }))
     }
 
-    /// Let `id` leave, or cancel it: the engine resumes it exactly once, or
+    /// Let `key` leave, or cancel it: the engine resumes it exactly once, or
     /// drops it and leaves the page as it was. `by` is who answered, which
     /// the engine sets down in the tab's record.
-    pub(crate) fn release_held(
-        &self,
-        id: u32,
-        kind: ui::webview::HeldKind,
-        allow: bool,
-        by: AnsweredBy,
-    ) {
-        if kind == ui::webview::HeldKind::Download {
+    pub(crate) fn release_held(&self, key: HeldKey, allow: bool, by: AnsweredBy) {
+        self.engine.send(match key {
             // A download the page offers is the engine's own question, and
             // its answer is the one a person's click on the offer gives.
-            self.engine
-                .send(WebViewCommand::DownloadDecision { id, allow, by });
-        } else {
-            self.engine
-                .send(WebViewCommand::AnswerHeldRequest { id, allow, by });
-        }
+            HeldKey::Download(id) => WebViewCommand::DownloadDecision { id, allow, by },
+            HeldKey::Request(id) => WebViewCommand::AnswerHeldRequest { id, allow, by },
+        });
     }
 
-    /// The engine says `id` is over: what the person allowed leaves, and the
-    /// invocation that waited for it is answered with what left.
+    /// The engine says the request `id` is over: what the person allowed
+    /// leaves, and the invocation that waited for it is answered with what
+    /// left.
     pub(crate) fn held_closed(&mut self, id: u32) {
-        let Some(held) = self.holds.closed(id) else {
+        let Some(held) = self.holds.closed(HeldKey::Request(id)) else {
             return;
         };
         self.structure_dirty = true;
@@ -406,12 +447,7 @@ impl BrowserWidget {
     /// Drop the holds nobody answered by `now`, and say that nobody did.
     pub(crate) fn expire_holds_at(&mut self, now: std::time::Instant) {
         for held in self.holds.expire(now) {
-            self.release_held(
-                held.request.id,
-                held.request.kind,
-                false,
-                AnsweredBy::Nobody,
-            );
+            self.release_held(held.key, false, AnsweredBy::Nobody);
             self.structure_dirty = true;
         }
     }
@@ -420,19 +456,18 @@ impl BrowserWidget {
     /// person like every other departure: the engine holds it, and its answer
     /// is the download's own.
     pub(crate) fn hold_download(&mut self, id: u32, url: &str, name: &str) -> bool {
-        let mut request = HeldRequest::new(id, ui::webview::HeldKind::Download);
+        let mut request = HeldRequest::new(id, HeldKind::Download);
         request.method = "GET".into();
         request.origin = origin_of(url);
         match self.holds.hold(request, shown_file(name)) {
-            Taken::Held => {
+            Taken::Held(_) => {
                 self.structure_dirty = true;
                 true
             }
             Taken::Known => false,
             Taken::TooMany => {
                 // One more than the person is asked about: discarded at once.
-                let kind = ui::webview::HeldKind::Download;
-                self.release_held(id, kind, false, AnsweredBy::TooMany);
+                self.release_held(HeldKey::Download(id), false, AnsweredBy::TooMany);
                 false
             }
         }

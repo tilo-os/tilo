@@ -5359,7 +5359,7 @@ impl BrowserWidget {
         // that is not the person at this window — the host holding a window
         // in a VM of theirs — answers that one departure among several.
         for held in self.holds.waiting() {
-            let id = held.request.id.to_string();
+            let id = held.number().to_string();
             let mut send = E::SendHeldRequest { id: id.clone() }
                 .bound()
                 .stating_bound("id", "The held request's id");
@@ -6151,9 +6151,9 @@ impl BrowserWidget {
         if matches!(
             operation,
             BrowserOperation::Form(_) | BrowserOperation::Page(_)
-        ) && let Some((id, kind)) = self.holds.release_for(invocation)
+        ) && let Some(held) = self.holds.release_for(invocation)
         {
-            self.release_held(id, kind, true, ui::webview::AnsweredBy::Person);
+            self.release_held(held, true, ui::webview::AnsweredBy::Person);
             return Ok(ui::framework::Effected::Pending);
         }
         if let BrowserOperation::Form(run) = operation {
