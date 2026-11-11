@@ -957,14 +957,17 @@ impl Widget for MessageList {
         self.rect
     }
 
-    fn tooltip(&self) -> Option<&str> {
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
         let point = self.pointer?;
         let slot = self.slot_at(point)?;
-        Self::action_at(slot, point).map(|action| match action {
-            CtxAction::ToggleStar if slot.starred => "Remove star (S)",
-            CtxAction::ToggleStar => "Star (S)",
-            CtxAction::Archive => "Archive (E)",
-            _ => "Delete (Delete)",
+        Self::action_at(slot, point).map(|action| {
+            match action {
+                CtxAction::ToggleStar if slot.starred => "Remove star (S)",
+                CtxAction::ToggleStar => "Star (S)",
+                CtxAction::Archive => "Archive (E)",
+                _ => "Delete (Delete)",
+            }
+            .into()
         })
     }
 

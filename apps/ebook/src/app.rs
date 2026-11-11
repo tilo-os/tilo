@@ -4983,8 +4983,8 @@ impl Widget for BooksApp {
         self.rect
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.hover_tooltip.as_deref()
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.hover_tooltip.as_deref().map(Into::into)
     }
 
     #[allow(

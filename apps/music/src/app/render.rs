@@ -1364,8 +1364,8 @@ impl Widget for Music {
         true
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip_at(self.mouse)
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.tooltip_at(self.mouse).map(Into::into)
     }
 
     fn needs_animation_frame(&self) -> bool {

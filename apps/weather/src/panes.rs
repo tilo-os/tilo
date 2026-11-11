@@ -242,8 +242,8 @@ impl Widget for DetailPane {
         Some("weather-detail")
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.core.borrow().detail_tooltip()
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.core.borrow().detail_tooltip().map(Into::into)
     }
 
     fn accessibility(&self) -> Option<AccessNode> {

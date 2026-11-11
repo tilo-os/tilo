@@ -7249,8 +7249,8 @@ impl Widget for VideoEditorApp {
     ///
     /// The editor is one widget, so the host asks it once and it answers for
     /// whatever the pointer is actually over.
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip_at(self.last_mouse)
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.tooltip_at(self.last_mouse).map(Into::into)
     }
 
     fn get_rect(&self) -> Rect {

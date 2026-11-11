@@ -310,7 +310,7 @@ fn banners_line_up_with_the_centre_and_quick_settings() {
     frame.relayout();
     let centre = overlays.place(Slot::Centre).expect("the centre is placed");
     assert!(
-        (banner.x1 - centre.x1).abs() < f64::EPSILON,
+        (banner.x1 - centre.room.x1).abs() < f64::EPSILON,
         "the banner's edge is the centre's edge"
     );
 }

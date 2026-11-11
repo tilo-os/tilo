@@ -1668,26 +1668,26 @@ impl Widget for MessageReader {
 
     /// Over a link of an HTML message, the address it really opens; over an
     /// attachment, what a press does.
-    fn tooltip(&self) -> Option<&str> {
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
         let point = self.pointer;
         if self.html.rect().is_some_and(|rect| rect.contains(point))
             && let Some(link) = self.html.hovered()
         {
-            return Some(link);
+            return Some(link.into());
         }
         if self
             .attachments
             .iter()
             .any(|(rect, _, _)| rect.contains(point))
         {
-            return Some("Open");
+            return Some("Open".into());
         }
         if self
             .attachment_saves
             .iter()
             .any(|(rect, _, _)| rect.contains(point))
         {
-            return Some("Save");
+            return Some("Save".into());
         }
         None
     }
@@ -2264,7 +2264,7 @@ mod tests {
         ));
         draw(&mut reader);
         assert_eq!(
-            reader.tooltip(),
+            reader.tooltip().as_deref(),
             Some("https://fieldnotes.example/read"),
             "the pointer over a link shows where it really goes"
         );

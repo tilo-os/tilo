@@ -202,7 +202,7 @@ fn library_controls_and_actions_are_discoverable_and_accessible() {
             action: Action::NextPage,
         }];
         app.refresh_hover_tooltip();
-        assert_eq!(Widget::tooltip(&app), Some("Next page"));
+        assert_eq!(Widget::tooltip(&app).as_deref(), Some("Next page"));
 
         // A swallowed modal background never pretends to be a real control.
         app.hits = vec![Hit {

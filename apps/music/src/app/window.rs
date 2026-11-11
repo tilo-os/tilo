@@ -80,7 +80,7 @@ impl MusicApp {
         std::mem::swap(&mut music.page, &mut self.page);
         let out = step(&mut music);
         std::mem::swap(&mut music.page, &mut self.page);
-        self.tooltip = Widget::tooltip(&*music).map(str::to_owned);
+        self.tooltip = Widget::tooltip(&*music).map(std::borrow::Cow::into_owned);
         out
     }
 }
@@ -297,8 +297,8 @@ impl Widget for MusicApp {
         self.lend(|music| music.perform_semantic_action(target, action, state, path))
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip.as_deref()
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.tooltip.as_deref().map(Into::into)
     }
 
     fn needs_animation_frame(&self) -> bool {
