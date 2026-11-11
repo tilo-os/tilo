@@ -1629,6 +1629,28 @@ async fn an_invitation_only_door_keeps_an_address_confirms_it_and_takes_it_off()
     let (status, _, _) = ask("wait-list/confirm", serde_json::json!({"token": confirm})).await;
     assert_eq!(status, 200);
 
+    // Whoever may invite reads it on the workspace's wait list, as the member
+    // panel does.
+    let listed = relay
+        .workspaces()
+        .unwrap()
+        .page_rooms(
+            &host.cert,
+            tilo_relay_protocol::workspaces::WorkspacesRequest::WaitList {
+                workspace: workspace.clone(),
+            },
+        )
+        .await;
+    let tilo_relay_protocol::workspaces::WorkspacesReply::WaitList(entries) = listed else {
+        panic!("the owner reads the wait list: {listed:?}");
+    };
+    assert_eq!(
+        entries.len(),
+        1,
+        "the confirmed address is listed: {entries:?}"
+    );
+    assert_eq!(entries[0].contact, "Ada@Example.org");
+
     // Taking the address off answers alike, and mails word that it left.
     let (status, head, body) =
         ask("wait-list/remove", serde_json::json!({"secret": removal})).await;

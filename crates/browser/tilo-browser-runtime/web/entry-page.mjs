@@ -1625,8 +1625,9 @@ function offerDoor({messages, named, error, workspace}) {
   // second tab opens on it again rather than on the setup screen.
   if (firstRun) {
     try { globalThis.localStorage?.setItem(SEEN, '1'); } catch { /* No storage: the door shows again either way. */ }
+    firstRun.close();
+    // Now, not after the screen's fade: the door is what this visit is.
     document.documentElement.removeAttribute('data-first-run');
-    document.getElementById('first-run')?.remove();
   }
   const form = document.getElementById('arrival-invite');
   const toggle = document.getElementById('arrival-invite-toggle');

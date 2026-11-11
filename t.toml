@@ -4832,6 +4832,20 @@ requires = ["arch=x86_64"]
 outputs = ["/target/page-boot/**"]
 timeout_secs = 1200
 
+# The front door of a workspace that takes people by invitation, in a real browser: a stranger
+# whose browser has never been here sees the wait list rather than the setup screen, leaves an
+# address, confirms it through the mail the door sends to a local sink, and stays on the list
+# when the tab reloads. The screenshots it keeps are what someone arriving today sees.
+[[check]]
+name = "wait-list-door"
+run = "bash os/containers/tilo-lounge/test-wait-list-door.sh /target/publish/web-desktop/bundle /target/wait-list-door"
+needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto" }
+requires = ["arch=x86_64"]
+outputs = ["/target/wait-list-door/**"]
+timeout_secs = 1200
+default = false
+
 # Two people on the page, each in their own browser, against the Lounge's relay run directly as
 # page-boot runs it: the gate's people step, brief (chat, presence, a call and the names on its
 # card, the strip panned and a sideways swipe over Sheets among a few apps), so what broke between
