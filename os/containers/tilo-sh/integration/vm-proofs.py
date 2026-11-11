@@ -68,16 +68,11 @@ def in_guest() -> dict[str, list[str]]:
         ACCOUNT,
         "--",
         "/bin/sh",
-        "-s",
+        "-c",
+        body,
     ]
     say(f"running the proofs in {WORKSPACE}'s VM")
-    ran = subprocess.run(
-        command,
-        input=body,
-        text=True,
-        capture_output=True,
-        timeout=900,
-    )
+    ran = subprocess.run(command, text=True, capture_output=True, timeout=900)
     sys.stderr.write(ran.stderr)
     if ran.returncode != 0:
         fail(f"the proofs did not run in the VM ({ran.returncode}): {ran.stdout[-2000:]}{ran.stderr[-2000:]}")
