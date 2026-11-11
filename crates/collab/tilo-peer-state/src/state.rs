@@ -2941,6 +2941,14 @@ impl StatePeer {
         }
         crate::durability::DurableReceipt::new(coverage, generation).map(Some)
     }
+    /// Whether this replica holds a record in the clear: one a catch-up hands
+    /// on as a snapshot this device signs, taking a number of its sequence.
+    pub(crate) fn holds_clear_records(&self) -> bool {
+        self.core
+            .documents
+            .keys()
+            .any(|route| !self.sealed_route(route))
+    }
     fn signed_snapshots_in_place(
         &mut self,
         key: &SigningKey,
