@@ -208,6 +208,7 @@ impl ResourceApp for SettingsShell {
 }
 
 #[cfg(test)]
+#[cfg(feature = "tilo-os")]
 mod tests {
     use super::*;
     use crate::panes::agent_models::AgentModelsEffect;

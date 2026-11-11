@@ -35,6 +35,7 @@ pub mod billing;
 pub mod bluetooth;
 #[cfg(feature = "tilo-os")]
 pub mod device_mesh;
+#[cfg(feature = "tilo-os")]
 pub mod devices_access;
 #[cfg(feature = "tilo-os")]
 pub mod disk_unlock;
@@ -139,6 +140,7 @@ pub(crate) fn view(
         #[cfg(feature = "tilo-os")]
         crate::categories::Category::AgentModels => agent_models::view(cx, app),
         crate::categories::Category::Billing => billing::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::DevicesAccess => devices_access::view(cx, app),
         #[cfg(not(feature = "tilo-os"))]
         _ => None,
@@ -174,7 +176,8 @@ fn programs_unreadable_on(path: Option<&std::ffi::OsStr>) -> Option<String> {
     }
 }
 
-#[cfg(all(test, feature = "tilo-os"))]
+#[cfg(test)]
+#[cfg(feature = "tilo-os")]
 mod tests {
     use super::*;
 

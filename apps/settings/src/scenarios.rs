@@ -97,6 +97,7 @@ const NETWORK_VPN_KILL_SWITCH: &str = "network-vpn-kill-switch";
 const NETWORK_VPN_BLOCKING: &str = "network-vpn-blocking";
 /// Every network capture.
 #[cfg(test)]
+#[cfg(feature = "tilo-os")]
 const NETWORK_SCENARIOS: [&str; 19] = [
     NETWORK_LIST,
     NETWORK_WIRED,
@@ -253,6 +254,7 @@ pub struct CaptureScene {
     pub remembered_drives: Vec<ntfs_mount::protocol::RememberedDrive>,
     /// The devices, agents and asking devices the Devices and access
     /// captures show in place of the host's.
+    #[cfg(feature = "tilo-os")]
     pub access: Option<crate::panes::devices_access::AccessSample>,
     /// A workspace bridged to Discord, and where the person's account there
     /// stands, for the linked-accounts captures.
@@ -439,6 +441,7 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         } else {
             Vec::new()
         },
+        #[cfg(feature = "tilo-os")]
         access: access_fixture(fixture.scenario()),
         linked_account: capture_link_state(fixture.scenario()),
         home_relay: (fixture.scenario() == Some(Category::DeviceMesh.slug()))
@@ -539,6 +542,7 @@ fn home_relay_fixture() -> ui::tilo_actions::remote::home_relay_hosting::HomeRel
 /// A person's laptop, phone and browser, a phone they lost, two agents
 /// and a script's key, and a new tablet asking to be them: what the
 /// Devices and access capture shows.
+#[cfg(feature = "tilo-os")]
 pub(crate) fn access_fixture(
     scenario: Option<&str>,
 ) -> Option<crate::panes::devices_access::AccessSample> {
@@ -1036,6 +1040,7 @@ pub fn keyboard_fixture(
 }
 
 #[cfg(test)]
+#[cfg(feature = "tilo-os")]
 mod tests {
     use super::*;
 

@@ -1160,6 +1160,7 @@ mod tests {
         assert!(record.get().store().get(&local.id).is_none());
     }
 
+    #[cfg(feature = "tilo-os")]
     #[test]
     fn account_directory_views_summarise_and_autofill() {
         let dir = sample_directory();
@@ -1194,6 +1195,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tilo-os")]
     #[test]
     fn journal_recovers_each_interrupted_removal_phase() {
         for phase in 1..=3 {

@@ -89,8 +89,13 @@ pub mod setting;
 pub mod settings_app;
 pub mod sidebar;
 #[cfg(test)]
+#[cfg(feature = "tilo-os")]
 pub(crate) mod stall;
 #[cfg(test)]
+#[cfg_attr(
+    not(feature = "tilo-os"),
+    allow(dead_code, reason = "some helpers serve only the device panes' tests")
+)]
 pub(crate) mod testing;
 #[cfg(feature = "tilo-os")]
 pub mod watch;
@@ -98,6 +103,7 @@ pub mod window;
 
 #[cfg(feature = "tilo-os")]
 pub mod account_probe;
+#[cfg(feature = "tilo-os")]
 pub mod device_fleet;
 #[cfg(feature = "tilo-os")]
 pub mod dispatcher;

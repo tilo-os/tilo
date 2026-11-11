@@ -18,6 +18,26 @@ pub struct Page {
     pub slug: &'static str,
 }
 
+/// The pages Settings has on the web, by slug: those that read and change
+/// what the person keeps, not the hardware of a Tilo device, which a page in
+/// a browser has none of.
+pub const WEB_PAGES: &[&str] = &[
+    "appearance",
+    "accessibility",
+    "region_formats",
+    "keyboard_shortcuts",
+    "billing",
+];
+
+impl Page {
+    /// Whether Settings has this page where this build runs: every page on
+    /// a Tilo device, on the web only [`WEB_PAGES`].
+    #[must_use]
+    pub fn here(self) -> bool {
+        !cfg!(target_arch = "wasm32") || WEB_PAGES.contains(&self.slug)
+    }
+}
+
 /// One setting, findable by name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Setting {

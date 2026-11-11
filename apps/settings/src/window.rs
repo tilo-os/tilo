@@ -1444,5 +1444,6 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg(feature = "tilo-os")]
 #[path = "native_observer_tests.rs"]
 mod native_observer_tests;

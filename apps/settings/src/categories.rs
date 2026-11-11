@@ -133,10 +133,9 @@ impl Category {
         Category::About,
     ];
 
-    /// The panes a build without the device's own (`tilo-os`) carries: the
-    /// person's look, language and shortcuts, and their billing.
-    #[cfg(not(feature = "tilo-os"))]
-    pub const ALL: &'static [Category] = &[
+    /// The panes a build without the device's own (`tilo-os`) carries, as on
+    /// the web: the person's look, language and shortcuts, and their billing.
+    pub const WEB: &'static [Category] = &[
         // Personal
         Category::Appearance,
         Category::Accessibility,
@@ -144,9 +143,12 @@ impl Category {
         // Devices
         Category::KeyboardShortcuts,
         // Hubs
-        Category::DevicesAccess,
         Category::Billing,
     ];
+
+    /// The panes a build without the device's own (`tilo-os`) carries.
+    #[cfg(not(feature = "tilo-os"))]
+    pub const ALL: &'static [Category] = Self::WEB;
 
     /// The category shown when Settings first opens and no link names one.
     #[cfg(feature = "tilo-os")]
@@ -343,6 +345,14 @@ impl Category {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A build without the device's own panes carries exactly the pages
+    /// search offers on the web, so a page found there opens.
+    #[test]
+    fn the_web_build_carries_the_pages_web_search_offers() {
+        let built: Vec<&str> = Category::WEB.iter().map(|c| c.slug()).collect();
+        assert_eq!(built, settings_store::index::WEB_PAGES);
+    }
 
     /// Every category is unique, fully described, keyworded and sits in exactly
     /// one listed section; slugs are unique too.
