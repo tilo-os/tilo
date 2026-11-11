@@ -210,6 +210,22 @@ The page shows only what it must: the capture, the page as the agent read it
 back, the reviewer's History and `vm-proofs.json` are in the work directory,
 and all of it is in the report.
 
+What it needs before it can hold:
+
+- **A guest that carries the Browser.** Steps 9 onwards need a workspace
+  guest with the headless session and the `tilo-browser` user in it, which is
+  what the guest image is becoming; until then the check fails at step 9 and
+  says exactly that.
+- **A person's answer to a page action.** A hosted window's page actions ask
+  the person whose page it holds, and there is nobody at a window in a VM to
+  ask: the relay records that the window asks and answers the same invocation
+  again with `action_confirmation_required`, and only a caller that can send
+  the relay its own `Confirm` (an agent participant, or a device of the
+  person's) can carry their answer back. Until the relay asks the person's
+  approving devices itself, which is what
+  [`hosted-browser.md`](hosted-browser.md) says it does, step 12's first page
+  action is refused and the check says so.
+
 ## Entry-speed work
 
 `TILO_SH_SEED=1 stack.sh check`, or `stack.sh up --seed` followed by
