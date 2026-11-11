@@ -148,3 +148,4 @@ music-kind-album = Album
 music-kind-artist = Artist
 music-kind-playlist = Playlist
 music-detail-load-failed = Couldn’t load this { $kind }
+music-view-playlist = Playlist
