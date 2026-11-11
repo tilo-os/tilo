@@ -23,6 +23,11 @@ chmod u+s /usr/bin/newuidmap /usr/bin/newgidmap
 # namespace, which a distribution's /dev/net/tun lets anyone do (0666) and
 # the VM's does not.
 chmod 0666 /dev/net/tun
+# The stack starts its VM host (Firecracker, a raw block device, cgroups) as
+# root when it can, through sudo: this user may, without a password, as the
+# machine's owner could.
+echo "$user ALL=(root) NOPASSWD: ALL" > "/etc/sudoers.d/tilo-sh"
+chmod 0440 "/etc/sudoers.d/tilo-sh"
 runtime=/tmp/run-$user
 install -d -m 0700 -o "$user" -g "$user" "$runtime"
 mkdir -p "$work"
