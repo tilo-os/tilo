@@ -156,6 +156,10 @@ pub struct Dispatcher<R: Resource> {
     /// The last immediate action and its serial, to tell whether the next
     /// continues it.
     last: Rc<RefCell<Option<Serialed<R>>>>,
+    /// What an action a person applies here is reported to the broker as:
+    /// for a child resource, its parent's action carrying it, which is what
+    /// applies; `None` for the resource's own actions, reported as invoked.
+    reported_as: Option<ReportedAs<R>>,
 }
 
 /// What a dispatcher keeps that does not name the resource's action type
@@ -328,6 +332,10 @@ impl Clone for DispatchCore {
     }
 }
 
+/// The published invocation a child's action is reported as.
+type ReportedAs<R> =
+    Rc<dyn Fn(&Invoke<R>) -> Option<ui_core::local_document_action::PublishedInvocation>>;
+
 /// What applying one action needs.
 type PermissionOf<R> = Rc<dyn Fn(&<R as Resource>::Action) -> ActionNeed>;
 
@@ -367,6 +375,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             submit_now: Rc::clone(&self.submit_now),
             group_now: self.group_now.clone(),
             last: Rc::clone(&self.last),
+            reported_as: self.reported_as.clone(),
         }
     }
 }
@@ -1000,6 +1009,7 @@ impl<R: Resource> Dispatcher<R> {
             submit_now: Rc::clone(&self.submit_now),
             group_now: self.group_now.clone(),
             last: Rc::clone(&self.last),
+            reported_as: self.reported_as.clone(),
         }
     }
 
@@ -1035,6 +1045,7 @@ impl<R: Resource> Dispatcher<R> {
                 )
             })),
             last: Rc::default(),
+            reported_as: None,
         }
     }
 
@@ -1879,6 +1890,7 @@ impl<R: Resource> Dispatcher<R> {
             submit_now: Rc::new(move |_, _, action: &C::Action, _| apply(action)),
             group_now: None,
             last: Rc::default(),
+            reported_as: None,
         }
     }
 
@@ -1902,6 +1914,7 @@ impl<R: Resource> Dispatcher<R> {
             submit_now: Rc::new(move |_, _, action: &C::Action, _| apply(action)),
             group_now: None,
             last: Rc::default(),
+            reported_as: None,
         }
     }
 
@@ -1929,6 +1942,8 @@ impl<R: Resource> Dispatcher<R> {
         let parent_permission = Rc::clone(&self.permission_of);
         let wrap = Rc::new(wrap);
         let wrap_for_permission = Rc::clone(&wrap);
+        let wrap_for_report = Rc::clone(&wrap);
+        let parent_report = self.clone();
         Dispatcher {
             core: self.core.child(id, (C::KIND, C::LABEL)),
             group: Rc::default(),
@@ -1942,6 +1957,10 @@ impl<R: Resource> Dispatcher<R> {
                 parent(host, edits, &wrap(action.clone()), context)
             }),
             last: Rc::default(),
+            reported_as: Some(Rc::new(move |invoke: &Invoke<C>| {
+                let action = invoke.build(tilo_resource::origin_now_ms()).ok()?;
+                parent_report.reported(&Invoke::<R>::apply(&wrap_for_report(action)).ok()?)
+            })),
         }
     }
 
@@ -1962,12 +1981,23 @@ impl<R: Resource> Dispatcher<R> {
             return None;
         }
         Some(ui_core::local_document_action::with_invocation(
-            ui_core::local_document_action::PublishedInvocation {
+            self.reported(invoke)?,
+        ))
+    }
+
+    /// The published invocation `invoke` is reported to the broker as.
+    fn reported(
+        &self,
+        invoke: &Invoke<R>,
+    ) -> Option<ui_core::local_document_action::PublishedInvocation> {
+        match &self.reported_as {
+            Some(reported_as) => reported_as(invoke),
+            None => Some(ui_core::local_document_action::PublishedInvocation {
                 resource: self.core.resource_id.to_string(),
                 action: invoke.id.to_owned(),
                 arguments: invoke.arguments.clone(),
-            },
-        ))
+            }),
+        }
     }
 
     /// End the gesture the last immediate actions belonged to: the pointer
