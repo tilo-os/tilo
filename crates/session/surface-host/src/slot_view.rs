@@ -41,7 +41,6 @@ use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
 use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::runtime::{Meta, NameHost, Principal, ResourceRef, Value};
-use ui::tilo_actions::Action as _;
 
 use crate::{Placement, WidgetHost};
 
@@ -302,12 +301,10 @@ impl Open {
             let applied = self
                 .instance
                 .host()
-                .and_then(|host| host.store().take_ticket(ticket))
+                .and_then(|host| Some((host.store().take_ticket(ticket)?, host)))
                 .ok_or_else(|| format!("no committed action {ticket}"))
-                .and_then(|action| {
-                    action
-                        .apply(&mut self.record)
-                        .map_err(|error| error.to_string())
+                .and_then(|(action, host)| {
+                    crate::commit::recorded(&host, &mut self.record, &action)
                 });
             if let Err(why) = &applied {
                 tracing::error!(why, "a slot view's change could not be committed");

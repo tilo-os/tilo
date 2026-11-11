@@ -9,6 +9,7 @@
 
 #![cfg(target_os = "linux")]
 
+mod commit;
 mod desktop;
 mod frames;
 mod i18n;
