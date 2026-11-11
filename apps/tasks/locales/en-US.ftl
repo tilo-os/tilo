@@ -63,7 +63,7 @@ tasks-project-involve = Add someone
 tasks-project-person-placeholder = Who
 tasks-project-role-placeholder = What they do
 tasks-project-tasks = Tasks
-tasks-project-no-tasks = No tasks work towards this yet.
+tasks-project-no-tasks = Nothing works towards this yet.
 tasks-project-documents = Documents
 tasks-project-no-documents = No documents yet.
 tasks-project-gone-title = This project was deleted
@@ -83,7 +83,7 @@ tasks-fact-due = Due { $date }
 tasks-thread = Thread
 tasks-thread-last-from = { $speaker } said
 tasks-thread-empty-title = Nothing said yet
-tasks-thread-empty-message = Writing to a task in its thread puts the conversation here.
+tasks-thread-empty-message = Write a message to start the conversation.
 tasks-thread-draft = Message
 tasks-thread-placeholder = Write a message
 tasks-thread-send = Send
@@ -95,9 +95,6 @@ tasks-message-from-run = From the agent
 tasks-message-lookup = Looked up
 tasks-message-answer = Answered with a view
 tasks-message-step = Ran
-
-## An issue as a chat with its agent
-
 ## History
 
 tasks-create = Created { $title }

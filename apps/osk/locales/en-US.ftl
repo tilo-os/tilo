@@ -58,7 +58,7 @@ osk-key-alt-latched = Alt, held for the next key
 osk-key-alt-locked = Alt, locked
 osk-toolbar-dismiss = Hide keyboard
 
-osk-context-unavailable = The focused field action is unavailable.
+osk-context-unavailable = This key doesn't work in this field.
 osk-context-stale = The field changed. Choose the action again.
 
 ## History: what each change of the learned record did

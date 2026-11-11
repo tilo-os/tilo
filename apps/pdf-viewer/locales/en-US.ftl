@@ -1,7 +1,5 @@
 # PDF Viewer — English (source locale).
 
-pdf-viewer-history-scope = PDF and its markup
-
 ## History: what each change did, by field and by verb
 
 pdf-viewer-page-occurrence-rotation = Turned a page to { $new } degrees

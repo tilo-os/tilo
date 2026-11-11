@@ -30,7 +30,7 @@ video-editor-text-source-align = Aligned the text of { $item }
 video-editor-text-source-font = Changed the font of { $item }
 video-editor-text-source-bold = { $new ->
     [true] Made { $item } bold
-   *[false] Made { $item } not bold
+   *[false] Removed bold from { $item }
 }
 video-editor-text-source-italic = { $new ->
     [true] Made { $item } italic
@@ -82,7 +82,7 @@ video-editor-clip-link-follows = { $new ->
 video-editor-filters-brightness = Changed a clip's brightness
 video-editor-filters-contrast = Changed a clip's contrast
 video-editor-filters-saturation = Changed a clip's saturation
-video-editor-clip-effect-kind = Changed a clip effect
+video-editor-clip-effect-kind = Changed a clip's effect
 video-editor-clip-effect-amount = Changed the strength of a clip effect
 video-editor-transform-scale-x = Scaled a clip horizontally
 video-editor-transform-scale-y = Scaled a clip vertically
@@ -117,7 +117,7 @@ video-editor-mask-rotation = Rotated a clip's mask
 video-editor-mask-feather = Feathered a clip's mask
 video-editor-mask-invert = { $new ->
     [true] Inverted a clip's mask
-   *[false] Uninverted a clip's mask
+   *[false] Restored a clip's mask
 }
 
 video-editor-marker-t = Moved the marker { $item }
@@ -147,7 +147,7 @@ video-editor-add-track = Added a { $kind ->
    *[other] picture
 } track
 video-editor-reset-mix = Reset a track's level and pan
-video-editor-trim-lanes = Levelled the tracks
+video-editor-trim-lanes = Lowered the level of the tracks
 video-editor-delete-track = Deleted a track
 video-editor-place-clip = Placed a clip on the timeline
 video-editor-delete-media = Deleted a source

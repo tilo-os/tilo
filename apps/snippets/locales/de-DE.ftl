@@ -18,15 +18,13 @@ snippets-section-tags = Tags
 snippets-folder-all = Alle Snippets
 snippets-folder-favorites = Favoriten
 snippets-folder-most-used = Meistgenutzt
-snippets-folder-named = Ordner { $name }
-snippets-tag-named = Tag { $name }
 
 ## List and snippet
 
 snippets-untitled = Unbenanntes Snippet
 snippets-new = Neues Snippet
 snippets-empty-library = Noch keine Snippets
-snippets-empty-library-message = Bewahre Text auf, den du immer wieder einfügst: Befehle, Antworten, Code. Kopiere ihn mit einem Klick, mit Lücken zum Ausfüllen, wenn er Variablen hat.
+snippets-empty-library-message = Bewahre Text auf, den du immer wieder einfügst: Befehle, Antworten, Code. Ein Snippet mit Variablen fragt sie beim Kopieren ab.
 snippets-empty-favorites = Noch keine Favoriten
 snippets-empty-most-used = Noch nichts kopiert
 snippets-empty-place = Hier gibt es keine Snippets
@@ -41,9 +39,7 @@ snippets-add-tag = Tag hinzufügen
 snippets-copied-clears = Kopiert; nach einer Minute ist die Zwischenablage wieder leer
 snippets-copy-failed = Konnte nicht in die Zwischenablage kopieren
 snippets-add-tag-placeholder = Tag hinzufügen
-snippets-copy-only = Kopieren ist der Weg aus dieser Bibliothek: füge das Snippet dort ein, wo du es brauchst.
 snippets-language-plain-text = Nur Text
-snippets-set-language = Sprache auf { $language } setzen
 snippets-copy = Kopieren
 snippets-fill-and-copy = Ausfüllen und kopieren
 snippets-add-favorite = Zu Favoriten hinzufügen

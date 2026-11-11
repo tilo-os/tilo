@@ -52,7 +52,6 @@ sheets-doc-settings-time-format = Set the workbook's time format
 # Importing a Notion export.
 sheets-notion-import-title = Import Notion export
 sheets-notion-files = Notion export
-sheets-notion-json-files = Notion database listing
 sheets-notion-imported =
     { $tables ->
         [one] Imported one table

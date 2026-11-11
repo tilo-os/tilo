@@ -52,7 +52,6 @@ sheets-doc-settings-time-format = Zeitformat der Arbeitsmappe festgelegt
 # Notion-Export importieren.
 sheets-notion-import-title = Notion-Export importieren
 sheets-notion-files = Notion-Export
-sheets-notion-json-files = Notion-Datenbankliste
 sheets-notion-imported =
     { $tables ->
         [one] Eine Tabelle importiert
