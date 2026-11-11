@@ -992,6 +992,43 @@ impl NativeWorkspaceOwner {
     ) -> Result<NativeOutgoingStatus, String> {
         self.with_current(workspace, |view| status(view, now))
     }
+    /// The workspace's governance and a signed snapshot of each record, for a
+    /// link's catch-up of `workspace`, committed as this device's write. The
+    /// snapshots are signed with `key`, this device's key, and take numbers
+    /// of its own sequence: signed in the live replica alone, they left the
+    /// durable view behind it, and the device's next commit, numbered from
+    /// that view, took a number a snapshot already held. Committed, they are
+    /// as durable as the replica, and a restart reuses no number a member
+    /// already holds.
+    ///
+    /// # Errors
+    /// The workspace is not held here, `key` is not this device's, or the
+    /// commit failed.
+    pub fn commit_bootstrap(
+        &self,
+        workspace: WorkspaceId,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let _turn = self.0.mutation.lock();
+        let candidate = self.view(workspace)?;
+        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
+            return Err("native bootstrap signer differs from selected device".into());
+        }
+        let (messages, stored) = candidate.change(|live, stored| {
+            let generation = stored
+                .generation
+                .checked_add(1)
+                .ok_or("native owner generation exhausted")?;
+            let messages = live
+                .publication_mut()
+                .durable_bootstrap_messages(key, now, generation)?;
+            stored.generation = generation;
+            Ok(messages)
+        })?;
+        self.publish_record(workspace, &candidate, stored, None)?;
+        Ok(messages)
+    }
     /// Retire every retained frame the workspace has refused or a durable
     /// receipt names, and commit the retirement.
     pub fn retire_outgoing(&self, workspace: WorkspaceId) -> Result<(), String> {

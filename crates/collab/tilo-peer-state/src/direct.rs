@@ -1161,13 +1161,29 @@ impl DirectSync {
             revocations,
         }];
         if replica.has_governance() && replica.signed_by_owner(&device) {
-            messages.extend(
-                replica
-                    .publication_mut()
-                    .bootstrap_messages(&self.0.key, SystemTime::now())?,
-            );
+            match &self.0.admission {
+                // The snapshots take numbers of this device's own sequence:
+                // where its engine owns the workspace they are its commit,
+                // made through the owner, so its next write numbers after them.
+                Some(admission) => {
+                    drop(replica);
+                    messages.extend(admission.owner.commit_bootstrap(
+                        admission.workspace,
+                        &self.0.key,
+                        SystemTime::now(),
+                    )?);
+                }
+                None => {
+                    messages.extend(
+                        replica
+                            .publication_mut()
+                            .bootstrap_messages(&self.0.key, SystemTime::now())?,
+                    );
+                }
+            }
+        } else {
+            drop(replica);
         }
-        drop(replica);
         Ok(messages
             .into_iter()
             .map(|message| Authored {
