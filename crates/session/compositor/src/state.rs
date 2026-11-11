@@ -319,6 +319,29 @@ fn shm_formats() -> Vec<smithay::reexports::wayland_server::protocol::wl_shm::Fo
     ]
 }
 
+/// The seat every client's input arrives on: a keyboard, a pointer and a touch screen. Its
+/// keyboard starts on the US layout, which always compiles; a person's own layout replaces it once
+/// settings reach the compositor. Stated outright, because an empty name would type the machine's
+/// own layout (`XKB_DEFAULT_*`) until then — on a machine set up in German, the first keymap every
+/// client gets would be German.
+fn seat(display: &DisplayHandle) -> (SeatState<State>, Seat<State>) {
+    let mut seat_state = SeatState::new();
+    let mut seat = seat_state.new_wl_seat(display, "seat0");
+    let us = XkbConfig {
+        rules: "evdev",
+        model: "pc105",
+        layout: "us",
+        variant: "",
+        options: Some(String::new()),
+    };
+    if let Err(error) = seat.add_keyboard(us, 400, 30) {
+        tracing::warn!(?error, "keyboard: default keymap did not compile");
+    }
+    seat.add_pointer();
+    seat.add_touch();
+    (seat_state, seat)
+}
+
 impl State {
     pub(crate) fn new(display: &DisplayHandle, policy: Box<dyn WindowPolicy>) -> Self {
         let compositor_state = CompositorState::new::<Self>(display);
@@ -326,24 +349,7 @@ impl State {
         let shm_state = ShmState::new::<Self>(display, shm_formats());
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(display);
         let data_device_state = DataDeviceState::new::<Self>(display);
-        let mut seat_state = SeatState::new();
-        let mut seat = seat_state.new_wl_seat(display, "seat0");
-        // The US layout always compiles; a person's layout replaces it once settings reach the
-        // compositor. Stated outright, because an empty name would type the machine's own layout
-        // (`XKB_DEFAULT_*`) until then — on a machine set up in German, the first keymap every
-        // client gets would be German.
-        let us = XkbConfig {
-            rules: "evdev",
-            model: "pc105",
-            layout: "us",
-            variant: "",
-            options: Some(String::new()),
-        };
-        if let Err(error) = seat.add_keyboard(us, 400, 30) {
-            tracing::warn!(?error, "keyboard: default keymap did not compile");
-        }
-        seat.add_pointer();
-        seat.add_touch();
+        let (seat_state, seat) = seat(display);
         let protocols = crate::protocols::Protocols::new(display);
         let selections = crate::selection::Selections::new(display, &protocols.primary_selection);
         crate::toplevel_icon::advertise(display);
