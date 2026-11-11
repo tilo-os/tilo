@@ -309,12 +309,12 @@ name = "openssl-free"
 # seconds, rather than part of security, whose micro-VM every crate change
 # would otherwise boot. It reads the OS tree and the workflows whole, the Rust
 # and shell sources of the apps and crates, every manifest and lockfile (cargo
-# tree resolves the vendored crates' too) and the two packaging recipes it
-# greps.
+# tree resolves the vendored crates' too), the packaging recipes it greps and
+# the build scripts that hold the images' ELF checks.
 inputs = [
   "os/", ".forgejo/", ".cargo/", "*Cargo.toml", "*Cargo.lock", "rust-toolchain.toml",
   "crates/*.rs", "crates/*.sh", "apps/*.rs", "apps/*.sh",
-  "dist/arch/PKGBUILD", "dist/nix/package.nix",
+  "dist/arch/PKGBUILD", "dist/nix/package.nix", "tools/ci/publish/",
 ]
 suites = ["os/tests/no_openssl_runtime.sh"]
 
@@ -1761,10 +1761,6 @@ reason = "needs make and a kernel source tree"
 [[unrequired]]
 suite = "os/kernel/tests/test-rpm.sh"
 reason = "needs the built kernel RPM; kernel-acceptance-<arch> runs it"
-
-[[unrequired]]
-suite = "os/containers/tilo-relay/test_probe_sccache.py"
-reason = "timing-sensitive: a 50 ms client timeout races Python start-up and fails under CPU contention"
 
 [[unrequired]]
 suite = "os/tests/airplay-encrypted-session.sh"

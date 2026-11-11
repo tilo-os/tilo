@@ -271,11 +271,13 @@ operate it. Companion to `docs/security/design-rationale.md`.
   `registry.fedoraproject.org`, which keeps the digests quay.io prunes. Their
   runtime packages come from the same frozen snapshot as the OS, so all of them
   share one base and one package set; `tools/ci/publish/relay-build.sh`,
-  `front-door-build.sh` and `vm-host-build.sh` are the build path they share.
-  The front door's and the VM host's programs are compiled by t
-  (`front-door-binaries`, `vm-host-binaries`, tools/ci/publish/server-binaries.sh)
-  and the images only package the result, so no image build compiles Rust: a
-  change costs that crate's compile and a layering run.
+  `agent-host-build.sh`, `front-door-build.sh` and `vm-host-build.sh` are the
+  build path they share.
+  Every one of their programs is compiled by t (`relay-binaries`,
+  `agent-host-binaries`, `front-door-binaries`, `vm-host-binaries`,
+  tools/ci/publish/server-binaries.sh) and the images only package the result,
+  so no image build compiles Rust: a change costs that crate's compile and a
+  layering run.
 - **Persistent GitHub input cache.** Every GitHub-hosted tarball, source
   snapshot, catalogue, and license consumed by the OS image is declared once
   in `os/external-assets/github-assets.tsv` with an immutable URL and SHA-256.

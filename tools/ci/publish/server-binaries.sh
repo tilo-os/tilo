@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # The programs the tilo.sh server images run, compiled by t's own check and cached like any other
-# build here: the front door's door, or the VM host's service, its jail helper and its member. The
-# images package what this leaves (front-door-build.sh, vm-host-build.sh); neither compiles Rust
-# inside its build, so an image after a change costs that crate's compile and a layering run.
+# build here: the front door's door, the VM host's service, its jail helper and its member, the
+# relay's daemon, its admin and its enroll program with the filesystem replica, or the agent host's
+# runtime. The images package what this leaves (front-door-build.sh, vm-host-build.sh,
+# relay-build.sh, agent-host-build.sh); none compiles Rust inside its build, so an image after a
+# change costs that crate's compile and a layering run.
 #
-# usage: server-binaries.sh IMAGE OUT    (IMAGE: front-door or vm-host)
+# usage: server-binaries.sh IMAGE OUT    (IMAGE: front-door, vm-host, relay or agent-host)
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage='usage: server-binaries.sh IMAGE OUT    (IMAGE: front-door or vm-host)'
+usage='usage: server-binaries.sh IMAGE OUT    (IMAGE: front-door, vm-host, relay or agent-host)'
 image=${1:?$usage}
 out=${2:?$usage}
 cd "$repo_root"
@@ -25,8 +27,19 @@ case $image in
     # resolution for the three programs.
     packages=(-p legacy-vm --bin tilo-legacy --bin tilo-hosted-jail -p tilo-runtime --bin tilo-runtime)
     bins=(tilo-legacy tilo-hosted-jail tilo-runtime) ;;
+  relay)
+    # The relay and the filesystem replica in one feature resolution, as the image compiled them:
+    # separate Cargo invocations recompile the shared dependencies whose selected features differ
+    # by package root.
+    packages=(-p tilo-relay -p tilo-fs --bins)
+    bins=(tilo-relay tilo-relay-admin tilo-enroll fs) ;;
+  agent-host)
+    # The headless runtime and the enroll CLI, one graph: tilo-runtime depends on tilo-relay as a
+    # library.
+    packages=(-p tilo-runtime -p tilo-relay --bin tilo-runtime --bin tilo-enroll)
+    bins=(tilo-runtime tilo-enroll) ;;
   *)
-    die "unknown server image $image: front-door or vm-host" ;;
+    die "unknown server image $image: front-door, vm-host, relay or agent-host" ;;
 esac
 rm -rf "$out"
 mkdir -p "$out"

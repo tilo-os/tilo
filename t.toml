@@ -2579,14 +2579,25 @@ image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c
 outputs = ["/target/publish/rpm-snapshot/**"]
 default = false
 
-# The relay's programs and the agent host's member, one compile graph: the images package what
-# this leaves, so neither compiles Rust inside its build.
+# The relay's programs: the image packages what this leaves, so it compiles no Rust inside its
+# build.
 [[check]]
 name = "relay-binaries"
 run = "bash tools/ci/publish/server-binaries.sh relay /target/publish/relay/binaries"
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/relay/binaries/**"]
+timeout_secs = 7200
+default = false
+
+# The agent host's programs, its own check so a change to one image's crates leaves the other's
+# image keyed as it was: the agent host's image packages what this leaves, too.
+[[check]]
+name = "agent-host-binaries"
+run = "bash tools/ci/publish/server-binaries.sh agent-host /target/publish/agent-host/binaries"
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/agent-host/binaries/**"]
 timeout_secs = 7200
 default = false
 
@@ -2602,11 +2613,11 @@ outputs = ["/target/publish/relay/image.oci.tar", "/target/publish/relay/digest"
 default = false
 
 # The agent host's image (os/containers/tilo-agent-host): the member and its enroll program on the
-# same base and snapshot as the relay, which it runs beside.
+# same base and snapshot as the relay, which it runs beside. Like the relay's it is packaging only.
 [[check]]
 name = "image-agent-host"
-run = "bash tools/ci/publish/agent-host-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/relay/binaries /target/publish/agent-host"
-needs = ["relay-binaries", "rpm-snapshot", "image-rpms-x86_64"]
+run = "bash tools/ci/publish/agent-host-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/agent-host/binaries /target/publish/agent-host"
+needs = ["agent-host-binaries", "rpm-snapshot", "image-rpms-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"

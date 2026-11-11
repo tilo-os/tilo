@@ -302,9 +302,10 @@ done
 
 relay_container="$repo/os/containers/tilo-relay/Containerfile"
 relay_entrypoint="$repo/os/containers/tilo-relay/tilo-home-peer"
+relay_binaries="$repo/tools/ci/publish/server-binaries.sh"
 if grep -Fq 'openssl-libs coreutils dnf5' "$relay_container" \
   && grep -Fq -- "-name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl" "$relay_container" \
-  && grep -Fq '/build/os/scripts/verify-elf-hardening.sh /out' "$relay_container" \
+  && grep -Fq 'bash os/scripts/verify-elf-hardening.sh "$out"' "$relay_binaries" \
   && grep -Fq '#!/usr/bin/busybox sh' "$relay_entrypoint"; then
   ok 'standalone relay verifies its ELFs, strips OpenSSL/package-manager, and uses static BusyBox'
 else
