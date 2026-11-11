@@ -114,7 +114,8 @@ fn bar_back(h: &FrameHarness) -> bool {
 
 /// A phone-wide (420 px) window whose bar holds the sidebar's toggle opens
 /// on its top-level page with nowhere to go back to: the toggle reaches the
-/// sidebar, and no Back stands beside it, in the bar or in the shell.
+/// sidebar, and no Back stands beside it, in the bar or in the shell. The
+/// places it reaches then carry Back to the page the toggle covered.
 #[test]
 fn a_top_level_page_has_no_back_beside_the_bars_toggle() {
     const NARROW: u32 = 420;
@@ -146,7 +147,15 @@ fn a_top_level_page_has_no_back_beside_the_bars_toggle() {
         NavPane::Sidebar,
         "the toggle reaches the sidebar"
     );
-    assert!(!bar_back(&h), "the sidebar is a first screen too");
+    assert!(
+        bar_back(&h),
+        "the places' screen offers the way back to the place it covered"
+    );
+    assert_eq!(
+        h.root::<NavShell>().window_toolbar().sidebar,
+        None,
+        "and the toggle stands aside for it"
+    );
 }
 
 /// With a list beside its content, the list is the top-level page: no Back

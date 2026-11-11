@@ -517,6 +517,9 @@ struct Inputs {
     leading: [bool; 4],
     /// The app's own page stack can go back ([`NavShell::with_back`]).
     content_back: bool,
+    /// What the content would list is empty, so a whole-window empty state stands in its column
+    /// ([`NavShell::nothing_listed`]).
+    nothing_listed: bool,
     /// The docked sidebar width a person dragged to, authored at 1×.
     user_sidebar: Option<f64>,
     /// A navigation-list sidebar: rail while narrow, list while wide.
@@ -596,6 +599,7 @@ impl Default for Inputs {
             actions: [0; 4],
             leading: [false; 4],
             content_back: false,
+            nothing_listed: false,
             toolbar_in_bar: false,
             user_sidebar: None,
             adaptive: None,
@@ -1558,6 +1562,7 @@ impl NavShell {
             // A window with nothing to show beside its overview has no content column, unless
             // what it shows is one whole-window empty state there.
             inputs.has_content = self.content_shown || self.nothing_listed_shown();
+            inputs.nothing_listed = self.nothing_listed_shown();
             inputs.has_inspector = body(Column::Inspector);
             // The overview's rail and controls go with it.
             let listed = !self.nothing_listed_shown();
@@ -2418,19 +2423,15 @@ impl NavShell {
         self.place_sheet();
     }
 
-    /// The screen a new window opens on: the first list of items, which is
-    /// the overview where there is one, the content's own list where it is
-    /// one (a mail window on the inbox, a Files window on the folder; Back
-    /// goes to the mailboxes or places) or the empty state standing in for
-    /// the list, else the sidebar (Settings' list).
+    /// The screen a new window opens on, from [`opening_pane`](layout::opening_pane): the first
+    /// list of items — the overview where there is one, the content's own list where it is one (a
+    /// mail window on the inbox, a Files window on the folder) or the empty state standing in for
+    /// it — else the sidebar (Settings' list).
     fn opening_pane(&self, stack: &[NavPane]) -> NavPane {
-        if stack.contains(&NavPane::Overview) {
-            NavPane::Overview
-        } else if self.inputs.borrow().kind == ContentKind::List || self.nothing_listed_shown() {
-            NavPane::Content
-        } else {
-            stack.first().copied().unwrap_or(NavPane::Content)
-        }
+        stack
+            .get(layout::opening_pane(&self.inputs.borrow(), stack))
+            .copied()
+            .unwrap_or(NavPane::Content)
     }
 
     /// Note a change of size class: the sidebar's choice for the new class
@@ -3988,12 +3989,9 @@ impl NavShell {
             }
         }
         if *key == Key::Named(NamedKey::Escape) {
-            if self.geometry.sidebar == SidebarPlacement::Drawer && self.is_sidebar_open() {
-                self.toggle_by_key(Column::Sidebar);
-                return true;
-            }
             // Escape goes back the way the bar's Back does, one step at a time: the inspector's
-            // sheet, the app's page stack, then a narrow window's push stack.
+            // sheet, a sidebar floating over the window, the app's page stack, then a narrow
+            // window's push stack.
             if self.back() {
                 return true;
             }

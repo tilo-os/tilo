@@ -475,10 +475,13 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     } else {
         Vec::new()
     };
-    // The bar's toggle reaches the sidebar at every width. Back drills past the screen the
-    // window opened on — the content's own list — and reaches the sidebar; a window already on
-    // its opening screen is a place, left by the toggle, with no way back to nothing. A shell
-    // that declares the bar's slots has no toggle of its own.
+    // The bar's toggle reaches the sidebar at every width. Back walks toward the screen the window
+    // opened on ([`back_home`]): a screen deeper than it goes one step back, and the sidebar's own
+    // screen, which stands in front of it, goes forward to it — the screen the toggle covered — so
+    // a phone is never left on the places with no way back to where the person was. A window on its
+    // opening screen is a place, left by the toggle, with no way back to nothing. A shell that
+    // declares the bar's slots has no toggle of its own, and a sidebar the bar's toggle reaches is
+    // no screen the push stack drills through.
     let first = usize::from(inputs.toggle_in_bar && stack.first() == Some(&NavPane::Sidebar));
     let drills = stack.len().saturating_sub(first) > 1;
 
@@ -746,7 +749,12 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         }
         NavPane::Content => Column::Content,
     };
-    let push_back = drills && front > opening_pane(&stack, inputs.kind, first);
+    // Back has a step where the front screen is not the one the window opens on: one screen back
+    // from a screen deeper than it, and forward to it from the sidebar's screen, which stands
+    // before it and would otherwise be a dead end.
+    let opening = back_home(inputs, &stack);
+    let push_back =
+        front > opening || (front < opening && stack.first() == Some(&NavPane::Sidebar));
     let window_row = Rect::new(0.0, 0.0, w, hh);
     let back_column = if push_back {
         Some(front_column)
@@ -933,15 +941,37 @@ pub(super) fn layout_of(sidebar: SidebarPlacement) -> SplitLayout {
     }
 }
 
-/// The screen a window opens on, which Back drills past: the content's own list where the
-/// content is a list, else the first screen of the stack. A screen at or before it is a place,
-/// reached and left by the sidebar's toggle; only a screen deeper than it has a way back.
-pub(super) fn opening_pane(stack: &[NavPane], kind: ContentKind, first: usize) -> usize {
-    if kind == ContentKind::List {
-        stack_index(stack, NavPane::Content)
+/// The first list of items the stack shows: the overview where there is one, the content where the
+/// content is itself a list or a whole-window empty state stands in it. `None` where the window
+/// has no such list and its first screen is a column of its own (a page beside its places).
+fn list_pane(inputs: &Inputs, stack: &[NavPane]) -> Option<usize> {
+    if let Some(overview) = stack.iter().position(|pane| *pane == NavPane::Overview) {
+        Some(overview)
+    } else if inputs.kind == ContentKind::List || inputs.nothing_listed {
+        Some(stack_index(stack, NavPane::Content))
     } else {
-        first.min(stack.len().saturating_sub(1))
+        None
     }
+}
+
+/// The screen a new window opens on: its first list of items, else the first screen of the stack
+/// (Settings' list, a library of shortcuts).
+pub(super) fn opening_pane(inputs: &Inputs, stack: &[NavPane]) -> usize {
+    list_pane(inputs, stack).unwrap_or(0)
+}
+
+/// The screen a narrow window's Back walks toward: the window's first list of items — the screen it
+/// opens on — else the first screen of the stack once the sidebar is no longer one of them, because
+/// a window whose sidebar the bar's toggle reaches opens on the screen after the places. A screen
+/// deeper than this one goes one step back; the sidebar's own screen, which stands before it, goes
+/// forward to it, so the places are never a dead end; and a screen at this one has nothing to go
+/// back to.
+pub(super) fn back_home(inputs: &Inputs, stack: &[NavPane]) -> usize {
+    list_pane(inputs, stack).unwrap_or_else(|| {
+        let past_places =
+            usize::from(inputs.toggle_in_bar && stack.first() == Some(&NavPane::Sidebar));
+        past_places.min(stack.len().saturating_sub(1))
+    })
 }
 
 pub(super) fn stack_index(stack: &[NavPane], pane: NavPane) -> usize {

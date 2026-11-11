@@ -201,8 +201,14 @@ impl NavShell {
         use crate::window_toolbar::ToolbarAction;
         let lookup = crate::i18n::I18nManager::lookup_plain;
         let back = self.can_go_back();
-        let toggle_yields =
-            back && self.geometry.sidebar != SidebarPlacement::Docked && !self.is_sidebar_open();
+        // A phone's sidebar screen is a screen of the push stack, and its way out is Back, to the
+        // screen the toggle covered: the toggle stands aside for it there, as it does on any screen
+        // that went somewhere deeper.
+        let on_sidebar_screen = self.geometry.sidebar == SidebarPlacement::Screen
+            && self.front_pane() == NavPane::Sidebar;
+        let toggle_yields = back
+            && self.geometry.sidebar != SidebarPlacement::Docked
+            && (on_sidebar_screen || !self.is_sidebar_open());
         let mut toolbar = WindowToolbar {
             sidebar: (self.has_sidebar() && !toggle_yields).then(|| self.is_sidebar_open()),
             ..WindowToolbar::default()

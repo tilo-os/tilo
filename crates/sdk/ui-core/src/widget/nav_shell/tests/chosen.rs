@@ -46,10 +46,11 @@ fn the_list_lists_for_the_window_until_something_is_shown() {
     );
 }
 
-/// A phone-shaped window lands on the list, and Back reaches the sidebar from it: there is no
-/// empty content screen between the two to go back to.
+/// A phone-shaped window lands on the list: it is the screen the window opens on, with nothing to
+/// go back to, and the places stand a toggle away behind it. There is no empty content screen
+/// between the two.
 #[test]
-fn a_phone_shows_its_list_and_back_reaches_the_sidebar() {
+fn a_phone_shows_its_list_with_the_places_a_toggle_away() {
     const NARROW: u32 = 390;
     let shell = mail_shell().content_shown(false);
     let mut h = harness(shell, NARROW, H, Theme::dark());
@@ -62,6 +63,11 @@ fn a_phone_shows_its_list_and_back_reaches_the_sidebar() {
     assert!(
         child_rect(&h, "sidebar").is_none(),
         "the sidebar waits behind"
+    );
+    assert_eq!(g.back, Rect::ZERO, "the list is where the window opened");
+    assert!(
+        g.toggle.width() > 0.0,
+        "it holds the way to the places, which come back to it"
     );
 
     h.root_mut::<NavShell>().show(NavPane::Overview);

@@ -115,6 +115,14 @@ email client's accounts + folders.
     narrowing a docked window keeps the person's place (they land on the
     page they were on, Back goes to the list), and widening docks again
     with the same page open. Choosing a destination pushes the content.
+    Back walks toward the screen the window opens on: a screen deeper than
+    it goes one step back, and the **places** themselves, which stand in
+    front of it, take Back to the screen they covered — the leading chip of
+    their header row, or the window's bar's Back where the app declares its
+    toolbar there — with the toggle standing aside for it, so a phone is
+    never left on the places with no way to the list they came from. Esc
+    and the system's back gesture take the same steps (and the gesture puts
+    a floating drawer away too).
   - **A floating drawer** only for a *content-primary* app
     (`ContentKind::Document`: a document or editor whose sidebar is an
     occasional outline or list of documents) too narrow to dock. It opens
