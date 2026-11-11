@@ -2122,7 +2122,6 @@ perm-secrets-none = No application has used saved passwords or keys yet.
 perm-secrets-detail = { $items } saved, used { $uses } times
 perm-secrets-forget = Forget and delete its secrets
 perm-secrets-access = Access to saved passwords and keys
-
 perm-this-device = This device
 perm-this-device-body = These security settings describe this device. They do not change permissions in other workspaces.
 perm-workspace-intro-body = Review the access approved for apps in each workspace. Manage collaborators and roles inside that workspace.
