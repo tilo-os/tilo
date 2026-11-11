@@ -380,10 +380,12 @@ const speaks = (node, pattern) => pattern instanceof RegExp
 const matching = (nodes, pattern, role = null) => nodes.find(node => speaks(node, pattern) && (!role || role.test(node.role)));
 const names = nodes => nodes.map(node => node.name || node.description).filter(Boolean).slice(0, 48).join(' | ');
 /** The agent's cursor, as the frame publishes it: the mark it draws where it acts, named with
- * what the agent is doing there ("Claude Code: Appending paragraph"). The agent's face stands in
- * the top bar, named after them alone, so the words after the name tell the cursor from it. */
+ * what the agent is doing there ("Claude Code: Appending paragraph"), or, for the caret it says
+ * it holds in the text, that it writes there ("Claude Code is writing here"). The agent's face
+ * stands in the top bar, named after them alone, so the words after the name tell the cursor
+ * from it. */
 const agentCursor = nodes => nodes.find(node => node.role === 'Image'
-  && /^claude code\s*:/i.test(node.name)
+  && /^claude code(\s*:|\s+is writing here$)/i.test(node.name)
   // The mark the text draws at the caret stands where it is drawn; a node with no bounds is
   // the agent at work with nothing drawn in text, which is not the cursor on what it writes.
   && node.rect && node.rect.x1 - node.rect.x0 > 0 && node.rect.y1 - node.rect.y0 > 0);
@@ -1553,7 +1555,9 @@ try {
               const cursor = showing ? agentCursor(showing) : undefined;
               check(`${combo}: the agent's cursor stands on what it writes`, Boolean(cursor),
                 showing ? `the frame shows ${names(showing)}`
-                  : `the page published no agent cursor while the write was in flight: ${names(await semantics(tab))}`);
+                  : `the page published no agent cursor while the write was in flight; what it says of people at work: ${
+                    JSON.stringify((await semantics(tab)).filter(node => /writing|selecting|claude code\s*:|^agent\s*:/i.test(node.name))
+                      .map(node => ({role: node.role, name: node.name, rect: node.rect})))}: ${names(await semantics(tab))}`);
               log(`${combo}: mid-edit shot in the note` +
                 `${cursor ? `, its cursor at ${JSON.stringify(cursor.rect)}` : ', with no agent cursor'}`);
               await shot(tab, combo, 'following-mid-edit', {expect: [/^launch notes$/i], read: showing});
