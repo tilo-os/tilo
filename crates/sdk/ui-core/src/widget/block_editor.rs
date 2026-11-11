@@ -9142,8 +9142,13 @@ impl Widget for BlockEditor {
                 ));
             }
             if let Some(image) = self.image_attachments.get_mut(&b.id) {
-                let source_bottom =
-                    (original.y0 + f64::from(b.line.image_source_height())).min(original.y1);
+                // The room the picture's source takes at the width this block is applied at,
+                // not the one it was last measured at: a host measures lines at widths it never
+                // applies, and a source measured at one of those would place the picture inside
+                // itself.
+                let source_bottom = (original.y0
+                    + f64::from(b.line.image_source_height_at(original.width())))
+                .min(original.y1);
                 if let Some(slot) = self.image_preview_rects.get_mut(index) {
                     *slot = Some(Rect::new(
                         original.x0 + pad,
