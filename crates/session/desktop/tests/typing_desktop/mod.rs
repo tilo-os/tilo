@@ -33,8 +33,16 @@ use ui::record::{RecordId, RecordOwners, RecordStore};
 use ui::state::State;
 use ui::widget::TileHost;
 
+/// One of the demo's windows: its key in the desk's records, its title, and
+/// the app it shows.
+pub type DemoApp = (
+    &'static str,
+    &'static str,
+    fn() -> &'static ApplicationDefinition,
+);
+
 /// The apps the demo opens, in the order it opens them.
-pub const DEMO: [(&str, &str, fn() -> &'static ApplicationDefinition); 6] = [
+pub const DEMO: [DemoApp; 6] = [
     ("notes", "Notes", notes::definition),
     ("sheets", "Sheets", sheets::definition),
     ("word_processor", "Writer", word_processor::definition),
@@ -190,7 +198,9 @@ impl DemoDesk {
         self.records
             .iter()
             .map(|(app, id, store)| {
-                let heads = store.with(id, |doc| doc.get_heads()).map_or(0, |h| h.len());
+                let heads = store
+                    .with(id, ui::automerge::AutoCommit::get_heads)
+                    .map_or(0, |heads| heads.len());
                 (*app, heads)
             })
             .collect()
@@ -200,7 +210,7 @@ impl DemoDesk {
     pub fn focused_name(&self) -> Option<String> {
         self.harness
             .focused_access_node()
-            .and_then(|node| node.name.clone())
+            .and_then(|node| node.name)
     }
 
     /// The note's record as its committed heads stand: what typing into the
@@ -212,7 +222,7 @@ impl DemoDesk {
             .find(|(owner, _, _)| *owner == TYPED_INTO)
             .expect("the note is open");
         store
-            .with(id, |doc| doc.get_heads())
+            .with(id, ui::automerge::AutoCommit::get_heads)
             .expect("the note's record is open")
     }
 
@@ -233,7 +243,7 @@ impl DemoDesk {
             .with(id, |doc| {
                 use ui::automerge::transaction::Transactable as _;
                 doc.put(ui::automerge::ROOT, "changed-elsewhere", "yes")
-                    .expect("the record takes another person's change")
+                    .expect("the record takes another person's change");
             })
             .expect("the record is open");
     }
@@ -279,7 +289,7 @@ impl DemoDesk {
                 .harness
                 .a11y_nodes()
                 .into_iter()
-                .find(|(_, node)| in_tile(node) && node.label().as_deref() == Some("New note"))
+                .find(|(_, node)| in_tile(node) && node.label() == Some("New note"))
             else {
                 panic!(
                     "the note's window publishes neither a note to type into nor a way to make one"

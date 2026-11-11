@@ -939,13 +939,15 @@ impl ResourceRoot {
         // Read while the document did not: the fields these edits were bound
         // to are of the last state that read, not what it holds now.
         let overlay = if self.typed.unreadable().is_some() {
-            overlay
-                .iter()
-                .filter(|spec| spec.id != tilo_resource::FIELD_EDIT)
-                .cloned()
-                .collect()
+            Rc::new(
+                overlay
+                    .iter()
+                    .filter(|spec| spec.id != tilo_resource::FIELD_EDIT)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
         } else {
-            (*overlay).clone()
+            overlay
         };
         self.action_bindings
             .update_shared(Rc::clone(&base.resource), overlay);

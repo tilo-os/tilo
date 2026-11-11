@@ -10,7 +10,9 @@
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
-    reason = "test fixtures: a failed lookup is the assertion"
+    clippy::cast_precision_loss,
+    reason = "test fixtures: a failed lookup is the assertion, and the figures \
+              are said in the units a person reads"
 )]
 
 mod typing_desktop;

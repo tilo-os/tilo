@@ -13,7 +13,9 @@
 #![allow(
     clippy::print_stdout,
     clippy::expect_used,
-    reason = "a benchmark reports to stdout and treats a failed setup as fatal"
+    clippy::cast_precision_loss,
+    reason = "a benchmark reports to stdout and treats a failed setup as fatal, \
+              in the units a person reads"
 )]
 
 #[path = "../tests/typing_desktop/mod.rs"]
