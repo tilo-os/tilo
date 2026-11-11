@@ -463,6 +463,7 @@ impl Caller {
             id: format!("{}:{execution}", crate::context::AGENT_RUN_GROUP),
             label: self.agent_name().unwrap_or(agent).to_owned(),
             kind: crate::context::AGENT_RUN_GROUP.to_owned(),
+            title: None,
         })
     }
 

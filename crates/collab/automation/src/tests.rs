@@ -878,6 +878,7 @@ fn a_run_a_task_asked_for_stamps_its_steps_with_that_tasks_group() {
         id: "task-run-7".into(),
         label: "Sort the inbox".into(),
         kind: "task".into(),
+        title: None,
     };
     let report = block_on(run(
         &host,

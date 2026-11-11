@@ -513,6 +513,7 @@ where
                 id: run,
                 label: "REPL".into(),
                 kind: "repl".into(),
+                title: None,
             },
         ),
     };

@@ -55,6 +55,7 @@ mod keys;
 mod link;
 mod publish;
 mod reads;
+mod run_context;
 mod run_voice;
 mod terminal;
 pub use content::MAX_PUT_BYTES;
@@ -76,6 +77,7 @@ use crate::participant::actions::{Outcome, door_outcome, open_row, record_of, re
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use collab_types::DocumentMutation;
 use keys::{Keys, catalogue_keys, invoke_keys};
+use run_context::{caller_context, said_run_title};
 use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, ActorPlace, Caller,
@@ -2334,8 +2336,9 @@ impl Worker {
             })
             .map(|group| tilo_desktop_model::ownership::OpenedBy {
                 run: group.id,
-                label: group.label,
-                title: said_run_title(request).unwrap_or_default().to_owned(),
+                // The agent, by its own name; the run, by the title it gave.
+                label: caller.agent_run().map_or(group.label, |run| run.label),
+                title: group.title.unwrap_or_default(),
             });
         let title = self
             .catalogue
@@ -2768,50 +2771,7 @@ impl Worker {
     }
 }
 
-/// The name the run `request` says it is a step of goes by, as History shows its changes under:
-/// the title the agent gave the run (`_meta` run.title), else the session's own name for its run.
-/// Words for people to read, never the run itself, which is the host's to say
-/// ([`caller_context`]).
-fn said_run_title(request: &InvokeRequest) -> Option<&str> {
-    request
-        .context
-        .as_ref()?
-        .group
-        .as_ref()
-        .filter(|group| group.kind == tilo_actions::context::AGENT_RUN_GROUP)
-        .map(|group| group.label.as_str())
-}
-
 /// The arguments an invocation carries, as the door binds them.
-/// What a caller may say of its own invocation, which History keeps: the
-/// work it belongs to (an agent's run), what it is for, and the gesture it
-/// was part of. Who invoked it is the host's to say, from the session that
-/// carried it, and what it did the action's.
-/// The context the host stamps on what `caller`'s `request` changes: the
-/// purpose and gesture the caller said, and the work it is part of. A run is
-/// the host's to say: an agent's or a key's actions on one connection are the
-/// run [`Caller::agent_run`] names, by the name the host knows for it; a run
-/// a client claims for itself is never taken.
-fn caller_context(caller: &Caller, request: &InvokeRequest) -> Option<tilo_actions::ActionContext> {
-    let said = request.context.as_ref();
-    let group = caller.agent_run().or_else(|| {
-        said.and_then(|context| context.group.clone())
-            .filter(|group| {
-                group.kind != tilo_actions::context::AGENT_RUN_GROUP
-                    && group.kind != tilo_actions::context::TASK_RUN_GROUP
-            })
-    });
-    if said.is_none() && group.is_none() {
-        return None;
-    }
-    Some(tilo_actions::ActionContext {
-        group,
-        purpose: said.and_then(|context| context.purpose.clone()),
-        gesture: said.and_then(|context| context.gesture),
-        ..tilo_actions::ActionContext::default()
-    })
-}
-
 fn invoke_arguments(argument: &InvokeArgument) -> serde_json::Map<String, serde_json::Value> {
     match argument {
         InvokeArgument::None => serde_json::Map::new(),

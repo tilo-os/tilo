@@ -2086,6 +2086,7 @@ mod local_document_report_tests {
                     id: "private-group".into(),
                     label: "Private work".into(),
                     kind: "task".into(),
+                    title: None,
                 }),
                 source_invocation: Some(tilo_actions::InvocationId(uuid::Uuid::from_bytes(
                     [2; 16],

@@ -1319,6 +1319,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             id: id.into(),
             label: label.into(),
             kind: "agent-run".into(),
+            title: None,
         });
         self
     }
@@ -1544,6 +1545,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     id: continued.unwrap_or_else(|| format!("mcp:{}", uuid::Uuid::new_v4())),
                     label,
                     kind: "agent-run".into(),
+                    title: None,
                 });
             }
             run.as_ref().map(|run| run.id.clone())
@@ -2970,9 +2972,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self.agent_run().map(|mut run| {
             // A call naming the run it is a step of (`_meta` run.title) is
             // attributed to that name, which is what people read in history
-            // and see in presence, not the connection's own label.
-            if let Ok(Some(title)) = STEP_TITLE.try_with(Clone::clone) {
-                run.label = title;
+            // and see in presence, not the connection's own label. It says so
+            // as its own title too: a host that names the run itself still
+            // calls it what the agent asked for.
+            if let Ok(Some(title)) = STEP_TITLE.try_with(Clone::clone)
+                && !title.is_empty()
+            {
+                run.label.clone_from(&title);
+                run.title = Some(title);
             }
             tilo_actions::ActionContext {
                 group: Some(run),

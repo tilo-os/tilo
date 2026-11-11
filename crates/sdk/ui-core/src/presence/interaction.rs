@@ -1114,6 +1114,7 @@ mod tests {
             id: "run-7".into(),
             label: "Morning".into(),
             kind: "shortcut".into(),
+            title: None,
         });
         assert!(presence.apply_interaction_at(shortcut, at).unwrap());
         let morning = UserId("shortcut:morning".into());

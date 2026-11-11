@@ -279,8 +279,7 @@ pub(super) fn question(
     // by the agent's own name says nothing more.
     let run = super::said_run_title(request)
         .filter(|run| *run != agent)
-        .unwrap_or_default()
-        .to_owned();
+        .unwrap_or_default();
     let contract = &about.descriptor.contract;
     Ok(ConfirmationQuestion {
         id,

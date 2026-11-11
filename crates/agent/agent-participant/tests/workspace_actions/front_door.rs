@@ -694,8 +694,9 @@ async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
 
 /// A minted key's agent goes by the name the key was minted with: History
 /// names its changes "Jane Doe's agent", in the colour presence draws it in,
-/// and its run by that name as the host knows it, never the key's grant id
-/// nor anything the client says of itself.
+/// never the key's grant id nor anything the client says of itself. Its run
+/// goes by the title the agent gave it (`_meta` run.title), and by the
+/// agent's name where it gave none.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
     let on_relay = door_on_relay(ISSUER).await;
@@ -737,6 +738,21 @@ async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
             json!({"text": "Dear Visa Officer,"}),
         )
         .await;
+    let title = "Fill Jane Doe's visa application";
+    let (status, reply) = agent
+        .post(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                     "params": {"name": "tilo_do",
+                                "arguments": {"path": "word-processor#append-paragraph",
+                                              "args": {"text": "I apply for a tourist visa."}},
+                                "_meta": {"so.tilo.mcp": {"structured": true,
+                                                          "run": {"id": "visa-1",
+                                                                  "title": title}}}}}))
+        .await;
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(
+        reply["result"]["structuredContent"]["status"], "ok",
+        "{reply}"
+    );
     let history = agent
         .did("word-processor#history", json!({"last": 50}))
         .await;
@@ -753,9 +769,17 @@ async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
             && by_agent.iter().all(|version| {
                 version["actor"]["name"] == "Jane Doe's agent"
                     && version["actor"]["colour"] == colour.as_str()
-                    && version["run"] == "Jane Doe's agent"
             }),
         "{history}"
+    );
+    let runs: std::collections::BTreeSet<&str> = by_agent
+        .iter()
+        .filter_map(|version| version["run"].as_str())
+        .collect();
+    assert_eq!(
+        runs,
+        ["Jane Doe's agent", title].into_iter().collect(),
+        "the untitled calls' run goes by the agent's name, the titled call's by its title: {history}"
     );
 }
 

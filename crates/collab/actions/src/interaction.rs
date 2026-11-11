@@ -473,6 +473,7 @@ mod tests {
                 id: "task:42".into(),
                 label: "Prepare budget".into(),
                 kind: "task".into(),
+                title: None,
             }),
         }
     }

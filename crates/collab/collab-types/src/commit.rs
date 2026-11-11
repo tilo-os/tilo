@@ -1145,6 +1145,7 @@ mod tests {
                 id: "run-1".to_owned(),
                 label: "Alex".to_owned(),
                 kind: "agent-run".to_owned(),
+                title: None,
             }),
             invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
             source_invocation: Some(invocation),

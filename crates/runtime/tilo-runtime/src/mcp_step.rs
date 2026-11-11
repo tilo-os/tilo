@@ -106,7 +106,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if let Ok(Some(title)) = Self::step_title(request.pointer("/params/_meta"))
             && !title.is_empty()
         {
-            run.label = title;
+            run.label.clone_from(&title);
+            run.title = Some(title);
         }
         Some(run)
     }
