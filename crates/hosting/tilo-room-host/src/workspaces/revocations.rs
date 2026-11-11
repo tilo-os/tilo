@@ -24,14 +24,6 @@ use tilo_user_identity::{DeviceCert, RevocationEntry, verify_revocation_entry};
 
 use super::{GovernedWorkspace, Workspaces};
 
-/// Revocations one root may keep in the relay's log. A key's revocation is a
-/// statement its root signed, and the relay refuses a key it was told to
-/// forget for as long as it serves the person. Each root's entries have this
-/// much room of their own, so nothing another person announces takes the place
-/// of a revocation its own root signed, while the log stays bounded by the
-/// roots the relay serves.
-const MAX_LOGGED_REVOCATIONS_PER_ROOT: usize = 4096;
-
 impl Workspaces {
     /// Take in the root-signed `entries` a device announced. An entry whose
     /// root the relay does not serve, or one naming a device this relay knows
@@ -94,9 +86,10 @@ impl Workspaces {
     /// workspace lists, because a stand-in is no device, but the one this host
     /// signs with when it approves a returning sign-in.
     ///
-    /// Each root's entries take log room of their own, and an entry the log
-    /// has no room left for is still refused from now on: a full log costs an
-    /// entry its place on disk, never its effect.
+    /// Every entry is kept in the log as long as the relay is: a restart
+    /// refuses each key it refused before. Only a root the relay serves gets
+    /// here ([`Self::take_revocations`]), so what the log holds grows with the
+    /// revocations of the people it serves and nothing else.
     fn record(&self, entries: &[RevocationEntry]) -> Result<(), String> {
         let host = &self.inner.host;
         let state_root = host.access.state_root();
@@ -114,29 +107,13 @@ impl Workspaces {
         if fresh.is_empty() {
             return Ok(());
         }
-        let logged =
-            crate::store::load_revocations(state_root).map_err(|error| error.to_string())?;
-        let mut logged_per_root = std::collections::HashMap::<[u8; 32], usize>::new();
-        for known in &logged {
-            let kept = logged_per_root.entry(known.user_public_key).or_default();
-            *kept = kept.saturating_add(1);
-        }
         let mut changed = false;
-        let mut full = false;
-        for entry in fresh {
+        for entry in &fresh {
             changed |= host
                 .revocations
                 .write_recover()
-                .insert(entry.clone())
+                .insert((*entry).clone())
                 .map_err(|error| error.to_string())?;
-            let kept = logged_per_root.entry(entry.user_public_key).or_default();
-            if *kept >= MAX_LOGGED_REVOCATIONS_PER_ROOT {
-                full = true;
-            } else if crate::store::append_revocation(state_root, entry)
-                .map_err(|error| error.to_string())?
-            {
-                *kept = kept.saturating_add(1);
-            }
             // The door holds only the host's own person's devices.
             if entry.user_public_key == host.cert.user_public_key {
                 self.inner
@@ -144,11 +121,8 @@ impl Workspaces {
                     .forget(&entry.revoked_device_public_key);
             }
         }
-        if full {
-            tracing::warn!(
-                "the relay's revocation log is full for a root it serves: a revocation is refused but not kept across a restart"
-            );
-        }
+        let fresh = fresh.into_iter().cloned().collect::<Vec<_>>();
+        crate::store::append_revocations(state_root, &fresh).map_err(|error| error.to_string())?;
         if changed {
             crate::authority_epoch::bump();
         }
@@ -230,7 +204,6 @@ mod tests {
     };
 
     use super::super::fixtures::{admit_view_reader, door_join, governor, test_host};
-    use super::MAX_LOGGED_REVOCATIONS_PER_ROOT;
 
     fn revocation(root: &SigningKey, device: [u8; 32]) -> RevocationEntry {
         let mut entry = RevocationEntry {
@@ -388,24 +361,15 @@ mod tests {
         relay.shutdown().await;
     }
 
-    /// One root's entries have log room of their own: once that root spent it,
-    /// a further revocation of its own is refused from its moment on all the
-    /// same, and the log keeps what it held rather than grow.
+    /// Ada's root revokes thousands of keys, more than the log once had room
+    /// for, and then her laptop. The log keeps every one of them, so the host
+    /// refuses each again once it reads the log after a restart.
     #[tokio::test]
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the relay a test binds is kept until it ends; dropping it earlier closes the host the test drives"
     )]
-    async fn a_full_log_still_refuses_the_revocation_it_cannot_keep() {
-        // The authority epoch is the whole process's, which every test that
-        // narrows anything bumps: only in a process of its own is the bump
-        // this test reads the log's own.
-        if !tilo_test_env::in_own_process_here(
-            module_path!(),
-            "a_full_log_still_refuses_the_revocation_it_cannot_keep",
-        ) {
-            return;
-        }
+    async fn every_revocation_of_a_served_root_is_kept_across_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
         let relay = test_host(dir.path(), &key, &cert).await;
@@ -418,28 +382,29 @@ mod tests {
         sign_device_cert(&mut laptop, &ada).unwrap();
         admit_view_reader(workspaces, &created.workspace, &key, &laptop).await;
 
-        let held = (0..MAX_LOGGED_REVOCATIONS_PER_ROOT)
-            .map(|n| {
-                let n = u64::try_from(n).unwrap();
-                revocation(&ada, made_up_key(n))
-            })
+        let mut revoked = (0..5000)
+            .map(|n| revocation(&ada, made_up_key(n)))
             .collect::<Vec<_>>();
-        crate::store::save_revocations(dir.path(), &held).unwrap();
-        let epoch = crate::authority_epoch::current();
-
-        let own = revocation(&ada, laptop.device_public_key);
-        workspaces.take_revocations(vec![own]).await.unwrap();
-        assert_eq!(
-            crate::store::load_revocations(dir.path()).unwrap().len(),
-            MAX_LOGGED_REVOCATIONS_PER_ROOT,
-            "a log with no room left keeps what it held"
-        );
-        assert!(
-            workspaces.revocations().refuses(&laptop),
-            "and the revocation is refused from its moment on"
-        );
-        assert_ne!(crate::authority_epoch::current(), epoch);
+        workspaces.take_revocations(revoked.clone()).await.unwrap();
+        let laptops = revocation(&ada, laptop.device_public_key);
+        workspaces
+            .take_revocations(vec![laptops.clone()])
+            .await
+            .unwrap();
+        revoked.push(laptops);
         relay.shutdown().await;
+
+        let mut list = tilo_user_identity::RevocationList::new();
+        for entry in crate::store::load_revocations(dir.path()).unwrap() {
+            list.insert(entry).unwrap();
+        }
+        for entry in &revoked {
+            assert!(
+                list.is_revoked(&entry.user_public_key, &entry.revoked_device_public_key),
+                "every revocation is read back after a restart"
+            );
+        }
+        assert!(list.refuses(&laptop), "the laptop is refused");
     }
 
     /// Ada's phone announces, in its identity hello, that her root revoked

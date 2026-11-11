@@ -30,6 +30,7 @@ pub(crate) mod replay;
 pub(crate) mod resume;
 #[doc(hidden)]
 pub mod retained;
+mod revocation_log;
 #[cfg(test)]
 pub(crate) use tilo_relay_store::test_barrier;
 #[cfg(any(test, feature = "test-support"))]
@@ -64,72 +65,11 @@ pub use governed_access::GOVERNED_ACCESS_FILE;
 /// Retained bootstrap checkpoints and the incremental tails after them.
 pub const RETAINED_DIR: &str = "retained";
 
-/// Root-signed device revocations enforced during relay authentication.
-pub const REVOCATIONS_FILE: &str = "revocations.json";
+pub use revocation_log::{
+    REVOCATIONS_FILE, append_revocation, append_revocations, load_revocations, save_revocations,
+};
 /// The metrics snapshot file is read by clients as well as the daemon.
 pub use tilo_relay_protocol::metrics::{METRICS_FILE, load_metrics, save_metrics};
-
-/// Load root-signed revocation entries from the relay state root.
-///
-/// # Errors
-///
-/// Returns an error if the file exists but can't be read, or fails to
-/// decode as JSON.
-pub fn load_revocations(
-    state_root: &Path,
-) -> Result<Vec<tilo_user_identity::RevocationEntry>, StoreError> {
-    let path = state_root.join(REVOCATIONS_FILE);
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    serde_json::from_slice(&fs::read(path)?).map_err(|error| StoreError::Json(error.to_string()))
-}
-
-/// Atomically replace the relay's root-signed revocation entries.
-///
-/// # Errors
-///
-/// Returns an error if the state root can't be created, `entries`
-/// can't be JSON-encoded, or the atomic write fails.
-pub fn save_revocations(
-    state_root: &Path,
-    entries: &[tilo_user_identity::RevocationEntry],
-) -> Result<(), StoreError> {
-    fs::create_dir_all(state_root)?;
-    let bytes =
-        serde_json::to_vec_pretty(entries).map_err(|error| StoreError::Json(error.to_string()))?;
-    atomic_write(&state_root.join(REVOCATIONS_FILE), &bytes)?;
-    Ok(())
-}
-
-/// Add `entry` to the relay's revocation log unless the log already holds
-/// its root's revocation of its device as early. Whether the log changed.
-/// Each root's entries are its own: another root's entry naming the same key
-/// neither replaces nor is replaced by it.
-///
-/// # Errors
-///
-/// Returns an error if the log can't be read or replaced.
-pub fn append_revocation(
-    state_root: &Path,
-    entry: &tilo_user_identity::RevocationEntry,
-) -> Result<bool, StoreError> {
-    let mut entries = load_revocations(state_root)?;
-    let same = |known: &tilo_user_identity::RevocationEntry| {
-        (known.user_public_key, known.revoked_device_public_key)
-            == (entry.user_public_key, entry.revoked_device_public_key)
-    };
-    if entries
-        .iter()
-        .any(|known| same(known) && known.revoked_at_ns <= entry.revoked_at_ns)
-    {
-        return Ok(false);
-    }
-    entries.retain(|known| !same(known));
-    entries.push(entry.clone());
-    save_revocations(state_root, &entries)?;
-    Ok(true)
-}
 
 /// Directory entries the relay's workspace stores listed to commit retained
 /// history since this process started.

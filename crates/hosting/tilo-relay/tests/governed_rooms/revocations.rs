@@ -316,3 +316,100 @@ async fn a_stand_in_revoked_in_a_room_is_refused_by_what_it_signs_after() {
     tablet_session.close().await;
     relay.shutdown().await;
 }
+
+/// Alice's root revokes thousands of keys, more than the relay's log once
+/// had room for, and last her phone, a device in none of the relay's rooms:
+/// only the relay's own log refuses it. The relay restarts as its daemon
+/// does, from that log, and refuses the phone and every key revoked before
+/// it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_revocation_is_refused_after_a_restart() {
+    let alice = TestUser::fresh("Alice");
+    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let phone = alice.enrol("alice-phone", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let relay = start(state.path(), &alice, &host).await;
+    let plans = create_and_enter(&relay, &laptop, "Plans").await;
+    let connects = |relay: &Relay| {
+        let relay_addr = relay.node_addr();
+        let phone = &phone;
+        async move {
+            RelayClient::connect_to_pinned_host(
+                device_endpoint(phone).await,
+                relay_addr,
+                phone.cert.clone(),
+                phone.sk.clone(),
+                RevocationList::new(),
+            )
+            .await
+            .is_ok()
+        }
+    };
+    assert!(connects(&relay).await, "the phone reaches its relay");
+
+    let mut revoked = (0..5000_u32)
+        .map(|n| {
+            let mut key = [0xa5; 32];
+            key[..4].copy_from_slice(&n.to_le_bytes());
+            let mut entry = RevocationEntry {
+                user_public_key: alice.user_pk,
+                revoked_device_public_key: key,
+                revoked_at_ns: tilo_clock::unix_now_ns(),
+                reason: RevocationReason::Retired,
+                signature: [0; 64],
+            };
+            sign_revocation_entry(&mut entry, &alice.user_sk).unwrap();
+            entry
+        })
+        .collect::<Vec<_>>();
+    revoked.push(revoke(&alice, &phone));
+    let laptop_session = session(&relay, &laptop, plans.workspace_id).await;
+    publish(&laptop_session, &hello(&laptop, revoked.clone()));
+    tilo_test_env::within("the relay keeps every revocation", async {
+        while tilo_relay::store::load_revocations(state.path()).map_or(0, |entries| entries.len())
+            < revoked.len()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    laptop_session.close().await;
+    relay.shutdown().await;
+
+    // The daemon starts from the identity its log refuses.
+    let identity = tilo_relay::daemon::with_persisted_revocations(
+        tilo_relay::daemon::RelayIdentity {
+            user_public_key: alice.user_pk,
+            device_signing_key: host.sk.clone(),
+            device_cert: host.cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        state.path(),
+    )
+    .unwrap();
+    for entry in &revoked {
+        assert!(
+            identity
+                .revocations
+                .is_revoked(&entry.user_public_key, &entry.revoked_device_public_key),
+            "every key revoked before the restart is refused after it"
+        );
+    }
+    let relay = Relay::start(
+        RelayConfig {
+            state_root: state.path().to_path_buf(),
+            iroh_listen: "127.0.0.1:0".parse().unwrap(),
+            ..RelayConfig::default()
+        },
+        identity,
+    )
+    .await
+    .unwrap();
+    assert!(
+        !connects(&relay).await,
+        "the phone, revoked past the old log's room, is refused after the restart"
+    );
+    assert!(admitted(&relay, &laptop, plans.workspace_id).await);
+    relay.shutdown().await;
+}
