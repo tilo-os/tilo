@@ -5072,7 +5072,7 @@ default = false
 # builds, on a machine with KVM. Asked for, never on its own.
 [[check]]
 name = "hosted-vm-measure"
-run = "bash tools/ci/hosted-vm-measure.sh /target/images/image-vm-host/image.oci.tar /target/publish/hosted-guest/image /target/hosted-vm-measure"
+run = "bash tools/ci/hosted-vm-measure.sh /target/publish/vm-host/image.oci.tar /target/publish/hosted-guest/image /target/hosted-vm-measure"
 needs = ["image-vm-host", "image-hosted-guest"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
