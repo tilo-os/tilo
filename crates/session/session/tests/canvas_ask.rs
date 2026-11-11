@@ -61,6 +61,7 @@ fn session(root: &std::path::Path) -> Session {
 fn ask(session: &mut Session, text: &str) {
     common::press(session, CANVAS_ENTRY);
     common::type_text(session, text);
+    // Pressed and let go within a frame, as `type_text` types: held across one, Enter would repeat.
     for pressed in [true, false] {
         session
             .compositor()
@@ -69,8 +70,8 @@ fn ask(session: &mut Session, text: &str) {
                 pressed,
             })
             .expect("a key");
-        session.step(Duration::from_millis(1)).expect("a frame");
     }
+    session.step(Duration::from_millis(1)).expect("a frame");
 }
 
 /// The `n`th send the session carried out, as `session:send-to` reads, once it is there.
