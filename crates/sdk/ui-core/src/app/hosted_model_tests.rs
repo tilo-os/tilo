@@ -116,6 +116,54 @@ fn an_app_with_no_window_publishes_and_answers_on_its_wakes() {
     );
 }
 
+/// An app with no window whose view waits for what its workspace holds
+/// hears from the shell where the workspace stands, on its wakes alone, and
+/// then publishes what the view answers, as a window of it does.
+#[cfg(feature = "native")]
+#[test]
+fn an_app_with_no_window_hears_its_workspace_and_publishes_its_view() {
+    use std::io::Write as _;
+    let (app_side, mut shell_side) = std::os::unix::net::UnixStream::pair().unwrap();
+    crate::workspace_sync::hosted_by_shell();
+    let view = crate::widget::ArrivingView::new(&crate::workspace_sync::holdings(), |()| {
+        Box::new(CounterCard::with_async_post_bump_reset()) as crate::widget::Element
+    });
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(view));
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    app.floating.client =
+        Some(crate::floating_surface::FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+    app.collaboration.manager =
+        CollaborationManager::with_peer_transport(HostedModelTransport(Rc::default()));
+    let bumps = |app: &App| {
+        app.actions
+            .last_published_actions
+            .iter()
+            .flatten()
+            .any(|action| action.address.action == "async-bump")
+    };
+    app.wake_unshown();
+    assert!(
+        !bumps(&app),
+        "nothing of the view is built before the workspace is"
+    );
+    let mut told = serde_json::to_vec(
+        &crate::floating_surface::FloatingSurfaceHostMessage::appearance(
+            &crate::theme::WindowAppearance::default(),
+        ),
+    )
+    .unwrap();
+    told.push(b'\n');
+    shell_side.write_all(&told).unwrap();
+    for _ in 0..3 {
+        app.wake_unshown();
+    }
+    assert!(
+        bumps(&app),
+        "the view's actions are published once the shell said"
+    );
+}
+
 fn hosted_directory_fixture() -> App {
     let mut app = App::new_with_controlled_inputs(
         State::new(),

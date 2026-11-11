@@ -77,7 +77,19 @@ impl super::App {
     /// ([`crate::host::WINDOWLESS_ENV`]): the passes a frame runs before it
     /// paints, so it takes its actions and publishes. Answers when it wakes
     /// next.
+    ///
+    /// The shell speaks to it as to a window: it says where the app's
+    /// workspace stands, which the app's views wait for before they build
+    /// and publish what they answer. What the shell asks of a window (a
+    /// surface to prepare) has no window here and goes unanswered.
     pub(crate) fn wake_unshown(&mut self) -> Option<crate::time::Instant> {
+        #[cfg(feature = "native")]
+        {
+            if self.pump_floating_surface_service() {
+                self.invalidate_widget_resource_cache();
+            }
+            drop(self.take_floating_host_messages());
+        }
         self.pump_hosted_model();
         self.root_widget.next_wake_deadline()
     }

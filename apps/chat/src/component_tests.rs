@@ -456,10 +456,23 @@ fn component_mount_as(
     ui::record::RecordStore,
     ui::record::RecordCheckout,
 ) {
+    let (component, records) = component_as(cache, author, instance, workspace, role);
+    let checkout = component.record().clone();
+    let frame = ui::headless::FrameHarness::from_component(component, (1280, 720), runner_inputs())
+        .unwrap();
+    (frame, records, checkout)
+}
+
+/// One mount of the workspace's Chat, not yet in a window.
+fn component_as(
+    cache: &ui::portable_storage::PortableStorage,
+    author: &str,
+    instance: u64,
+    workspace: &str,
+    role: ui::permissions::Role,
+) -> (ui::application::AppComponent, ui::record::RecordStore) {
     use std::rc::Rc;
-    use ui::application::{
-        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
-    };
+    use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 
     let cache = cache.clone();
     let definition = crate::definition();
@@ -497,19 +510,16 @@ fn component_mount_as(
     let component = definition
         .instantiate(context, target, RestoreInput::None)
         .unwrap();
-    let checkout = component.record().clone();
+    (component, records)
+}
+
+fn runner_inputs() -> ui::application::ComponentRunnerInputs {
     let font_root = ui::font_catalog::checkout_root();
     let fonts = ui::font_catalog::FontCatalog::controlled_fixture(&font_root, "en-US");
-    let frame = ui::headless::FrameHarness::from_component(
-        component,
-        (1280, 720),
-        ComponentRunnerInputs {
-            theme: ui::Theme::dark(),
-            text_renderer: ui::TextRenderer::with_font_catalog(&fonts).unwrap(),
-        },
-    )
-    .unwrap();
-    (frame, records, checkout)
+    ui::application::ComponentRunnerInputs {
+        theme: ui::Theme::dark(),
+        text_renderer: ui::TextRenderer::with_font_catalog(&fonts).unwrap(),
+    }
 }
 
 fn semantic_owner_path(node: &ui::headless::InspectionNode, target: &str) -> Option<String> {
@@ -1780,4 +1790,46 @@ fn a_newcomer_opening_chat_waits_for_the_workspaces_chat_and_never_founds_one() 
         })
         .unwrap();
     assert!(opened, "the page opened the workspace's chat");
+}
+
+/// A Chat with no window publishes what a window of it does: its resource's
+/// actions and the effects its view answers (send, open an agent).
+#[test]
+fn a_chat_with_no_window_publishes_what_a_window_of_it_does() {
+    let cache = ui::portable_storage::PortableStorage::new("unshown", "device").unwrap();
+    let (component, _) = component_as(
+        &cache,
+        "author",
+        1,
+        "workspace",
+        ui::permissions::Role::Owner,
+    );
+    let mut app = ui::App::from_component(component, runner_inputs()).unwrap();
+    let catalogue = |app: &mut ui::App| {
+        for _ in 0..3 {
+            app.controlled_hosted_model_for_test();
+        }
+        let mut actions: Vec<String> = app
+            .collect_resources()
+            .iter()
+            .flat_map(|resource| {
+                (resource.actions.iter()).map(|action| format!("{}#{}", resource.kind, action.id))
+            })
+            .collect();
+        actions.sort();
+        actions
+    };
+    let unshown = catalogue(&mut app);
+    for effect in ["chat.workspace#send", "chat.workspace#open-agent"] {
+        assert!(
+            unshown.iter().any(|action| action == effect),
+            "{effect} in {unshown:?}"
+        );
+    }
+    app.init_layout();
+    assert_eq!(
+        unshown,
+        catalogue(&mut app),
+        "a window of it publishes the same"
+    );
 }
