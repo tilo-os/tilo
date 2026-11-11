@@ -1,13 +1,11 @@
 shortcuts-runs = Recent runs
-shortcuts-runs-empty = Runs you start appear here.
 shortcuts-edit = Edit
 shortcuts-duplicate = Duplicate
 shortcuts-run = Run
 shortcuts-delete = Delete
 shortcuts-library-unavailable = Saved shortcuts are not available here
 shortcuts-saved-empty = No shortcuts yet
-shortcuts-saved-empty-draft = Describe one above and the agent drafts it for you.
-shortcuts-saved-empty-blank = Shortcuts you save appear here.
+shortcuts-saved-empty-draft = Describe one and the agent drafts it for you.
 shortcuts-last-run = Last run
 shortcuts-input-placeholder = Type a value
 shortcuts-blocks = Building blocks

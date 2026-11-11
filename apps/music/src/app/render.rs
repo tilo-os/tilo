@@ -3120,13 +3120,13 @@ impl Music {
         if self.spotify_catalogue {
             let y = self.position_source_buttons(ctx, look, body, y);
             return if pls.is_empty() {
-                Self::note(ctx, look, body, y, "Playlists you make appear here.")
+                y
             } else {
                 self.draw_playlist_cards(ctx, look, body, y, pls)
             };
         }
         if pls.is_empty() {
-            return Self::note(ctx, look, body, y, "Playlists you make appear here.");
+            return y;
         }
         self.draw_playlist_cards(ctx, look, body, y, pls)
     }
@@ -4455,7 +4455,6 @@ impl Music {
         if ids.is_empty() {
             let content = EmptyStateContent {
                 icon: Some(Icon::Heart),
-                message: Some("Like a song and it appears here."),
                 ..EmptyStateContent::new("No liked songs yet")
             };
             return self.empty_page(ctx, body, y, &content, None);
@@ -4625,7 +4624,6 @@ impl Music {
         if genres.is_empty() {
             let content = EmptyStateContent {
                 icon: Some(Icon::LayoutGrid),
-                message: Some("Genres appear here as your library grows."),
                 action_label: Some("Search music"),
                 ..EmptyStateContent::new("Nothing to browse yet")
             };

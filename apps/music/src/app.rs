@@ -1456,7 +1456,9 @@ impl Music {
                     .and_then(serde_json::Value::as_str)
                     .map_or_else(
                         || self.backend_name.clone(),
-                        |name| format!("{} {name}", crate::i18n::t("music-spotify-output")),
+                        |name| {
+                            crate::i18n::t_args("music-spotify-output", &[("device", name.into())])
+                        },
                     )
             })
         }
@@ -4799,6 +4801,17 @@ impl Music {
 
     /// Push an action row onto the open menu, recording its parallel `Action`.
     fn push_menu(&mut self, label: impl Into<String>, action: Action) {
+        self.push_menu_with_detail(label, None, action);
+    }
+
+    /// A menu row that also says where the choice comes from, carried at the
+    /// row's trailing edge.
+    fn push_menu_with_detail(
+        &mut self,
+        label: impl Into<String>,
+        detail: Option<String>,
+        action: Action,
+    ) {
         let idx = self.menu_actions.len() as i64;
         let pending = self.pending.clone();
         let select = move || pending.store(idx, Ordering::SeqCst);
@@ -4806,6 +4819,10 @@ impl Music {
             MenuItem::destructive_action(label, select)
         } else {
             MenuItem::action(label, select)
+        };
+        let item = match detail {
+            Some(detail) => item.with_detail(detail),
+            None => item,
         };
         self.context.push(item);
         self.menu_actions.push(action);

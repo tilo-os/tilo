@@ -663,21 +663,15 @@ fn overview_body(ui: &Ui, description: &LocalState<String>, door: &DoorState) ->
         Arrival::Ready(_) => {}
     }
     if door.runs.is_empty() {
+        // Nothing yet: a saved-shortcut library with nothing in it says so, and
+        // one that has shortcuts leaves the runs out rather than heading
+        // nothing.
         if matches!(&door.library, Arrival::Ready(library) if library.is_empty()) {
-            items.push(Box::new(
-                EmptyState::new(CATALOG.t("shortcuts-saved-empty")).with_message(CATALOG.t(
-                    if drafting {
-                        "shortcuts-saved-empty-draft"
-                    } else {
-                        "shortcuts-saved-empty-blank"
-                    },
-                )),
-            ));
-        } else {
-            items.push(Box::new(Section::titled(
-                CATALOG.t("shortcuts-runs"),
-                vec![Box::new(caption("shortcuts-runs-empty"))],
-            )));
+            let mut empty = EmptyState::new(CATALOG.t("shortcuts-saved-empty"));
+            if drafting {
+                empty = empty.with_message(CATALOG.t("shortcuts-saved-empty-draft"));
+            }
+            items.push(Box::new(empty));
         }
     } else {
         items.push(run_history(ui, door));

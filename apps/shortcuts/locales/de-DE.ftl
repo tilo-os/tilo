@@ -1,13 +1,11 @@
 shortcuts-runs = Letzte Ausführungen
-shortcuts-runs-empty = Gestartete Ausführungen erscheinen hier.
 shortcuts-edit = Bearbeiten
 shortcuts-duplicate = Duplizieren
 shortcuts-run = Ausführen
 shortcuts-delete = Löschen
 shortcuts-library-unavailable = Gespeicherte Kurzbefehle sind hier nicht verfügbar
 shortcuts-saved-empty = Noch keine Kurzbefehle
-shortcuts-saved-empty-draft = Beschreibe oben einen, und der Agent entwirft ihn für dich.
-shortcuts-saved-empty-blank = Gespeicherte Kurzbefehle erscheinen hier.
+shortcuts-saved-empty-draft = Beschreibe einen, und der Agent entwirft ihn für dich.
 shortcuts-last-run = Letzte Ausführung
 shortcuts-input-placeholder = Wert eingeben
 shortcuts-blocks = Bausteine
