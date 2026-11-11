@@ -58,23 +58,11 @@
 //! moment, even clients using dma-buf still require that the `wl_drm` infrastructure is
 //! initialized to have hardware-acceleration.
 //!
-//! ## X11 backend
-//!
-//! Alongside this infrastructure, Smithay also provides an alternative backend based on
-//! [x11rb](https://crates.io/crates/x11rb), which makes it possible to run your compositor as
-//! an X11 client. This is generally quite helpful for development and debugging.
-//!
-//! The X11 backend does not concern itself with what renderer is in use, allowing presentation to
-//! the window assuming you can provide it with a [`Dmabuf`](crate::backend::allocator::dmabuf::Dmabuf).
-//! The X11 backend is also an input provider, and is accessible in the [`x11`] module, gated by
-//! the `backend_x11` cargo feature.
-//!
 //! ## Winit backend
 //!
 //! Alongside this infrastructure, Smithay also provides an alternative backend based on
 //! [winit](https://crates.io/crates/winit), which makes it possible to run your compositor as
-//! a Wayland or X11 client. You are encouraged to use the X11 backend where possible since winit
-//! does not integrate into calloop too well. This backend is generally quite helpful for
+//! a Wayland or X11 client. This backend is generally quite helpful for
 //! development and debugging. That backend is both a renderer and an input provider, and is
 //! accessible in the [`winit`] module, gated by the `backend_winit` cargo feature.
 //!
@@ -94,14 +82,8 @@ pub mod session;
 #[cfg(feature = "backend_udev")]
 pub mod udev;
 
-#[cfg(feature = "backend_vulkan")]
-pub mod vulkan;
-
 #[cfg(feature = "backend_winit")]
 pub mod winit;
-
-#[cfg(feature = "backend_x11")]
-pub mod x11;
 
 /// Error that can happen when swapping buffers.
 #[derive(Debug, thiserror::Error)]

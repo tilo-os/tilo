@@ -11,6 +11,11 @@ compiles, the manifest as shipped minus its example and bench targets, the
 license and README. Examples, benches, anvil, CI files and the changelog stay
 upstream.
 
+The backends no Tilo crate builds are left out too: the X11 backend
+(`backend_x11`), Vulkan (`backend_vulkan`, its allocator included) and the
+glow renderer (`renderer_glow`), with their features and the `ash` and `glow`
+dependencies only they used.
+
 ## Warning-free on the workspace toolchain
 
 A path dependency's warnings are not capped like a registry crate's, and CI

@@ -1,14 +1,10 @@
 //! Reexports of crates, that are part of the public api, for convenience
 
-#[cfg(feature = "backend_vulkan")]
-pub use ash;
 pub use calloop;
 #[cfg(feature = "backend_drm")]
 pub use drm;
 #[cfg(feature = "backend_gbm")]
 pub use gbm;
-#[cfg(feature = "renderer_glow")]
-pub use glow;
 #[cfg(feature = "backend_libinput")]
 pub use input;
 #[cfg(feature = "renderer_pixman")]
