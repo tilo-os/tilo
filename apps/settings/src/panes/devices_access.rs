@@ -482,7 +482,12 @@ impl AccessModel {
     fn devices_section(&self, cx: &ViewCx<Settings>) -> SettingsSection {
         let title = t("settings-access-devices");
         if let Some(error) = &self.devices_asked.error {
-            return section(&title, rows(vec![note(error)]));
+            // The host's reason is for the log; the person reads what it means.
+            tracing::warn!(target: "tilo::settings", %error, "the host did not list the person's devices");
+            return section(
+                &title,
+                rows(vec![note(&t("settings-access-devices-unlisted"))]),
+            );
         }
         if !self.devices_asked.answered {
             return section(&title, rows(vec![note(&t("settings-access-reading"))]));
@@ -507,7 +512,11 @@ impl AccessModel {
             return section(&title, rows(vec![note(&t("settings-access-reading"))]));
         }
         if let Some(error) = &self.door_error {
-            return section(&title, rows(vec![note(error)]));
+            tracing::warn!(target: "tilo::settings", %error, "the host did not answer the agent door");
+            return section(
+                &title,
+                rows(vec![note(&t("settings-access-agents-unlisted"))]),
+            );
         }
         if self.door.grants.is_empty() {
             return section(&title, rows(vec![note(&t("settings-access-no-agents"))]));

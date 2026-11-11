@@ -2853,6 +2853,8 @@ settings-access-reach-until = { $reach }, { $until }
 settings-access-script-key = Key for a script
 settings-access-script-key-on = Key for a script on { $place }
 settings-access-revoke-compromised = Revoke: its key may be known to someone else
+settings-access-devices-unlisted = Your devices can't be listed here yet.
+settings-access-agents-unlisted = The agents you let in can't be listed here yet.
 
 ## Window and accessibility copy
 settings-a11y-apple-password = Apple ID password
