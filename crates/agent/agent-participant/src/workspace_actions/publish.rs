@@ -37,6 +37,71 @@ fn document(
     }
 }
 
+/// How long [`Worker::watch_saved`] waits to hear a write was saved before
+/// it logs that it was not.
+const SAVE_WATCH: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// One write the host handed to the session, as its log names it.
+pub(super) struct Written {
+    app: String,
+    workspace: String,
+    record: String,
+    whole: bool,
+    changes: Vec<String>,
+}
+
+impl Written {
+    pub(super) fn of(route: &DocumentRoute, mutation: &DocumentMutation) -> Self {
+        Self {
+            app: route.app_id.clone(),
+            workspace: route.cluster_id.clone(),
+            record: route.record.clone(),
+            whole: matches!(mutation, DocumentMutation::Snapshot(_)),
+            changes: changes_of(mutation),
+        }
+    }
+
+    fn saved(&self) {
+        tracing::info!(
+            app = %self.app,
+            workspace = %self.workspace,
+            record = %self.record,
+            whole = self.whole,
+            changes = ?self.changes,
+            "workspace actions: a change is saved"
+        );
+    }
+
+    fn unsaved(&self, reason: &str) {
+        tracing::warn!(
+            app = %self.app,
+            workspace = %self.workspace,
+            record = %self.record,
+            whole = self.whole,
+            changes = ?self.changes,
+            %reason,
+            "workspace actions: a change answered done is not saved"
+        );
+    }
+}
+
+/// The changes `mutation` carries, short hashes, for the log: each change of
+/// a run of them, or the heads of a whole record.
+fn changes_of(mutation: &DocumentMutation) -> Vec<String> {
+    let hashes = match mutation {
+        DocumentMutation::Incremental(bytes) => {
+            tilo_automerge_isolate::change_hashes(bytes).unwrap_or_default()
+        }
+        DocumentMutation::Snapshot(bytes) => automerge::AutoCommit::load(bytes)
+            .map(|mut doc| doc.get_heads())
+            .unwrap_or_default(),
+    };
+    hashes
+        .iter()
+        .map(|hash| hash.to_string().chars().take(12).collect())
+        .collect()
+}
+
 impl Worker {
     /// Publish `mutation` as the member: sealed with the record's channel
     /// keys, or held until a participant admits the member to it.
@@ -72,6 +137,15 @@ impl Worker {
             .get_mut(&workspace_id)
             .ok_or("the workspace was not joined")?;
         workspace.peer.write(route.clone(), mutation)?;
+        let written = Written::of(route, mutation);
+        tracing::debug!(
+            app = %written.app,
+            workspace = %written.workspace,
+            record = %written.record,
+            whole = written.whole,
+            changes = ?written.changes,
+            "workspace actions: a change was handed to the session"
+        );
         // The workspace holds the record by its index naming it, as a
         // window opening the record names it there.
         self.index_record(workspace_id, route);
@@ -95,9 +169,41 @@ impl Worker {
             .peer
             .barrier()?;
         match saved.recv_timeout(COMMIT_WAIT) {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(())) => {
+                Written::of(route, mutation).saved();
+                Ok(())
+            }
             Ok(Err(reason)) => Err(format!("the host did not save the change: {reason}")),
             Err(_) => Err("the host has not acknowledged saving the change".into()),
+        }
+    }
+
+    /// Log whether the host comes to hold `written`, handed to the session
+    /// by [`Self::commit`], durably: without holding the caller's answer, as
+    /// a write held for its record's keys goes once they arrive. What proves
+    /// afterwards whether a write answered done was kept.
+    pub(super) fn watch_saved(&self, workspace_id: u64, written: Vec<Written>) {
+        if written.is_empty() {
+            return;
+        }
+        let Some(saved) = self
+            .workspaces
+            .get(&workspace_id)
+            .and_then(|workspace| workspace.peer.barrier().ok())
+        else {
+            return;
+        };
+        let watching = std::thread::Builder::new()
+            .name("write-saved".into())
+            .spawn(move || match saved.recv_timeout(SAVE_WATCH) {
+                Ok(Ok(())) => written.iter().for_each(Written::saved),
+                Ok(Err(reason)) => written.iter().for_each(|write| write.unsaved(&reason)),
+                Err(_) => written.iter().for_each(|write| {
+                    write.unsaved("the host has not acknowledged saving it");
+                }),
+            });
+        if let Err(error) = watching {
+            tracing::debug!(%error, "workspace actions: whether a write was saved is not watched");
         }
     }
 

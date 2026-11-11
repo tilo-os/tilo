@@ -2451,7 +2451,8 @@ impl Worker {
 
     /// Commit what the owner's action changed, each record on its own
     /// route: a part it started is held beside the record it acted on.
-    /// The error is why a commit failed.
+    /// Whether the host comes to hold each durably is logged
+    /// ([`Self::watch_saved`]). The error is why a commit failed.
     fn commit_taken(
         &mut self,
         workspace_id: u64,
@@ -2459,12 +2460,15 @@ impl Worker {
         taken: Vec<(DocumentRoute, DocumentMutation)>,
     ) -> Result<(), String> {
         let holder = self.holder_of(route);
+        let mut written = Vec::with_capacity(taken.len());
         for (changed, mutation) in taken {
             if changed != holder {
                 self.beside.insert(changed.clone(), holder.clone());
             }
             self.commit(workspace_id, &changed, &mutation)?;
+            written.push(publish::Written::of(&changed, &mutation));
         }
+        self.watch_saved(workspace_id, written);
         Ok(())
     }
 
