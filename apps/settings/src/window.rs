@@ -40,6 +40,7 @@ use std::rc::Rc;
 
 use crate::categories::Category;
 use crate::effects::SettingsEffect;
+#[cfg(feature = "tilo-os")]
 use crate::keyboard_watch::KeyboardWatch;
 use crate::resource::Settings;
 use crate::reveal::{Reveal, RevealAsks};
@@ -427,8 +428,12 @@ pub(crate) fn window(cx: &ViewCx<Settings>, mut app: SettingsApp) -> Element {
                 .with_child(Box::new(shell)),
         ),
     );
-    let content = KeyboardWatch::new(Rc::clone(&app), Box::new(content));
-    let content = crate::secrets::SecretSheet::new(app.secrets().clone(), Box::new(content));
+    #[cfg(feature = "tilo-os")]
+    let content: ui::widget::Element =
+        Box::new(KeyboardWatch::new(Rc::clone(&app), Box::new(content)));
+    #[cfg(not(feature = "tilo-os"))]
+    let content: ui::widget::Element = Box::new(content);
+    let content = crate::secrets::SecretSheet::new(app.secrets().clone(), content);
     let content = cx.upkeep(upkeep(cx, &chrome), Box::new(content));
     let content = Box::new(Inspected {
         app: Rc::clone(&app),

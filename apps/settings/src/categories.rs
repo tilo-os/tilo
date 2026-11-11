@@ -93,7 +93,10 @@ pub enum Category {
 
 impl Category {
     /// Canonical ordering used by the sidebar, grouped by [`Section`]: the
-    /// index's page order ([`settings_store::index::PAGES`]).
+    /// index's page order ([`settings_store::index::PAGES`]). Only the panes
+    /// this build carries: without the device panes (`tilo-os`, off on the
+    /// web) the device's hardware and OS services are not listed at all.
+    #[cfg(feature = "tilo-os")]
     pub const ALL: &'static [Category] = &[
         // Connectivity
         Category::Network,
@@ -128,8 +131,32 @@ impl Category {
         Category::About,
     ];
 
+    /// The panes a build without the device's own (`tilo-os`) carries: the
+    /// person's look, language and shortcuts, and their billing.
+    #[cfg(not(feature = "tilo-os"))]
+    pub const ALL: &'static [Category] = &[
+        // Personal
+        Category::Appearance,
+        Category::Accessibility,
+        Category::RegionFormats,
+        // Devices
+        Category::KeyboardShortcuts,
+        // Hubs
+        Category::Billing,
+    ];
+
     /// The category shown when Settings first opens and no link names one.
+    #[cfg(feature = "tilo-os")]
     pub const DEFAULT: Category = Category::Network;
+
+    /// The category shown when Settings first opens and no link names one.
+    #[cfg(not(feature = "tilo-os"))]
+    pub const DEFAULT: Category = Category::Appearance;
+
+    /// Whether this build carries the category's pane.
+    pub fn is_built(self) -> bool {
+        Self::ALL.contains(&self)
+    }
 
     /// Which section this category groups under.
     pub fn section(self) -> Section {

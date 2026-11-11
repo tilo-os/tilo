@@ -1243,7 +1243,7 @@ pub(super) const APPS: &[FleetApp] = &[
         id: "so.tilo.settings",
         name: "Settings",
         category: "System",
-        platforms: &["tilo-os"],
+        platforms: &["tilo-os", "web"],
         tagline: "Devices, accounts and preferences for Tilo",
         names: &["Einstellungen"],
         keywords: &[

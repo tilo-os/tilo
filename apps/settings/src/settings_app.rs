@@ -65,6 +65,7 @@ pub struct SettingsApp {
     keyboard_shown: RefCell<Option<serde_json::Value>>,
     /// What the Keyboard pane's add-source picker shows, as the window
     /// last read it; `None` while no picker is drawn.
+    #[cfg(feature = "tilo-os")]
     input_picker_shown: RefCell<Option<serde_json::Value>>,
 }
 
@@ -116,6 +117,7 @@ impl SettingsApp {
             keyboard_partial: Cell::new(false),
             pane_scroll: RefCell::default(),
             keyboard_shown: RefCell::new(None),
+            #[cfg(feature = "tilo-os")]
             input_picker_shown: RefCell::new(None),
         };
         app.areas = crate::area::Areas::of(&app.area_context());
@@ -298,6 +300,7 @@ impl SettingsApp {
 
     /// Where the person's accounts and their secrets are kept for this
     /// window.
+    #[cfg(feature = "tilo-os")]
     pub(crate) fn account_root(&self) -> &crate::accounts::AccountRoot {
         &self.account_root
     }
@@ -422,17 +425,20 @@ impl SettingsApp {
     }
 
     /// The window read the keyboard it draws: `shown`, or none drawn.
+    #[cfg(feature = "tilo-os")]
     pub(crate) fn keyboard_drawn(&self, shown: Option<serde_json::Value>) {
         *self.keyboard_shown.borrow_mut() = shown;
     }
 
     /// What the Keyboard pane's add-source picker shows; `None` while none
     /// is drawn.
+    #[cfg(feature = "tilo-os")]
     pub(crate) fn input_picker(&self) -> Option<serde_json::Value> {
         self.input_picker_shown.borrow().clone()
     }
 
     /// The window read the add-source picker it draws: `shown`, or none.
+    #[cfg(feature = "tilo-os")]
     pub(crate) fn input_picker_drawn(&self, shown: Option<serde_json::Value>) {
         *self.input_picker_shown.borrow_mut() = shown;
     }

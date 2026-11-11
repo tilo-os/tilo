@@ -227,8 +227,10 @@ pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
 /// scenario opens.
 #[derive(Clone, Debug)]
 pub struct CaptureScene {
+    #[cfg(feature = "tilo-os")]
     /// Fixed formats status for the explicit codecs capture scenarios.
     pub codec_status: Option<crate::codec_pack::CodecPackStatus>,
+    #[cfg(feature = "tilo-os")]
     /// Fixed standing of Windows support for its capture scenarios.
     pub windows_support: Option<os_actions::windows_compat::Readiness>,
     /// Where the capture keeps its account stores.
@@ -242,11 +244,14 @@ pub struct CaptureScene {
     pub person_devices: Vec<settings_store::person_displays::PersonDevice>,
     /// Synthetic attached keyboards; captures never discover the real host.
     pub input_hardware: Option<settings_store::hardware::InputHardwareSnapshot>,
+    #[cfg(feature = "tilo-os")]
     /// Stand-in storage summaries of the person's devices, for the
     /// storage capture.
     pub storage_devices: Vec<DeviceResidency>,
+    #[cfg(feature = "tilo-os")]
     /// A stand-in for this device's disk, for the storage capture.
     pub storage_capacity: Option<os_actions::DiskCapacity>,
+    #[cfg(feature = "tilo-os")]
     pub remembered_drives: Vec<ntfs_mount::protocol::RememberedDrive>,
     /// A workspace bridged to Discord, and where the person's account there
     /// stands, for the linked-accounts captures.
@@ -391,7 +396,9 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         .ok()
         .map(|directory| directory.join("tilo"));
     fixture.provide(CaptureScene {
+        #[cfg(feature = "tilo-os")]
         codec_status: codec_status(fixture.scenario()),
+        #[cfg(feature = "tilo-os")]
         windows_support: windows_support(fixture.scenario()),
         account_root,
         account_form,
@@ -414,17 +421,20 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         } else {
             Vec::new()
         },
+        #[cfg(feature = "tilo-os")]
         storage_devices: if fixture.scenario() == Some(Category::Storage.slug()) {
             storage_fixture()
         } else {
             Vec::new()
         },
+        #[cfg(feature = "tilo-os")]
         storage_capacity: (fixture.scenario() == Some(Category::Storage.slug())).then_some(
             os_actions::DiskCapacity {
                 total_bytes: 512_000_000_000,
                 available_bytes: 187_400_000_000,
             },
         ),
+        #[cfg(feature = "tilo-os")]
         remembered_drives: if fixture.scenario() == Some(STORAGE_DRIVES) {
             drives_fixture()
         } else {
@@ -604,6 +614,7 @@ pub(crate) fn billing_fixture(
 /// yet, a desktop that keeps one workspace and caches another, and a home
 /// server that holds copies of both.
 /// Two remembered drives, for the drives capture.
+#[cfg(feature = "tilo-os")]
 pub fn drives_fixture() -> Vec<ntfs_mount::protocol::RememberedDrive> {
     use ntfs_mount::protocol::{Mode, Placement, RememberedDrive};
     vec![
@@ -625,6 +636,7 @@ pub fn drives_fixture() -> Vec<ntfs_mount::protocol::RememberedDrive> {
 }
 
 /// One device's storage summary.
+#[cfg(feature = "tilo-os")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceResidency {
     /// The device's key, in hex; what its summaries are kept by.
@@ -637,6 +649,7 @@ pub struct DeviceResidency {
     pub summary: runtime_fs::storage::ResidencySummary,
 }
 
+#[cfg(feature = "tilo-os")]
 pub fn storage_fixture() -> Vec<DeviceResidency> {
     use runtime_fs::storage::{ResidencySplit, ResidencySummary, WorkspaceResidency};
     const MB: u64 = 1_000_000;
@@ -717,6 +730,7 @@ pub fn storage_fixture() -> Vec<DeviceResidency> {
     ]
 }
 
+#[cfg(feature = "tilo-os")]
 fn codec_status(scenario: Option<&str>) -> Option<crate::codec_pack::CodecPackStatus> {
     let json = match scenario? {
         "codecsdemo-off" => r#"{"state":"not-installed"}"#,
@@ -739,6 +753,7 @@ fn codec_status(scenario: Option<&str>) -> Option<crate::codec_pack::CodecPackSt
 
 /// The Windows compat helpers status for the explicit scenarios: the same
 /// three verbs the codec pack has, over the sizes this image declares.
+#[cfg(feature = "tilo-os")]
 fn windows_support(scenario: Option<&str>) -> Option<os_actions::windows_compat::Readiness> {
     use os_actions::windows_compat::{Readiness, SizeDisclosure};
     let disclosure = SizeDisclosure {

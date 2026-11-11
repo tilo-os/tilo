@@ -28,8 +28,8 @@ category = "System"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
-platforms = ["tilo-os"]
-platform-reason = "The Tilo OS control panel."
+platforms = ["tilo-os", "web"]
+platform-reason = "The Tilo OS control panel; on the web, the person's identity, devices, agents, keys and billing."
 
 [package.names]
 de = "Einstellungen"
