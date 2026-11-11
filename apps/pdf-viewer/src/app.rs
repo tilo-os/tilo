@@ -1043,14 +1043,16 @@ impl PdfApp {
         // A recognisable swatch (diagonal split, bright colours) written to a
         // temp PNG and imported through the real code path.
         let (w, h) = (480u32, 360u32);
-        let mut img = image::RgbaImage::new(w, h);
-        for (x, y, px) in img.enumerate_pixels_mut() {
-            let above = (x as f32 / w as f32) > (y as f32 / h as f32);
-            *px = if above {
-                image::Rgba([64, 132, 246, 255])
-            } else {
-                image::Rgba([246, 132, 64, 255])
-            };
+        let mut img = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                let above = (x as f32 / w as f32) > (y as f32 / h as f32);
+                img.extend_from_slice(if above {
+                    &[64, 132, 246, 255]
+                } else {
+                    &[246, 132, 64, 255]
+                });
+            }
         }
         let Some(png) = tilo_paths::temp_dir().map(|dir| dir.join("tilo_pdf_demo_import.png"))
         else {
@@ -1059,7 +1061,7 @@ impl PdfApp {
         // Encoded by the shared runtime's PNG encoder: `DynamicImage::save`
         // is generic over the path and picks the format at run time, so it
         // compiled every encoder the image crate has into this app.
-        let written = ui::png::encode_rgba8(w, h, img.as_raw()).is_ok_and(|bytes| {
+        let written = ui::png::encode_rgba8(w, h, &img).is_ok_and(|bytes| {
             tilo_files::file_at(&png)
                 .and_then(|(dir, name)| tilo_files::blocking::write(&dir, &name, &bytes))
                 .is_ok()
@@ -5867,7 +5869,6 @@ impl PdfApp {
         page: usize,
         size: Option<u32>,
     ) -> Result<ui::tilo_actions::ActionOutput, String> {
-        use image::ImageEncoder as _;
         let size = size.unwrap_or(1024);
         if !(64..=1536).contains(&size) {
             return Err("size must be within 64..=1536".into());
@@ -5893,14 +5894,7 @@ impl PdfApp {
         let bitmap = document
             .render(page - 1, &options)
             .map_err(|error| format!("page {page} cannot be drawn: {error}"))?;
-        let mut png = Vec::new();
-        image::codecs::png::PngEncoder::new(&mut png)
-            .write_image(
-                bitmap.pixels(),
-                bitmap.width(),
-                bitmap.height(),
-                image::ExtendedColorType::Rgba8,
-            )
+        let png = ui::png::encode_rgba8(bitmap.width(), bitmap.height(), bitmap.pixels())
             .map_err(|error| format!("page {page} cannot be encoded: {error}"))?;
         let hash = self
             .content
