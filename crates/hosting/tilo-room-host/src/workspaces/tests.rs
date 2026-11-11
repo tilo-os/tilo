@@ -598,8 +598,7 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key);
     let due = || async {
         let current = workspaces.workspace(&created.workspace).await.unwrap();
-        let due = starts_over(&current.lock().await.record.outgoing);
-        due
+        starts_over(&current.lock().await.record.outgoing)
     };
     for index in 1..=MAX_PUBLICATION_TAIL {
         if due().await {
