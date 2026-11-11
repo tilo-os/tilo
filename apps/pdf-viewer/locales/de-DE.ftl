@@ -108,16 +108,42 @@ pdf-note-link-failed = { $address } konnte nicht geöffnet werden. Versuche den 
 pdf-note-link-unsupported = Links wie { $address } werden nicht aus einem PDF geöffnet.
 pdf-note-link-file = Links zu anderen Dateien werden nicht aus einem PDF geöffnet. Öffne { $path } stattdessen in Dateien.
 
+## Das leere Fenster: was es vor dem Öffnen eines Dokuments sagt und warum ein
+## Öffnen gescheitert ist. Wird sowohl gezeichnet als auch vorgelesen.
+
+pdf-empty-heading = Kein Dokument geöffnet
+pdf-empty-opening = PDF wird geöffnet …
+pdf-empty-open = PDF öffnen
+pdf-empty-open-another = Anderes PDF öffnen
+pdf-empty-open-failed = Dieses Dokument konnte nicht geöffnet werden
+pdf-empty-detail-password = Dieses PDF ist passwortgeschützt und kann daher nicht geöffnet werden.
+pdf-empty-detail-picker = Das Dateifenster konnte nicht geöffnet werden. Versuche das Öffnen erneut.
+pdf-empty-detail-engine = Der PDF-Viewer kann auf diesem Gerät gerade keine PDFs öffnen. Versuche es erneut.
+pdf-empty-detail-unreadable = Die Datei ist nicht verfügbar oder kein lesbares PDF.
+pdf-empty-detail-other = Prüfe die Datei und versuche es erneut.
+pdf-empty-waiting-title = Warten auf das Dokument
+pdf-empty-waiting = { $name } öffnet sich, sobald ein Gerät mit dieser Datei online ist.
+pdf-empty-elsewhere-title = Nicht auf diesem Gerät
+pdf-empty-elsewhere = Kein verbundenes Gerät hat gerade { $name }. Es öffnet sich, sobald ein Gerät mit dieser Datei online ist.
+pdf-empty-arriving-title = Das Dokument wird geholt …
+pdf-empty-arriving = { $name } kommt von einem Gerät in diesem Arbeitsbereich, das die Datei hat.
+pdf-empty-the-document = Das Dokument
+
+## Die Tabs der Prüf-Seitenleiste: der Name jedes Tabs und die kürzere Form,
+## die er zeigt, wenn die Leiste zu schmal für alle Namen ist.
+
+pdf-tab-comments = Kommentare
+pdf-tab-comments-short = Notizen
+pdf-tab-contents = Inhalt
+pdf-tab-contents-short = Inhalt
+pdf-tab-signatures = Unterschrift
+pdf-tab-signatures-short = Signieren
+
 ## Wie das Fenster und seine Teile für assistive Technik heißen
 
 pdf-title = PDF-Viewer
-pdf-a11y-opening = PDF wird geöffnet
-pdf-a11y-empty-heading = PDF öffnen
 pdf-a11y-pages = Seiten
 pdf-a11y-page-markup = Enthält Markierungen
-pdf-a11y-tab-comments = Kommentare
-pdf-a11y-tab-contents = Inhalt
-pdf-a11y-tab-signatures = Unterschriften
 pdf-a11y-resolve-comment = Kommentar erledigen
 pdf-a11y-reopen-comment = Kommentar wieder öffnen
 pdf-a11y-canvas = Zeichenfläche der PDF-Seite. Pfeiltasten scrollen; Bild auf und Bild ab wechseln die Seite.

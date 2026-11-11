@@ -64,13 +64,19 @@ fn tool_icon(tool: Tool) -> Icon {
     }
 }
 
-/// The review panel's tab labels, full and short.
-fn tab_labels(short: bool) -> [&'static str; 3] {
-    if short {
-        ["Notes", "Index", "Sign"]
+/// The review panel's tab labels: the names the panel's tabs carry, or the
+/// shorter forms they fall back to when the strip cannot hold them all.
+fn tab_labels(short: bool) -> [String; 3] {
+    let keys: [&str; 3] = if short {
+        [
+            "pdf-tab-comments-short",
+            "pdf-tab-contents-short",
+            "pdf-tab-signatures-short",
+        ]
     } else {
-        ["Comments", "Contents", "Signatures"]
-    }
+        ["pdf-tab-comments", "pdf-tab-contents", "pdf-tab-signatures"]
+    };
+    keys.map(crate::t)
 }
 
 impl PdfApp {
@@ -81,7 +87,8 @@ impl PdfApp {
     fn measure_tabs(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         // Tabs pack from the leading edge, each as wide as its label.
         let tab_widths = [false, true].map(|short| {
-            let segments = tab_labels(short).map(Segment::new);
+            let labels = tab_labels(short);
+            let segments = labels.each_ref().map(Segment::new);
             let rects = SegmentedFace::partition_segments(
                 Rect::new(0.0, 0.0, f64::MAX / 4.0, 1.0),
                 &segments,
@@ -767,7 +774,8 @@ impl PdfApp {
     /// The no-document surface: the library empty state, with the one action
     /// that gets a document on screen. While an open is in flight it names
     /// the wait and offers nothing; when the last open failed it says why in
-    /// one bounded line (the full reason stays in the accessible error).
+    /// one bounded line. Every word is the catalogue's, the same message
+    /// assistive technology reads out.
     fn draw_empty_state(
         &self,
         scene: &mut Scene,
@@ -776,8 +784,16 @@ impl PdfApp {
         theme: &Theme,
         canvas: Rect,
     ) {
+        // The messages each state can show, resolved once and held until the
+        // painted content stops borrowing them.
         let detail;
         let waiting;
+        let waited;
+        let opening = crate::t("pdf-empty-opening");
+        let open_failed = crate::t("pdf-empty-open-failed");
+        let empty = crate::t("pdf-empty-heading");
+        let open = crate::t("pdf-empty-open");
+        let open_another = crate::t("pdf-empty-open-another");
         // What the workspace holds, as the rows the empty state offers: the
         // document a window elsewhere or an agent made is opened from here.
         let offers: Vec<ui::widget::DocumentOffer<'_>> = self
@@ -789,12 +805,13 @@ impl PdfApp {
                 caption: Some(&document.caption),
             })
             .collect();
-        let content = if self.pending_open.is_some() {
+        let content = if self.opening() {
             EmptyStateContent {
                 icon: Some(Icon::FileText),
-                ..EmptyStateContent::new("Opening PDF…")
+                ..EmptyStateContent::new(&opening)
             }
         } else if let Some((title, message, error)) = self.source_wait_text() {
+            waited = title;
             waiting = message;
             EmptyStateContent {
                 icon: Some(if error {
@@ -804,25 +821,21 @@ impl PdfApp {
                 }),
                 message: Some(&waiting),
                 error,
-                ..EmptyStateContent::new(title)
+                ..EmptyStateContent::new(&waited)
             }
-        } else if let Some(err) = &self.load_error {
-            let lower = err.to_ascii_lowercase();
-            detail = if lower.contains("password") || lower.contains("encrypt") {
-                "This PDF needs a password before it can be opened."
-            } else if lower.contains("unavailable") || lower.contains("not a readable pdf") {
-                "The file is unavailable or isn't a readable PDF."
-            } else {
-                "Check the file and try again."
-            };
+        } else if let Some(failure) = self.open_failure_text() {
+            detail = failure;
             EmptyStateContent {
                 icon: Some(Icon::TriangleAlert),
-                message: Some(detail),
+                message: Some(&detail),
                 // A window whose record marks up a document keeps it: another
                 // file opens in a window of its own, so none is offered here.
-                action_label: self.record_source.is_none().then_some("Open another PDF"),
+                action_label: self
+                    .record_source
+                    .is_none()
+                    .then_some(open_another.as_str()),
                 error: true,
-                ..EmptyStateContent::new("Couldn't open this document")
+                ..EmptyStateContent::new(&open_failed)
             }
         } else {
             EmptyStateContent {
@@ -830,8 +843,8 @@ impl PdfApp {
                 // The workspace's own documents first: one click opens the
                 // paper someone filled in, wherever it was made.
                 documents: &offers,
-                action_label: Some("Open PDF"),
-                ..EmptyStateContent::new("No document open")
+                action_label: Some(&open),
+                ..EmptyStateContent::new(&empty)
             }
         };
         let painted = self.file_open.paint(
@@ -1323,6 +1336,7 @@ impl PdfApp {
         let tab_rects = self.sidebar_tab_rects();
         let rects: Vec<Rect> = tab_rects.iter().map(|(_, r)| *r).collect();
         let labels = tab_labels(self.sidebar_tabs_short());
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
         let selected = tab_rects
             .iter()
             .position(|(tab, _)| *tab == self.sidebar_tab)

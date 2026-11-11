@@ -108,16 +108,42 @@ pdf-note-link-failed = { $address } couldn't be opened. Try the link again.
 pdf-note-link-unsupported = Links like { $address } aren't opened from a PDF.
 pdf-note-link-file = Links to other files aren't opened from a PDF. Open { $path } from Files instead.
 
+## The empty window: what it says before a document is open, and why an open
+## failed. Painted on the page and read out alike.
+
+pdf-empty-heading = No document open
+pdf-empty-opening = Opening PDF…
+pdf-empty-open = Open PDF
+pdf-empty-open-another = Open another PDF
+pdf-empty-open-failed = Couldn't open this document
+pdf-empty-detail-password = This PDF is password-protected, so it can't be opened.
+pdf-empty-detail-picker = The file window couldn't open. Try opening the file again.
+pdf-empty-detail-engine = The reader can't open PDFs on this device right now. Try again.
+pdf-empty-detail-unreadable = The file is unavailable or isn't a readable PDF.
+pdf-empty-detail-other = Check the file and try again.
+pdf-empty-waiting-title = Waiting for the document
+pdf-empty-waiting = { $name } opens when a device that has it connects.
+pdf-empty-elsewhere-title = This document isn't here
+pdf-empty-elsewhere = No device connected now has { $name }. It opens when one that has it does.
+pdf-empty-arriving-title = Getting the document…
+pdf-empty-arriving = { $name } is coming from a device in this workspace that has it.
+pdf-empty-the-document = The document
+
+## The review panel's tabs: each tab's name, and the shorter form it shows when
+## the strip is too narrow to hold every name.
+
+pdf-tab-comments = Comments
+pdf-tab-comments-short = Notes
+pdf-tab-contents = Contents
+pdf-tab-contents-short = Index
+pdf-tab-signatures = Signatures
+pdf-tab-signatures-short = Sign
+
 ## What the window and its parts are called for assistive technology
 
 pdf-title = PDF Viewer
-pdf-a11y-opening = Opening PDF
-pdf-a11y-empty-heading = Open a PDF
 pdf-a11y-pages = Pages
 pdf-a11y-page-markup = Contains review markup
-pdf-a11y-tab-comments = Comments
-pdf-a11y-tab-contents = Contents
-pdf-a11y-tab-signatures = Signatures
 pdf-a11y-resolve-comment = Resolve comment
 pdf-a11y-reopen-comment = Reopen comment
 pdf-a11y-canvas = PDF page canvas. Arrow keys scroll; Page Up and Page Down change pages.

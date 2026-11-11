@@ -1198,14 +1198,14 @@ fn the_reader_names_its_review_panel_from_the_catalogue() {
     assert_eq!(
         tabs,
         [
-            crate::t("pdf-a11y-tab-comments"),
-            crate::t("pdf-a11y-tab-contents"),
-            crate::t("pdf-a11y-tab-signatures"),
+            crate::t("pdf-tab-comments"),
+            crate::t("pdf-tab-contents"),
+            crate::t("pdf-tab-signatures"),
         ],
         "each tab is named by its catalogue message"
     );
     assert!(
-        tabs.iter().all(|name| !name.starts_with("pdf-a11y")),
+        tabs.iter().all(|name| !name.starts_with("pdf-")),
         "the tabs are messages, not keys: {tabs:?}"
     );
 
