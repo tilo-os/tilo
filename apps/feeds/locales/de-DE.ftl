@@ -45,3 +45,4 @@ feeds-reading-settings = Leseeinstellungen
 feeds-refreshing = Feeds werden aktualisiert
 feeds-no-article = Kein Artikel ausgewählt
 feeds-articles-with-tag = Artikel mit diesem Schlagwort zeigen
+feeds-feed-actions = Aktionen für diesen Feed

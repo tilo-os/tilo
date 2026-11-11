@@ -622,6 +622,7 @@ participant-unknown-agent = Unknown agent
 
 # Command palette chrome: footer key hints, result count and empty states.
 palette-name = Command palette
+palette-argument-name = Action confirmation
 palette-results = Results
 palette-placeholder = Search…
 palette-empty = Nothing to show
@@ -790,6 +791,9 @@ window-root-name = Tilo application window
 action-palette-query = Search actions and results
 search-field-filter = Filter
 search-field-placeholder = Search
+# What the field itself is called, apart from the placeholder inside it.
+search-field-name = Search
+search-field-filter-name = Filter
 presentation-window-title = Audience presentation
 
 approved-check-reports-disabled = Phase reports unavailable

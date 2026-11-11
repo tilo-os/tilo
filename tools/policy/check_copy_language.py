@@ -49,11 +49,15 @@ A crate that ships a translation paints what a person reads through its
 catalogue: an English literal handed to a copy builder there ships the source
 language inside a translated window, so it fails unless
 `copy_source_literals.toml` says why no catalogue has to carry it (what an
-agent is told a tool does, a key's name, a capture label).
+agent is told a tool does, a key's name, a capture label). A label is painted
+as much when a closure or a conditional picks the literal
+(`map_or_else(|| "Search", …)`, `if open { "Shown" } else { "Hidden" }`) as
+when the builder is handed it directly, so both count.
 """
 
 from __future__ import annotations
 
+import bisect
 import re
 import sys
 import tomllib
@@ -470,6 +474,45 @@ def translated_units(root: Path) -> list[str]:
     return sorted(units)
 
 
+def next_significant(code: str, offset: int) -> str:
+    """The first character at or after `offset` that lexed code kept."""
+    while offset < len(code) and code[offset].isspace():
+        offset += 1
+    return code[offset : offset + 1]
+
+
+def arrow_before(code: str, offset: int) -> bool:
+    """`code[:offset]` ends in `=>` and whitespace."""
+    offset -= 1
+    while offset >= 0 and code[offset].isspace():
+        offset -= 1
+    return offset >= 1 and code[offset - 1 : offset + 1] == "=>"
+
+
+def painted_literals(code: str, starts: list[int],
+                     by_start: dict[int, rust_source.Literal],
+                     begin: int, end: int) -> list[rust_source.Literal]:
+    """The literals a copy builder's first argument paints, in `[begin, end)`.
+
+    The argument itself, and what a closure or a conditional inside it hands
+    back: `map_or_else(|| "Search", |named| …)` and `if open { "Shown" } else
+    { "Hidden" }` both reach the label as surely as the literal argument does.
+    A literal that only feeds a call (`|word| say(word, "Search")`) is not
+    painted, and does not count.
+    """
+    found = []
+    at = bisect.bisect_left(starts, begin)
+    while at < len(starts) and starts[at] < end:
+        literal = by_start[starts[at]]
+        after = next_significant(code, literal.end)
+        if (not code[begin : literal.start].strip()
+                or after == "}"
+                or (arrow_before(code, literal.start) and after in ",}")):
+            found.append(literal)
+        at += 1
+    return found
+
+
 def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
     """(file, line, text) of each English literal handed to a copy builder by a
     crate that ships translations, in production code."""
@@ -491,22 +534,20 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 if marked[index] != "\n":
                     marked[index] = "x"
         kept = rust_source.blank_test_items("".join(marked))
-        starts = {literal.start: literal for literal in literals if not literal.byte}
+        by_start = {literal.start: literal for literal in literals if not literal.byte}
+        starts = sorted(by_start)
         for builder in COPY_BUILDERS:
             start = code.find(builder)
             while start >= 0:
-                begin, _ = first_argument(code, start + len(builder))
+                begin, end = first_argument(code, start + len(builder))
                 if begin < len(code) and code[begin] == "&":
                     begin += 1
-                # Lexed literals read as spaces, so skip whitespace only up to
-                # the literal it hides.
-                while begin < len(code) and begin not in starts and code[begin].isspace():
-                    begin += 1
-                literal = starts.get(begin)
-                if literal is not None and kept[begin] == "x" and english_words(literal.value):
+                for literal in painted_literals(code, starts, by_start, begin, end):
+                    if kept[literal.start] != "x" or not english_words(literal.value):
+                        continue
                     found.append((
                         path.relative_to(root).as_posix(),
-                        rust_source.line_number(text, begin),
+                        rust_source.line_number(text, literal.start),
                         literal.value,
                     ))
                 start = code.find(builder, start + len(builder))

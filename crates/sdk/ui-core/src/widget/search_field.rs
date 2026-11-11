@@ -1041,14 +1041,12 @@ impl Widget for SearchField {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        let mut node = self
-            .input
-            .accessibility()?
-            .with_name(if self.escalation.is_some() {
-                "Filter"
-            } else {
-                "Search"
-            });
+        let name = if self.escalation.is_some() {
+            crate::i18n::widget_format("search-field-filter-name", &[])
+        } else {
+            crate::i18n::widget_format("search-field-name", &[])
+        };
+        let mut node = self.input.accessibility()?.with_name(name);
         let mut description = Vec::new();
         if !self.placeholder.is_empty() {
             description.push(crate::i18n!(&self.placeholder));

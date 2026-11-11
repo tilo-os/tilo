@@ -636,11 +636,11 @@ pub(super) fn shared_accessibility_nodes(app: &PlayerState) -> Vec<ui::a11y::Acc
                 let is_jump = focus.starts_with("shared-jump-");
                 AccessNode::new(Role::Button)
                     .with_name(if is_jump {
-                        "Jump to timestamp annotation"
+                        crate::i18n::t("video-jump-to-note")
                     } else if target.contains(".annotation.") {
-                        "Delete timestamp annotation"
+                        crate::i18n::t("video-delete-note")
                     } else {
-                        "Delete shared playlist"
+                        crate::i18n::t("video-delete-shared-playlist")
                     })
                     .with_action_target(target)
                     .with_bounds(rect)

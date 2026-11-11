@@ -264,18 +264,19 @@ impl Widget for ActionPalette {
         }
         let confirm = self.confirm.as_ref();
         let description = confirm.map_or("", |confirm| confirm.detail.as_str());
+        // The palette names the step it is on: the question it asks, or — while
+        // it collects the arguments of an action — that action, and itself
+        // otherwise.
+        let name = match confirm {
+            Some(confirm) => confirm.question.clone(),
+            None if self.in_argument_mode() => {
+                crate::i18n::widget_format("palette-argument-name", &[])
+            }
+            None => crate::i18n::widget_format("palette-name", &[]),
+        };
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Dialog)
-                .with_name(confirm.map_or_else(
-                    || {
-                        if self.in_argument_mode() {
-                            "Action confirmation"
-                        } else {
-                            "Search"
-                        }
-                    },
-                    |confirm| confirm.question.as_str(),
-                ))
+                .with_name(name)
                 .with_description(description)
                 .with_state(
                     crate::a11y::AccessState::new()

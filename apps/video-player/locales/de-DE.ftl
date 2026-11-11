@@ -33,3 +33,6 @@ video-queue = Warteschlange
 video-recent = Zuletzt
 video-shared = Geteilt
 video-open-video = Video öffnen
+video-jump-to-note = Zur Zeitmarke springen
+video-delete-note = Zeitmarke löschen
+video-delete-shared-playlist = Geteilte Wiedergabeliste löschen

@@ -1241,9 +1241,9 @@ impl Widget for SheetsApp {
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
                                     .with_name(if thread.resolved {
-                                        "Reopen comment"
+                                        crate::resource::CATALOG.t("sheets-reopen-comment")
                                     } else {
-                                        "Resolve comment"
+                                        crate::resource::CATALOG.t("sheets-resolve-comment")
                                     })
                                     .with_action_target(format!("{target}:toggle"))
                                     .with_state(AccessState::new().focusable(true)),

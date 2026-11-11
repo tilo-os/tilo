@@ -33,3 +33,6 @@ video-queue = Queue
 video-recent = Recent
 video-shared = Shared
 video-open-video = Open video
+video-jump-to-note = Jump to timestamp annotation
+video-delete-note = Delete timestamp annotation
+video-delete-shared-playlist = Delete shared playlist
