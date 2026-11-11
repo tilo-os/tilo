@@ -83,3 +83,35 @@ weather-locations-remove = Remove location
 
 ## The forecast's own button
 weather-retry = Retry
+
+## The sky an hour or a day shows, by the weather code the provider reports.
+
+weather-sky-clear = Clear sky
+weather-sky-mainly-clear = Mainly clear
+weather-sky-partly-cloudy = Partly cloudy
+weather-sky-overcast = Overcast
+weather-sky-fog = Fog
+weather-sky-rime-fog = Rime fog
+weather-sky-light-drizzle = Light drizzle
+weather-sky-drizzle = Drizzle
+weather-sky-dense-drizzle = Dense drizzle
+weather-sky-freezing-drizzle = Freezing drizzle
+weather-sky-dense-freezing-drizzle = Dense freezing drizzle
+weather-sky-slight-rain = Slight rain
+weather-sky-rain = Rain
+weather-sky-heavy-rain = Heavy rain
+weather-sky-freezing-rain = Freezing rain
+weather-sky-heavy-freezing-rain = Heavy freezing rain
+weather-sky-slight-snow = Slight snow
+weather-sky-snow = Snow
+weather-sky-heavy-snow = Heavy snow
+weather-sky-snow-grains = Snow grains
+weather-sky-light-showers = Light showers
+weather-sky-showers = Showers
+weather-sky-violent-showers = Violent showers
+weather-sky-slight-snow-showers = Slight snow showers
+weather-sky-snow-showers = Snow showers
+weather-sky-thunderstorm = Thunderstorm
+weather-sky-thunderstorm-hail = Thunderstorm, hail
+weather-sky-severe-thunderstorm = Severe thunderstorm
+weather-sky-unknown = Unknown

@@ -2233,7 +2233,10 @@ mod morning_preview_regression {
             .presentation
             .expect("cached forecast publishes a bounded morning preview");
         assert!(presentation.is_valid());
-        assert!(presentation.preview.unwrap().contains("observation"));
+        assert!(
+            presentation.preview.unwrap().contains("Clear"),
+            "the preview names the condition"
+        );
         assert!(presentation.detail.unwrap().contains("Open-Meteo"));
         assert_eq!(presentation.badge.as_deref(), Some("Capture fixture"));
     }

@@ -44,7 +44,7 @@ impl PlaceRowText {
                     Sky::from_code(snap.current.weather_code),
                     snap.current.is_day,
                 ))),
-                secondary: Sky::label(snap.current.weather_code).to_string(),
+                secondary: Sky::label(snap.current.weather_code),
                 temperature: Some(format!(
                     "{}°",
                     snap.temp_in(snap.current.temperature, units).round() as i64

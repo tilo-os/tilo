@@ -63,40 +63,45 @@ impl Sky {
         }
     }
 
-    /// Full human-readable label for the exact code (more specific than
-    /// the family — e.g. "Heavy rain" vs "Slight rain").
-    pub fn label(code: i64) -> &'static str {
+    /// The catalogue message naming the sky for the exact code, finer than
+    /// the family: "Heavy rain" rather than "rain".
+    pub fn label_key(code: i64) -> &'static str {
         match code {
-            0 => "Clear sky",
-            1 => "Mainly clear",
-            2 => "Partly cloudy",
-            3 => "Overcast",
-            45 => "Fog",
-            48 => "Rime fog",
-            51 => "Light drizzle",
-            53 => "Drizzle",
-            55 => "Dense drizzle",
-            56 => "Freezing drizzle",
-            57 => "Dense freezing drizzle",
-            61 => "Slight rain",
-            63 => "Rain",
-            65 => "Heavy rain",
-            66 => "Freezing rain",
-            67 => "Heavy freezing rain",
-            71 => "Slight snow",
-            73 => "Snow",
-            75 => "Heavy snow",
-            77 => "Snow grains",
-            80 => "Light showers",
-            81 => "Showers",
-            82 => "Violent showers",
-            85 => "Slight snow showers",
-            86 => "Snow showers",
-            95 => "Thunderstorm",
-            96 => "Thunderstorm, hail",
-            99 => "Severe thunderstorm",
-            _ => "Unknown",
+            0 => "weather-sky-clear",
+            1 => "weather-sky-mainly-clear",
+            2 => "weather-sky-partly-cloudy",
+            3 => "weather-sky-overcast",
+            45 => "weather-sky-fog",
+            48 => "weather-sky-rime-fog",
+            51 => "weather-sky-light-drizzle",
+            53 => "weather-sky-drizzle",
+            55 => "weather-sky-dense-drizzle",
+            56 => "weather-sky-freezing-drizzle",
+            57 => "weather-sky-dense-freezing-drizzle",
+            61 => "weather-sky-slight-rain",
+            63 => "weather-sky-rain",
+            65 => "weather-sky-heavy-rain",
+            66 => "weather-sky-freezing-rain",
+            67 => "weather-sky-heavy-freezing-rain",
+            71 => "weather-sky-slight-snow",
+            73 => "weather-sky-snow",
+            75 => "weather-sky-heavy-snow",
+            77 => "weather-sky-snow-grains",
+            80 => "weather-sky-light-showers",
+            81 => "weather-sky-showers",
+            82 => "weather-sky-violent-showers",
+            85 => "weather-sky-slight-snow-showers",
+            86 => "weather-sky-snow-showers",
+            95 => "weather-sky-thunderstorm",
+            96 => "weather-sky-thunderstorm-hail",
+            99 => "weather-sky-severe-thunderstorm",
+            _ => "weather-sky-unknown",
         }
+    }
+
+    /// The sky as the page names it, in the reader's language.
+    pub fn label(code: i64) -> String {
+        crate::i18n::t(Self::label_key(code))
     }
 
     /// Whether this sky family involves falling precipitation — used to
@@ -132,7 +137,7 @@ mod tests {
         }
         {
             assert_eq!(Sky::from_code(12345), Sky::PartlyCloudy);
-            assert_eq!(Sky::label(12345), "Unknown");
+            assert_eq!(Sky::label_key(12345), "weather-sky-unknown");
         }
         {
             assert!(Sky::from_code(65).is_wet());
