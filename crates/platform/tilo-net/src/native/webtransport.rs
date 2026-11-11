@@ -334,6 +334,17 @@ const SERVER_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(10
 /// Streams of each direction one session holds open at once: a session's
 /// own, a call's pictures, and room to start over.
 const SERVER_MAX_STREAMS: u32 = 256;
+/// How much a session sends before its first acknowledgement: the window
+/// QUIC's slow start begins from.
+///
+/// A page entering a workspace waits first for its replay, the workspace's
+/// governance and its shared desktop: most of a megabyte for a few hundred
+/// members, which the host writes at once. From QUIC's default window
+/// (14,720 bytes, RFC 9002) slow start doubles it every round trip, so that
+/// took six round trips the visitor watched; from 256 KiB it takes two. The
+/// host's iroh endpoint starts from the same window, and the pacer spreads
+/// it over the round trip rather than sending it as one burst.
+const SERVER_INITIAL_WINDOW: u64 = 256 * 1024;
 
 impl Listener {
     /// Listen on `socket`, presenting the certificate `certificate` resolves.
@@ -366,6 +377,9 @@ impl Listener {
                     .map_err(|error| NetError::Protocol(error.to_string()))?,
             ))
             .keep_alive_interval(Some(SERVER_KEEP_ALIVE));
+        let mut cubic = quinn::congestion::CubicConfig::default();
+        cubic.initial_window(SERVER_INITIAL_WINDOW);
+        transport.congestion_controller_factory(std::sync::Arc::new(cubic));
         config.transport_config(std::sync::Arc::new(transport));
         let runtime = quinn::default_runtime()
             .ok_or_else(|| NetError::Protocol("no async runtime for the QUIC listener".into()))?;
@@ -414,7 +428,17 @@ impl Listener {
                     let (serves, serve) = (serves.clone(), serve.clone());
                     tasks.spawn(async move {
                         let request = tokio::time::timeout(HANDSHAKE_BUDGET, async {
-                            let connection = incoming.await.ok()?;
+                            // The host's HTTP/3 SETTINGS go out with its
+                            // handshake (0.5-RTT data) rather than a round trip
+                            // later, once the peer's Finished arrives: a browser
+                            // asks for its session only once it has read them.
+                            // They say what the host takes, nothing secret, and
+                            // the peer's request is still read only after the
+                            // handshake completes.
+                            let connection = match incoming.accept().ok()?.into_0rtt() {
+                                Ok((connection, _)) => connection,
+                                Err(connecting) => connecting.await.ok()?,
+                            };
                             web_transport_quinn::Request::accept(connection).await.ok()
                         })
                         .await
