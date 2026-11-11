@@ -114,6 +114,9 @@ tilo-content-device = { path = "../../system/content-device" }
 # the admission door it answers with: the engine's own membership.
 # The relay session a joined room syncs through.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# A workspace host's signed address, which a key enters a workspace at.
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # The offload route a session's action door places offloadable actions
 # through: the compute session with the home relay, placement and the

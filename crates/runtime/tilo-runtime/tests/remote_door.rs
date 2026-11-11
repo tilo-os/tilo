@@ -719,3 +719,131 @@ async fn a_revoked_key_reads_no_workspace_list() {
         .unwrap_err();
     assert!(refused.contains("removed"), "{refused}");
 }
+
+/// B's own signed address for `workspace`, as the person's list carries it.
+fn address_on_b(
+    person: &Person,
+    b: &B,
+    workspace: &str,
+) -> tilo_relay_session::workspaces::WorkspaceHostAddress {
+    let hint = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
+        version: 1,
+        mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+        workspace_id: tilo_peer_state::join::room_workspace_id(workspace).unwrap(),
+        room: workspace.to_owned(),
+        endpoint_addr: addr(&b.endpoint),
+        host_user_public_key: person.b.1.user_public_key,
+        host_device_certificate: person.b.1.clone(),
+        packet_relay_url: "iroh:direct".into(),
+    }
+    .transport_hint(&person.b.0)
+    .unwrap();
+    tilo_relay_session::workspaces::WorkspaceHostAddress::of_hint(
+        &postcard::to_stdvec(&hint).unwrap(),
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_key_enters_a_workspace_its_persons_device_hosts_at_the_address_their_list_names() {
+    use tilo_runtime::enter::{Key, enter};
+    let person = Person::new();
+    let b = b(&person, &[]).await;
+    let all = grant(
+        &person.root,
+        9,
+        tilo_user_identity::AgentScope::AllWorkspaces,
+    );
+    let key = Key {
+        key: all.0.clone(),
+        cert: all.1.clone(),
+    };
+    let address = address_on_b(&person, &b, DESK);
+    assert_eq!(
+        address.name, "Build box",
+        "the list names the device that hosts it"
+    );
+    let dialing = endpoint(&all.0).await;
+    let entered = enter(&dialing, &key, DESK, &address, "Visa backend #1")
+        .await
+        .expect("the person's device lets their key in");
+    let introduced = entered.handle(initialize()).await.unwrap();
+    assert!(
+        introduced.pointer("/result/serverInfo").is_some(),
+        "{introduced}"
+    );
+    let apps = entered
+        .handle(tool(2, "tilo_ls", &json!({})))
+        .await
+        .unwrap();
+    assert_eq!(apps["result"]["isError"], false, "{apps}");
+    assert!(text(&apps).contains("notes"), "{apps}");
+    let done = entered
+        .handle(tool(3, "tilo_do", &json!({"path": "notes/Notebook#pin"})))
+        .await
+        .unwrap();
+    assert_eq!(done["result"]["isError"], false, "{done}");
+    assert_eq!(b.door.host.invoked.lock().unwrap().len(), 1, "it ran on B");
+    let arrived = b.door.arrived.lock().unwrap().clone();
+    assert_eq!(arrived.len(), 1);
+    assert_eq!(arrived[0].device, all.1, "B knows which key came in");
+    assert_eq!(arrived[0].workspace.as_deref(), Some(DESK));
+
+    // An address names one workspace: another's is not entered with it.
+    assert!(
+        enter(&dialing, &key, ON_RELAY, &address, "Visa backend #1")
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_for_another_workspace_or_a_revoked_key_is_refused_at_the_device() {
+    use tilo_runtime::enter::{Key, enter};
+    let person = Person::new();
+    let revoked = grant(
+        &person.root,
+        10,
+        tilo_user_identity::AgentScope::AllWorkspaces,
+    );
+    let b = b(&person, &[&revoked.1]).await;
+    // A key for one workspace does not reach another the same device hosts.
+    let elsewhere = grant(
+        &person.root,
+        11,
+        tilo_user_identity::AgentScope::parse(ON_RELAY).unwrap(),
+    );
+    let refused = enter(
+        &endpoint(&elsewhere.0).await,
+        &Key {
+            key: elsewhere.0.clone(),
+            cert: elsewhere.1.clone(),
+        },
+        DESK,
+        &address_on_b(&person, &b, DESK),
+        "elsewhere",
+    )
+    .await
+    .err()
+    .expect("refused");
+    assert!(refused.contains("reaches only"), "{refused}");
+    // A key the person revoked is refused.
+    let refused = enter(
+        &endpoint(&revoked.0).await,
+        &Key {
+            key: revoked.0.clone(),
+            cert: revoked.1.clone(),
+        },
+        DESK,
+        &address_on_b(&person, &b, DESK),
+        "revoked",
+    )
+    .await
+    .err()
+    .expect("refused");
+    assert!(refused.contains("removed"), "{refused}");
+    assert!(
+        b.door.arrived.lock().unwrap().is_empty(),
+        "nobody was asked"
+    );
+}

@@ -190,6 +190,7 @@ impl Relay {
             lobby_workspace: lobby,
             lobby: tokio::sync::Mutex::new(None),
             entered: Mutex::default(),
+            endpoint: tokio::sync::OnceCell::new(),
         })
     }
 
@@ -424,15 +425,48 @@ pub struct Connection {
     /// The workspaces it entered or is entering, by id: each joined once,
     /// and left with the session.
     entered: Mutex<HashMap<String, Arc<tokio::sync::OnceCell<u64>>>>,
+    /// The grant's own iroh endpoint, keyed by it: what dials the person's
+    /// devices that host a workspace of theirs.
+    endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
         self.device.close();
+        if let Some(endpoint) = self.endpoint.get().cloned() {
+            tokio::spawn(async move { endpoint.close().await });
+        }
     }
 }
 
 impl Connection {
+    /// The grant's endpoint, bound the first time a workspace on one of the
+    /// person's devices is entered.
+    ///
+    /// # Errors
+    /// The endpoint could not bind.
+    pub async fn endpoint(&self) -> Result<iroh::Endpoint, RelayError> {
+        self.endpoint
+            .get_or_try_init(|| async {
+                iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+                    .secret_key(iroh::SecretKey::from_bytes(&self.key.key().to_bytes()))
+                    .bind()
+                    .await
+                    .map_err(|error| RelayError::Unavailable(error.to_string()))
+            })
+            .await
+            .cloned()
+    }
+
+    /// The key as the shared way into a workspace takes it.
+    #[must_use]
+    pub fn entering_key(&self) -> tilo_runtime::enter::Key {
+        tilo_runtime::enter::Key {
+            key: self.key.key().clone(),
+            cert: self.key.cert().clone(),
+        }
+    }
+
     fn workspace(&self, listing: &tilo_relay_session::workspaces::WorkspaceListing) -> Workspace {
         Workspace {
             id: listing.workspace.clone(),

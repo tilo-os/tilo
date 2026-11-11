@@ -113,6 +113,9 @@ pub enum Refusal {
     Revoked,
     /// This device serves no agents now.
     Unserved(String),
+    /// A key made for an agent asked for a workspace its scope does not
+    /// reach, or named none.
+    OutOfScope,
 }
 
 impl Refusal {
@@ -138,6 +141,9 @@ impl Refusal {
                     .to_owned()
             }
             Self::Unserved(why) => why.clone(),
+            Self::OutOfScope => {
+                "this key reaches only the workspaces it was made for: name one of them".to_owned()
+            }
         }
     }
 }
@@ -385,9 +391,28 @@ impl RemoteDoor {
         let bytes = hex::decode(&hello.certificate).map_err(|_| Refusal::Unreadable)?;
         let device: DeviceCert = postcard::from_bytes(&bytes).map_err(|_| Refusal::Unreadable)?;
         self.devices.admit(dialer, &device)?;
-        let workspace = hello
+        let mut workspace = hello
             .workspace
             .filter(|workspace| uuid::Uuid::parse_str(workspace).is_ok());
+        // A key made for an agent works where its scope reaches, as a relay
+        // admits it (`tilo_room_host::workspace_access`): a key for one
+        // workspace in that one alone, never the one in front of the person.
+        if let Some(scope) = device.capabilities.agent
+            && !hello.list
+        {
+            match (&workspace, scope) {
+                (Some(asked), scope) if !scope.reaches(asked) => {
+                    return Err(Refusal::OutOfScope);
+                }
+                (None, tilo_user_identity::AgentScope::Workspace(_)) => {
+                    workspace = Some(scope.name());
+                }
+                (None, tilo_user_identity::AgentScope::AllWorkspaces) => {
+                    return Err(Refusal::OutOfScope);
+                }
+                _ => {}
+            }
+        }
         let asked = if hello.list {
             Asked::List
         } else if hello.probe {
@@ -688,9 +713,53 @@ impl Dialed {
         connection.close(0_u32.into(), b"the agent left");
     }
 
+    /// The open door's stream as MCP lines this process reads and writes
+    /// itself, rather than carries to a local client.
+    #[must_use]
+    pub fn into_lines(self) -> Lines {
+        Lines {
+            connection: self.connection,
+            send: self.send,
+            recv: self.recv,
+        }
+    }
+
     /// End a probe.
     pub fn close(self) {
         self.connection.close(0_u32.into(), b"probed");
+    }
+}
+
+/// An open door's MCP, one JSON-RPC message a line each way.
+pub struct Lines {
+    connection: Connection,
+    send: SendStream,
+    recv: RecvStream,
+}
+
+impl Lines {
+    /// Send `message` as one line.
+    ///
+    /// # Errors
+    /// The door closed.
+    pub async fn send(&mut self, message: &serde_json::Value) -> io::Result<()> {
+        write_line(&mut self.send, message).await
+    }
+
+    /// The next message the door sends.
+    ///
+    /// # Errors
+    /// The door closed, or sent what is no JSON.
+    pub async fn next(&mut self) -> io::Result<serde_json::Value> {
+        let line = read_line(&mut self.recv).await?;
+        serde_json::from_slice(&line).map_err(io::Error::other)
+    }
+}
+
+impl Drop for Lines {
+    fn drop(&mut self) {
+        let _ = self.send.finish();
+        self.connection.close(0_u32.into(), b"the agent left");
     }
 }
 
