@@ -457,15 +457,19 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(unload && !accept && navigation_dispatched_ && !navigation_started_) RefuseNavigation("The page asked to stay");
   }
   bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>&,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
-#if defined(OS_MAC)
     Event("file_dialog");
     // An agent's page action cannot drive a native panel, so while it is
     // driving the chooser is held for fill-page-files instead. A person's
-    // own click keeps the platform panel.
+    // own click keeps the platform panel where the host has one.
     if(page_automation_ && page_automation_->HoldFileDialog(callback)) return true;
+#if defined(OS_MAC)
     return ShowHostFileDialog(mode,title,extensions,callback);
 #else
-    return false;
+    // Every page is offscreen here and no panel exists to show: the chooser is
+    // answered with nothing rather than left waiting for a person who is shown
+    // no way to answer it.
+    callback->Cancel();
+    return true;
 #endif
   }
   void PublishZoom() {
