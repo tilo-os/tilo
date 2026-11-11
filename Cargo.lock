@@ -18376,6 +18376,8 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "blake3",
+ "calculator",
+ "calendar",
  "chat",
  "chrono",
  "collab-types",
@@ -18387,6 +18389,8 @@ dependencies = [
  "notes",
  "serde",
  "serde_json",
+ "sheets",
+ "slides",
  "taffy",
  "tempfile",
  "tilo-action-policy",

@@ -66,6 +66,13 @@ word-processor = { path = "../../../apps/word-processor" }
 tilo-app-state = { path = "../../system/app-state" }
 tempfile.workspace = true
 notes = { path = "../../../apps/notes" }
+# The six windows the browser's launch demo opens, for the typing measurement
+# (`tests/typing_desktop`, `examples/typing_perf`): what a keystroke in one of
+# them costs with the others open beside it.
+sheets = { path = "../../../apps/sheets" }
+calendar = { path = "../../../apps/calendar" }
+calculator = { path = "../../../apps/calculator" }
+slides = { path = "../../../apps/slides" }
 tilo-tts = { path = "../../system/tts" }
 tilo-activities = { path = "../activities" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, features = ["test-support"] }
