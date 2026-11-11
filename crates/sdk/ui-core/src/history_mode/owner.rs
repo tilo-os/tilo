@@ -23,6 +23,9 @@ pub(crate) enum OwnedDocumentPublication {
         mutation: collab_types::DocumentMutation,
         authorization: Option<crate::invocation_scope::DocumentAuthorization>,
         heads: Vec<automerge::ChangeHash>,
+        /// The document the mutation was read from: what a change that
+        /// continues an earlier one names its action through.
+        document: AutoCommit,
     },
 }
 
@@ -313,6 +316,7 @@ impl HistoryOwner {
                 mutation,
                 authorization,
                 heads,
+                document,
             }
         }
 

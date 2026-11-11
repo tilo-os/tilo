@@ -366,6 +366,7 @@ mod tests {
                 app: step.app,
                 record: step.record,
                 mutation: &step.mutation,
+                document: None,
             })
             .collect();
         let mut commits = WorkspaceCommit::of_units(WORKSPACE, &author(), &named).unwrap();

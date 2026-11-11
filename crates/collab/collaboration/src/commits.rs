@@ -392,11 +392,13 @@ mod tests {
                 app: "tasks",
                 record: "a",
                 mutation: &first_mutation,
+                document: None,
             },
             collab_types::UnitMutation {
                 app: "discussion",
                 record: "thread",
                 mutation: &second_mutation,
+                document: None,
             },
         ];
         let author = publisher();
@@ -465,6 +467,7 @@ mod tests {
                 app: "discussion",
                 record: "thread",
                 mutation: &mutation(&mut second.clone()),
+                document: None,
             }],
         )
         .unwrap()
@@ -642,11 +645,13 @@ mod tests {
                     app: "tasks",
                     record: "a",
                     mutation: &undo_first,
+                    document: None,
                 },
                 collab_types::UnitMutation {
                     app: "discussion",
                     record: "thread",
                     mutation: &undo_second,
+                    document: None,
                 },
             ],
         )

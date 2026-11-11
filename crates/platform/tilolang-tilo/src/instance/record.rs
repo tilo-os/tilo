@@ -1015,6 +1015,7 @@ impl InstanceRecord {
                 app: &self.route.app_id,
                 record,
                 mutation,
+                document: None,
             })
             .collect();
         let workspace = self.route.cluster_id.to_string();
