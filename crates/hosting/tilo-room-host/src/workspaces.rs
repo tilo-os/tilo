@@ -2681,6 +2681,8 @@ impl Workspaces {
         let accessing = crate::timing::start();
         let now = SystemTime::now();
         let access: GovernedAccess = workspace.peer().governance().governed_access(now)?;
+        crate::timing::event("room.settle.access_read", accessing, 0);
+        let members = access.member_devices.clone();
         // Who is in the workspace is what its governance just said: the person
         // listing of every one of them is answered from that, not by reading
         // every workspace this host governs.
@@ -2723,10 +2725,7 @@ impl Workspaces {
             }
         }
         let standing = crate::timing::start();
-        let standings = workspace
-            .peer()
-            .governance()
-            .governed_standings(SystemTime::now())?;
+        let standings = workspace.peer().governance().standings_of(&members, now)?;
         host.access
             .replace_standings(workspace.workspace_id(), true, standings)
             .await

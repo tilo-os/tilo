@@ -335,17 +335,19 @@ pub(crate) async fn replace_governed_access(
             crate::authority_epoch::bump();
         }
         let saved = access.clone();
-        authorization_io(move || {
-            let bytes = store.save_governed_access(&saved)?;
+        let writing = crate::timing::start();
+        let written = authorization_io(move || {
+            let (digest, written) = store.save_governed_access(&saved)?;
             // Applied to the runtime below, its narrowing announced
             // above: the watch need not announce the file again.
             crate::membership_watch::wrote_own(
                 &store.root().join(crate::store::GOVERNED_ACCESS_FILE),
-                &bytes,
+                digest,
             );
-            Ok(())
+            Ok(written)
         })
         .await?;
+        crate::timing::event("room.settle.access_write", writing, written);
         let mut runtime = workspace.lock().await;
         runtime.membership.set(access.member_devices);
         runtime.governed_user_roots = access.member_user_roots.into_iter().collect();

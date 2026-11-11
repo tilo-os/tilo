@@ -31,6 +31,16 @@ impl PeerGovernance<'_> {
         now: SystemTime,
     ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>, String> {
         let access = self.peer.governance().governed_access(now)?;
+        self.standings_of(&access.member_devices, now)
+    }
+    /// [`Self::governed_standings`] of `devices`, the member devices
+    /// [`Self::governed_access`] at `now` answered: a host that just listed
+    /// them for its access does not list them again.
+    pub fn standings_of(
+        self,
+        devices: &[[u8; 32]],
+        now: SystemTime,
+    ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>, String> {
         let doc = self
             .peer
             .core
@@ -39,9 +49,9 @@ impl PeerGovernance<'_> {
             .ok_or("workspace governance missing")?;
         // One policy, shared by every device's standing.
         let policy = std::sync::Arc::new(doc.workspace_policy(&self.peer.core.workspace).clone());
-        Ok(access
-            .member_devices
-            .into_iter()
+        Ok(devices
+            .iter()
+            .copied()
             .filter_map(|device| {
                 self.peer
                     .member_with(device, std::sync::Arc::clone(&policy), now)
