@@ -173,6 +173,23 @@ impl Site {
             .expect("the site deletes its workspace");
     }
 
+    /// Where the site's relay is reached, as a link to something it hands out names it.
+    pub fn node_addr(&self) -> iroh::EndpointAddr {
+        self.relay
+            .as_ref()
+            .expect("the site's relay runs")
+            .node_addr()
+    }
+
+    /// The workspace `workspace` as the site's host carries it, by its id here: what a machine an
+    /// environment runs in is handed, and what a page action names.
+    pub fn workspace_id(&self, workspace: &str) -> Option<u64> {
+        self.runtime
+            .block_on(self.workspaces.summary(workspace))
+            .ok()
+            .map(|summary| summary.workspace_id)
+    }
+
     /// Make the workspace public with `role` for everyone who joins at the door, as its owner does:
     /// from now on the door admits people.
     pub fn publish(&self, role: WorkspaceRole) {

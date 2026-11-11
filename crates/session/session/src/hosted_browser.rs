@@ -17,7 +17,7 @@
 //! [`UP`]: tilo_actions::remote::browser::UP
 //! [`USED`]: tilo_actions::remote::browser::USED
 
-use std::io::{BufRead as _, Write as _};
+use std::io::{self, BufRead as _, Write as _};
 use std::time::{Duration, Instant};
 
 use tilo_action_broker::collab_app_broker::{AppBrokerState, ExecutionStatus};
@@ -33,6 +33,9 @@ const ENTER_INVITATION_SECONDS: u64 = 600;
 /// How often the page's use is reported while it is in use: one an action or a viewer is what the
 /// host counts its idle limit from, and a page being read for an hour is in use the whole time.
 const USED_EVERY: Duration = Duration::from_secs(60);
+/// The colour the record of the person an environment serves carries, as a device that joined
+/// without their root gets it.
+const ENVIRONMENT_AVATAR: [u8; 3] = [88, 101, 242];
 
 /// What the session reports on its standard output: the host relays every line.
 pub type Reports = Box<dyn FnMut(Report) + Send>;
@@ -116,7 +119,7 @@ impl HostedBrowser {
 
     /// Follow what the session's broker admits: an action on the window's page is the page in use,
     /// and the page track's viewers say so too ([`Self::follow`]).
-    pub(crate) fn watching(&mut self, broker: Option<&std::sync::Arc<AppBrokerState>>) {
+    pub(crate) fn watching(&self, broker: Option<&std::sync::Arc<AppBrokerState>>) {
         let Some(broker) = broker else {
             return;
         };
@@ -296,12 +299,12 @@ pub fn handed() -> Result<Option<HostedBrowser>, String> {
     if line.trim().is_empty() {
         return Err("the session was handed no material".to_owned());
     }
-    HostedBrowser::take(&line, Box::new(say_on_stdout)).map(Some)
+    HostedBrowser::take(&line, Box::new(|report| say_on_stdout(&report))).map(Some)
 }
 
 /// Every report, one line on the session's standard output: what the host that started the
 /// session reads, and the log is the environment's stderr only.
-fn say_on_stdout(report: Report) {
+fn say_on_stdout(report: &Report) {
     println!("{}", report.line());
     if let Err(error) = std::io::stdout().flush() {
         tracing::warn!(%error, "a browser environment's report was not written");
@@ -319,7 +322,27 @@ fn take_identity(material: &Material) -> Result<(), String> {
     tilo_user_identity::persist::write_device_key(&paths.device_privkey, &key)
         .map_err(|error| format!("this device's key was not written: {error}"))?;
     tilo_user_identity::install_device_cert(&paths, &material.device, tilo_clock::unix_now_ns())
-        .map_err(|error| format!("this device's certificate was not taken: {error}"))
+        .map_err(|error| format!("this device's certificate was not taken: {error}"))?;
+    // The person the workspace belongs to, as a record this device holds of them: the relay hands
+    // over their public key, and every part of the session that presents this device's person in a
+    // workspace reads that person from this login's identity records. The record carries no root:
+    // what signs here is the device certificate the relay issued.
+    let directory = runtime_identity::identity_dir_from_env()
+        .map_err(|error| format!("this device's identity directory is not known: {error}"))?;
+    let record = runtime_identity::public_member_record(
+        runtime_identity::UNNAMED_DISPLAY_NAME,
+        ENVIRONMENT_AVATAR,
+        material.user_public_key,
+    )
+    .map_err(|error| format!("the person's record was not written: {error}"))?;
+    let user = hex::encode(material.user_public_key);
+    let id = format!("identity-{}", user.get(..55).unwrap_or(&user));
+    if let Err(error) = runtime_identity::import_identity(&directory, &id, &record)
+        && error.kind() != io::ErrorKind::AlreadyExists
+    {
+        return Err(format!("the person's record was not taken: {error}"));
+    }
+    Ok(())
 }
 
 /// Ask this environment's relay to enter the session's device into the workspace, the way a member
@@ -380,4 +403,73 @@ fn tab_of(shared: &Shared, workspace: &str, app: &str) -> Option<u64> {
             })
             .map(|tab| tab.id)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// A session in an environment, holding the window `provider` and reporting into `said`.
+    fn holding(provider: u64, said: &Arc<Mutex<Vec<String>>>) -> HostedBrowser {
+        let reports = Arc::clone(said);
+        let (sender, arrived) = std::sync::mpsc::channel();
+        HostedBrowser {
+            material: Material {
+                workspace: "11111111-1111-4111-8111-111111111111".into(),
+                workspace_id: 1,
+                record: "uuid:5c07c075-0000-4000-8000-0000000000aa".into(),
+                device: tilo_user_identity::DeviceCert {
+                    user_public_key: [1; 32],
+                    device_public_key: [2; 32],
+                    device_label: "Browser".into(),
+                    capabilities: tilo_user_identity::DeviceCapabilities::member(),
+                    issued_at_ns: 1,
+                    expires_at_ns: None,
+                    signature: [0; 64],
+                    issuer: None,
+                },
+                secret: [0; 32],
+                relay: iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+                user_public_key: [1; 32],
+                account: "acct".into(),
+            },
+            reports: Box::new(move |report| {
+                reports
+                    .lock()
+                    .expect("the reports are this test's")
+                    .push(report.line());
+            }),
+            waking: None,
+            arrived,
+            sender,
+            join: Join::Asking,
+            window: Window::Open(provider),
+            said_used: None,
+        }
+    }
+
+    #[test]
+    fn the_page_in_use_is_said_once_a_minute_while_it_is() {
+        let said: Arc<Mutex<Vec<String>>> = Arc::default();
+        let mut hosted = holding(42, &said);
+        let reports =
+            |said: &Arc<Mutex<Vec<String>>>| said.lock().expect("this test's reports").clone();
+        hosted.used();
+        assert_eq!(reports(&said), vec!["used".to_owned()], "the page was used");
+        hosted.used();
+        assert_eq!(
+            reports(&said),
+            vec!["used".to_owned()],
+            "a page in use is said once a minute, not once an action"
+        );
+        // A minute later it is said again: a page being read for an hour is in use the whole time.
+        hosted.said_used = Instant::now().checked_sub(USED_EVERY + Duration::from_secs(1));
+        hosted.used();
+        assert_eq!(
+            reports(&said),
+            vec!["used".to_owned(), "used".to_owned()],
+            "the page is still in use"
+        );
+    }
 }

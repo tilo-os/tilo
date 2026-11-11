@@ -78,6 +78,7 @@ pub struct Options {
     /// workspace and record it was handed, and what it reports of the window it holds
     /// ([`crate::hosted_browser::HostedBrowser`]). A session a person starts has none, and does
     /// nothing an environment's session is spared.
+    #[cfg(target_os = "linux")]
     pub hosted_browser: Option<crate::hosted_browser::HostedBrowser>,
     /// Carries out what the person chose in the power menu (log out,
     /// suspend, restart, shut down, switch user); the session locks the
@@ -374,6 +375,7 @@ impl Default for Options {
             apps: None,
             launch: None,
             setup: None,
+            #[cfg(target_os = "linux")]
             hosted_browser: None,
             session_actions: no_session_actions,
             user: String::new(),
