@@ -162,7 +162,7 @@ tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"], opt
 sha2 = { workspace = true, optional = true }
 # The fetch proxy a page's apps reach the web through, and the mail the door
 # sends over HTTPS.
-tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host"], optional = true }
+tilo-net = { path = "../../platform/tilo-net", features = ["http", "json", "proxy-host"], optional = true }
 # The door's mail outbox awaits a send in its own future.
 futures = { workspace = true, optional = true }
 # The keyed hash of a visitor's address the door's wait-list windows count.
