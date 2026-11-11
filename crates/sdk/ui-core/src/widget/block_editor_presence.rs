@@ -95,6 +95,7 @@ impl BlockEditor {
             // The characters are the mark: the activity rail leaves this
             // invocation out rather than naming it a second time.
             ctx.presence.note_shown(interaction.invocation);
+            ctx.presence.note_drawn(interaction.invocation, now);
             let name = ctx.presence.interaction_status_label(&interaction);
             // The chip says what the invocation is doing here, and so does
             // what a reader is told of its caret.

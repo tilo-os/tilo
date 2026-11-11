@@ -77,6 +77,7 @@ impl TextInput {
             return;
         };
         presence.note_shown(acting.invocation);
+        presence.note_drawn(acting.invocation, now);
         // What it is doing here is editing this field, whatever its action
         // is called: the field's own name says which.
         let words = if self.accessible_name.trim().is_empty() {

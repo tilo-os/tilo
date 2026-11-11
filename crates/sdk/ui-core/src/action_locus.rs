@@ -93,6 +93,11 @@ pub(crate) fn draw_action_presence(
         now,
         &resolved,
     );
+    // Every visible interaction was drawn by this frame (where it acts, or on the rail): what it
+    // shows counts from here.
+    for interaction in presence.visible_interactions(now) {
+        presence.note_drawn(interaction.invocation, now);
+    }
     painted
 }
 
