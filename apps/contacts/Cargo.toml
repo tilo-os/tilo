@@ -60,6 +60,8 @@ pim-lines = { path = "../../crates/text/pim-lines" }
 # resolved in the shared workspace lockfile, so this adds no registry fetch.
 
 [dev-dependencies]
+# Builds the pictures the photo import tests read.
+image = { workspace = true, features = ["png", "jpeg"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # Serialises the tests that construct scratch files / drive the portal
 # drain path so parallel runs don't race on the shared temp dir.
@@ -69,8 +71,6 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 # file-type association it declares is checked against the packaging schema.
 # Already resolved in the workspace lockfile.
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
-# Builds the pictures the photo import tests read.
-image = { workspace = true, features = ["png", "jpeg"] }
 # Reads the history sentences the book's changes record.
 
 [[test]]

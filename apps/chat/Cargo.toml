@@ -87,12 +87,9 @@ taffy.workspace = true
 # The data directory for the workspace document, the workspace mount the
 # attachment picker browses, and the session's account and host names.
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
-# Read image headers for workspace attachments and encode demo thumbnails for
-# the shared `ui::ImageStore`.
-# Attachment bytes live in the app's content store; no
-# sender-local path is stored in the chat document.
-image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 [dev-dependencies]
+# Tests build their image fixtures.
+image = { workspace = true, features = ["png"] }
 # Tests see this package's samples. The key must not be the package name:
 # a dependency named `chat` claims `--features chat/thin` in the
 # collection build, and the app then links the whole runtime statically.
