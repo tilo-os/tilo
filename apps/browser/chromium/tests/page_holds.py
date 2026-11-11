@@ -74,6 +74,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 class PageHolds(unittest.TestCase):
+    requests = 0
+
     @classmethod
     def setUpClass(cls):
         cls.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
@@ -93,28 +95,48 @@ class PageHolds(unittest.TestCase):
         host.navigate(self.url + path)
         return host
 
+    def page(self, host, action, **fields):
+        """The answer to one page action, whether it came while the test
+        waited for something else or has to be waited for."""
+        PageHolds.requests += 1
+        request = PageHolds.requests
+        host.send(op='page', request_id=request, action=action, **fields)
+        match = lambda e: e['event'] == 'page_result' and e.get('request_id') == request
+        return next((e for e in host.seen if match(e)), None) or host.until(match)
+
+    def read(self, host):
+        """What the page shows. A tab runs one action at a time, so a read
+        that arrives while the action before it still runs is refused and
+        asked again."""
+        deadline = time.monotonic() + 30
+        while True:
+            answer = self.page(host, 'outline')
+            if 'outline' in answer:
+                return answer['outline']
+            self.assertLess(time.monotonic(), deadline, f'the page never answered the read: {answer}')
+            time.sleep(0.1)
+
+    def shows(self, host, text):
+        """What the page shows, read again until it says `text`: a page
+        changing its own text is nothing the host reports."""
+        deadline = time.monotonic() + 30
+        while True:
+            outline = self.read(host)
+            if text in outline:
+                return outline
+            self.assertLess(time.monotonic(), deadline, f'{text!r} not in what the page shows:\n{outline}')
+            time.sleep(0.1)
+
     def ref(self, host, pattern):
-        host.send(op='page', request_id=1, action='outline')
-        outline = host.until(lambda e: e['event'] == 'page_result')['outline']
+        outline = self.read(host)
         found = re.search(pattern + r'[^\n]*\[ref=(d\d+e\d+)\]', outline)
         self.assertIsNotNone(found, f'{pattern!r} not in outline:\n{outline}')
         return found.group(1)
 
-    def shows(self, host, text, timeout=20):
-        """What the page shows, asked again until it says `text`: a page
-        changing its own text is nothing the host reports."""
-        deadline = time.monotonic() + timeout
-        while True:
-            host.send(op='page', request_id=3, action='outline')
-            outline = host.until(lambda e: e['event'] == 'page_result'
-                                 and e.get('request_id') == 3)['outline']
-            if text in outline or time.monotonic() >= deadline:
-                break
-        self.assertIn(text, outline, 'what the page shows')
-        return outline
-
     def click(self, host, pattern):
-        host.send(op='page', request_id=2, action='click', element=self.ref(host, pattern))
+        PageHolds.requests += 1
+        host.send(op='page', request_id=PageHolds.requests, action='click',
+                  element=self.ref(host, pattern))
 
     def held(self, host):
         return host.until(lambda e: e['event'] == 'held')
@@ -146,8 +168,10 @@ class PageHolds(unittest.TestCase):
 
     def test_enter_in_a_field_waits_for_the_person(self):
         host = self.open('/')
-        host.send(op='page', request_id=3, action='press', key='Enter',
-                  element=self.ref(host, 'textbox "Name"'))
+        field = self.ref(host, 'textbox "Name"')
+        PageHolds.requests += 1
+        host.send(op='page', request_id=PageHolds.requests, action='press', key='Enter',
+                  element=field, ctrl=False, shift=False, alt=False, meta=False)
         held = self.held(host)
         self.assertEqual(held['kind'], 'submit', held)
         self.answer(host, held, True)
