@@ -191,7 +191,7 @@ pub(crate) struct Editor {
     /// False until the resource holds a file — drives the composed empty
     /// state (no fabricated buffer in the live app).
     has_file: bool,
-    /// Where the empty state's crate::resource::CATALOG.t("hex-editor-new-file") button sits, once painted.
+    /// Where the empty state's new-file button sits, once painted.
     new_file: Rect,
     /// The bytes as last opened or saved, which the changed-byte marks
     /// compare against.

@@ -621,7 +621,7 @@ impl Widget for ReaderPane {
             .tags
             .iter()
             .find(|(r, _)| r.contains(point))
-            .map(|(rect, _)| (*rect, crate::i18n::t("feeds-articles-with-tag").to_string()))
+            .map(|(rect, _)| (*rect, crate::i18n::t("feeds-articles-with-tag")))
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
