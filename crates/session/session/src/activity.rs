@@ -343,7 +343,9 @@ impl Activity {
     }
 
     /// Read the records the session's own services keep from `services` : what History lists and
-    /// a run is undone in, where no app's process holds the record.
+    /// a run is undone in, where no app's process holds the record. The desktop mounts the
+    /// services, so only it attaches them.
+    #[cfg(target_os = "linux")]
     pub(crate) fn attach_services(&self, services: Rc<RefCell<tilo_service::Services>>) {
         *self.0.services.borrow_mut() = Some(services);
     }
