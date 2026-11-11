@@ -49,3 +49,6 @@ video-playlists = Playlists
 video-bookmarks = Bookmarks
 video-local-video = Local video
 video-play = Play { $title }
+
+## Facts, property labels and section titles
+video-player-too-large = { $title } was too large to reopen after a reload (over { $size })

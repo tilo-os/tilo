@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 use std::rc::Rc;
+use ui::i18n::ArgValue;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::ModelPath;
@@ -37,6 +38,7 @@ use crate::keypad::{CalcScreen, DisplaySlot, MEM_KEYS};
 use crate::mathfield::MathField;
 use crate::model::{self, CalcModel, KeypadPage, Mode, PlotFn};
 use crate::plot_panel::PlotPanel;
+use crate::resource::CATALOG;
 use crate::resource::Calculator;
 
 use ui::tilo_resource::Id;
@@ -1898,10 +1900,15 @@ impl CalculatorApp {
                     panel.delete_rect(index),
                 );
                 let mut field = AccessNode::new(Role::TextInput)
-                    .with_name(format!(
-                        "{} {} formula",
-                        title.trim_end_matches('s'),
-                        index + 1
+                    .with_name(CATALOG.t_args(
+                        "calculator-graph-field",
+                        &[
+                            (
+                                "kind",
+                                ArgValue::Text(title.trim_end_matches('s').to_owned()),
+                            ),
+                            ("number", ArgValue::Text((index + 1).to_string())),
+                        ],
                     ))
                     .with_value(row.expr.clone())
                     .with_action_target(format!("calculator.graph.field:{slug}:{index}"))
@@ -1910,10 +1917,15 @@ impl CalculatorApp {
                     field = field.with_bounds(bounds);
                 }
                 let mut visible = AccessNode::new(Role::ToggleButton)
-                    .with_name(format!(
-                        "Show {} {}",
-                        title.trim_end_matches('s'),
-                        index + 1
+                    .with_name(CATALOG.t_args(
+                        "calculator-graph-show",
+                        &[
+                            (
+                                "kind",
+                                ArgValue::Text(title.trim_end_matches('s').to_owned()),
+                            ),
+                            ("number", ArgValue::Text((index + 1).to_string())),
+                        ],
                     ))
                     .with_action_target(format!("calculator.graph.visible:{slug}:{index}"))
                     .with_state(AccessState::new().focusable(true).checked(row.visible));
@@ -1921,10 +1933,15 @@ impl CalculatorApp {
                     visible = visible.with_bounds(bounds);
                 }
                 let mut delete = AccessNode::new(Role::Button)
-                    .with_name(format!(
-                        "Delete {} {}",
-                        title.trim_end_matches('s'),
-                        index + 1
+                    .with_name(CATALOG.t_args(
+                        "calculator-graph-delete",
+                        &[
+                            (
+                                "kind",
+                                ArgValue::Text(title.trim_end_matches('s').to_owned()),
+                            ),
+                            ("number", ArgValue::Text((index + 1).to_string())),
+                        ],
                     ))
                     .with_action_target(format!("calculator.graph.delete:{slug}:{index}"))
                     .with_description(crate::resource::CATALOG.t("calculator-a11y-remove-formula"))
@@ -1941,7 +1958,13 @@ impl CalculatorApp {
                 );
             }
             let mut add = AccessNode::new(Role::Button)
-                .with_name(format!("Add {}", title.trim_end_matches('s')))
+                .with_name(CATALOG.t_args(
+                    "calculator-graph-add",
+                    &[(
+                        "kind",
+                        ArgValue::Text(title.trim_end_matches('s').to_owned()),
+                    )],
+                ))
                 .with_action_target(format!("calculator.graph.add:{slug}"))
                 .with_state(AccessState::new().focusable(true));
             if let Some(bounds) = add_bounds {

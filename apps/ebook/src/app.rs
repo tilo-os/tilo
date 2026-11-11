@@ -41,6 +41,7 @@ use vello::peniko::{BlendMode, Blob, Color, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+use ui::i18n::ArgValue;
 use ui::time::Instant;
 
 use ui::ColorCompat;
@@ -82,6 +83,7 @@ use crate::model::{
     ReadMode, ReadTheme, Settings, default_fonts, default_schemes,
 };
 use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice};
+use crate::resource::CATALOG;
 mod window_bar;
 
 use crate::paint;
@@ -5094,16 +5096,23 @@ impl Widget for BooksApp {
         }
         if !has_modal && self.view == View::Reader {
             if self.toc_open() {
-                children.push(AccessNode::new(Role::StaticText).with_name(format!(
-                    "Contents: chapter {} of {}. Scroll this list to browse every chapter.",
-                    self.chapter + 1,
-                    self.num_chapters()
+                children.push(AccessNode::new(Role::StaticText).with_name(CATALOG.t_args(
+                    "ebook-a11y-contents",
+                    &[
+                        ("chapter", ArgValue::Text((self.chapter + 1).to_string())),
+                        ("chapters", ArgValue::Text(self.num_chapters().to_string())),
+                    ],
                 )));
             }
             if self.notes_open() {
-                children.push(AccessNode::new(Role::StaticText).with_name(format!(
-                    "Annotations: {} total. Scroll this list to browse every annotation.",
-                    self.annotations.len()
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "a count only selects a plural form; exactness past 2^52 is irrelevant"
+                )]
+                let number = self.annotations.len() as f64;
+                children.push(AccessNode::new(Role::StaticText).with_name(CATALOG.t_args(
+                    "ebook-a11y-annotations",
+                    &[("annotations", ArgValue::Number(number))],
                 )));
             }
         }
@@ -6225,9 +6234,9 @@ impl BooksApp {
                     self.shortcut_capture = None;
                     self.shortcut_capture_error = None;
                 } else if crate::reader_keys::reserved_reader_key(character.as_str()) {
-                    self.shortcut_capture_error = Some(format!(
-                        "{} is reserved for a built-in reader command. Choose another key.",
-                        key_legend(character.as_str())
+                    self.shortcut_capture_error = Some(CATALOG.t_args(
+                        "ebook-key-reserved",
+                        &[("key", ArgValue::Text(key_legend(character.as_str())))],
                     ));
                 } else {
                     self.shortcut_capture_error =

@@ -35,6 +35,7 @@ use ui::widget::{
 use ui::{LocalState, TextRole};
 
 use crate::journal::JournalLoadError;
+use crate::locales::CATALOG;
 use crate::model::{Filter, LogEntry, Priority};
 use crate::resource::Logs;
 use ui::widget::DrawChild;
@@ -704,15 +705,22 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
         return Box::new(EmptyState::new("No entry selected"));
     };
     // The unit is the inspector's title.
-    let mut properties =
-        vec![Property::new("Program", entry.identifier.clone()).with_kind(TextKind::Identifier)];
+    let mut properties = vec![
+        Property::new(CATALOG.t("logs-program"), entry.identifier.clone())
+            .with_kind(TextKind::Identifier),
+    ];
     if let Some(pid) = entry.pid {
-        properties.push(Property::new("Process ID", pid.to_string()).with_kind(TextKind::Numeric));
+        properties.push(
+            Property::new(CATALOG.t("logs-process-id"), pid.to_string())
+                .with_kind(TextKind::Numeric),
+        );
     }
     properties.extend([
-        Property::new("Host", entry.hostname.clone()).with_kind(TextKind::Identifier),
-        Property::new("Transport", entry.transport.clone()),
-        Property::new("Boot ID", entry.boot_id.clone()).with_kind(TextKind::Identifier),
+        Property::new(CATALOG.t("logs-host"), entry.hostname.clone())
+            .with_kind(TextKind::Identifier),
+        Property::new(CATALOG.t("logs-transport"), entry.transport.clone()),
+        Property::new(CATALOG.t("logs-boot-id"), entry.boot_id.clone())
+            .with_kind(TextKind::Identifier),
     ]);
     for (key, value) in &entry.extra {
         if !value.trim().is_empty() {

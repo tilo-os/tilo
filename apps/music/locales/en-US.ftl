@@ -130,3 +130,21 @@ music-a11y-description = Music library and playback controls
 music-search-this-app = In this app
 music-a11y-songs = Songs
 music-a11y-navigation = Music navigation
+
+## Facts, property labels and section titles
+music-a11y-search-genre = Search for { $genre }
+music-a11y-move-down = Move { $track } down
+music-a11y-move-up = Move { $track } up
+music-a11y-remove-from-playlist = Remove { $track } from { $playlist }
+music-a11y-delete-playlist = Delete { $playlist }
+music-a11y-rename-playlist = Rename { $playlist }
+music-a11y-artist = { $genre }; { $listeners ->
+    [one] one monthly listener
+   *[other] { $listeners } monthly listeners
+}
+music-a11y-play = Play { $track }
+music-a11y-like = Like { $track }
+music-kind-album = Album
+music-kind-artist = Artist
+music-kind-playlist = Playlist
+music-detail-load-failed = Couldn’t load this { $kind }

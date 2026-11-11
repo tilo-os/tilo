@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use ui::framework::Refused;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::theme::{Preset, ThemeDocument};
@@ -19,6 +20,7 @@ use ui::widget::{
 };
 
 use crate::apply::AppearanceChoice;
+use crate::locales::CATALOG;
 use crate::preview::{Show, ThemePreview};
 use crate::studio::{Rung, Studio, Theme};
 
@@ -768,7 +770,10 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, editing: &Editing) -> Element {
             if findings.is_empty() {
                 String::from("Every pairing meets its contrast floor.")
             } else {
-                format!("Too little contrast: {}", findings.join("; "))
+                CATALOG.t_args(
+                    "themes-contrast-low",
+                    &[("findings", ArgValue::Text(findings.join("; ")))],
+                )
             }
         })
         .with_id("contrast-findings")

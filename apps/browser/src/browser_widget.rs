@@ -46,6 +46,7 @@ use ui::widget::{
     paint_rule,
 };
 
+use crate::CATALOG;
 use crate::actions::history_resource_id;
 use crate::address_overlay::AddressSuggestions;
 use crate::browsing_mode::BrowsingMode;
@@ -5484,12 +5485,15 @@ impl BrowserWidget {
                 .stating_bound("method", "The method it leaves with")
                 .stating_bound("destination", "Where it goes")
                 .stating_bound("picture", "The filled page, as content");
-            send.type_mut().label = format!("Let it leave: {}", held.describing());
+            send.type_mut().label = CATALOG.t_args(
+                "browser-action-let-leave",
+                &[("request", ui::i18n::ArgValue::Text(held.describing()))],
+            );
             page.actions.push(send);
             let mut keep = E::KeepHeldRequest { id }
                 .bound()
                 .stating_bound("id", "The held request's id");
-            keep.type_mut().label = "Keep the page as it is".into();
+            keep.type_mut().label = CATALOG.t("browser-action-keep-page");
             page.actions.push(keep);
         }
         let element = String::new();

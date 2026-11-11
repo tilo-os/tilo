@@ -32,3 +32,16 @@ print-centre-all-pages = Alle Seiten
 
 ## Fenster- und Barrierefreiheits-Texte
 print-centre-a11y-pages = Zu druckende Seiten
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+print-centre-text-language = Textsprache
+print-centre-orientation = Ausrichtung
+print-centre-page-of = Seite { $page } von { $pages }
+print-centre-availability = Verfügbarkeit
+print-centre-state = Zustand
+print-centre-section-connection-check = Verbindungsprüfung
+print-centre-scanners = Verfügbare Scanner
+print-centre-reporting-levels = Mit Füllstandsmeldung
+print-centre-printers-responding = Antwortende Drucker
+print-centre-section-tools = Werkzeuge
+print-centre-section-printers = Deine Drucker

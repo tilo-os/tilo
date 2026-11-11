@@ -40,3 +40,4 @@ typst-a11y-live-preview = Live rendered preview
 
 ## Window and accessibility copy
 typst-editor-a11y-outline = Outline
+typst-editor-page-of = Page { $page } of { $pages }

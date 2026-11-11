@@ -34,3 +34,6 @@ code-editor-code-help-close = Close
 ## Accessibility
 code-editor-a11y-document = Code editor
 code-editor-a11y-document-description = Code editor. Use the file tree, file header, editor document, and bottom panel to navigate the project.
+
+## Facts, property labels and section titles
+code-editor-a11y-code = Code: { $project }

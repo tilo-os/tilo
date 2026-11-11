@@ -8,6 +8,7 @@
 //! or padding: text names its role, buttons their role, and the toolkit
 //! spaces what it composes.
 
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::tokens::{Spacing, SpacingStep, TextRole};
 use ui::widget::toggle_group::Segment;
@@ -22,6 +23,7 @@ use super::{
     Door, El, PrintChoice, PrintPreview, ScanState, Snapshot, UiCommand, display_name,
     failed_areas, friendly_queue_state, friendly_reason, job_title, supply_level,
 };
+use crate::locales::CATALOG;
 use crate::resource::{
     OCR_LANGUAGES, PrintCentreEffect, PrintDefaults, SCAN_COLORS, SCAN_RESOLUTIONS, SCAN_SOURCES,
 };
@@ -403,10 +405,9 @@ pub(super) fn live_view(snapshot: &Snapshot, tx: &Door) -> El {
             Box::new(
                 bare_column()
                     .with_rhythm(ui::tokens::Rhythm::Section)
-                    .push(Box::new(
-                        Section::new(Vec::new())
-                            .with_header(SectionHeader::heading("Your printers")),
-                    ))
+                    .push(Box::new(Section::new(Vec::new()).with_header(
+                        SectionHeader::heading(CATALOG.t("print-centre-section-printers")),
+                    )))
                     .push(Box::new(
                         CardGrid::new(queues.iter().map(|queue| printer_card(queue, tx)).collect())
                             .with_card_width(CardWidth::Wide),
@@ -463,7 +464,7 @@ fn live_tools(
         UiCommand::Diagnostics,
     ));
     Box::new(Section::titled(
-        "Tools",
+        CATALOG.t("print-centre-section-tools"),
         vec![Box::new(tools.into_iter().fold(
             bare_column().with_rhythm(ui::tokens::Rhythm::Section),
             Column::push,
@@ -582,19 +583,24 @@ pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &Door) -> El {
         .count();
     let check = Section::new(vec![Box::new(PropertyList::new(vec![
         Property::new(
-            "Printers responding",
+            CATALOG.t("print-centre-printers-responding"),
             format!("{responding} of {}", queues.len()),
         ),
         Property::new(
-            "Reporting ink or toner levels",
+            CATALOG.t("print-centre-reporting-levels"),
             format!(
                 "{supply_reports} {}",
                 plural(supply_reports, "printer", "printers")
             ),
         ),
-        Property::new("Scanners available", scanners.len().to_string()),
+        Property::new(
+            CATALOG.t("print-centre-scanners"),
+            scanners.len().to_string(),
+        ),
     ]))])
-    .with_header(SectionHeader::heading("Connection check"));
+    .with_header(SectionHeader::heading(
+        CATALOG.t("print-centre-section-connection-check"),
+    ));
     let mut items: Vec<El> = Vec::new();
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, true, false, true), tx) {
         items.push(issue);
@@ -802,9 +808,9 @@ pub(super) fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &Door)
             .collect(),
         _ => vec![copy("This printer does not report supply levels.")],
     };
-    let status = Property::new("State", friendly_queue_state(queue));
+    let status = Property::new(CATALOG.t("print-centre-state"), friendly_queue_state(queue));
     let availability = Property::new(
-        "Availability",
+        CATALOG.t("print-centre-availability"),
         if queue.default {
             "Preferred printer"
         } else {
@@ -977,8 +983,14 @@ fn document_card(filename: &str, preview: &PrintPreview, tx: &Door) -> El {
                 .with_intrinsic_height()
                 .push(preview_widget)
                 .push(Box::new(
-                    Text::new(&format!("Page {} of {}", shown.saturating_add(1), pages))
-                        .with_role(TextRole::Label),
+                    Text::new(&CATALOG.t_args(
+                        "print-centre-page-of",
+                        &[
+                            ("page", ArgValue::Text(shown.saturating_add(1).to_string())),
+                            ("pages", ArgValue::Text(pages.to_string())),
+                        ],
+                    ))
+                    .with_role(TextRole::Label),
                 ))
                 .push(Box::new(
                     Row::new()
@@ -1220,8 +1232,11 @@ fn page_details(
             TextRole::Heading,
         ))
         .push(Box::new(PropertyList::new(vec![
-            Property::new("Orientation", orientation),
-            Property::new("Text language", &page_data.ocr_language),
+            Property::new(CATALOG.t("print-centre-orientation"), orientation),
+            Property::new(
+                CATALOG.t("print-centre-text-language"),
+                &page_data.ocr_language,
+            ),
         ])))
         .push(muted(&page_data.ocr_note));
     if let Some(recognized) = &page_data.recognized_text {

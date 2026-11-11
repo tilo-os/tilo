@@ -17,6 +17,7 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -29,6 +30,7 @@ use ui::widget::toggle_group::SegmentedStyle;
 use ui::widget::{ControlSize, EmptyState, EmptyStateContent, SegmentedFace, ToggleGroup, Widget};
 
 use crate::highlight;
+use crate::i18n::CATALOG;
 use crate::i18n::{count, t, t_args};
 use crate::model::{AlignedRow, DiffModel, RowKind};
 use crate::pane::{self, CodeMetrics};
@@ -696,15 +698,23 @@ impl Widget for DiffView {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let changes = self.model.blocks.len();
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a count only selects a plural form; exactness past 2^52 is irrelevant"
+        )]
+        let number = changes as f64;
         Some(
             AccessNode::new(Role::Canvas)
-                .with_name(format!(
-                    "Diff between {} and {}",
-                    self.left_label, self.right_label
+                .with_name(CATALOG.t_args(
+                    "diffmerge-a11y-between",
+                    &[
+                        ("left", ArgValue::Text(self.left_label.clone())),
+                        ("right", ArgValue::Text(self.right_label.clone())),
+                    ],
                 ))
-                .with_description(format!(
-                    "{changes} change{}. Scroll to review the aligned source lines.",
-                    if changes == 1 { "" } else { "s" }
+                .with_description(CATALOG.t_args(
+                    "diffmerge-a11y-changes",
+                    &[("changes", ArgValue::Number(number))],
                 ))
                 .with_state(AccessState::new().focusable(true).focused(self.focused))
                 .with_bounds(self.rect),
@@ -728,7 +738,10 @@ impl DiffView {
                     .into_iter()
                     .map(|(show_right, label)| {
                         AccessNode::new(Role::ToggleButton)
-                            .with_name(format!("Show {label} file"))
+                            .with_name(CATALOG.t_args(
+                                "diffmerge-a11y-show-file",
+                                &[("source", ArgValue::Text(label))],
+                            ))
                             .with_description(t("diff-a11y-switch-diff-source"))
                             .with_action_target(format!(
                                 "diffmerge.diff-source:{}",
@@ -750,11 +763,22 @@ impl DiffView {
         }
         controls.extend(self.model.blocks.iter().enumerate().map(|(index, block)| {
             AccessNode::new(Role::Button)
-                .with_name(format!(
-                    "Change {}: lines {} through {}",
-                    index.saturating_add(1),
-                    block.first_row.saturating_add(1),
-                    block.last_row.saturating_add(1)
+                .with_name(CATALOG.t_args(
+                    "diffmerge-a11y-change-lines",
+                    &[
+                        (
+                            "change",
+                            ArgValue::Text(index.saturating_add(1).to_string()),
+                        ),
+                        (
+                            "first",
+                            ArgValue::Text(block.first_row.saturating_add(1).to_string()),
+                        ),
+                        (
+                            "last",
+                            ArgValue::Text(block.last_row.saturating_add(1).to_string()),
+                        ),
+                    ],
                 ))
                 .with_description(t("diff-a11y-show-change"))
                 .with_action_target(format!(

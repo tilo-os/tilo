@@ -84,3 +84,12 @@ ebook-a11y-choose-colour = Choose colour
 
 ## Window and accessibility copy
 ebook-drop-epub = Drop an EPUB here or choose one
+
+## Facts, property labels and section titles
+ebook-key-reserved = { $key } is reserved for a built-in reader command. Choose another key.
+ebook-a11y-annotations = { $annotations ->
+    [one] One annotation. Scroll this list to browse it.
+   *[other] Annotations: { $annotations } total. Scroll this list to browse every annotation.
+}
+ebook-a11y-contents = Contents: chapter { $chapter } of { $chapters }. Scroll this list to browse every chapter.
+ebook-a11y-annotation-hit = { $kind } in chapter { $chapter } of { $title }

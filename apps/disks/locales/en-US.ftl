@@ -13,3 +13,24 @@ disks-drive-empty = This drive has no partitions.
 disks-a11y-smart = SMART attributes
 disks-none-mounted = No filesystems are mounted.
 disks-a11y-drives = Drives
+
+## Facts, property labels and section titles
+disks-section-details = Details
+disks-used-for = Used for
+disks-free = Free
+disks-used = Used
+disks-mounted-at = Mounted at
+disks-encryption = Encryption
+disks-filesystem = Filesystem
+disks-type = Type
+disks-size = Size
+disks-device = Device
+disks-serial = Serial number
+disks-interface = Interface
+disks-capacity = Capacity
+disks-section-filesystems = Filesystems
+disks-partition-a11y = Select partition { $device }
+
+disks-section-attributes = Attributes
+disks-section-drive = Drive
+disks-section-partition-map = Partition map

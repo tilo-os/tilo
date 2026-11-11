@@ -25,6 +25,7 @@ use accessible::{
 };
 pub(super) use now_playing::NowPlaying;
 pub(super) use query_view::SearchView;
+use ui::i18n::ArgValue;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
@@ -37,6 +38,7 @@ use ui::widget::Continuable;
 /// A track's row: its title and the line under it. Real rows and the rows
 /// on their way take its geometry.
 pub(crate) const TRACK_ROW: ui::widget::RowShape = ui::widget::RowShape::TITLE.with_secondary(1);
+use crate::i18n::CATALOG;
 use ui::widget::data_table::DataTableFace;
 use ui::widget::{
     ArrivalFace, Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent,
@@ -1186,7 +1188,10 @@ impl Widget for Music {
                             AccessNode::new(Role::ListItem)
                                 .with_hashed_key(format!("genre:{genre}"))
                                 .with_name(genre)
-                                .with_description(format!("Search for {genre}"))
+                                .with_description(CATALOG.t_args(
+                                    "music-a11y-search-genre",
+                                    &[("genre", ArgValue::Text((*genre).to_owned()))],
+                                ))
                                 .with_position(index + 1, total)
                         }),
                 );
@@ -3900,8 +3905,21 @@ impl Music {
     /// An honest error for a live detail page whose fetch failed (offline,
     /// geo-block, network error), with a way home: a deep link can open a
     /// page with no Back history to return to.
+    /// What a detail page shows, named in the window's language.
+    fn kind_name(kind: &str) -> String {
+        match kind {
+            "album" => CATALOG.t("music-kind-album"),
+            "artist" => CATALOG.t("music-kind-artist"),
+            "playlist" => CATALOG.t("music-kind-playlist"),
+            other => other.to_owned(),
+        }
+    }
+
     fn draw_detail_error(&mut self, ctx: &mut PaintCtx<'_>, body: Rect, y: f64, kind: &str) -> f64 {
-        let title = format!("Couldn’t load this {kind}");
+        let title = CATALOG.t_args(
+            "music-detail-load-failed",
+            &[("kind", ArgValue::Text(Self::kind_name(kind)))],
+        );
         let content = EmptyStateContent {
             icon: Some(Icon::WifiOff),
             message: Some("Check your connection and try again."),

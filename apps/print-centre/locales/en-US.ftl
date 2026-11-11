@@ -32,3 +32,16 @@ print-centre-all-pages = All pages
 
 ## Window and accessibility copy
 print-centre-a11y-pages = Pages to print
+
+## Facts, property labels and section titles
+print-centre-text-language = Text language
+print-centre-orientation = Orientation
+print-centre-page-of = Page { $page } of { $pages }
+print-centre-availability = Availability
+print-centre-state = State
+print-centre-section-connection-check = Connection check
+print-centre-scanners = Scanners available
+print-centre-reporting-levels = Reporting ink or toner levels
+print-centre-printers-responding = Printers responding
+print-centre-section-tools = Tools
+print-centre-section-printers = Your printers

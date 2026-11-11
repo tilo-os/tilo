@@ -84,3 +84,12 @@ ebook-a11y-choose-colour = Farbe wählen
 
 ## Fenster- und Barrierefreiheits-Texte
 ebook-drop-epub = EPUB hier ablegen oder eines auswählen
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+ebook-key-reserved = { $key } ist für einen eingebauten Lesebefehl reserviert. Wähle eine andere Taste.
+ebook-a11y-annotations = { $annotations ->
+    [one] Eine Anmerkung. Scrolle durch diese Liste, um sie zu sehen.
+   *[other] Anmerkungen: { $annotations } insgesamt. Scrolle durch diese Liste, um alle zu sehen.
+}
+ebook-a11y-contents = Inhalt: Kapitel { $chapter } von { $chapters }. Scrolle durch diese Liste, um alle Kapitel zu sehen.
+ebook-a11y-annotation-hit = { $kind } in Kapitel { $chapter } von { $title }

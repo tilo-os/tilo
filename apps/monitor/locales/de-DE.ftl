@@ -19,3 +19,23 @@ monitor-monitor-flat = { $new ->
 
 ## Fenster- und Barrierefreiheits-Texte
 monitor-a11y-processes = Prozesse
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+monitor-command = Befehl
+monitor-running-for = Läuft seit
+monitor-open-files = Offene Dateien
+monitor-virtual-memory = Virtueller Speicher
+monitor-threads = Threads
+monitor-parent = Übergeordneter Prozess
+monitor-app = App
+monitor-status = Status
+monitor-user = Benutzer
+monitor-memory-children = Speicher mit Kindprozessen
+monitor-cpu-children = CPU mit Kindprozessen
+monitor-processor = Prozessor
+monitor-kernel = Kernel
+monitor-host-name = Rechnername
+
+monitor-section-system = System
+monitor-legend-in-use = In Benutzung: { $percent }
+monitor-section-memory = Speicher

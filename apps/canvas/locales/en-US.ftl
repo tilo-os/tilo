@@ -481,3 +481,6 @@ canvas-pictures-unavailable = This needs a picture of the artwork, which can’t
 # still being decoded: a browser page cannot wait for the decoder, so the
 # same request answers once the pixels are here.
 canvas-pictures-decoding = This needs a picture that is still being decoded. Ask again in a moment.
+
+## Facts, property labels and section titles
+canvas-a11y-artwork = { $width } by { $height } units, { $layers } layers, { $marks } marks, { $selected } selected; inspect lists them and look shows them

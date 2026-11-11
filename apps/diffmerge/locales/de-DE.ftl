@@ -165,3 +165,14 @@ diff-a11y-side-by-side = Basis, unsere und ihre Fassung stehen nebeneinander.
 
 diff-a11y-folders-truncated = Nur der erste Teil der Ordner wurde verglichen
 diff-a11y-choose-file = Eine Datei wählen, um sie zu vergleichen
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+diffmerge-a11y-change-lines = Änderung { $change }: Zeilen { $first } bis { $last }
+diffmerge-a11y-show-file = Datei { $source } anzeigen
+diffmerge-a11y-changes = { $changes ->
+    [one] Eine Änderung. Scrolle durch die ausgerichteten Quellzeilen.
+   *[other] { $changes } Änderungen. Scrolle durch die ausgerichteten Quellzeilen.
+}
+diffmerge-a11y-between = Unterschied zwischen { $left } und { $right }
+diffmerge-a11y-for-change = { $choice } für Änderung { $change }
+diffmerge-a11y-show-source = Quelle { $source } anzeigen

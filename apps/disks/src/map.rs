@@ -11,8 +11,10 @@
 
 use std::collections::HashMap;
 
+use crate::locales::CATALOG;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::charts::legend;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -479,7 +481,10 @@ impl Widget for PartitionMap {
             }
             group.children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(format!("Select partition {}", entry.device))
+                    .with_name(CATALOG.t_args(
+                        "disks-partition-a11y",
+                        &[("device", ArgValue::Text(entry.device.clone()))],
+                    ))
                     .with_description(entry.label.clone())
                     .with_bounds(*rect + origin)
                     .with_action_target(format!("disks.part:{}", entry.device))

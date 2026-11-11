@@ -11,6 +11,7 @@
 //! conversion a press does.
 
 use ui::TextRole;
+use ui::i18n::ArgValue;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -22,6 +23,7 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use crate::convert::{self, Dimension, Unit};
 use crate::draw::{self, Align};
+use crate::resource::CATALOG;
 use ui::widget::DrawChild;
 
 /// What a press on the conversion page asks for.
@@ -680,7 +682,10 @@ impl crate::app::CalculatorApp {
         ] {
             let mut node = AccessNode::new(Role::Button)
                 .with_name(format!("{name} unit: {}", unit.name))
-                .with_description(format!("Change {} to the next unit", unit.symbol))
+                .with_description(CATALOG.t_args(
+                    "calculator-next-unit",
+                    &[("unit", ArgValue::Text(unit.symbol.to_owned()))],
+                ))
                 .with_action_target(ConvertPage::semantic_target(&step))
                 .with_state(AccessState::new().focusable(true));
             if let Some(bounds) = page.control_rect(&step) {

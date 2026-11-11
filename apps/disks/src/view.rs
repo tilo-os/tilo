@@ -24,6 +24,7 @@ use ui::window_toolbar::{
 };
 
 use crate::app::{ActionKind, Tab};
+use crate::locales::CATALOG;
 use crate::map::{MapEntry, PartitionMap};
 use crate::model::{
     AttrSeverity, Drive, DriveKind, Partition, SmartAttr, SmartInfo, SmartStatus, fmt_hours,
@@ -308,11 +309,11 @@ pub(crate) fn loading(offset: &Rc<Cell<(f32, f32)>>, since: ui::time::Instant) -
         .with_no_padding()
         .with_rhythm(Rhythm::Group)
         .push(Box::new(Section::titled(
-            "Partition map",
+            CATALOG.t("disks-section-partition-map"),
             vec![Box::new(PartitionMap::pending(since))],
         )))
         .push(Box::new(Section::titled(
-            "Filesystems",
+            CATALOG.t("disks-section-filesystems"),
             vec![ui::widget::ArrivingView::placeholder_since(
                 local(),
                 since,
@@ -325,7 +326,7 @@ pub(crate) fn loading(offset: &Rc<Cell<(f32, f32)>>, since: ui::time::Instant) -
             )],
         )))
         .push(Box::new(Section::titled(
-            "Details",
+            CATALOG.t("disks-section-details"),
             vec![ui::widget::ArrivingView::placeholder_since(
                 local(),
                 since,
@@ -437,19 +438,19 @@ fn overview(model: &DetailModel<'_>, intents: &Intents) -> Element {
         .with_no_padding()
         .with_rhythm(Rhythm::Group);
     page = page.push(Box::new(Section::titled(
-        "Partition map",
+        CATALOG.t("disks-section-partition-map"),
         vec![Box::new(map)],
     )));
     page = page.push(Box::new(filesystems(drive, model.partition, intents)));
     if let Some(part) = model.partition.and_then(|i| drive.partitions.get(i)) {
         page = page.push(Box::new(partition_details(drive, part)));
         page = page.push(Box::new(Section::titled(
-            "Drive",
+            CATALOG.t("disks-section-drive"),
             vec![Box::new(PropertyList::new(drive_facts(drive)))],
         )));
     } else {
         page = page.push(Box::new(Section::titled(
-            "Details",
+            CATALOG.t("disks-section-details"),
             vec![Box::new(PropertyList::new(drive_facts(drive)))],
         )));
     }
@@ -504,7 +505,7 @@ fn filesystems(drive: &Drive, selected: Option<usize>, intents: &Intents) -> Sec
                 ))),
         ));
     }
-    Section::titled("Filesystems", items)
+    Section::titled(CATALOG.t("disks-section-filesystems"), items)
 }
 
 /// The mounted partition the drive page's two ways on act for: the chosen
@@ -587,13 +588,17 @@ fn interface_name(drive: &Drive) -> String {
 
 fn drive_facts(drive: &Drive) -> Vec<Property> {
     let mut facts = vec![
-        Property::new("Device", format!("/dev/{}", drive.name)).with_kind(TextKind::Identifier),
-        Property::new("Type", drive.kind.long()),
-        Property::new("Capacity", size(drive.size)).with_kind(TextKind::Numeric),
-        Property::new("Interface", interface_name(drive)),
+        Property::new(CATALOG.t("disks-device"), format!("/dev/{}", drive.name))
+            .with_kind(TextKind::Identifier),
+        Property::new(CATALOG.t("disks-type"), drive.kind.long()),
+        Property::new(CATALOG.t("disks-capacity"), size(drive.size)).with_kind(TextKind::Numeric),
+        Property::new(CATALOG.t("disks-interface"), interface_name(drive)),
     ];
     if let Some(serial) = &drive.serial {
-        facts.push(Property::new("Serial number", serial.clone()).with_kind(TextKind::Identifier));
+        facts.push(
+            Property::new(CATALOG.t("disks-serial"), serial.clone())
+                .with_kind(TextKind::Identifier),
+        );
     }
     facts
 }
@@ -634,7 +639,7 @@ fn health(drive: &Drive) -> Element {
         }
         if !smart.attrs.is_empty() {
             page = page.push(Box::new(Section::titled(
-                "Attributes",
+                CATALOG.t("disks-section-attributes"),
                 vec![Box::new(attribute_table(&smart.attrs))],
             )));
         }
@@ -786,38 +791,45 @@ fn partition_summary(drive: &Drive, part: &Partition) -> String {
 /// where it is mounted and its room, and what of the running system it holds.
 fn partition_details(drive: &Drive, part: &Partition) -> Section {
     let mut facts = vec![
-        Property::new("Device", format!("/dev/{}", part.name)).with_kind(TextKind::Identifier),
-        Property::new("Size", size(part.size)).with_kind(TextKind::Numeric),
+        Property::new(CATALOG.t("disks-device"), format!("/dev/{}", part.name))
+            .with_kind(TextKind::Identifier),
+        Property::new(CATALOG.t("disks-size"), size(part.size)).with_kind(TextKind::Numeric),
     ];
     if let Some(kind) = part.part_type_name.clone().filter(|kind| !kind.is_empty()) {
-        facts.push(Property::new("Type", kind));
+        facts.push(Property::new(CATALOG.t("disks-type"), kind));
     }
     if let Some(fstype) = part.fstype.clone().filter(|fs| !fs.is_empty()) {
-        facts.push(Property::new("Filesystem", fstype));
+        facts.push(Property::new(CATALOG.t("disks-filesystem"), fstype));
     }
     if let Some(encryption) = &part.encryption {
         let state = match &encryption.unlocked_as {
             Some(_) => format!("{}, unlocked", encryption.scheme),
             None => format!("{}, locked", encryption.scheme),
         };
-        facts.push(Property::new("Encryption", state));
+        facts.push(Property::new(CATALOG.t("disks-encryption"), state));
     }
     facts.push(Property::new(
-        "Mounted at",
+        CATALOG.t("disks-mounted-at"),
         part.mount_display()
             .unwrap_or_else(|| "Not mounted".to_owned()),
     ));
     if let Some(used) = part.used {
-        facts.push(Property::new("Used", size(used)).with_kind(TextKind::Numeric));
+        facts.push(Property::new(CATALOG.t("disks-used"), size(used)).with_kind(TextKind::Numeric));
         facts.push(
-            Property::new("Free", size(part.size.saturating_sub(used)))
-                .with_kind(TextKind::Numeric),
+            Property::new(
+                CATALOG.t("disks-free"),
+                size(part.size.saturating_sub(used)),
+            )
+            .with_kind(TextKind::Numeric),
         );
     }
     if let Some(purpose) = purpose(drive, part) {
-        facts.push(Property::new("Used for", purpose));
+        facts.push(Property::new(CATALOG.t("disks-used-for"), purpose));
     }
-    Section::titled("Details", vec![Box::new(PropertyList::new(facts))])
+    Section::titled(
+        CATALOG.t("disks-section-details"),
+        vec![Box::new(PropertyList::new(facts))],
+    )
 }
 
 fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {

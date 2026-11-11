@@ -41,6 +41,7 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ViewCx};
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
 use crate::page::{self, Frame, stack};
+use crate::resource::CATALOG;
 
 /// Display facts only; final installation still reprobes through the native helper.
 #[derive(Clone)]
@@ -896,7 +897,7 @@ impl SetupApp {
                 ))
                 .push(Box::new(Text::new(&retained).dimmed())),
         )])
-        .with_header(SectionHeader::heading("Tilo Desktop"))
+        .with_header(SectionHeader::heading(CATALOG.t("imager-section-desktop")))
     }
 
     fn internal_download_card(&self) -> Section {
@@ -974,8 +975,9 @@ impl SetupApp {
                 .with_id("setup.internal.status")
                 .with_live(Politeness::Assertive),
         ));
-        Section::new(vec![Box::new(content)])
-            .with_header(SectionHeader::heading("Full Tilo download"))
+        Section::new(vec![Box::new(content)]).with_header(SectionHeader::heading(
+            CATALOG.t("imager-section-full-download"),
+        ))
     }
 
     fn review_body(&self) -> Column {
@@ -1045,7 +1047,9 @@ impl SetupApp {
                 Section::new(vec![Box::new(
                     Text::new(&self.internal_readiness_text()).with_live(Politeness::Polite),
                 )])
-                .with_header(SectionHeader::heading("Before installing")),
+                .with_header(SectionHeader::heading(
+                    &CATALOG.t("imager-section-before-installing"),
+                )),
             ));
         }
         body

@@ -137,3 +137,63 @@ mail-shortcuts-title = Keyboard shortcuts
 
 ## Window and accessibility copy
 mail-a11y-mailboxes = Mailboxes
+
+## What the window shows
+mail-view-drawer = Folder drawer
+mail-view-reading = Reading pane
+mail-view-list = Message list
+mail-view-all = Folders, message list, and reading pane
+
+## Facts, property labels and section titles
+mail-a11y-current-view = Current view: { $view }
+mail-a11y-reading = Reading: { $subject }
+mail-a11y-save-attachment = Save attachment { $file } ({ $size })
+mail-a11y-refused = The server refused this message: { $reason }
+mail-a11y-cancel-sending = Cancel sending to { $to }
+mail-a11y-outbox-row = To { $to }: { $subject }
+mail-a11y-no-messages = No messages in { $folder }
+mail-status-send-failed = Send failed: { $error }
+mail-purge-body = { $count ->
+    [one] One message in Trash will be deleted from this mailbox and the server. This can’t be undone.
+   *[other] { $count } messages in Trash will be deleted from this mailbox and the server. This can’t be undone.
+}
+mail-status-attach-failed = Couldn’t attach { $name }: { $error }
+mail-status-attached = Attached { $name }
+
+mail-status-picker-failed = Couldn’t open attachment picker: { $error }
+
+mail-status-archived = { $count ->
+    [one] Archived one message
+   *[other] Archived { $count } messages
+}
+mail-status-trashed = { $count ->
+    [one] Moved one message to Trash
+   *[other] Moved { $count } messages to Trash
+}
+mail-status-marked-read = { $count ->
+    [one] Marked one message read
+   *[other] Marked { $count } messages read
+}
+mail-status-marked-unread = { $count ->
+    [one] Marked one message unread
+   *[other] Marked { $count } messages unread
+}
+mail-status-deleted = { $count ->
+    [one] Deleted one message
+   *[other] Deleted { $count } messages
+}
+mail-status-account-not-saved = Selected account, but could not save that preference: { $error }
+mail-status-purged = { $count ->
+    [one] Permanently deleted one trashed message
+   *[other] Permanently deleted { $count } trashed messages
+}
+mail-status-purge-nothing = Nothing was deleted; the selected messages changed before confirmation
+mail-status-preferences-not-saved = Could not save your Mail preferences: { $error }
+
+mail-from = From { $sender }
+mail-status-copy-cancelled = Attachment save cancelled
+mail-status-copy-saved = Saved a copy as { $file }
+mail-status-selection-cancelled = Attachment selection cancelled
+mail-status-selection-composer-closed = Attachment selection cancelled because the composer was closed
+mail-status-picker-disconnected = Attachment picker disconnected before selecting a file
+mail-status-choose-file = Choose a file to attach

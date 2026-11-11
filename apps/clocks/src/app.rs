@@ -7,6 +7,7 @@
 //! platform's notification scheduler, and keeps the shell's floating clock
 //! current. A capture or a past version does none of that.
 
+use crate::locales::CATALOG;
 use crate::model::{Clocks, WeekdayKey, bounded_label};
 use crate::native_timers::{
     ALARMS_URI, TIMERS_URI, alarm_id as native_alarm_id, timer_id as native_timer_id,
@@ -17,6 +18,7 @@ use crate::transport::{ShellCommand, ShellSnapshot};
 use chrono::{Datelike, Offset, TimeZone, Utc};
 use std::{collections::BTreeSet, time::Duration};
 use ui::framework::{Actions, Dispatcher, Live};
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::prelude::Id;
 use ui::widget::Filterable;
@@ -987,18 +989,19 @@ fn timers_screen(
         .with_padding_rhythm(None, None)
         .with_rhythm(ui::tokens::Rhythm::Related)
         .with_align_items(taffy::AlignItems::Start);
-    for (label, id, state, maximum) in [
-        ("Hours", "hours", &custom_hours, 99.0),
-        ("Minutes", "minutes", &custom_minutes, 59.0),
-        ("Seconds", "seconds", &custom_seconds, 59.0),
+    for (label_key, id, state, maximum) in [
+        ("clocks-field-hours", "hours", &custom_hours, 99.0),
+        ("clocks-field-minutes", "minutes", &custom_minutes, 59.0),
+        ("clocks-field-seconds", "seconds", &custom_seconds, 59.0),
     ] {
+        let label = CATALOG.t(label_key);
         duration_fields = duration_fields.push(Box::new(
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
                 .with_intrinsic_width()
                 .with_rhythm(ui::tokens::Rhythm::Tight)
-                .push(Box::new(Text::new(label).with_role(ui::TextRole::Caption)))
+                .push(Box::new(Text::new(&label).with_role(ui::TextRole::Caption)))
                 .push(Box::new(
                     ui::widget::NumberInput::from_state(state)
                         .with_id(&format!("clocks.timer.custom.{id}"))
@@ -1006,7 +1009,10 @@ fn timers_screen(
                         .with_step(1.0)
                         .with_precision(0)
                         .control_size(ui::widget::ControlSize::Large)
-                        .with_accessible_name(format!("Timer duration {id}")),
+                        .with_accessible_name(CATALOG.t_args(
+                            "clocks-timer-duration",
+                            &[("name", ArgValue::Text(label.clone()))],
+                        )),
                 )),
         ));
     }
@@ -1094,10 +1100,12 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Tight);
         for (i, ms) in stopwatch.laps_ms.iter().enumerate().rev() {
-            laps = laps.push(Box::new(Text::new(&format!(
-                "Lap {}   {}",
-                i.saturating_add(1),
-                duration(*ms)
+            laps = laps.push(Box::new(Text::new(&CATALOG.t_args(
+                "clocks-lap",
+                &[
+                    ("number", ArgValue::Text(i.saturating_add(1).to_string())),
+                    ("time", ArgValue::Text(duration(*ms))),
+                ],
             ))));
         }
         Box::new(Card::new(Box::new(

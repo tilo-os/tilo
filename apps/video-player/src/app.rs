@@ -47,6 +47,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::fill_rect;
 use ui::portal::{ContentsOutcome, PickedContents, PortalOutcome};
@@ -66,6 +67,7 @@ use ui::framework::{
 use ui::tilo_resource::{ActionDecl, Id};
 
 use crate::actions::VideoEffect;
+use crate::i18n::CATALOG;
 use crate::preferences::{PLAYBACK_RATES, PlayerSettings, RecentMedia, RecentVideos, ResumePoints};
 use crate::shared::{Library as PlayerResource, library as verbs};
 use ui::widget::DrawChild;
@@ -820,10 +822,15 @@ impl PlayerState {
     fn keep_contents(&mut self, queue_id: &str, file: &PickedContents) {
         if file.bytes.len() > crate::kept::KEEP_LIMIT {
             if let Some(entry) = self.queue.iter_mut().find(|entry| entry.id == queue_id) {
-                entry.title = format!(
-                    "{} — too large to reopen after a reload (over {})",
-                    entry.title,
-                    ui::format::memory(crate::kept::KEEP_LIMIT as u64)
+                entry.title = CATALOG.t_args(
+                    "video-player-too-large",
+                    &[
+                        ("title", ArgValue::Text(entry.title.clone())),
+                        (
+                            "size",
+                            ArgValue::Text(ui::format::memory(crate::kept::KEEP_LIMIT as u64)),
+                        ),
+                    ],
                 );
             }
             return;

@@ -51,3 +51,17 @@ firewall-a11y-rules = Regeln
 firewall-zone-empty = Diese Zone hat noch keine Regeln.
 firewall-applying-rules = Die gespeicherten Regeln werden auf dieses Gerät angewendet…
 firewall-a11y-zones = Firewall-Zonen
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+firewall-a11y-allow-service = { $service } zulassen
+firewall-packets-window = Pakete in den letzten { $minutes } Minuten
+firewall-a11y-enable-rule = Regel { $rule } aktivieren
+firewall-masquerading = Maskierung
+firewall-unmatched-traffic = Nicht zugeordneter Datenverkehr
+firewall-section-details = Details
+firewall-interfaces = Schnittstellen
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+firewall-delete-rule-body = { $rule } über { $protocol } von { $source } wird nicht mehr { $action }.
+firewall-state-allowed = zugelassen
+firewall-state-denied = abgelehnt

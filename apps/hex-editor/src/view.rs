@@ -37,6 +37,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::TryRecvError;
+use ui::i18n::ArgValue;
 use ui::time::Instant;
 use ui::widget::TaffyTreeExt;
 use ui::widget::toast::{ToastKind, Transient};
@@ -882,19 +883,28 @@ impl Editor {
     fn accessibility(&self, goto: &Popover<PopoverPrompt>) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
-        let mut children = vec![
+        let mut children =
+            vec![
             AccessNode::new(Role::StaticText)
                 .with_name(if self.has_file {
-                    format!(
-                        "{}; {} bytes; cursor at hexadecimal 0x{:X}; {} mode; {}",
-                        self.file_name,
-                        self.model.len(),
-                        self.model.cursor(),
-                        self.model.mode().label(),
-                        self.model.endian().label(),
+                    #[allow(
+                        clippy::cast_precision_loss,
+                        reason = "a byte count only selects a plural form; exactness past 2^52 is \
+irrelevant"
+                    )]
+                    let bytes = self.model.len() as f64;
+                    crate::resource::CATALOG.t_args(
+                        "hex-a11y-status",
+                        &[
+                            ("file", ArgValue::Text(self.file_name.clone())),
+                            ("bytes", ArgValue::Number(bytes)),
+                            ("cursor", ArgValue::Text(format!("0x{:X}", self.model.cursor()))),
+                            ("mode", ArgValue::Text(self.model.mode().label().to_owned())),
+                            ("endian", ArgValue::Text(self.model.endian().label().to_owned())),
+                        ],
                     )
                 } else {
-                    "No file open. Open a local file to inspect its bytes.".to_string()
+                    crate::resource::CATALOG.t("hex-a11y-no-file")
                 })
                 .with_live(Politeness::Polite)
                 .with_hashed_key("hex.status"),

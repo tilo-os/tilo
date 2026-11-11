@@ -11,6 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use ui::chrome::{NavCount, NavRowFace};
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::tokens::TextRole;
 use ui::widget::DrawChild;
@@ -27,6 +28,7 @@ use vello::peniko::{BlendMode, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::CATALOG;
 use crate::actions::PdfEffect;
 use std::path::Path;
 use ui::Widget;
@@ -5033,7 +5035,10 @@ impl Widget for PdfApp {
                     .cloned()
                     .unwrap_or_else(|| format!("page-{}", index + 1));
                 let mut node = AccessNode::new(Role::ListItem)
-                    .with_name(format!("Page {}", index + 1))
+                    .with_name(CATALOG.t_args(
+                        "pdf-a11y-page",
+                        &[("page", ArgValue::Text((index + 1).to_string()))],
+                    ))
                     .with_action_target(format!("pdf.page:{page_id}"))
                     .with_bounds(bounds)
                     .with_position(index + 1, pages)
@@ -5056,7 +5061,13 @@ impl Widget for PdfApp {
                 self.doc_name.clone()
             }),
             AccessNode::new(Role::Document)
-                .with_name(format!("Page {current} of {pages}"))
+                .with_name(CATALOG.t_args(
+                    "pdf-a11y-page-of",
+                    &[
+                        ("current", ArgValue::Text(current.to_string())),
+                        ("pages", ArgValue::Text(pages.to_string())),
+                    ],
+                ))
                 .with_description(crate::t("pdf-a11y-canvas"))
                 .with_value(format!("Zoom {:.0}%", self.zoom() * 100.0))
                 .with_bounds(self.canvas_rect)
@@ -5071,7 +5082,13 @@ impl Widget for PdfApp {
                 .map(|index| {
                     let page = self.raster_matches.get(index).map_or(1, |m| m.page);
                     AccessNode::new(Role::ListItem)
-                        .with_name(format!("Match {} on page {page}", index + 1))
+                        .with_name(CATALOG.t_args(
+                            "pdf-a11y-match",
+                            &[
+                                ("match", ArgValue::Text((index + 1).to_string())),
+                                ("page", ArgValue::Text(page.to_string())),
+                            ],
+                        ))
                         .with_action_target(format!("pdf.match:{index}"))
                         .with_position(index + 1, count)
                         .with_state(focusable().selected(index == self.active_match))
@@ -5117,17 +5134,28 @@ impl Widget for PdfApp {
                     .iter()
                     .map(|comment| {
                         let text = &comment.comment.text;
+                        #[allow(
+                            clippy::cast_precision_loss,
+                            reason = "a count only selects a plural form; exactness past 2^52 is \
+irrelevant"
+                        )]
+                        let replies = comment.comment.replies.len() as f64;
                         AccessNode::new(Role::ListItem)
                             .with_name(if text.trim().is_empty() {
                                 "Empty comment".into()
                             } else {
                                 text.clone()
                             })
-                            .with_description(format!(
-                                "{} on page {}; {} replies",
-                                self.author_name(&comment.comment.author),
-                                comment.page,
-                                comment.comment.replies.len()
+                            .with_description(CATALOG.t_args(
+                                "pdf-a11y-comment",
+                                &[
+                                    (
+                                        "author",
+                                        ArgValue::Text(self.author_name(&comment.comment.author)),
+                                    ),
+                                    ("page", ArgValue::Text(comment.page.to_string())),
+                                    ("replies", ArgValue::Number(replies)),
+                                ],
                             ))
                             .with_action_target(format!("pdf.comment:{}.open", comment.id))
                             .with_state(
@@ -5183,10 +5211,16 @@ impl Widget for PdfApp {
                     ];
                     nodes.extend(self.signatures.iter().map(|signature| {
                         AccessNode::new(Role::ListItem)
-                            .with_name(format!("Signature by {}", signature.signer))
-                            .with_description(format!(
-                                "Signed {} on page {}",
-                                signature.date, signature.page
+                            .with_name(CATALOG.t_args(
+                                "pdf-a11y-signature-by",
+                                &[("signer", ArgValue::Text(signature.signer.clone()))],
+                            ))
+                            .with_description(CATALOG.t_args(
+                                "pdf-a11y-signed",
+                                &[
+                                    ("date", ArgValue::Text(signature.date.clone())),
+                                    ("page", ArgValue::Text(signature.page.to_string())),
+                                ],
                             ))
                             .with_action_target(format!("pdf.signature:{}.open", signature.id))
                             .with_state(focusable().selected(

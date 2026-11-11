@@ -519,9 +519,9 @@ impl Credentials {
             if forms.is_empty() {
                 column = column.push(line("No supported address form found on this page."));
             } else {
-                column = column.push(Box::new(
-                    Section::new(forms).with_header(SectionHeader::group("Forms on this page")),
-                ));
+                column = column.push(Box::new(Section::new(forms).with_header(
+                    SectionHeader::group(crate::CATALOG.t("browser-section-forms")),
+                )));
             }
             column = column.push(Box::new(Actions::new(
                 self.button(
@@ -568,9 +568,9 @@ impl Credentials {
                     )) as Box<dyn Widget>
                 })
                 .collect();
-            column = column.push(Box::new(
-                Section::new(forms).with_header(SectionHeader::group("Forms on this page")),
-            ));
+            column = column.push(Box::new(Section::new(forms).with_header(
+                SectionHeader::group(crate::CATALOG.t("browser-section-forms")),
+            )));
         }
         if self.accounts.is_empty() {
             column = column.push(line("No saved accounts for this site."));
@@ -593,9 +593,9 @@ impl Credentials {
                     )) as Box<dyn Widget>
                 })
                 .collect();
-            column = column.push(Box::new(
-                Section::new(accounts).with_header(SectionHeader::group("Saved accounts")),
-            ));
+            column = column.push(Box::new(Section::new(accounts).with_header(
+                SectionHeader::group(crate::CATALOG.t("browser-section-saved-accounts")),
+            )));
         }
         self.password_actions(column, ready)
     }
@@ -627,8 +627,11 @@ impl Credentials {
         if let Some((_, username, _)) = &self.capture {
             column = column
                 .push(Box::new(
-                    Text::new(&format!("Save login for {username}?"))
-                        .with_role(TextRole::Subheading),
+                    Text::new(&crate::CATALOG.t_args(
+                        "browser-save-login",
+                        &[("site", ui::i18n::ArgValue::Text(username.clone()))],
+                    ))
+                    .with_role(TextRole::Subheading),
                 ))
                 .push(line(
                     "The password is kept in this device’s password store.",

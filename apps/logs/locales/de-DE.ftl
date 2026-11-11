@@ -18,3 +18,10 @@ logs-clear-filters = Die Journal-Filter zurückgesetzt
 ## Fenster- und Barrierefreiheits-Texte
 logs-severity = Schweregrad
 logs-a11y-entries = Journaleinträge
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+logs-boot-id = Start-ID
+logs-transport = Transport
+logs-host = Rechner
+logs-process-id = Prozess-ID
+logs-program = Programm

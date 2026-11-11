@@ -13,6 +13,7 @@ use ui::num::u32_of_usize;
 
 use ui::fact::{Measure, Measured};
 use ui::framework::Actions;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{SpacingStep, TextRole};
@@ -28,6 +29,7 @@ use crate::model::{
     Container, ContainerStatus, DetailTab, DistroBox, Engine, Image, Section as Place, Volume,
 };
 use crate::podman::Action;
+use crate::resource::CATALOG;
 use crate::resource::{Containers, ContainersEffect};
 
 /// What a control in the window asks for. The app applies each one to the
@@ -733,7 +735,7 @@ fn stats(c: &Container) -> Element {
     };
     stack(vec![
         Section::titled(
-            "Usage",
+            CATALOG.t("containers-section-usage"),
             vec![
                 usage("CPU", &cpu, s.cpu_percent),
                 usage("Memory (RSS)", &memory, s.mem_fraction()),
@@ -745,7 +747,10 @@ fn stats(c: &Container) -> Element {
                 ),
             ],
         ),
-        Section::titled("Activity", vec![Box::new(StatGroup::new(tiles))]),
+        Section::titled(
+            CATALOG.t("containers-section-activity"),
+            vec![Box::new(StatGroup::new(tiles))],
+        ),
     ])
 }
 
@@ -770,20 +775,21 @@ fn facts(column: &PropertyColumn, rows: Vec<Property>) -> Element {
 fn inspect(c: &Container) -> Element {
     let column = PropertyColumn::new();
     let mut page = vec![Section::titled(
-        "Details",
+        CATALOG.t("containers-section-details"),
         vec![facts(
             &column,
             vec![
                 Property::new("ID", c.short_id()).with_kind(TextKind::Identifier),
-                Property::new("Command", c.command.clone()).with_kind(TextKind::Code),
-                Property::new("Created", c.created.clone()),
-                Property::new("State", c.status_detail.clone()),
+                Property::new(CATALOG.t("containers-command"), c.command.clone())
+                    .with_kind(TextKind::Code),
+                Property::new(CATALOG.t("containers-created"), c.created.clone()),
+                Property::new(CATALOG.t("containers-state"), c.status_detail.clone()),
             ],
         )],
     )];
     if !c.ports.is_empty() {
         page.push(Section::titled(
-            "Ports",
+            CATALOG.t("containers-section-ports"),
             vec![facts(
                 &column,
                 c.ports
@@ -791,7 +797,10 @@ fn inspect(c: &Container) -> Element {
                     .map(|p| {
                         Property::new(
                             format!("{}/{}", p.container_port, p.protocol),
-                            format!("Host port {}", p.host_port),
+                            CATALOG.t_args(
+                                "containers-host-port",
+                                &[("port", ArgValue::Text(p.host_port.to_string()))],
+                            ),
                         )
                         .with_kind(TextKind::Numeric)
                     })
@@ -801,7 +810,7 @@ fn inspect(c: &Container) -> Element {
     }
     if !c.mounts.is_empty() {
         page.push(Section::titled(
-            "Mounts",
+            CATALOG.t("containers-section-mounts"),
             vec![facts(
                 &column,
                 c.mounts
@@ -820,7 +829,7 @@ fn inspect(c: &Container) -> Element {
     }
     if !c.env.is_empty() {
         page.push(Section::titled(
-            "Environment",
+            CATALOG.t("containers-section-environment"),
             vec![facts(
                 &column,
                 c.env
@@ -832,7 +841,7 @@ fn inspect(c: &Container) -> Element {
     }
     if !c.labels.is_empty() {
         page.push(Section::titled(
-            "Labels",
+            CATALOG.t("containers-section-labels"),
             vec![facts(
                 &column,
                 c.labels
@@ -960,15 +969,20 @@ pub(crate) fn images_page(
             Box::new(row) as Element
         })
         .collect();
-    let summary = format!(
-        "{} {} use {} of disk space.",
-        engine.images.len(),
-        if engine.images.len() == 1 {
-            "image"
-        } else {
-            "images"
-        },
-        ui::format::size(engine.image_disk_bytes())
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a count only selects a plural form; exactness past 2^52 is irrelevant"
+    )]
+    let number = engine.images.len() as f64;
+    let summary = CATALOG.t_args(
+        "containers-images-summary",
+        &[
+            ("count", ArgValue::Number(number)),
+            (
+                "size",
+                ArgValue::Text(ui::format::size(engine.image_disk_bytes())),
+            ),
+        ],
     );
     page(Some(summary), rows)
 }
@@ -1013,7 +1027,13 @@ pub(crate) fn volumes_page(
         })
         .collect();
     let in_use = engine.volumes.iter().filter(|v| v.in_use_by > 0).count();
-    let summary = format!("{in_use} of {} volumes are in use.", engine.volumes.len());
+    let summary = CATALOG.t_args(
+        "containers-volumes-in-use",
+        &[
+            ("in_use", ArgValue::Text(in_use.to_string())),
+            ("total", ArgValue::Text(engine.volumes.len().to_string())),
+        ],
+    );
     page(Some(summary), rows)
 }
 

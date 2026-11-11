@@ -16,6 +16,7 @@ use ui::widget::{
     Avatar, AvatarSize, Chip, Column, Element, Property, PropertyList, Row, Scrollable, Text,
 };
 
+use crate::account_editor::CATALOG;
 use crate::actions::ContactsEffect;
 use crate::form::Slot;
 use crate::model::{Address, Contact};
@@ -271,12 +272,14 @@ fn contact_properties(contact: &Contact, actions: Option<&Actions<Contacts>>) ->
             }),
     );
     if let Some(birthday) = &contact.birthday {
-        let property = Property::new("Birthday", birthday.pretty()).with_kind(TextKind::Numeric);
+        let property = Property::new(CATALOG.t("contacts-birthday"), birthday.pretty())
+            .with_kind(TextKind::Numeric);
         facts.push(editable(property, actions, contact, Slot::Birthday));
     }
     let website = contact.website.trim();
     if !website.is_empty() {
-        let property = Property::new("Website", website).with_kind(TextKind::Identifier);
+        let property =
+            Property::new(CATALOG.t("contacts-website"), website).with_kind(TextKind::Identifier);
         facts.push(with_effect(
             property,
             actions,
@@ -290,7 +293,7 @@ fn contact_properties(contact: &Contact, actions: Option<&Actions<Contacts>>) ->
     let notes = contact.notes.trim();
     if !notes.is_empty() {
         facts.push(editable(
-            Property::new("Notes", notes),
+            Property::new(CATALOG.t("contacts-notes"), notes),
             actions,
             contact,
             Slot::Notes,

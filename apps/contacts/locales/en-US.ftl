@@ -82,3 +82,14 @@ contacts-a11y-sort = Sort contacts
 contacts-a11y-export-list = Contacts to export
 contacts-a11y-birthday-calendar = Birthday calendar
 contacts-a11y-favorite = Favorite
+
+## Facts, property labels and section titles
+contacts-other-card = Other card
+contacts-this-card = This card
+contacts-keep-field = { $field } to keep
+contacts-notes = Notes
+contacts-website = Website
+contacts-birthday = Birthday
+
+contacts-keep-this-card = Keep this card's
+contacts-keep-other-card = Keep the other card's

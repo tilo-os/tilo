@@ -21,6 +21,7 @@ use winit::event::WindowEvent;
 use ui::charts::{BarGauge, Chart, ChartStyle, Series, nice_step};
 use ui::fact::{Measure, Measured};
 use ui::format::memory as format_bytes;
+use ui::i18n::ArgValue;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer};
 use ui::theme::Theme;
@@ -35,6 +36,7 @@ use ui::widget::{
 
 use crate::app::{SortKey, Tab};
 use crate::model::{Metrics, ProcessDataStatus, ProcessInfo, fmt_rate, fmt_uptime};
+use crate::resource::CATALOG;
 use crate::tree::SumMode;
 use ui::widget::DrawChild;
 
@@ -1111,7 +1113,7 @@ fn processor_section(metrics: &Metrics, theme: &Theme) -> Section {
         })
         .collect();
     Section::titled(
-        "Processor",
+        CATALOG.t("monitor-processor"),
         vec![
             Box::new(cpu_chart),
             Box::new(Facts::new(vec![
@@ -1133,7 +1135,7 @@ fn memory_section(metrics: &Metrics, theme: &Theme) -> Section {
         .map(|frac| frac * 100.0)
         .collect();
     Section::titled(
-        "Memory",
+        CATALOG.t("monitor-section-memory"),
         vec![
             level_gauge(
                 "RAM",
@@ -1150,7 +1152,13 @@ fn memory_section(metrics: &Metrics, theme: &Theme) -> Section {
             Box::new(history_chart(
                 vec![
                     Series::new(history, theme.tokens.colors.presence.series(1)).with_legend(
-                        format!("In use {}", percent_label(metrics.mem_frac() * 100.0)),
+                        CATALOG.t_args(
+                            "monitor-legend-in-use",
+                            &[(
+                                "percent",
+                                ArgValue::Text(percent_label(metrics.mem_frac() * 100.0)),
+                            )],
+                        ),
                     ),
                 ],
                 100.0,
@@ -1217,11 +1225,12 @@ fn system_section(metrics: &Metrics, process_count: usize, thread_count: usize) 
         metrics.load_avg[0], metrics.load_avg[1], metrics.load_avg[2]
     );
     Section::titled(
-        "System",
+        CATALOG.t("monitor-section-system"),
         vec![Box::new(PropertyList::new(vec![
-            Property::new("Host name", metrics.host.clone()).with_kind(TextKind::Identifier),
-            Property::new("Kernel", metrics.kernel.clone()),
-            Property::new("Processor", metrics.cpu_brand.clone()),
+            Property::new(CATALOG.t("monitor-host-name"), metrics.host.clone())
+                .with_kind(TextKind::Identifier),
+            Property::new(CATALOG.t("monitor-kernel"), metrics.kernel.clone()),
+            Property::new(CATALOG.t("monitor-processor"), metrics.cpu_brand.clone()),
             numeric("Cores", metrics.cores.len().to_string()),
             numeric("Load average", load),
             numeric("Processes", process_count.to_string()),
@@ -1568,6 +1577,68 @@ pub(crate) struct ProcessDetail<'a> {
     pub requests: Shared,
 }
 
+/// The selected process' facts: what it runs as, what it holds and how long it
+/// has run.
+fn process_facts(detail: &ProcessDetail<'_>) -> Vec<Property> {
+    let process = detail.process;
+    let mut properties = Vec::new();
+    if let Some((cpu, memory)) = detail.with_children {
+        properties.extend([
+            Property::new(CATALOG.t("monitor-cpu-children"), format!("{cpu:.1}%"))
+                .with_kind(TextKind::Numeric),
+            Property::new(CATALOG.t("monitor-memory-children"), format_bytes(memory))
+                .with_kind(TextKind::Numeric),
+        ]);
+    }
+    properties.extend([
+        Property::new("PID", process.pid.to_string())
+            .with_kind(TextKind::Numeric)
+            .copyable(),
+        Property::new(CATALOG.t("monitor-user"), process.user.clone())
+            .with_kind(TextKind::Identifier),
+        Property::new(CATALOG.t("monitor-status"), process.status.clone()),
+    ]);
+    if let Some(app) = &process.app {
+        properties.push(
+            Property::new(CATALOG.t("monitor-app"), app.clone()).with_kind(TextKind::Identifier),
+        );
+    }
+    if let Some(parent) = &detail.parent {
+        properties.push(Property::new(CATALOG.t("monitor-parent"), parent.clone()));
+    }
+    properties.extend([
+        Property::new(CATALOG.t("monitor-threads"), process.threads.to_string())
+            .with_kind(TextKind::Numeric),
+        Property::new(
+            CATALOG.t("monitor-virtual-memory"),
+            format_bytes(process.virt_bytes),
+        )
+        .with_kind(TextKind::Numeric),
+    ]);
+    if let Some(files) = process.open_files {
+        properties.push(
+            Property::new(CATALOG.t("monitor-open-files"), files.to_string())
+                .with_kind(TextKind::Numeric),
+        );
+    }
+    properties.push(
+        Property::new(
+            CATALOG.t("monitor-running-for"),
+            fmt_uptime(process.run_secs),
+        )
+        .with_kind(TextKind::Numeric),
+    );
+    // A command line is shown only where the person allowed command lines.
+    if !process.cmd.is_empty() {
+        properties.push(
+            Property::new(CATALOG.t("monitor-command"), process.cmd.clone())
+                .with_kind(TextKind::Code),
+        );
+    }
+
+    properties
+}
+
 /// The inspector: the selected process's load, its facts and the actions
 /// that end it, or one empty state when nothing is selected.
 pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
@@ -1586,43 +1657,7 @@ pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
         Box::new(StatTile::new("Memory (RSS)", memory).unit(unit)),
     ]);
 
-    let mut properties = Vec::new();
-    if let Some((cpu, memory)) = detail.with_children {
-        properties.extend([
-            Property::new("CPU with children", format!("{cpu:.1}%")).with_kind(TextKind::Numeric),
-            Property::new("Memory with children", format_bytes(memory))
-                .with_kind(TextKind::Numeric),
-        ]);
-    }
-    properties.extend([
-        Property::new("PID", process.pid.to_string())
-            .with_kind(TextKind::Numeric)
-            .copyable(),
-        Property::new("User", process.user.clone()).with_kind(TextKind::Identifier),
-        Property::new("Status", process.status.clone()),
-    ]);
-    if let Some(app) = &process.app {
-        properties.push(Property::new("App", app.clone()).with_kind(TextKind::Identifier));
-    }
-    if let Some(parent) = &detail.parent {
-        properties.push(Property::new("Parent", parent.clone()));
-    }
-    properties.extend([
-        Property::new("Threads", process.threads.to_string()).with_kind(TextKind::Numeric),
-        Property::new("Virtual memory", format_bytes(process.virt_bytes))
-            .with_kind(TextKind::Numeric),
-    ]);
-    if let Some(files) = process.open_files {
-        properties
-            .push(Property::new("Open files", files.to_string()).with_kind(TextKind::Numeric));
-    }
-    properties.push(
-        Property::new("Running for", fmt_uptime(process.run_secs)).with_kind(TextKind::Numeric),
-    );
-    // A command line is shown only where the person allowed command lines.
-    if !process.cmd.is_empty() {
-        properties.push(Property::new("Command", process.cmd.clone()).with_kind(TextKind::Code));
-    }
+    let properties = process_facts(detail);
 
     let mut actions = Row::new().no_wrap();
     let pid = process.pid;

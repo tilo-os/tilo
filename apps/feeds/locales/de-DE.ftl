@@ -50,3 +50,7 @@ feeds-feed-actions = Aktionen für diesen Feed
 ## Fenster- und Barrierefreiheits-Texte
 feeds-a11y-text-size = Textgröße
 feeds-a11y-subscriptions = Abos
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+feeds-a11y-star = { $article } markieren
+feeds-a11y-tag = Schlagwort { $tag }

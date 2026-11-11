@@ -18,3 +18,21 @@ containers-pull-stopped = Stopped. What had been fetched stays in the image stor
 containers-a11y-containers = Containers
 containers-sample-data = Sample data
 containers-a11y-sections = Sections
+
+## Facts, property labels and section titles
+containers-section-labels = Labels
+containers-section-environment = Environment
+containers-section-mounts = Mounts
+containers-host-port = Host port { $port }
+containers-section-ports = Ports
+containers-state = State
+containers-created = Created
+containers-command = Command
+containers-section-details = Details
+containers-section-activity = Activity
+containers-section-usage = Usage
+containers-images-summary = { $count ->
+    [one] One image uses { $size } of disk space.
+   *[other] { $count } images use { $size } of disk space.
+}
+containers-volumes-in-use = { $in_use } of { $total } volumes are in use.

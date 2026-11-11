@@ -130,3 +130,21 @@ music-a11y-description = Musikbibliothek und Wiedergabesteuerung
 music-search-this-app = In dieser App
 music-a11y-songs = Titel
 music-a11y-navigation = Musik-Navigation
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+music-a11y-search-genre = Nach { $genre } suchen
+music-a11y-move-down = { $track } nach unten
+music-a11y-move-up = { $track } nach oben
+music-a11y-remove-from-playlist = { $track } aus { $playlist } entfernen
+music-a11y-delete-playlist = { $playlist } löschen
+music-a11y-rename-playlist = { $playlist } umbenennen
+music-a11y-artist = { $genre }; { $listeners ->
+    [one] ein monatlicher Hörer
+   *[other] { $listeners } monatliche Hörer
+}
+music-a11y-play = { $track } abspielen
+music-a11y-like = { $track } als Lieblingssong markieren
+music-kind-album = Album
+music-kind-artist = Künstler
+music-kind-playlist = Playlist
+music-detail-load-failed = { $kind } konnte nicht geladen werden
