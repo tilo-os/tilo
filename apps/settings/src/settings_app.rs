@@ -157,7 +157,9 @@ impl SettingsApp {
             ));
         }
         self.storage = cx.storage().clone();
-        self.devices = cx.mode().is_live() && !cfg!(test);
+        // Without the device panes (`tilo-os`, off on the web) there is no
+        // hardware or OS service of this device to reach.
+        self.devices = cx.mode().is_live() && !cfg!(test) && cfg!(feature = "tilo-os");
         if self.devices {
             self.radios = crate::radios::Radios::of_device();
         }
