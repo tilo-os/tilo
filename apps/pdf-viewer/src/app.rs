@@ -1802,7 +1802,10 @@ impl PdfApp {
             .right()
             .docked_width(f64::from(m.inspector_width))
             .overlay_width(f64::from(m.inspector_width))
-            .content_min_width(f64::from(m.detail_min_width))
+            // The pages are paper drawn to the room they get, not a column
+            // of text: the panel stands beside them down to their own
+            // narrowest.
+            .content_surface(f64::from(m.detail_min_width))
     }
 
     /// The strip the review panel docks in: the window's height, beside the
