@@ -45,17 +45,17 @@ fn asked_routes(cluster_id: &str, app_id: &str, record: &str) -> Vec<DocumentRou
 }
 
 impl Workspace {
-    /// Whether this member holds `route` or is being sent it: its changes
-    /// are here, or the documents it is sealed with are waiting for the
-    /// keys they open with.
+    /// Whether this member's replica holds `route`: readable, or sealed and waiting for the
+    /// keys it opens with.
     pub(super) fn holds(&self, route: &DocumentRoute) -> bool {
-        self.log.iter().any(|(held, _)| held == route)
-            || self
-                .peer
-                .status()
-                .routes
-                .get(route)
-                .is_some_and(|status| status.waiting() > 0)
+        self.peer
+            .engine()
+            .records(&route.cluster_id)
+            .is_ok_and(|records| {
+                records
+                    .iter()
+                    .any(|(app, record)| *app == route.app_id && *record == route.record)
+            })
     }
 
     /// Ask the workspace's host for the records `needs` reads that this
@@ -103,9 +103,8 @@ impl Workspace {
 mod tests {
     use super::asked_routes;
     use crate::workspace_actions::{GaveUp, Needs, sealed_for};
-    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
     use tilo_peer_state::document_frame::DocumentRoute;
-    use tilo_session_host::session::RouteStatus;
 
     const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
 
@@ -114,13 +113,6 @@ mod tests {
             app_id: app.into(),
             cluster_id: WORKSPACE.into(),
             record: record.into(),
-        }
-    }
-
-    fn sealed(awaiting: usize) -> RouteStatus {
-        RouteStatus {
-            awaiting_keys: awaiting,
-            ..RouteStatus::default()
         }
     }
 
@@ -166,10 +158,10 @@ mod tests {
         let head = route("so.tilo.chat", chain().part(3).as_str());
         let asked = route("so.tilo.chat", chain().part(1).as_str());
         let records = route("so.tilo.chat", "");
-        let routes = BTreeMap::from([
-            (head.clone(), sealed(2)),
-            (records.clone(), sealed(1)),
-            (route("so.tilo.notes", "note"), sealed(1)),
+        let routes = BTreeSet::from([
+            head.clone(),
+            records.clone(),
+            route("so.tilo.notes", "note"),
         ]);
         let mut waited = sealed_for(
             &routes,
