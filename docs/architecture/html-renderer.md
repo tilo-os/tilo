@@ -257,6 +257,20 @@ Against the targets:
   in the HTML screenshot and not the canvas one. The median keystroke
   still writes 2 properties and creates nothing; the largest frame of the
   run wrote 1,510 and created 287.
+- **One key, on a quiet machine, with the plain page in the same run**
+  (`tools/web/html-renderer/run-typing.sh`, 20 keys, the desktop bundle;
+  the plain page's median was 0.3 ms, so the run was usable). A key drew two
+  frames. The first reached the page at 7.9 ms p50 and 12.0 p90, wrote 7
+  properties, and spent 4.2 ms in layout and 0.65 ms in the presenter; the
+  browser painted it at **10.2 ms p50 and 14.6 p90** — within one 16.7 ms
+  frame of the plain page. The toolkit's own passes for that frame were sync
+  1.9 ms, build_layout 1.0, apply_layout 0.3, draw 1.9, and 2.2 ms handling
+  the input itself. The second frame wrote nothing and cost 3.1 ms of wasm
+  (sync 0.6, apply 0.2, draw 2.5); it lands 19–120 ms after the key, after
+  the browser has already painted, so it is not on the key's path to the
+  screen. The frame metrics name what asks for it: `queued: component wake`
+  and `queued: input frame pending` — the app's own background update after
+  the edit, which the runtime cannot know changes no pixel until it draws.
 - **The last run, with every change in this stage** (HTML, canvas and
   plain DOM in one run; raw data in
   [`html-renderer/results.json`](html-renderer/results.json)): typing p50 /
@@ -326,22 +340,28 @@ beyond noise.
 What blocks it:
 
 - **Typing in painted text** (the editors: Notes, the word processor) is
-  still behind a plain page's 2 – 3 ms. Half of a keystroke was waiting, not
-  working: the frame the input asked for was drawn in a task of its own, and
-  a rendering update often came between the two. The frame is now drawn
-  inside the input's own task, and a frame nothing changed is skipped. What
-  is left is still two frames per key (the frame schedule asks for an
-  animation frame after the first) and a layout pass of about 4 ms in wasm,
-  plus the browser's style, layout and paint of the changed line; the next step is a CPU trace per key on a
-  quiet machine, not another headless timing run. The measured split per
-  keystroke (`typingBreakdown` in `results.json`: input → frame handed over,
-  and present → first paint) is what that trace starts from, and the phone
-  width improved with the change from 23.1 / 44.4 ms to 18.2 / 29.6 ms
-  (p50 / p90) in runs whose plain-DOM baseline stayed sane.
-- **Not every app is measured past its first screen.** The parity run
-  mounts each app and types into its first field; menus, dialogs, drags,
-  the canvas app's drawing and the video editor's timeline are not driven
-  yet, and ebook's pages differ from the canvas for a reason not found.
+  within one frame of a plain page on a machine quiet enough to say so: with
+  the plain page at 0.3 ms p50, a key was painted at 10.2 ms p50 and 14.6 p90.
+  Earlier figures said otherwise because they were taken on a shared builder
+  whose own plain page measured 2.8 ms, and the page's median there moved by
+  more than the work being measured. Two things are left, and neither is a
+  frame on the key's path: a key still draws a second frame, asked for by the
+  app's own post-edit background update (`queued: component wake`), which
+  writes nothing and costs about 3 ms of wasm after the browser has painted;
+  and the first frame's 4.2 ms of layout. Removing the second frame needs the
+  toolkit to answer "did anything change?" before it draws — a frame that
+  only queued work asked for, whose sync leaves the composition at rest,
+  should draw nothing.
+- **Not every app is measured past its first screen.** The parity run mounts
+  each app and types into its first field; `parity.mjs` also drives a
+  scenario for the apps that have one (see **Reproducing**): a seeded note
+  typed into, dragged over and asked for its text menu; the canvas app's
+  dialog and two strokes; the video editor's timeline. Those steps agree with
+  the canvas within glyph edges — the note's typed and selected frames differ
+  by 1.1 % — and the run found a dialog that does not: the canvas app's "New
+  artwork…" differs in 47 % of its pixels, with the sheet behind it painted
+  much darker as HTML than on the canvas. ebook's pages differ from the
+  canvas for a reason not found yet.
 - **Phones.** Only Notes is measured at 390 px. Pictures are rasterized at
   one pixel per CSS pixel, so they are soft on a phone's screen.
 - **Real hardware.** Every number here is headless Chrome without a GPU;
@@ -355,6 +375,35 @@ tools/web/html-renderer/all.sh   # Notes: --select, --wheel, --phone or --quick 
 tools/web/html-renderer/all-desktop.sh   # the sign-in fields, then every app of the desktop bundle
 tools/web/html-renderer/size.sh   # the desktop bundle's start module, with `dom` off
 ```
+
+The desktop bundle `all-desktop.sh` measures is built by the runtime's own
+script, which is the one a deployment uses:
+
+```sh
+CARGO=rcargo crates/browser/tilo-browser-runtime/scripts/build.sh \
+  "$CARGO_TARGET_DIR/htmlrenderer/desktop" --bundle desktop --profile release
+tools/web/html-renderer/run-typing.sh [--keys N] [--trace] [--phone]
+tools/web/html-renderer/run-parity.sh [--scenarios] [--phone] [--apps id,id]
+node tools/web/html-renderer/names.mjs "$CARGO_TARGET_DIR/htmlrenderer/desktop" so.tilo.notes --seed note
+```
+
+`run-typing.sh` is what one key costs: the frames it draws and what each
+spent, the toolkit's per-pass timings, the widget paths of what asked for
+each frame, and a Chrome trace of the browser's main thread when asked for
+one. It measures the plain-DOM page first and rejects the run when that page's
+median is above 8 ms, since a machine busy enough to slow a plain page by that
+much says nothing about this one.
+
+`parity.mjs` drives a scenario where it has one (`--scenarios` runs only
+those apps): a note seeded through the app's own import action and found by
+the name the sidebar gives it, a selection dragged over it, its text menu
+raised; the canvas app's dialog and strokes; the video editor's timeline. Each
+step names its target the way assistive technology does, so both renders are
+worked the same way, and each screenshot is compared after each step. Where a
+render put the named control is reported beside the diff. `--phone` runs the
+same apps at 390 px with three device pixels per point. When a step cannot
+find its target it prints the names the tree does hold, which is what
+`names.mjs` lists on its own.
 
 The bundle lands in `$CARGO_TARGET_DIR/htmlrenderer/bundle`; open
 `app.html?render=dom` or `?render=gpu` (`&app=` names another app of the
