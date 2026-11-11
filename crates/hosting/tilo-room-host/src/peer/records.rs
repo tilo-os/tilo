@@ -33,17 +33,39 @@ pub(super) async fn handle_open_record(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return refused("workspace not bound on this relay");
     };
-    let store = {
+    let (store, governed) = {
         let mut runtime = crate::workspace_io::fresh_membership(&ws).await?;
         if !session.admits(&runtime, peer, WorkspaceOperation::State) {
             return refused("device not in workspace membership");
         }
         runtime.hold_record(&peer.device_public_key, channel);
-        runtime.store.clone()
+        (
+            runtime.store.clone(),
+            runtime
+                .workspace_authority
+                .as_ref()
+                .and_then(crate::workspaces::WorkspaceAuthority::workspaces),
+        )
     };
-    let frames = tokio::task::spawn_blocking(move || store.record_frames(&channel))
-        .await
-        .map_err(|error| PeerError::Protocol(format!("record read: {error}")))??;
+    let frames = tokio::task::spawn_blocking(move || {
+        let mut frames = store.record_frames(&channel)?;
+        // A linked member's write whose copy to the relay has not landed yet
+        // is kept by the workspace's link: sent from there, so the page never
+        // hears the record is absent while the workspace's host keeps it.
+        if let Some(governed) = governed {
+            match governed.link_frames_lacking(workspace_id, channel, &frames) {
+                Ok(lacking) => frames.extend(lacking),
+                Err(error) => {
+                    return Err(PeerError::Protocol(format!(
+                        "the workspace link's history of the record: {error}"
+                    )));
+                }
+            }
+        }
+        Ok::<_, PeerError>(frames)
+    })
+    .await
+    .map_err(|error| PeerError::Protocol(format!("record read: {error}")))??;
     let sent = u32::try_from(frames.len()).unwrap_or(u32::MAX);
     // On the queue the frames go out on, behind them: a reply is written by
     // another task and could overtake them, so a device would hear the

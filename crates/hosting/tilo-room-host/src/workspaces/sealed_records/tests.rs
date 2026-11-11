@@ -2432,3 +2432,126 @@ async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
     drop(page);
     relay.shutdown().await;
 }
+
+/// What the relay sends `page` when it opens `record`: how many frames, before
+/// it says the record was sent whole.
+async fn opened_frames(page: &crate::RelayClient, workspace_id: u64, record: &str) -> u32 {
+    let channel = neighbour_wire::app_document_channel(APP, record);
+    page.send(crate::Envelope::OpenRecord {
+        workspace_id,
+        channel,
+    })
+    .unwrap();
+    tilo_test_env::within("the relay answers the page's ask", async {
+        loop {
+            if let Some(crate::Envelope::RecordOpened {
+                channel: opened,
+                frames,
+                ..
+            }) = page.recv().await
+                && opened == channel
+            {
+                return frames;
+            }
+        }
+    })
+    .await
+}
+
+/// A linked desk writes a part over the workspace's link while the relay
+/// runs, and the relay's copy of it for its sessions fails `failing` times;
+/// the part, and the relay's page, wait.
+async fn a_desk_writes_while_its_copy_fails(
+    failing: usize,
+) -> (Lounge, crate::RelayClient, String) {
+    let (lounge, page) = lounge_with_client().await;
+    lounge
+        .workspaces
+        .inner
+        .session_carriers
+        .failing
+        .store(failing, std::sync::atomic::Ordering::Release);
+    let desk = Desk::link(&lounge, 5).await;
+    let record = neighbour_wire::record_part(RECORD, 0);
+    let part = SealingMember::join(
+        &lounge.workspaces,
+        &lounge.workspace,
+        (APP, RECORD),
+        desk.key.clone(),
+    )
+    .await
+    .part(&lounge.workspaces, &lounge.workspace, &record)
+    .await;
+    let ((), message) = part.seal(&lounge.workspace, |doc| {
+        doc.put(ROOT, "title", "the desk's part").unwrap();
+        doc.commit_edit("fixture", "title");
+    });
+    desk.link.send(message).unwrap();
+    tilo_test_env::within("the relay tries to copy the desk's write", async {
+        while lounge
+            .workspaces
+            .inner
+            .session_carriers
+            .failing
+            .load(std::sync::atomic::Ordering::Acquire)
+            == failing
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    (lounge, page, record)
+}
+
+/// The relay's copy of a desk's write for its sessions fails once while it
+/// runs: it is tried again until it lands, and a page that opens the record
+/// is sent it from the relay's own history.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_desks_write_whose_copy_failed_once_still_reaches_a_page() {
+    let (lounge, page, record) = Box::pin(a_desk_writes_while_its_copy_fails(1)).await;
+    tilo_test_env::within("the copy is tried again until it lands", async {
+        while retained_writes(&lounge.relay, lounge.workspace_id, &record)
+            .await
+            .is_empty()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert_eq!(
+        opened_frames(&page, lounge.workspace_id, &record).await,
+        1,
+        "the page is sent the desk's write, once"
+    );
+    drop(page);
+    let Lounge {
+        workspaces, relay, ..
+    } = lounge;
+    drop(workspaces);
+    relay.shutdown().await;
+}
+
+/// The relay's copy of a desk's write keeps failing: until it lands, a page
+/// that opens the record is sent the write from the workspace's link, never
+/// told the record is absent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_is_sent_a_desks_write_whose_copy_has_not_landed() {
+    let (lounge, page, record) = Box::pin(a_desk_writes_while_its_copy_fails(usize::MAX)).await;
+    assert!(
+        retained_writes(&lounge.relay, lounge.workspace_id, &record)
+            .await
+            .is_empty(),
+        "the copy has not landed"
+    );
+    assert_eq!(
+        opened_frames(&page, lounge.workspace_id, &record).await,
+        1,
+        "the page is sent the desk's write from the link"
+    );
+    drop(page);
+    let Lounge {
+        workspaces, relay, ..
+    } = lounge;
+    drop(workspaces);
+    relay.shutdown().await;
+}

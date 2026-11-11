@@ -45,7 +45,6 @@ mod device_plane_tests;
 mod door;
 mod follow;
 pub use device_plane::HostJobs;
-use follow::Followed;
 pub use follow::RecordWrite;
 #[cfg(test)]
 mod device_rejoin_tests;
@@ -54,6 +53,7 @@ mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod hosts;
 mod link_follow;
+mod session_carry;
 pub(crate) use link_follow::carry_admitted;
 mod listing;
 mod memberships;
@@ -92,6 +92,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_peer_state::store::{Appetite, Store as LinkStore};
 
 use ed25519_dalek::SigningKey;
 use neighbour_wire::Retention;
@@ -814,6 +815,9 @@ struct WorkspacesInner {
     /// Those waiting for their workspace's next write of the changes it staged,
     /// by workspace.
     queued_writes: std::sync::Mutex<HashMap<String, Vec<collaboration::Written>>>,
+    /// Linked members' writes on their way to the relay's sessions, each
+    /// workspace's in order, each tried until it lands.
+    session_carriers: session_carry::SessionCarriers,
     /// How many members' windows each workspace could not take in because they
     /// build on history it no longer has
     /// ([`unbuildable_windows::missing_history`]), by workspace.
@@ -1000,8 +1004,7 @@ impl Workspaces {
         let workspaces = Arc::new(device_plane::WorkspacesMap::default());
         let (plane, jobs) = device_plane::plane(Arc::clone(&workspaces), host.key.clone());
         let store =
-            tilo_peer_state::store::Store::open(store, tilo_peer_state::store::Appetite::StoreAll)
-                .map_err(|error| error.to_string())?;
+            LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
         let this = Self {
             inner: Arc::new(WorkspacesInner {
                 #[cfg(test)]
@@ -1023,6 +1026,7 @@ impl Workspaces {
                 channel_notices: std::sync::Mutex::default(),
                 queued_admissions: std::sync::Mutex::default(),
                 queued_writes: std::sync::Mutex::default(),
+                session_carriers: session_carry::SessionCarriers::default(),
                 unbuildable_windows: std::sync::Mutex::default(),
                 listings,
                 #[cfg(feature = "agents")]
@@ -2622,87 +2626,6 @@ impl Workspaces {
             );
         }
         Ok(admissions)
-    }
-
-    /// Replay every record write the relay retains for `workspace` into the
-    /// governor's copy, and keep what it took in.
-    async fn recall(&self, workspace: &mut GovernedWorkspace) -> Result<(), String> {
-        let retained = self
-            .inner
-            .host
-            .records
-            .retained(workspace.workspace_id())
-            .await?;
-        self.recall_retained(workspace, retained);
-        Ok(())
-    }
-
-    /// Take `retained`, the record writes the relay retains for `workspace`, into
-    /// the governor's copy, and keep what it took in. A write held for an
-    /// app surface not here yet may be let go past the held queue's bound,
-    /// and so is every later write of its author to its record, which
-    /// would otherwise overtake it for good. The relay still retains them
-    /// all: they are replayed again, in the order their authors wrote them,
-    /// once the surface arrives ([`Self::follow`]) or something they waited
-    /// for lands ([`Followed::replay_wanted`]).
-    fn recall_retained(
-        &self,
-        workspace: &mut GovernedWorkspace,
-        retained: Vec<crate::workspace_records::RetainedBody>,
-    ) {
-        let (mut changed, mut again) = (false, false);
-        for retained in retained {
-            // What the relay's device wrote is retained under its key, the
-            // governor's own commits and its sessions' writes alike: the
-            // first are the governor's copy already, the second it took in
-            // as they came (`absorb`). Neither is replayed into it.
-            if retained.author == self.inner.host.cert.device_public_key {
-                continue;
-            }
-            let message: neighbour_wire::NeighbourMsg = match postcard::from_bytes(&retained.body) {
-                Ok(message) => message,
-                Err(error) => {
-                    tracing::warn!(
-                        author = %hex::encode(retained.author),
-                        %error,
-                        "a retained write does not decode; it is not replayed"
-                    );
-                    continue;
-                }
-            };
-            let followed = workspace.follow(retained.author, message.clone());
-            // The link keeps what the workspace holds from before a device
-            // joins it, this start's replay included: a device that joins now
-            // reads the history the workspace was founded with.
-            self.carry_to_links(workspace.workspace(), retained.author, &message);
-            let Followed {
-                changed: took,
-                replay_wanted,
-                refused,
-            } = followed;
-            changed |= took;
-            again |= replay_wanted;
-            if let Some(reason) = refused {
-                let filed = workspace.refused(
-                    &self.inner.host.cert,
-                    &self.inner.host.key,
-                    &message,
-                    &reason,
-                );
-                changed |= filed.changed;
-            } else if took && self.landed(workspace, &message) {
-                changed = true;
-            }
-        }
-        if changed {
-            workspace.keep_followed();
-        }
-        // What a write let go waited for landed in this replay: the relay's
-        // copy is read again, with what reached it since this one was read.
-        // Each further replay needs something new to land, so it ends.
-        if again {
-            self.replay_soon(workspace.workspace().to_owned());
-        }
     }
 
     /// Bring the relay in line with the workspace's committed state: admit exactly

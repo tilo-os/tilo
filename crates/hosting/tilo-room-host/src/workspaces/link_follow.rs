@@ -15,6 +15,7 @@
 //! goes on reading, rather than ending with the workspace's link unread for as
 //! long as the relay runs.
 
+use super::follow::Followed;
 use super::{GovernedWorkspace, WeakWorkspaces, Workspaces};
 use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
@@ -76,10 +77,11 @@ impl Workspaces {
     /// Carry `message`, `author`'s record write the workspace's link
     /// admitted, to the members that take part through relay sessions: the
     /// relay retains it in `author`'s name and sends it to every session, as
-    /// it does a session's own write. Only the link's first copy of a frame
+    /// it does a session's own write, trying again until it is durable there
+    /// ([`Self::carry_until_landed`]). Only the link's first copy of a frame
     /// comes here ([`tilo_peer_state::direct::Heard::fresh`]), so nothing a
     /// session sent reaches the sessions twice.
-    async fn carry_to_sessions(
+    fn carry_to_sessions(
         &self,
         workspace: &str,
         author: [u8; 32],
@@ -102,9 +104,7 @@ impl Workspaces {
             channel,
             checkpoint: retention == neighbour_wire::Retention::Checkpoint,
         };
-        if let Err(error) = self.inner.host.records.carry(number, author, commit).await {
-            tracing::warn!(%workspace, %error, "a linked member's write did not reach the relay's sessions");
-        }
+        self.carry_until_landed(workspace, number, author, commit);
     }
 
     /// Carry to the relay's sessions every record write `workspace`'s link
@@ -164,8 +164,7 @@ impl Workspaces {
                 if held.contains(&(frame.lineage, frame.seq)) {
                     continue;
                 }
-                self.carry_to_sessions(workspace.workspace(), author, message)
-                    .await;
+                self.carry_to_sessions(workspace.workspace(), author, message);
                 carried = carried.saturating_add(1);
             }
             tilo_peer_state::store::advance(&mut cursors, &replay.frames);
@@ -223,9 +222,7 @@ impl Workspaces {
                 // The members on relay sessions read it as the linked members
                 // do, the first time the link takes it in.
                 if frame.fresh && frame.report.is_ok() {
-                    workspaces
-                        .carry_to_sessions(&name, frame.author, &frame.message)
-                        .await;
+                    workspaces.carry_to_sessions(&name, frame.author, &frame.message);
                 }
                 if let Err(error) = workspaces.absorb(&name, frame.author, &body).await {
                     tracing::warn!(%name, %error, "the host did not keep what its link admitted");
@@ -258,5 +255,88 @@ impl Workspaces {
                 }
             }
         });
+    }
+}
+
+impl Workspaces {
+    /// Replay every record write the relay retains for `workspace` into the
+    /// governor's copy, and keep what it took in.
+    pub(super) async fn recall(&self, workspace: &mut GovernedWorkspace) -> Result<(), String> {
+        let retained = self
+            .inner
+            .host
+            .records
+            .retained(workspace.workspace_id())
+            .await?;
+        self.recall_retained(workspace, retained);
+        Ok(())
+    }
+
+    /// Take `retained`, the record writes the relay retains for `workspace`, into
+    /// the governor's copy, and keep what it took in. A write held for an
+    /// app surface not here yet may be let go past the held queue's bound,
+    /// and so is every later write of its author to its record, which
+    /// would otherwise overtake it for good. The relay still retains them
+    /// all: they are replayed again, in the order their authors wrote them,
+    /// once the surface arrives ([`Self::follow`]) or something they waited
+    /// for lands ([`Followed::replay_wanted`]).
+    pub(super) fn recall_retained(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        retained: Vec<crate::workspace_records::RetainedBody>,
+    ) {
+        let (mut changed, mut again) = (false, false);
+        for retained in retained {
+            // What the relay's device wrote is retained under its key, the
+            // governor's own commits and its sessions' writes alike: the
+            // first are the governor's copy already, the second it took in
+            // as they came (`absorb`). Neither is replayed into it.
+            if retained.author == self.inner.host.cert.device_public_key {
+                continue;
+            }
+            let message: neighbour_wire::NeighbourMsg = match postcard::from_bytes(&retained.body) {
+                Ok(message) => message,
+                Err(error) => {
+                    tracing::warn!(
+                        author = %hex::encode(retained.author),
+                        %error,
+                        "a retained write does not decode; it is not replayed"
+                    );
+                    continue;
+                }
+            };
+            let followed = workspace.follow(retained.author, message.clone());
+            // The link keeps what the workspace holds from before a device
+            // joins it, this start's replay included: a device that joins now
+            // reads the history the workspace was founded with.
+            self.carry_to_links(workspace.workspace(), retained.author, &message);
+            let Followed {
+                changed: took,
+                replay_wanted,
+                refused,
+            } = followed;
+            changed |= took;
+            again |= replay_wanted;
+            if let Some(reason) = refused {
+                let filed = workspace.refused(
+                    &self.inner.host.cert,
+                    &self.inner.host.key,
+                    &message,
+                    &reason,
+                );
+                changed |= filed.changed;
+            } else if took && self.landed(workspace, &message) {
+                changed = true;
+            }
+        }
+        if changed {
+            workspace.keep_followed();
+        }
+        // What a write let go waited for landed in this replay: the relay's
+        // copy is read again, with what reached it since this one was read.
+        // Each further replay needs something new to land, so it ends.
+        if again {
+            self.replay_soon(workspace.workspace().to_owned());
+        }
     }
 }
