@@ -49,9 +49,9 @@ fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
 }
 
 /// What `peer` queued to publish, taken.
-fn take(peer: &mut ChannelPeer, vault: &VaultKey) -> Vec<MlsGovernanceFrame> {
+fn take(peer: &mut ChannelPeer) -> Vec<MlsGovernanceFrame> {
     let frames = peer.outbox().to_vec();
-    peer.published(vault).unwrap();
+    peer.published();
     frames
 }
 
@@ -123,7 +123,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         &session,
         &NeighbourMsg::MlsGovernance {
             workspace: WORKSPACE.into(),
-            frame: Box::new(take(&mut laptop_peer, &vault).remove(0)),
+            frame: Box::new(take(&mut laptop_peer).remove(0)),
             delivery: 1,
         },
     );
@@ -282,9 +282,9 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
                 request
                     .verify()
                     .expect("signed by the browser's device key");
-                laptop_peer.learn_request(*request, &vault).unwrap();
+                laptop_peer.learn_request(*request).unwrap();
                 laptop_peer.reconcile_now(&allowed, &vault).unwrap();
-                for frame in take(&mut laptop_peer, &vault) {
+                for frame in take(&mut laptop_peer) {
                     publish(
                         &session,
                         &NeighbourMsg::MlsGovernance {
@@ -386,7 +386,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         .access_request_now(1, false, &vault)
         .unwrap()
         .unwrap();
-    laptop_peer.learn_request(phone_request, &vault).unwrap();
+    laptop_peer.learn_request(phone_request).unwrap();
     let allowed = BTreeSet::from([
         Ed25519PublicKey::from_bytes(laptop_device),
         browser_device,
@@ -396,7 +396,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     laptop_peer.reconcile_now(&allowed, &vault).unwrap();
     assert!(epoch(&laptop_peer) > before);
     publish(&session, &seal(&laptop_peer, 3, "under the new epoch"));
-    for frame in take(&mut laptop_peer, &vault) {
+    for frame in take(&mut laptop_peer) {
         publish(
             &session,
             &NeighbourMsg::MlsGovernance {
@@ -530,7 +530,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
         &session,
         &NeighbourMsg::MlsGovernance {
             workspace: WORKSPACE.into(),
-            frame: Box::new(take(&mut laptop_peer, &vault).remove(0)),
+            frame: Box::new(take(&mut laptop_peer).remove(0)),
             delivery: 1,
         },
     );
@@ -590,9 +590,9 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
         match postcard::from_bytes::<NeighbourMsg>(&data) {
             // The page asks for the channels of the workspace's other records too.
             Ok(NeighbourMsg::MlsAccessRequest { request, .. }) if request.channel == scope => {
-                laptop_peer.learn_request(*request, &vault).unwrap();
+                laptop_peer.learn_request(*request).unwrap();
                 laptop_peer.reconcile_now(&allowed, &vault).unwrap();
-                for frame in take(&mut laptop_peer, &vault) {
+                for frame in take(&mut laptop_peer) {
                     publish(
                         &session,
                         &NeighbourMsg::MlsGovernance {
@@ -706,7 +706,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
         &session,
         &NeighbourMsg::MlsGovernance {
             workspace: WORKSPACE.into(),
-            frame: Box::new(take(&mut laptop_peer, &vault).remove(0)),
+            frame: Box::new(take(&mut laptop_peer).remove(0)),
             delivery: 1,
         },
     );
@@ -735,9 +735,9 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
             // The page asks for the channels of the workspace's other records too.
             Ok(NeighbourMsg::MlsAccessRequest { request, .. }) if request.channel == scope => {
                 assert_eq!(author, *browser_device.as_bytes());
-                laptop_peer.learn_request(*request, &vault).unwrap();
+                laptop_peer.learn_request(*request).unwrap();
                 laptop_peer.reconcile_now(&allowed, &vault).unwrap();
-                for frame in take(&mut laptop_peer, &vault) {
+                for frame in take(&mut laptop_peer) {
                     publish(
                         &session,
                         &NeighbourMsg::MlsGovernance {

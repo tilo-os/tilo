@@ -91,9 +91,9 @@ fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
 }
 
 /// What `peer` queued to publish, taken.
-fn take(peer: &mut ChannelPeer, vault: &VaultKey) -> Vec<MlsGovernanceFrame> {
+fn take(peer: &mut ChannelPeer) -> Vec<MlsGovernanceFrame> {
     let frames = peer.outbox().to_vec();
-    peer.published(vault).unwrap();
+    peer.published();
     frames
 }
 
@@ -180,7 +180,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
             revocations: Vec::new(),
         },
     );
-    for frame in take(&mut laptop_peer, &vault()) {
+    for frame in take(&mut laptop_peer) {
         publish(
             &session,
             &NeighbourMsg::MlsGovernance {
@@ -266,9 +266,9 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
                 request
                     .verify()
                     .expect("signed by the browser's device key");
-                laptop_peer.learn_request(*request, &vault()).unwrap();
+                laptop_peer.learn_request(*request).unwrap();
                 laptop_peer.reconcile_now(&allowed, &vault()).unwrap();
-                for frame in take(&mut laptop_peer, &vault()) {
+                for frame in take(&mut laptop_peer) {
                     publish(
                         &session,
                         &NeighbourMsg::MlsGovernance {

@@ -750,15 +750,12 @@ impl ChannelPeer {
 
     /// The transport took every frame of [`Self::outbox`].
     ///
-    /// # Errors
-    ///
-    /// Returns an error when the emptied outbox cannot be written.
-    pub fn published(&mut self, vault: &VaultKey) -> Result<()> {
-        if self.outbox.is_empty() {
-            return Ok(());
-        }
+    /// The emptied outbox is written with the next change, not on its own: a
+    /// commit is then written once, not once more as it leaves. A device that
+    /// restarts before then publishes those frames again, which every
+    /// receiver and the host take as the duplicates they are.
+    pub fn published(&mut self) {
         self.outbox.clear();
-        self.save(vault)
     }
 
     /// Queue this device's head frame again: a transport that keeps a
@@ -946,11 +943,16 @@ impl ChannelPeer {
     /// [`Self::reconcile`]. The caller has checked the request came from the
     /// device it names. Returns whether it was new.
     ///
+    /// The request is kept in memory and written with the commit that admits
+    /// its device, not on its own: writing the whole state for each request
+    /// cost a crowd arriving together one write of the group, which grows with
+    /// it, per person. A request lost with a restart before then is asked
+    /// again, as the device asks until it is in.
+    ///
     /// # Errors
     ///
-    /// Returns an error for a request of another channel, a bad signature,
-    /// or a failed write.
-    pub fn learn_request(&mut self, request: MlsAccessRequestV1, vault: &VaultKey) -> Result<bool> {
+    /// Returns an error for a request of another channel or a bad signature.
+    pub fn learn_request(&mut self, request: MlsAccessRequestV1) -> Result<bool> {
         if request.channel != self.channel {
             return Err(governance("access request names another channel"));
         }
@@ -964,7 +966,6 @@ impl ChannelPeer {
             return Err(governance("the channel holds too many access requests"));
         }
         self.requests.insert(request.device, request);
-        self.save(vault)?;
         Ok(true)
     }
 
@@ -974,10 +975,11 @@ impl ChannelPeer {
         let MemberRecord::Joined(group) = &self.record else {
             return Vec::new();
         };
+        let joined = group.signature_keys();
         self.requests
             .iter()
             .filter(|(device, request)| {
-                allowed.contains(*device) && !admitted_with(group, device, request)
+                allowed.contains(*device) && !admitted_with(&joined, device, request)
             })
             .map(|(device, _)| *device)
             .collect()
@@ -1109,6 +1111,7 @@ impl ChannelPeer {
         vault: &VaultKey,
     ) -> Result<Reconciled> {
         self.drop_unfinished();
+        self.forget_answered_requests();
         let mut outcome = Reconciled::default();
         if !self.differs(allowed) {
             return Ok(outcome);
@@ -1209,6 +1212,10 @@ impl ChannelPeer {
             return Ok(());
         };
         group.merge_pending_transaction()?;
+        // Their requests are answered: kept, they would be checked against
+        // the whole group on every later pass.
+        let added = frame.added();
+        self.requests.retain(|device, _| !added.contains(device));
         if let Some(history) = history {
             // Handed over whether or not a full keyring keeps them here.
             group.keyring.merge(history).ok();
@@ -1259,6 +1266,22 @@ impl ChannelPeer {
         vault: &VaultKey,
     ) -> Result<Reconciled> {
         complete_now(self.reconcile(allowed, vault))
+    }
+
+    /// Forget the requests of devices already in the group with the key they
+    /// asked with: a device asks again until its Welcome arrives, and each
+    /// answered request kept would be checked against the group on every
+    /// pass.
+    fn forget_answered_requests(&mut self) {
+        let MemberRecord::Joined(group) = &self.record else {
+            return;
+        };
+        if self.requests.is_empty() {
+            return;
+        }
+        let joined = group.signature_keys();
+        self.requests
+            .retain(|device, request| !admitted_with(&joined, device, request));
     }
 
     /// Drop a commit a reconcile staged and never finished: its future was
@@ -1597,12 +1620,9 @@ impl ChannelPeer {
             group.import_key_history(history).ok();
         }
         let epoch = group.epoch();
-        // A request from a device the commit added with another key is older
-        // than the one it was admitted with.
-        let group: &ChannelGroup = group;
-        self.requests.retain(|device, request| {
-            !added.contains(device) || admitted_with(group, device, request)
-        });
+        // The commit answered the requests of the devices it added: the one
+        // it admitted them with, and any older one.
+        self.requests.retain(|device, _| !added.contains(device));
         self.parent = Some(parent);
         self.advance(frame);
         self.settle_orphaned();
@@ -1720,13 +1740,14 @@ impl ChannelPeer {
     }
 }
 
-/// Whether `device` is in `group` with the member key `request` asked with.
+/// Whether `device` is in the group with the member key `request` asked
+/// with, given every member's key ([`ChannelGroup::signature_keys`]).
 fn admitted_with(
-    group: &ChannelGroup,
+    joined: &std::collections::HashMap<Vec<u8>, Vec<u8>>,
     device: &Ed25519PublicKey,
     request: &MlsAccessRequestV1,
 ) -> bool {
-    let Some(joined_with) = group.signature_key_of(device.as_bytes()) else {
+    let Some(joined_with) = joined.get(device.as_bytes().as_slice()) else {
         return false;
     };
     device_key_package(request).is_ok_and(|package| {

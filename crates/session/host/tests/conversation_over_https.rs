@@ -63,9 +63,9 @@ fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
 }
 
 /// What `peer` queued to publish, taken.
-fn take(peer: &mut ChannelPeer, vault: &VaultKey) -> Vec<MlsGovernanceFrame> {
+fn take(peer: &mut ChannelPeer) -> Vec<MlsGovernanceFrame> {
     let frames = peer.outbox().to_vec();
-    peer.published(vault).unwrap();
+    peer.published();
     frames
 }
 
@@ -183,7 +183,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
             revocations: Vec::new(),
         },
     );
-    for (index, frame) in take(&mut desktop_channel, &vault).into_iter().enumerate() {
+    for (index, frame) in take(&mut desktop_channel).into_iter().enumerate() {
         publish(
             &desktop,
             &NeighbourMsg::MlsGovernance {
@@ -226,11 +226,11 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
             Ok(NeighbourMsg::MlsAccessRequest { request, .. }) if request.channel == scope => {
                 assert_eq!(request.device, bob_device, "the page asks, not the host");
                 request.verify().expect("signed by the page's device key");
-                desktop_channel.learn_request(*request, &vault).unwrap();
+                desktop_channel.learn_request(*request).unwrap();
                 let allowed =
                     BTreeSet::from([Ed25519PublicKey::from_bytes(alice_device), bob_device]);
                 desktop_channel.reconcile_now(&allowed, &vault).unwrap();
-                for frame in take(&mut desktop_channel, &vault) {
+                for frame in take(&mut desktop_channel) {
                     publish(
                         &desktop,
                         &NeighbourMsg::MlsGovernance {

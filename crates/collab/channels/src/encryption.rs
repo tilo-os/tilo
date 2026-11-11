@@ -49,6 +49,12 @@ const REQUEST_FRESH: Duration = Duration::from_secs(60);
 /// for one member's commit to reach the others, so they follow it rather than
 /// commit the same change beside it and fork the group.
 const TURN: Duration = Duration::from_secs(2);
+/// The least time between two commits this device writes for one channel.
+/// Every member follows each commit, and in a group of hundreds a commit costs
+/// each of them work that grows with the group: people arriving within this
+/// of each other are admitted in one commit rather than one each. A change
+/// after a quiet spell is committed at once.
+const COMMIT_SPACING: Duration = Duration::from_millis(500);
 /// Under the state root, the directory of a workspace's channels.
 #[cfg(not(target_arch = "wasm32"))]
 const CHANNELS_DIR: &str = "channels";
@@ -632,6 +638,9 @@ struct PeerEntry {
     /// one in turn to commit the change: it commits at this instant if none
     /// of them has by then.
     turn_at: Option<Instant>,
+    /// When this device last committed a change of the channel's group: the
+    /// next waits for [`COMMIT_SPACING`] after it.
+    committed_at: Option<Instant>,
     /// An endpoint opened the route after this device was removed: ask
     /// again, and the policy decides whether access resumes.
     rejoin: bool,
@@ -1710,13 +1719,20 @@ impl ChannelEncryption {
         if let Some(route) = route {
             self.learn_route(workspace, channel, route);
         }
-        let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
+        let Some(entry) = self
+            .peers
+            .get_mut(&channel)
+            .filter(|_| self.store.is_some())
+        else {
             return;
         };
         if entry.workspace != workspace {
             return;
         }
-        match entry.peer.learn_request(request, &store.vault) {
+        let device = request.device;
+        let learned = entry.peer.learn_request(request);
+        tracing::debug!(%workspace, channel = %channel.0, ?device, ?learned, "channel access request taken");
+        match learned {
             Ok(true) => entry.dirty = true,
             Ok(false) => {}
             Err(error) => tracing::warn!(%error, %workspace, "channel access request refused"),
@@ -1751,9 +1767,14 @@ impl ChannelEncryption {
             return;
         };
         let waits = TURN.saturating_mul(u32::try_from(turn).unwrap_or(u32::MAX));
-        let at = *entry
-            .turn_at
-            .get_or_insert_with(|| now.checked_add(waits).unwrap_or(now));
+        let spaced = entry
+            .committed_at
+            .and_then(|at| at.checked_add(COMMIT_SPACING));
+        let at = *entry.turn_at.get_or_insert_with(|| {
+            now.checked_add(waits)
+                .unwrap_or(now)
+                .max(spaced.unwrap_or(now))
+        });
         if now < at {
             return;
         }
@@ -1769,6 +1790,8 @@ impl ChannelEncryption {
             tracing::warn!(%workspace, refused = outcome.refused.len(), "malformed channel access requests refused");
         }
         if outcome.changed() {
+            tracing::debug!(%workspace, channel = %channel.0, admitted = ?outcome.admitted, removed = ?outcome.removed, "channel group changed");
+            entry.committed_at = Some(now);
             let gate = entry.peer.gate();
             self.register_gate(channel, gate);
             self.bump(channel);
@@ -1778,7 +1801,11 @@ impl ChannelEncryption {
     /// Hand the transport every frame this device wrote or must publish
     /// again; kept for the next pass while the transport refuses one.
     fn publish(&mut self, channel: ChannelId, transport: &dyn GovernanceTransport) {
-        let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
+        let Some(entry) = self
+            .peers
+            .get_mut(&channel)
+            .filter(|_| self.store.is_some())
+        else {
             return;
         };
         if entry.peer.outbox().is_empty() {
@@ -1794,8 +1821,8 @@ impl ChannelEncryption {
                 delivery: self.delivery,
             });
         }
-        if accepted && let Err(error) = entry.peer.published(&store.vault) {
-            tracing::warn!(%error, workspace = %entry.workspace, "channel outbox could not be written");
+        if accepted {
+            entry.peer.published();
         }
     }
 
@@ -1880,6 +1907,7 @@ impl ChannelEncryption {
             return;
         };
         entry.retry.fired(now, REQUEST_LONGEST);
+        tracing::debug!(workspace = %entry.workspace, channel = %channel.0, device = ?request.device, issued = request.issued_at, "channel access asked");
         // Routed when the record is known, so participants decide Read on it.
         self.delivery = self.delivery.wrapping_add(1);
         let message = match entry.route.clone() {
@@ -2056,6 +2084,7 @@ impl ChannelEncryption {
                 fresh_at: now.checked_add(REQUEST_FRESH).unwrap_or(now),
                 dirty: true,
                 turn_at: None,
+                committed_at: None,
                 rejoin: false,
                 founding: Founding {
                     at: found_at,

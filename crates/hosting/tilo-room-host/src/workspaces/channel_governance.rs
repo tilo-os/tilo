@@ -200,7 +200,9 @@ impl Workspaces {
         };
         // Whatever settle handed over is retained before the channel
         // governance a service derives from it.
+        let flushing = crate::timing::start();
         publisher.flushed().await;
+        crate::timing::event("channels.notices.flushed", flushing, 0);
         // Taken under the service: notices that queue while it works start the
         // next hand-over, which takes all of them at once.
         let waiting = self
@@ -210,6 +212,11 @@ impl Workspaces {
             .map_err(|_| "channel notices poisoned")?
             .remove(workspace)
             .unwrap_or_default();
+        crate::timing::event(
+            "channels.notices.taken",
+            crate::timing::start(),
+            waiting.len() as u64,
+        );
         sink.take(waiting);
         Ok(())
     }

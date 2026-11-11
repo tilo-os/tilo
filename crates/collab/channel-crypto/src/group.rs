@@ -620,15 +620,19 @@ impl ChannelGroup {
             .map(|credential| credential.identity().to_vec())
     }
 
-    /// The signature key of the member whose credential identity is
-    /// `identity`: it names the member key the device joined with.
-    pub(crate) fn signature_key_of(&self, identity: &[u8]) -> Option<Vec<u8>> {
-        self.group.members().find_map(|member| {
-            BasicCredential::try_from(member.credential)
-                .ok()
-                .filter(|credential| credential.identity() == identity)
-                .map(|_| member.signature_key)
-        })
+    /// The signature key of every member by its credential identity: the
+    /// member key each device joined with. Read once for a whole set of
+    /// devices, never once per device, which would walk every member for
+    /// each of them.
+    pub(crate) fn signature_keys(&self) -> std::collections::HashMap<Vec<u8>, Vec<u8>> {
+        self.group
+            .members()
+            .filter_map(|member| {
+                BasicCredential::try_from(member.credential)
+                    .ok()
+                    .map(|credential| (credential.identity().to_vec(), member.signature_key))
+            })
+            .collect()
     }
 
     fn clear_pending(&mut self) -> Result<()> {

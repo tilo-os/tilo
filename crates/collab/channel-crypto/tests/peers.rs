@@ -46,7 +46,7 @@ impl Device {
     /// Take the frames this device queued, as a transport does.
     fn take(&mut self) -> Vec<MlsGovernanceFrame> {
         let frames = self.peer.outbox().to_vec();
-        self.peer.published(&vault()).unwrap();
+        self.peer.published();
         frames
     }
 
@@ -146,7 +146,7 @@ fn any_participant_admits_and_late_joiners_read_all_past_content() {
     // Alice admits Bob.
     let mut members = allowed(&[&alice, &bob]);
     let request = bob.ask(false);
-    alice.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.learn_request(request).unwrap();
     assert!(
         alice
             .peer
@@ -162,8 +162,8 @@ fn any_participant_admits_and_late_joiners_read_all_past_content() {
     // Bob, not the channel's creator, admits Carol.
     members = allowed(&[&alice, &bob, &carol]);
     let request = carol.ask(false);
-    bob.peer.learn_request(request.clone(), &vault()).unwrap();
-    alice.peer.learn_request(request, &vault()).unwrap();
+    bob.peer.learn_request(request.clone()).unwrap();
+    alice.peer.learn_request(request).unwrap();
     let outcome = bob.peer.reconcile_now(&members, &vault()).unwrap();
     assert_eq!(outcome.admitted, vec![carol.public()]);
     let frames = bob.take();
@@ -209,7 +209,7 @@ fn a_group_hands_a_legacy_groups_keys_to_every_member_and_joiner() {
     let mut bob = Device::waiting(2, channel);
     let mut members = allowed(&[&alice, &bob]);
     let request = bob.ask(false);
-    alice.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.learn_request(request).unwrap();
     alice.peer.reconcile_now(&members, &vault()).unwrap();
     let frames = alice.take();
     deliver(&frames, &mut [&mut bob], &members);
@@ -254,7 +254,7 @@ fn a_group_hands_a_legacy_groups_keys_to_every_member_and_joiner() {
     let mut carol = Device::waiting(3, channel);
     members = allowed(&[&alice, &bob, &carol]);
     let request = carol.ask(false);
-    alice.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.learn_request(request).unwrap();
     alice.peer.reconcile_now(&members, &vault()).unwrap();
     let frames = alice.take();
     deliver(&frames, &mut [&mut carol], &members);
@@ -274,14 +274,14 @@ fn a_commit_the_membership_does_not_back_is_refused() {
     let mut bob = Device::waiting(2, channel);
     let mut eve = Device::waiting(9, channel);
     let both = allowed(&[&alice, &bob]);
-    alice.peer.learn_request(bob.ask(false), &vault()).unwrap();
+    alice.peer.learn_request(bob.ask(false)).unwrap();
     alice.peer.reconcile_now(&both, &vault()).unwrap();
     deliver(&alice.take(), &mut [&mut bob], &both);
     assert_eq!(bob.epoch(), Some(1));
 
     // Alice's view lets Eve in; Bob's membership does not.
     let with_eve = allowed(&[&alice, &bob, &eve]);
-    alice.peer.learn_request(eve.ask(false), &vault()).unwrap();
+    alice.peer.learn_request(eve.ask(false)).unwrap();
     alice.peer.reconcile_now(&with_eve, &vault()).unwrap();
     let frames = alice.take();
     let withheld = frames
@@ -307,7 +307,7 @@ fn a_commit_the_membership_does_not_back_is_refused() {
     // A frame declaring other changes than its MLS commit makes is refused.
     let mut dave = Device::waiting(4, channel);
     let all = allowed(&[&alice, &bob, &eve, &dave]);
-    alice.peer.learn_request(dave.ask(false), &vault()).unwrap();
+    alice.peer.learn_request(dave.ask(false)).unwrap();
     alice.peer.reconcile_now(&all, &vault()).unwrap();
     let real = alice
         .take()
@@ -353,11 +353,8 @@ fn concurrent_commits_on_one_epoch_converge_on_the_lower_digest() {
     let mut carol = Device::waiting(3, channel);
     let mut dave = Device::waiting(4, channel);
     let three = allowed(&[&alice, &bob, &carol]);
-    alice.peer.learn_request(bob.ask(false), &vault()).unwrap();
-    alice
-        .peer
-        .learn_request(carol.ask(false), &vault())
-        .unwrap();
+    alice.peer.learn_request(bob.ask(false)).unwrap();
+    alice.peer.learn_request(carol.ask(false)).unwrap();
     alice.peer.reconcile_now(&three, &vault()).unwrap();
     deliver(&alice.take(), &mut [&mut bob, &mut carol], &three);
     assert_eq!((bob.epoch(), carol.epoch()), (Some(1), Some(1)));
@@ -367,10 +364,7 @@ fn concurrent_commits_on_one_epoch_converge_on_the_lower_digest() {
     let everyone = allowed(&[&alice, &bob, &carol, &dave]);
     let request = dave.ask(false);
     for device in [&mut alice, &mut bob, &mut carol] {
-        device
-            .peer
-            .learn_request(request.clone(), &vault())
-            .unwrap();
+        device.peer.learn_request(request.clone()).unwrap();
     }
     alice.peer.reconcile_now(&everyone, &vault()).unwrap();
     bob.peer.reconcile_now(&everyone, &vault()).unwrap();
@@ -451,7 +445,7 @@ fn commits_for_one_epoch_on_different_heads_keep_the_lower_digest() {
     let mut dave = Device::waiting(4, channel);
     let mut erin = Device::waiting(5, channel);
     let both = allowed(&[&alice, &bob]);
-    alice.peer.learn_request(bob.ask(false), &vault()).unwrap();
+    alice.peer.learn_request(bob.ask(false)).unwrap();
     alice.peer.reconcile_now(&both, &vault()).unwrap();
     deliver(&alice.take(), &mut [&mut bob], &both);
     assert_eq!((alice.epoch(), bob.epoch()), (Some(1), Some(1)));
@@ -460,8 +454,8 @@ fn commits_for_one_epoch_on_different_heads_keep_the_lower_digest() {
     // commit, so each keeps its own head from here.
     let everyone = allowed(&[&alice, &bob, &dave, &erin]);
     let request = dave.ask(false);
-    alice.peer.learn_request(request.clone(), &vault()).unwrap();
-    bob.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.learn_request(request.clone()).unwrap();
+    bob.peer.learn_request(request).unwrap();
     alice.peer.reconcile_now(&everyone, &vault()).unwrap();
     bob.peer.reconcile_now(&everyone, &vault()).unwrap();
     let (alice_2, bob_2) = (alice.take(), bob.take());
@@ -472,8 +466,8 @@ fn commits_for_one_epoch_on_different_heads_keep_the_lower_digest() {
     // A second change, committed by both on the epoch each holds: two commits
     // for epoch 3 that followed different frames.
     let request = erin.ask(false);
-    alice.peer.learn_request(request.clone(), &vault()).unwrap();
-    bob.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.learn_request(request.clone()).unwrap();
+    bob.peer.learn_request(request).unwrap();
     alice.peer.reconcile_now(&everyone, &vault()).unwrap();
     bob.peer.reconcile_now(&everyone, &vault()).unwrap();
     let from_alice = alice.take();
@@ -547,10 +541,7 @@ fn settle(devices: &mut [&mut Device], allowed: &BTreeSet<Ed25519PublicKey>) {
         for device in devices.iter_mut() {
             for request in &requests {
                 if request.device != device.public() {
-                    device
-                        .peer
-                        .learn_request(request.clone(), &vault())
-                        .unwrap();
+                    device.peer.learn_request(request.clone()).unwrap();
                 }
             }
         }
@@ -666,7 +657,7 @@ fn a_device_without_the_route_follows_commits_and_keeps_its_group() {
     let everyone = allowed(&[&alice, &bob, &carol]);
     settle(&mut [&mut alice, &mut bob], &everyone);
     let request = carol.ask(false);
-    alice.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.learn_request(request).unwrap();
     alice.peer.reconcile_now(&everyone, &vault()).unwrap();
     for frame in alice.take() {
         if frame.join_material().is_none() {
@@ -695,18 +686,15 @@ fn a_member_that_fell_behind_or_lost_its_state_is_admitted_again() {
     let mut dave = Device::waiting(4, channel);
     let history = alice.seal("history");
     let members = allowed(&[&alice, &bob, &carol, &dave]);
-    alice.peer.learn_request(bob.ask(false), &vault()).unwrap();
+    alice.peer.learn_request(bob.ask(false)).unwrap();
     alice.peer.reconcile_now(&members, &vault()).unwrap();
     deliver(&alice.take(), &mut [&mut bob], &members);
 
     // Bob misses two commits; the host only kept the newest.
-    alice
-        .peer
-        .learn_request(carol.ask(false), &vault())
-        .unwrap();
+    alice.peer.learn_request(carol.ask(false)).unwrap();
     alice.peer.reconcile_now(&members, &vault()).unwrap();
     deliver(&alice.take(), &mut [&mut carol], &members);
-    alice.peer.learn_request(dave.ask(false), &vault()).unwrap();
+    alice.peer.learn_request(dave.ask(false)).unwrap();
     alice.peer.reconcile_now(&members, &vault()).unwrap();
     let newest = alice.take();
     deliver(&newest, &mut [&mut carol, &mut dave], &members);
@@ -722,7 +710,7 @@ fn a_member_that_fell_behind_or_lost_its_state_is_admitted_again() {
 
     // Carol, any participant, admits Bob again with a fresh key: history
     // included.
-    carol.peer.learn_request(bob.ask(false), &vault()).unwrap();
+    carol.peer.learn_request(bob.ask(false)).unwrap();
     let outcome = carol.peer.reconcile_now(&members, &vault()).unwrap();
     assert_eq!(outcome.admitted, vec![bob.public()]);
     assert_eq!(outcome.removed, vec![bob.public()]);
@@ -739,7 +727,7 @@ fn a_member_that_fell_behind_or_lost_its_state_is_admitted_again() {
     let mut dave = Device::waiting(4, channel);
     let stale_epoch = alice.epoch();
     assert!(!alice.peer.differs(&members));
-    alice.peer.learn_request(dave.ask(true), &vault()).unwrap();
+    alice.peer.learn_request(dave.ask(true)).unwrap();
     assert!(alice.peer.differs(&members));
     alice.peer.reconcile_now(&members, &vault()).unwrap();
     deliver(
@@ -776,10 +764,7 @@ fn competing_geneses_keep_the_lower_digest() {
         PeerEvent::Desynchronised
     );
     assert_eq!(loser.peer.access(), Access::Waiting);
-    winner
-        .peer
-        .learn_request(loser.ask(false), &vault())
-        .unwrap();
+    winner.peer.learn_request(loser.ask(false)).unwrap();
     winner.peer.reconcile_now(&both, &vault()).unwrap();
     deliver(&winner.take(), &mut [&mut loser], &both);
     assert_eq!(loser.epoch(), Some(1));
@@ -805,10 +790,7 @@ fn a_welcomed_member_judges_competing_geneses_by_its_own_group() {
     let mut in_loser = Device::waiting(4, channel);
     let everyone = allowed(&[&winner, &loser, &in_winner, &in_loser]);
     for (founder, joiner) in [(&mut winner, &mut in_winner), (&mut loser, &mut in_loser)] {
-        founder
-            .peer
-            .learn_request(joiner.ask(false), &vault())
-            .unwrap();
+        founder.peer.learn_request(joiner.ask(false)).unwrap();
         founder.peer.reconcile_now(&everyone, &vault()).unwrap();
         deliver(&founder.take(), &mut [joiner], &everyone);
         assert_eq!(joiner.epoch(), Some(1));
@@ -835,10 +817,7 @@ fn a_welcomed_member_judges_competing_geneses_by_its_own_group() {
     );
 
     // The winner's group admits it.
-    winner
-        .peer
-        .learn_request(in_loser.ask(false), &vault())
-        .unwrap();
+    winner.peer.learn_request(in_loser.ask(false)).unwrap();
     winner.peer.reconcile_now(&everyone, &vault()).unwrap();
     deliver(&winner.take(), &mut [&mut in_loser], &everyone);
     assert_eq!(in_loser.epoch(), winner.epoch());
@@ -851,7 +830,7 @@ fn a_welcomed_member_judges_competing_geneses_by_its_own_group() {
         late.receive(&winning, &everyone).unwrap(),
         PeerEvent::Genesis
     );
-    loser.peer.learn_request(late.ask(false), &vault()).unwrap();
+    loser.peer.learn_request(late.ask(false)).unwrap();
     loser.peer.reconcile_now(&everyone, &vault()).unwrap();
     let welcome = loser
         .take()
@@ -989,7 +968,7 @@ fn a_signer_that_answers_later_signs_every_frame() {
         bob.public(),
     ]
     .into();
-    alice.learn_request(bob.ask(false), &vault()).unwrap();
+    alice.learn_request(bob.ask(false)).unwrap();
     pollster::block_on(alice.reconcile(&both, &vault())).unwrap();
     let frames = alice.outbox().to_vec();
     for frame in &frames {
@@ -1013,7 +992,7 @@ fn a_device_that_went_on_from_a_commit_that_lost_starts_over() {
     let mut dave = Device::waiting(4, channel);
     let mut erin = Device::waiting(5, channel);
     let both = allowed(&[&alice, &bob]);
-    alice.peer.learn_request(bob.ask(false), &vault()).unwrap();
+    alice.peer.learn_request(bob.ask(false)).unwrap();
     alice.peer.reconcile_now(&both, &vault()).unwrap();
     deliver(&alice.take(), &mut [&mut bob], &both);
     assert_eq!((alice.epoch(), bob.epoch()), (Some(1), Some(1)));
@@ -1021,8 +1000,8 @@ fn a_device_that_went_on_from_a_commit_that_lost_starts_over() {
     // Both admit Dave on epoch 1: two sibling commits for epoch 2.
     let everyone = allowed(&[&alice, &bob, &dave, &erin]);
     let request = dave.ask(false);
-    alice.peer.learn_request(request.clone(), &vault()).unwrap();
-    bob.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.learn_request(request.clone()).unwrap();
+    bob.peer.learn_request(request).unwrap();
     alice.peer.reconcile_now(&everyone, &vault()).unwrap();
     bob.peer.reconcile_now(&everyone, &vault()).unwrap();
     let from_alice = alice.take();
@@ -1037,7 +1016,7 @@ fn a_device_that_went_on_from_a_commit_that_lost_starts_over() {
 
     // The loser admits Erin on its own epoch 2 before it hears the winner,
     // and seals content there.
-    loser.peer.learn_request(erin.ask(false), &vault()).unwrap();
+    loser.peer.learn_request(erin.ask(false)).unwrap();
     loser.peer.reconcile_now(&everyone, &vault()).unwrap();
     let went_on = loser.take();
     assert_eq!((went_on[0].epoch, loser.epoch()), (3, Some(3)));
@@ -1083,10 +1062,10 @@ fn the_founder_is_in_the_group_with_the_key_it_asked_with() {
     let mut bob = Device::waiting(2, channel);
     let both = allowed(&[&alice, &bob]);
     let asked = alice.ask(false);
-    bob.peer.learn_request(asked, &vault()).unwrap();
+    bob.peer.learn_request(asked).unwrap();
     assert!(alice.peer.found_now(&vault()).unwrap());
 
-    alice.peer.learn_request(bob.ask(false), &vault()).unwrap();
+    alice.peer.learn_request(bob.ask(false)).unwrap();
     alice.peer.reconcile_now(&both, &vault()).unwrap();
     deliver(&alice.take(), &mut [&mut bob], &both);
     assert_eq!((alice.epoch(), bob.epoch()), (Some(1), Some(1)));
@@ -1113,7 +1092,7 @@ fn a_device_that_went_on_from_a_lost_commit_by(depth: u8) {
         .map(|seed| Device::waiting(10 + seed, channel))
         .collect();
     let both = allowed(&[&alice, &bob]);
-    alice.peer.learn_request(bob.ask(false), &vault()).unwrap();
+    alice.peer.learn_request(bob.ask(false)).unwrap();
     alice.peer.reconcile_now(&both, &vault()).unwrap();
     deliver(&alice.take(), &mut [&mut bob], &both);
 
@@ -1121,8 +1100,8 @@ fn a_device_that_went_on_from_a_lost_commit_by(depth: u8) {
     named.extend(joiners.iter());
     let everyone = allowed(&named);
     let request = dave.ask(false);
-    alice.peer.learn_request(request.clone(), &vault()).unwrap();
-    bob.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.learn_request(request.clone()).unwrap();
+    bob.peer.learn_request(request).unwrap();
     alice.peer.reconcile_now(&everyone, &vault()).unwrap();
     bob.peer.reconcile_now(&everyone, &vault()).unwrap();
     let from_alice = alice.take();
@@ -1139,10 +1118,7 @@ fn a_device_that_went_on_from_a_lost_commit_by(depth: u8) {
     // content under every epoch it reaches there.
     let mut sealed = vec![loser.seal("at the lost commit")];
     for joiner in &mut joiners {
-        loser
-            .peer
-            .learn_request(joiner.ask(false), &vault())
-            .unwrap();
+        loser.peer.learn_request(joiner.ask(false)).unwrap();
         loser.peer.reconcile_now(&everyone, &vault()).unwrap();
         went_on.extend(loser.take());
         sealed.push(loser.seal("further on the branch that lost"));

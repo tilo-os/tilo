@@ -70,7 +70,7 @@ impl Channels {
     fn take(&mut self, channel: ChannelId) -> Vec<MlsGovernanceFrame> {
         let peer = self.peer(channel);
         let frames = peer.outbox().to_vec();
-        peer.published(&vault()).unwrap();
+        peer.published();
         frames
     }
 }
@@ -290,7 +290,7 @@ async fn admit(
             let asking = asked.entry(channel).or_default();
             asking.insert(request.device);
             let peer = channels.peer(channel);
-            peer.learn_request(*request, &vault()).unwrap();
+            peer.learn_request(*request).unwrap();
             let allowed: BTreeSet<Ed25519PublicKey> = asking
                 .iter()
                 .copied()
