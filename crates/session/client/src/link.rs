@@ -583,6 +583,15 @@ impl Outbox for Link {
                 keys.clone(),
             );
         }
+        // Held before the session, which reads held writes under this lock, can look: read from
+        // now on, and said to the session as the route alone.
+        if let Cmd::Write(route, frames) = command {
+            let mut held = self.engine.held_writes().lock();
+            self.outbox.send(Cmd::Write(route.clone(), Vec::new()))?;
+            held.entry(route).or_default().extend(frames);
+            drop(held);
+            return Ok(());
+        }
         self.outbox.send(command)
     }
 }

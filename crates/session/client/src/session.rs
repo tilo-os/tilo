@@ -652,7 +652,7 @@ impl Task {
         let Ok(frames) = DocumentMutation::Snapshot(snapshot.clone()).encode_frames() else {
             return true;
         };
-        let snapshot_entries = self.commit_frames(&route, frames, true).await;
+        let (snapshot_entries, _) = self.commit_frames(&route, frames, true).await;
         if snapshot_entries.is_empty() {
             // Custody has no room for the whole snapshot now: the host asks again as the record
             // grows.
@@ -1379,8 +1379,9 @@ impl Task {
                 self.opened_routes.insert(route);
                 asked
             }
-            Command::Client(Cmd::Write(route, frames)) => {
-                self.publish(route, frames);
+            // Its frames are held already ([`crate::Link`]).
+            Command::Client(Cmd::Write(route, _)) => {
+                self.publish(&route);
                 true
             }
             Command::Client(Cmd::Barrier(done)) => {

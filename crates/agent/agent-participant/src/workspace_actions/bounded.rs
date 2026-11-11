@@ -26,7 +26,7 @@
 use super::{
     ActionHostError, Arc, Caller, CallerPrincipal, ConfinedReplica, Confirmation, DocumentMutation,
     DocumentRoute, HashMap, HashSet, Instant, InvocationId, InvokeRequest, Mounted, Mutex, Outcome,
-    Seed, Worker, WorkspaceState, bytes_of, reads,
+    Seed, Worker, WorkspaceState, reads,
 };
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
@@ -196,7 +196,8 @@ fn written_keys(
             .map_err(|error| error.to_string())?;
     }
     let was = doc.get_heads();
-    doc.load_incoming(&bytes_of(mutation))
+    let (DocumentMutation::Snapshot(written) | DocumentMutation::Incremental(written)) = mutation;
+    doc.load_incoming(written)
         .map_err(|error| error.to_string())?;
     let now = doc.get_heads();
     Ok(doc

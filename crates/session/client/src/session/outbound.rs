@@ -13,26 +13,20 @@ use super::{
 };
 
 impl Task {
-    /// Take `frames`, cleartext document frames of `route`, to commit to this device's replica
-    /// sealed with the route's keys ([`Self::commit_held`]), behind what the route holds already.
-    /// Never in the clear: the frames wait for this device's keys.
-    pub(super) fn publish(&mut self, route: DocumentRoute, frames: Vec<Vec<u8>>) {
+    /// `route` holds new writes of this device, held as the session was told of them: to commit
+    /// to its replica sealed with the route's keys ([`Self::commit_held`]). Never in the clear:
+    /// the writes wait for this device's keys.
+    pub(super) fn publish(&mut self, route: &DocumentRoute) {
         if route.workspace_id().is_err() {
+            self.engine.held_writes().lock().remove(route);
             self.fail(
                 "protocol-rejected",
                 "A document names an invalid workspace.",
             );
             return;
         }
-        self.open_channel(&route);
-        let ready = self.ciphers.contains_key(&route);
-        self.engine
-            .held_writes()
-            .lock()
-            .entry(route)
-            .or_default()
-            .extend(frames);
-        if ready {
+        self.open_channel(route);
+        if self.ciphers.contains_key(route) {
             self.outbound_due = true;
         } else {
             self.persist_channels(true);
@@ -40,7 +34,8 @@ impl Task {
     }
 
     /// Commit the writes held for their route's keys or for room in custody, once they may: every
-    /// held write of a route whose keys this device holds, in one owner turn per route.
+    /// held write of a route whose keys this device holds, in one owner turn per route; held,
+    /// so read, until committed.
     pub(super) async fn commit_held(&mut self) {
         if !std::mem::take(&mut self.outbound_due) {
             return;
@@ -54,9 +49,16 @@ impl Task {
             .cloned()
             .collect();
         for route in ready {
-            let frames = self.engine.held_writes().lock().remove(&route);
-            if let Some(frames) = frames {
-                self.commit_frames(&route, frames, false).await;
+            let Some(frames) = self.engine.held_writes().lock().get(&route).cloned() else {
+                continue;
+            };
+            let (_, taken) = self.commit_frames(&route, frames, false).await;
+            let mut held = self.engine.held_writes().lock();
+            if let Some(frames) = held.get_mut(&route) {
+                frames.drain(..taken.min(frames.len()));
+                if frames.is_empty() {
+                    held.remove(&route);
+                }
             }
         }
         self.persist_channels(true);
@@ -64,22 +66,22 @@ impl Task {
     }
 
     /// Seal, sign and commit `frames` of `route` into this device's custody, in one owner turn;
-    /// the entries it committed, as the host names them. What this device writes, its readers
-    /// read at once. What custody has no room for waits with the route's held writes and commits
-    /// once the host answered some of what it holds; `whole` commits every frame or none.
+    /// the entries it committed, as the host names them, and how many of `frames` it is done with
+    /// (all of them when they cannot commit). What this device writes, its readers read at once;
+    /// what custody has no room for waits for the host's answers. `whole` commits all or none.
     pub(super) async fn commit_frames(
         &mut self,
         route: &DocumentRoute,
         frames: Vec<Vec<u8>>,
         whole: bool,
-    ) -> Vec<[u8; 32]> {
+    ) -> (Vec<[u8; 32]>, usize) {
         let owner = self.replicas.owner();
         let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
             self.fail(
                 "protocol-rejected",
                 "A document names an invalid workspace.",
             );
-            return Vec::new();
+            return (Vec::new(), frames.len());
         };
         let before: BTreeSet<[u8; 32]> = self
             .custody(workspace)
@@ -99,36 +101,28 @@ impl Task {
             .take_while(|fits| *fits)
             .count();
         if whole && room < frames.len() {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
         let signer = Arc::clone(&self.signer);
-        let mut frames = std::collections::VecDeque::from(frames);
-        let mut taken = Vec::new();
         let mut writes = Vec::new();
-        while taken.len() < room {
-            let Some(frame) = frames.pop_front() else {
-                break;
-            };
+        for frame in frames.iter().take(room) {
             let Some(cipher) = self.ciphers.get_mut(route) else {
                 self.fail("signature-rejected", "the route's channel keys went away");
-                return Vec::new();
+                return (Vec::new(), frames.len());
             };
             match crate::document::signed_write(
                 route,
-                &frame,
+                frame,
                 signer.as_ref(),
                 cipher.as_mut(),
                 tilo_clock::unix_now_ns(),
             )
             .await
             {
-                Ok(write) => {
-                    writes.push(write);
-                    taken.push(frame);
-                }
+                Ok(write) => writes.push(write),
                 Err(error) => {
                     self.fail("signature-rejected", error.to_string());
-                    return Vec::new();
+                    return (Vec::new(), frames.len());
                 }
             }
         }
@@ -141,36 +135,23 @@ impl Task {
             Ok(committed) => committed,
             Err(error) => {
                 self.fail("signature-rejected", error);
-                return Vec::new();
+                return (Vec::new(), frames.len());
             }
         };
-        if !whole {
-            let mut rest = taken.split_off(committed.min(taken.len()));
-            rest.extend(frames);
-            if !rest.is_empty() {
-                let mut writes = self.engine.held_writes().lock();
-                let held = writes.entry(route.clone()).or_default();
-                let later = std::mem::take(held);
-                held.extend(rest);
-                held.extend(later);
-                drop(writes);
-                self.persist_channels(true);
-            }
-        }
         if committed == 0 {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
         self.landed(route, Some(self.config.cert.device_public_key));
-        let committed: Vec<[u8; 32]> = self
+        let ids: Vec<[u8; 32]> = self
             .custody(workspace)
             .into_iter()
             .filter(|entry| !before.contains(&entry.0))
             .map(|entry| tilo_relay_protocol::compaction::entry_id(&entry.1))
             .collect();
         // What this device publishes, its own replica holds.
-        self.note_delivered(route, &committed);
+        self.note_delivered(route, &ids);
         self.count_custody();
-        committed
+        (ids, committed)
     }
 
     /// `workspace`'s writes in this device's custody: id, bytes, channel and retention.

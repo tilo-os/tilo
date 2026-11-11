@@ -14,20 +14,18 @@ use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_client::{Cmd, Outbox};
 
-use super::{COMMIT_WAIT, Needs, Worker, bytes_of, is_part};
+use super::{COMMIT_WAIT, Needs, Worker, is_part};
 
-/// The record at `route` as the session's replica holds it, with `written`
-/// (a change of it the replica may not have taken in yet) merged in, and
-/// whether the replica holds it at all.
+/// The record at `route` as the session's replica holds it, and whether the
+/// replica holds it at all.
 fn document(
     peer: &tilo_session_client::Link,
     route: &DocumentRoute,
-    written: Option<&[u8]>,
 ) -> (automerge::AutoCommit, bool) {
-    let held = peer
+    match peer
         .engine()
-        .record(&route.cluster_id, &route.app_id, &route.record);
-    let (mut doc, held) = match held {
+        .record(&route.cluster_id, &route.app_id, &route.record)
+    {
         Ok(Some(bytes)) => (
             automerge::AutoCommit::load(&bytes).unwrap_or_else(|error| {
                 tracing::warn!(record = %route.record, %error, "workspace actions: a record does not load");
@@ -36,13 +34,7 @@ fn document(
             true,
         ),
         _ => (automerge::AutoCommit::new(), false),
-    };
-    if let Some(bytes) = written
-        && let Err(error) = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes)
-    {
-        tracing::warn!(record = %route.record, %error, "workspace actions: a change does not load");
     }
-    (doc, held)
 }
 
 impl Worker {
@@ -82,7 +74,7 @@ impl Worker {
         workspace.peer.write(route.clone(), mutation)?;
         // The workspace holds the record by its index naming it, as a
         // window opening the record names it there.
-        self.index_record(workspace_id, route, &bytes_of(mutation));
+        self.index_record(workspace_id, route);
         Ok(())
     }
 
@@ -113,24 +105,19 @@ impl Worker {
     /// workspace, when the index names it.
     pub(super) fn record_name(&self, workspace_id: u64, route: &DocumentRoute) -> Option<String> {
         let workspace = self.workspaces.get(&workspace_id)?;
-        let checkout = ui::record::identity(&document(&workspace.peer, route, None).0)?;
+        let checkout = ui::record::identity(&document(&workspace.peer, route).0)?;
         let index = DocumentRoute {
             record: String::new(),
             ..route.clone()
         };
-        ui::record::index::name_of(&document(&workspace.peer, &index, None).0, &checkout.id)
+        ui::record::index::name_of(&document(&workspace.peer, &index).0, &checkout.id)
     }
 
     /// Name the record at `route` in its app's index of the workspace,
     /// under what its app calls it now, unless the index already does. A
     /// record of the workspace itself (its desk, its emoji), the index, and
     /// a part of a record's chain are no records of their own there.
-    pub(super) fn index_record(
-        &mut self,
-        workspace_id: u64,
-        route: &DocumentRoute,
-        written: &[u8],
-    ) {
+    pub(super) fn index_record(&mut self, workspace_id: u64, route: &DocumentRoute) {
         if route.record.is_empty()
             || is_part(&route.record)
             || collab_types::workspace_record(&route.app_id, &route.record).is_some()
@@ -138,18 +125,13 @@ impl Worker {
         {
             return;
         }
-        if let Err(reason) = self.name_in_index(workspace_id, route, written) {
+        if let Err(reason) = self.name_in_index(workspace_id, route) {
             tracing::warn!(app = %route.app_id, record = %route.record, %reason,
                 "workspace actions: a record is not named in its workspace's index");
         }
     }
 
-    fn name_in_index(
-        &mut self,
-        workspace_id: u64,
-        route: &DocumentRoute,
-        written: &[u8],
-    ) -> Result<(), String> {
+    fn name_in_index(&mut self, workspace_id: u64, route: &DocumentRoute) -> Result<(), String> {
         let index_route = DocumentRoute {
             record: String::new(),
             ..route.clone()
@@ -160,7 +142,7 @@ impl Worker {
                 .workspaces
                 .get(&workspace_id)
                 .ok_or("the workspace was not joined")?;
-            document(&workspace.peer, route, Some(written)).0
+            document(&workspace.peer, route).0
         };
         let Some(checkout) = ui::record::identity(&record) else {
             return Ok(());
@@ -199,7 +181,7 @@ impl Worker {
                 link.as_deref(),
             )
             .map_err(|error| error.to_string())?;
-        let (mut index, held) = document(&workspace.peer, &index_route, None);
+        let (mut index, held) = document(&workspace.peer, &index_route);
         let _ = index.save();
         let named = ui::record::index::reference(&mut index, &checkout.id, &checkout.kind);
         let renamed = name.is_some()

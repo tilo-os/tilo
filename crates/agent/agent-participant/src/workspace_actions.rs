@@ -1119,12 +1119,6 @@ impl Workspace {
     }
 }
 
-fn bytes_of(mutation: &DocumentMutation) -> Vec<u8> {
-    match mutation {
-        DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes.clone(),
-    }
-}
-
 /// A request held off the service's thread until its workspace is ready for
 /// it: joined, and holding the keys of what the request reads.
 struct Waiting {

@@ -370,7 +370,8 @@ pub enum Cmd {
     OpenRecordAt(Topic, DocumentRoute),
     /// Take part in a route's encrypted channel: ask its participants for access.
     OpenRoute(DocumentRoute),
-    /// Commit the signed frames of one write to a route, in order ([`Outbox::write`]).
+    /// Commit the frames of one write to a route, in order ([`Outbox::write`]). A
+    /// [`crate::Link`] holds them in its engine, readable at once, and says the route alone.
     Write(DocumentRoute, Vec<Vec<u8>>),
     /// Seal a route's documents with this cipher from now on.
     InstallCipher(
