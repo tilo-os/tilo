@@ -1367,6 +1367,13 @@ impl Widget for RichTextLine {
         self.dirty.styled_layout || self.emoji_moved() || self.inner.is_layout_dirty()
     }
 
+    /// Where the field's text stands in it, as the field paints it: an audit of a window reads
+    /// the line a composer or a block editor shows, whether it stands in the middle of a band
+    /// taller than itself or at its inset.
+    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
+        self.inner.layout_info()
+    }
+
     /// The inner field is no child, so it takes the host's inputs from here: a coarse pointer
     /// makes the field a finger's target tall, as any field is.
     fn set_interaction_environment(

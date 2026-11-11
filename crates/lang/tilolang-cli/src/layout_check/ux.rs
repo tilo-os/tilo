@@ -1129,12 +1129,15 @@ fn fields(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>)
         && matches!(role(node), Some(Role::TextInput | Role::MultilineTextInput))
         && text.rows <= 1
         && text.lines == 0
+        && !text.document
     {
-        let band = rect(node);
+        let field = rect(node);
         let line = f64::from(text.line);
-        if band.height() > line + 2.0 * SLACK {
-            let above = f64::from(text.top) - band.y0;
-            let under = band.y1 - (f64::from(text.top) + line);
+        // Only a band's room is a band's: a field stretched to fill a pane starts its text at the
+        // inset, where it grows, and is no line off centre.
+        if field.height() > line + 2.0 * SLACK && field.height() <= f64::from(text.band) + SLACK {
+            let above = f64::from(text.top) - field.y0;
+            let under = field.y1 - (f64::from(text.top) + line);
             if (above - under).abs() > SLACK {
                 push(
                     out,
@@ -1683,8 +1686,9 @@ mod tests {
         );
     }
 
-    /// A window too narrow for a page's gutters keeps one at its edge: content eight pixels from
-    /// the glass is caught, content a gutter in is not.
+    /// A field's one line stands in the middle of the band it is typed into: a band grown to a
+    /// finger's target centres it, a line left at the top does not, and wrapped text, a box given
+    /// rows and a document's page start at the inset.
     #[test]
     fn a_field_holding_one_line_stands_it_in_the_middle_of_the_band() {
         fn field(
@@ -1701,7 +1705,17 @@ mod tests {
                 line: f64_to_f32(line),
                 rows,
                 lines,
+                // A field stands one band tall as it is read here, whatever room it was given.
+                band: f64_to_f32(at[3]),
+                document: false,
             }));
+            field
+        }
+        /// The field in a band `band` tall: the room a single-line field of its size keeps.
+        fn in_band(mut field: InspectionNode, band: f64) -> InspectionNode {
+            if let Some(LayoutInfo::Text(text)) = &mut field.layout {
+                text.band = f64_to_f32(band);
+            }
             field
         }
         // A composer in a phone's window: the band grew to the target a finger needs, and its one
@@ -1721,13 +1735,30 @@ mod tests {
         let wrapped = field("comment", [100.0, 20.0, 240.0, 60.0], 28.0, 18.2, 2, 0);
         assert!(found(Kind::LineOffCentre, &wrapped, (390, 844)).is_empty());
         // A box given rows of its own (a note's six) starts at its inset, one line or not.
-        let note = field("notes", [0.0, 0.0, 240.0, 126.0], 6.0, 18.2, 1, 6);
+        let note = in_band(
+            field("notes", [0.0, 0.0, 240.0, 126.0], 6.0, 18.2, 1, 6),
+            32.0,
+        );
         assert!(found(Kind::LineOffCentre, &note, (1280, 800)).is_empty());
+        // A field stretched to fill a pane keeps its line at its inset: the room is the pane's.
+        let filled = in_band(
+            field("composer", [0.0, 0.0, 320.0, 200.0], 8.0, 18.2, 1, 0),
+            48.0,
+        );
+        assert!(found(Kind::LineOffCentre, &filled, (1280, 800)).is_empty());
+        // A document's own page starts at its inset however tall the page stands.
+        let mut page = field("body", [0.0, 0.0, 320.0, 400.0], 8.0, 18.2, 1, 0);
+        if let Some(LayoutInfo::Text(text)) = &mut page.layout {
+            text.document = true;
+        }
+        assert!(found(Kind::LineOffCentre, &page, (1280, 800)).is_empty());
         // A single-line field centres its band already, and stands one line tall.
         let single = field("search", [0.0, 0.0, 240.0, 32.0], 6.9, 18.2, 1, 0);
         assert!(found(Kind::LineOffCentre, &single, (1280, 800)).is_empty());
     }
 
+    /// A window too narrow for a page's gutters keeps one at its edge: content eight pixels from
+    /// the glass is caught, content a gutter in is not.
     #[test]
     fn a_narrow_window_keeps_a_gutter() {
         let narrow = |text_x: f64, content_right: f64| {

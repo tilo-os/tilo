@@ -164,10 +164,10 @@ pub enum Kind {
     /// window, or a second tag for one actor: the word is lost, and one actor reads as two.
     PresenceTag,
     /// A field holding one line of text, standing it above the middle of the control a person
-    /// types into: the band around the line grew (a phone's target, a row that stretches the
-    /// field) while the line stayed at the top, so the words float over empty room instead of
-    /// standing where the field puts the caret. One line stands in the middle of the field;
-    /// text that wraps, and a box given lines of its own, starts at its inset.
+    /// types into: the band around the line grew (a phone's target) while the line stayed at the
+    /// top, so the words float over empty room instead of standing where the field puts the
+    /// caret. One line stands in the middle of a field that tall; text that wraps, a box given
+    /// lines of its own and a document's page start at their inset.
     LineOffCentre,
 }
 

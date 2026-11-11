@@ -3676,29 +3676,30 @@ impl TextInput {
     }
 
     /// The top of a wrapping field's content, in window coordinates and before its scroll: the
-    /// inset its chrome keeps — or, where it holds one line and stands taller than it, that
-    /// line centred in it.
+    /// inset its chrome keeps — or, where the field stands one band tall and holds one line,
+    /// that line centred in it.
     ///
-    /// A field grows to its text, but it can also be given more room than one line needs: a
-    /// band grown to the touch target (a composer on a phone), a row that stretches it to the
-    /// face of the button beside it. A single-line field centres its band in that room
-    /// ([`Self::text_band`]); a wrapping field that holds one line centres that line the same
-    /// way, so the words and the caret stand in the middle of the control a person touches
-    /// rather than at its top edge. Once the text wraps — or the field was given lines of its
-    /// own (`min_lines`, a note's box) — the text starts at the inset and grows down, as a
-    /// document does.
+    /// A field grows to its text, but a band can be taller than one line: a composer on a phone
+    /// stands at the target a finger reaches, and a row may stretch the field to the face of the
+    /// button beside it. A single-line field centres its text in that band ([`Self::text_band`]);
+    /// a wrapping field that holds one line centres it the same way, so the words and the caret
+    /// stand in the middle of the control a person touches rather than at its top edge. Anything
+    /// more is not a band's room: text that wraps, a field given lines of its own (`min_lines`, a
+    /// note's box), a document's page and a field stretched to fill a pane all start at the inset
+    /// and grow down.
     fn multiline_top(&self) -> f64 {
         let inset = self.rect.y0 + self.multiline_padding_y();
-        // A document's own text (a note's page, a block editor's line) begins at its inset and
-        // grows down, however much room the page it fills leaves under it.
-        if self.plain || self.min_lines > 0 || !self.fits_one_line() {
-            return inset;
-        }
         let line = self.line_height();
-        if self.rect.height() <= line + 2.0 * self.multiline_padding_y() + 0.5 {
+        let room = self.rect.height() - line;
+        if self.plain
+            || self.min_lines > 0
+            || !self.fits_one_line()
+            || room <= 2.0 * self.multiline_padding_y() + 0.5
+            || self.rect.height() > self.band() + 0.5
+        {
             return inset;
         }
-        self.rect.y0 + (self.rect.height() - line) / 2.0
+        self.rect.y0 + room / 2.0
     }
 
     /// Whether the field's content is one row tall: one line of text, or its placeholder, that
@@ -4593,6 +4594,17 @@ impl TextInput {
         theme.tokens.metrics.field_min_width * crate::tokens::Metrics::text_growth(theme.text_scale)
     }
 
+    /// The band a field of this size stands at: the control height, grown to
+    /// the target a coarse pointer reaches, as a single-line field's band is.
+    fn band(&self) -> f64 {
+        if self.interaction.supports_hover() {
+            self.band_height
+        } else {
+            self.band_height
+                .max(f64::from(self.interaction.minimum_target()))
+        }
+    }
+
     /// The least height of a wrapping chrome'd field: one band, or
     /// `min_lines` lines and the vertical inset; a coarse pointer makes it at
     /// least the touch target, as a single-line field's band is.
@@ -4603,13 +4615,7 @@ impl TextInput {
         let line =
             f64::from(self.effective_font_size() * self.scale_for(scale) * LINE_HEIGHT_RATIO);
         let lines = f64::from(u32::try_from(self.min_lines).unwrap_or(u32::MAX));
-        let band = if self.interaction.supports_hover() {
-            self.band_height
-        } else {
-            self.band_height
-                .max(f64::from(self.interaction.minimum_target()))
-        };
-        (lines * line + 2.0 * self.multiline_padding_y()).max(band)
+        (lines * line + 2.0 * self.multiline_padding_y()).max(self.band())
     }
 
     fn masked(&self) -> bool {
@@ -6691,16 +6697,30 @@ impl Widget for TextInput {
 
     /// Where the field's text stands in it, so an audit of a window holds it to the band a
     /// person reads: one line in the middle of the field it is typed into.
+    ///
+    /// The band is read from the field's layout, never from a painted frame: a window laid out
+    /// and never drawn reports the same line a drawn one does.
     fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
         if self.rect == Rect::ZERO {
             return None;
         }
-        let (top, line) = self.text_band();
+        let line = if self.multiline {
+            self.line_height()
+        } else {
+            f64::from(self.effective_font_size() * LINE_HEIGHT_RATIO)
+        };
+        let top = if self.multiline {
+            self.multiline_top()
+        } else {
+            self.rect.y0 + (self.rect.height() - line) / 2.0
+        };
         Some(crate::widget::LayoutInfo::Text(crate::widget::TextLayout {
             top: crate::num::f32_of_f64(top),
             line: crate::num::f32_of_f64(line),
             rows: self.content_rows(),
             lines: u32::try_from(self.min_lines).unwrap_or(u32::MAX),
+            band: crate::num::f32_of_f64(self.band()),
+            document: self.plain,
         }))
     }
 

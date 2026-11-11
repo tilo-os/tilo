@@ -489,16 +489,17 @@ fn a_wrapping_field_holding_one_line_centres_it_in_the_band_it_stands_in() {
         );
     }
 
-    // Case `a_field_the_row_stretches_centres_its_one_line`.
+    // Case `a_field_stretched_to_fill_a_pane_keeps_its_line_at_the_inset`.
     {
-        // The row around a composer stretches the field to the face of the button beside it.
-        let mut stretched = TextInput::local().multiline(true);
-        stretched.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 48.0));
-        draw_to_populate(&mut stretched);
-        let (top, line) = stretched.text_band();
+        // Room past the band is the pane's, not the line's: the text begins where it grows and
+        // fills down, as a document does.
+        let mut filled = TextInput::local().multiline(true);
+        filled.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 240.0));
+        draw_to_populate(&mut filled);
+        let (top, _) = filled.text_band();
         assert!(
-            (top - (48.0 - line) / 2.0).abs() < 0.5,
-            "one line centred in a stretched field: {top}"
+            (top - 8.0).abs() < 0.5,
+            "the line starts at the field's inset: {top}"
         );
     }
 

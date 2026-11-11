@@ -170,7 +170,8 @@ pub struct ShellLayout {
 ///
 /// An audit reads this to hold a field to what a person reads: one that follows the line it
 /// holds stands that line in the middle of the control, however much room the band around it
-/// takes, while a box given rows of its own starts at its top inset and grows down.
+/// takes, while a document's own text and a box given rows of its own start at the top inset
+/// and grow down.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct TextLayout {
     /// The top of the first line's band.
@@ -181,6 +182,12 @@ pub struct TextLayout {
     pub rows: u32,
     /// The rows the field was given of its own: none for a field that follows its text.
     pub lines: u32,
+    /// The height a single-line field of this size stands at: the control's band, grown to the
+    /// target a coarse pointer reaches. One line stands centred in a field that tall, and starts
+    /// at its inset in a field given more room than a band's.
+    pub band: f32,
+    /// The text is a document's own, written as prose is: a note's page, a block editor's line.
+    pub document: bool,
 }
 
 /// Concrete layout policies. Manual layout information can extend this enum.
