@@ -16,7 +16,6 @@
 //! | Route | Body | Answer |
 //! |---|---|---|
 //! | [`DIRECTORY_PATH`] | none | [`DirectoryPage`] |
-//! | `<door>join` | [`DoorJoin`] | [`DoorAnswer`] |
 //! | `<door>report` | [`DoorReport`] | `204` |
 //! | `<door>errors` | [`PageError`] | `204` |
 //! | [`WAIT_LIST`] | `{email, language}` | `{email, removal, mail}` |
@@ -32,6 +31,10 @@
 //! `<door>` is a [`DirectoryEntry::door`], resolved against the directory's
 //! own address. A site names its directory in its `entry.json`
 //! (`directory`, an address), beside its home workspace.
+//!
+//! Joining is not one of these routes: a device enters through a door on the
+//! session it opens with the door's host ([`crate::entering`]), whose origin
+//! is the door's own, and the workspace's door decides there.
 
 use serde::{Deserialize, Serialize};
 
@@ -57,7 +60,7 @@ pub fn door_path(workspace: &str) -> String {
 }
 
 /// The workspace a relay door route below the API prefix names, and what is
-/// asked of it there: `/directory/<workspace>/join` is `(workspace, "join")`.
+/// asked of it there: `/directory/<workspace>/report` is `(workspace, "report")`.
 /// The wait list's acts are the one step of two words:
 /// `…/wait-list/remove` is `(workspace, "wait-list/remove")`.
 #[must_use]
@@ -175,7 +178,9 @@ pub struct DirectoryPage {
     pub workspaces: Vec<DirectoryEntry>,
 }
 
-/// A person asking a door to let them in.
+/// A person asking a door to let them in: what a device's entry through the
+/// door asks of it ([`crate::entering::Through::Door`]), on its session with
+/// the door's host.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DoorJoin {
@@ -184,20 +189,6 @@ pub struct DoorJoin {
     /// The name they give the workspace.
     #[serde(default)]
     pub display_name: String,
-}
-
-/// What a door answers a person it lets in: an invitation only they can
-/// redeem and the one-time token that admits them at once.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DoorAnswer {
-    /// The invitation bound to the person, URL-safe base64 without padding.
-    pub invitation: String,
-    /// The token their redemption presents.
-    pub admission_token: String,
-    /// Where to redeem it; the door's own origin when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin: Option<String>,
 }
 
 /// Why a door did not let a person in, as it says it: what every caller reads, never a sentence
@@ -427,17 +418,17 @@ mod tests {
     fn a_door_route_names_its_room_and_step() {
         let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
         assert_eq!(
-            door_route(&format!("/{}join", door_path(workspace))),
-            Some((workspace, "join"))
+            door_route(&format!("/{}errors", door_path(workspace))),
+            Some((workspace, "errors"))
         );
         assert_eq!(
             door_route(&format!("/directory/{workspace}/report")),
             Some((workspace, "report"))
         );
         assert_eq!(door_route("/directory"), None);
-        assert_eq!(door_route("/directory//join"), None);
+        assert_eq!(door_route("/directory//report"), None);
         assert_eq!(
-            door_route(&format!("/directory/{workspace}/join/more")),
+            door_route(&format!("/directory/{workspace}/report/more")),
             None
         );
         assert_eq!(door_route("/rooms"), None);
@@ -527,10 +518,5 @@ mod tests {
         assert_eq!(listed.default_role, WorkspaceRole::Editor);
         assert_eq!(listed.here_count, 12);
         assert!(listed.here.is_empty());
-        let answer: DoorAnswer = serde_json::from_value(serde_json::json!({
-            "invitation": "abc", "admissionToken": "t"
-        }))
-        .unwrap();
-        assert_eq!(answer.origin, None);
     }
 }

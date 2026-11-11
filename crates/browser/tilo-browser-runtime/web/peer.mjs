@@ -219,7 +219,7 @@ const isLoopbackHttp = url => url.protocol === 'http:' && LOOPBACK.has(url.hostn
  * no content type: the host reads every body as the bytes it is, and a
  * cross-origin POST with only the browser's own headers goes without the
  * CORS preflight, which cost a page entering through another origin's door a
- * round trip before each of the door's, the host's and the join's requests. */
+ * round trip before each request it made of the host. */
 export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...args)) {
   const base = new URL(origin);
   const secure = base.protocol === 'https:' || isLoopbackHttp(base);

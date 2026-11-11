@@ -827,8 +827,8 @@ export async function startEntryPage({mode}) {
     mcp: MCP_URL,
     ...(query.get('room') ? {room: query.get('room')} : {}),
     ...(query.get('workspace') ? {workspaceName: query.get('workspace')} : {}),
-    // The directory sheet's Join, which its door granted: the page joins with
-    // the invitation it answered, then shows the workspace.
+    // The directory sheet's Join: the page enters the workspace through its
+    // door on the session, then shows it.
     onJoinGranted: joined => { void openGrantedWorkspace(joined); },
     // The render state is for tests and tools (data-phase, data-frames on
     // the root element); the bar only tells the person something they can
@@ -1133,8 +1133,8 @@ export async function startEntryPage({mode}) {
   const openGrantedWorkspace = async joined => {
     if (!opened) return;
     try {
-      // The same join an invitation link takes, which keeps the membership so
-      // the opened page reconnects as this person.
+      // The same join the page's own door and an invitation link take, which
+      // keeps the membership so the opened page reconnects as this person.
       const {peer, origin, room, name} = await joinGranted(joined, {
         join: options => deps.joinWorkspace(options), displayName: displayName ?? null,
       });

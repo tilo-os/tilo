@@ -15,8 +15,9 @@ pub use tilo_session_client::{
 
 pub mod layout;
 
-/// How long redeeming an invitation to a workspace may take: the host is asked three times, each
-/// exchange with its own bound.
+/// How long coming into a workspace may take: redeeming an invitation asks its host three times,
+/// each exchange with its own bound, and entering through a door asks the door's host on a session
+/// and then takes the workspace's state by the membership exchange.
 pub(crate) const REDEEM_WITHIN: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// How long taking the granted workspace in may take: installing what the host granted and telling
@@ -34,17 +35,21 @@ pub const JOIN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(
         .saturating_add(SETTLE_WITHIN.as_secs()),
 );
 
-/// A workspace this session is joining: the invitation that admits this device to its workspace, and
-/// the workspace on the desk made for it, which is where what the workspace holds arrives.
+/// A workspace this session is joining: the way this device comes into it (the workspace's door,
+/// or an invitation that admits it), and the workspace on the desk made for it, which is where what
+/// the workspace holds arrives.
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct Enrolling {
     /// The slot the desk made for it.
     pub slot: tilo_desktop_model::WorkspaceSlot,
-    /// The workspace the invitation grants.
+    /// The workspace joined.
     pub workspace_id: tilo_desktop_model::WorkspaceId,
-    /// The invitation itself, verified for this person before it got here.
-    pub invitation: String,
+    /// How this device comes in: through the workspace's door, entered on a session with the
+    /// door's host, or with an invitation verified for this person before it got here.
+    pub way: tilo_workspace_directory::Way,
+    /// How the workspace's people see the person: the name a door entry gives it.
+    pub name: String,
     /// Renewing this device's certificate before it is presented, when this device joined a
     /// person's identity: the ask the session's pass may already have under way, waited for rather
     /// than presented past.

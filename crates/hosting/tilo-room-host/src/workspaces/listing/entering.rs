@@ -178,7 +178,8 @@ impl Workspaces {
     }
 
     /// `entered`, with the group that seals `workspace`'s shared desktop as
-    /// its governance decides it now.
+    /// its governance decides it now, and this host's signed address for the
+    /// workspace, where a desktop takes it in.
     async fn with_desktop_scope(&self, workspace: &str, entered: Entered) -> Entered {
         let Entered::Admitted {
             workspace: uuid,
@@ -190,18 +191,22 @@ impl Workspaces {
         else {
             return entered;
         };
-        let desktop_scope = match self.workspace(workspace).await {
+        let (desktop_scope, host) = match self.workspace(workspace).await {
             Ok(governed) => {
                 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
                 let route = collab_types::ChannelRoute::new(DESKTOP_APP, DESKTOP_RECORD);
                 let governed = governed.lock().await;
-                governed
+                let scope = governed
                     .peer()
                     .governance()
                     .unit_scope(std::time::SystemTime::now(), &route)
-                    .ok()
+                    .ok();
+                let hint = self.transport_hint(&governed);
+                drop(governed);
+                let host = hint.ok().and_then(|hint| postcard::to_stdvec(&hint).ok());
+                (scope, host)
             }
-            Err(_) => None,
+            Err(_) => (None, None),
         };
         Entered::Admitted {
             workspace: uuid,
@@ -209,6 +214,7 @@ impl Workspaces {
             name,
             role,
             desktop_scope,
+            host,
         }
     }
 }
@@ -227,6 +233,7 @@ fn entered(reply: JoinReply) -> Entered {
             name,
             role,
             desktop_scope: None,
+            host: None,
         },
         JoinReply::Refused(reason) => Entered::Refused(refused(reason)),
         JoinReply::Invitation { .. } => Entered::Refused(refused(

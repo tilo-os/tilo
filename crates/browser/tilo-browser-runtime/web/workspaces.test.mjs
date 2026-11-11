@@ -821,19 +821,30 @@ test('the directory lists the workspaces this page holds by the host actions tha
   assert.deepEqual(heldWorkspaces({entered: [], current: {kind: 'own'}}), []);
 });
 
-test('a join the directory was granted is made with its invitation and token, then opened under its name', async () => {
+test('a join chosen in the directory enters through its door on the session, then opens under its name', async () => {
   const joined = [];
+  const door = 'https://rooms.example/peer/v1/directory/WORKSPACE/';
   const grant = await joinGranted(
-    {origin: 'https://rooms.example/join/garden', invitation: 'INV', admissionToken: 'TOKEN', workspace: 'WORKSPACE', name: 'Gardeners'},
+    {origin: 'https://rooms.example', door, workspace: 'WORKSPACE', name: 'Gardeners'},
     {join: async options => { joined.push(options); return {workspace: 'WORKSPACE'}; }, displayName: 'Brave Otter'},
   );
-  assert.deepEqual(joined, [{origin: 'https://rooms.example/join/garden', invitation: 'INV', admissionToken: 'TOKEN', displayName: 'Brave Otter'}]);
+  assert.deepEqual(joined, [{origin: 'https://rooms.example', door, displayName: 'Brave Otter'}],
+    'the page enters through the door itself, holding no invitation or token');
   assert.deepEqual(grant, {peer: {workspace: 'WORKSPACE'}, origin: 'https://rooms.example', room: 'WORKSPACE', name: 'Gardeners'});
 });
 
-test('a grant that carries no invitation joins nothing', async () => {
+test('a pasted link\'s invitation is redeemed with the same join', async () => {
+  const joined = [];
+  await joinGranted(
+    {origin: 'https://rooms.example', invitation: 'INV', workspace: 'WORKSPACE', name: 'Gardeners'},
+    {join: async options => { joined.push(options); return {workspace: 'WORKSPACE'}; }},
+  );
+  assert.deepEqual(joined, [{origin: 'https://rooms.example', invitation: 'INV'}]);
+});
+
+test('a grant that names neither a door nor an invitation joins nothing', async () => {
   await assert.rejects(() => joinGranted({origin: 'https://rooms.example', invitation: ''}, {join: async () => {}}), TypeError);
-  await assert.rejects(() => joinGranted({origin: '', invitation: 'INV'}, {join: async () => {}}), TypeError);
+  await assert.rejects(() => joinGranted({origin: '', door: 'https://rooms.example/directory/W/'}, {join: async () => {}}), TypeError);
 });
 
 test('an invitation to another workspace on the home\'s host leaves the home its own name and choice', () => {

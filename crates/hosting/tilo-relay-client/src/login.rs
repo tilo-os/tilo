@@ -183,11 +183,11 @@ fn pair_of(pair: &str) -> Result<([u8; 32], Option<[u8; 16]>), String> {
 }
 
 /// A workspace's public door, as the site names it (`entry.json`'s home
-/// `admission`): its `join` path, which names the workspace it lets people
-/// into. A device enters through it on its session with the workspace's host
+/// `admission`): its path, which names the workspace it lets people into. A
+/// device enters through it on its session with the workspace's host
 /// ([`tilo_relay_protocol::entering`]).
 pub struct Door {
-    /// The door's `join`, below its origin.
+    /// The door's path, below its origin (`…/directory/<workspace>/`).
     pub path: String,
 }
 
@@ -202,8 +202,8 @@ impl Door {
 }
 
 /// The door of the site whose `entry.json` is `entry` to the workspace it
-/// keeps on the host at `host_origin`: its origin and `join` path. Only
-/// HTTPS, but for a door on loopback.
+/// keeps on the host at `host_origin`: its origin and path. Only HTTPS, but
+/// for a door on loopback.
 #[must_use]
 pub fn site_door(entry: &serde_json::Value, host_origin: &str) -> Option<(String, String)> {
     let home = entry.get("home")?;
@@ -221,12 +221,7 @@ pub fn site_door(entry: &serde_json::Value, host_origin: &str) -> Option<(String
     if authority.is_empty() || !(scheme == "https" || (scheme == "http" && loopback)) {
         return None;
     }
-    let path = if path.ends_with('/') {
-        format!("{path}join")
-    } else {
-        format!("{path}/join")
-    };
-    Some((format!("{scheme}://{authority}"), path))
+    Some((format!("{scheme}://{authority}"), path.to_owned()))
 }
 
 /// The door of the site at `site` to its workspace on the host at

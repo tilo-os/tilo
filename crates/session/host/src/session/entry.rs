@@ -159,6 +159,7 @@ impl Task {
                 name,
                 role,
                 desktop_scope,
+                ..
             } => {
                 self.config.entering = None;
                 // The desktop opens with the keys of the group the host named

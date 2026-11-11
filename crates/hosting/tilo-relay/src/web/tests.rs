@@ -301,14 +301,15 @@ async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
 }
 
 /// The public directory and its doors answer any site's page without
-/// credentials, and a full door says when to come back: what a page on
-/// another origin reads and does without going through a proxy.
+/// credentials: what a page on another origin reads and does without going
+/// through a proxy. Nobody is let in over HTTP: a device enters through the
+/// door on its session with the host, so the door has no `join` route.
 #[tokio::test]
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the relay governs the workspace until it shuts down at the end"
 )]
-async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
+async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
     let root = SigningKey::from_bytes(&[121; 32]);
     let host = host(
         &root,
@@ -316,15 +317,7 @@ async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
     let state = tempfile::tempdir().unwrap();
-    let relay = relay_at(
-        &state,
-        host.identity(),
-        RelayConfig {
-            max_workspace_grants: Some(1),
-            ..Default::default()
-        },
-    )
-    .await;
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let workspaces = relay.workspaces().unwrap().clone();
     let workspace = workspaces.create("Plaza").await.unwrap().workspace;
     workspaces
@@ -360,50 +353,31 @@ async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
     assert_eq!(page.workspaces.len(), 1);
     assert_eq!(page.workspaces[0].description, "Coffee and tea");
 
-    let ask = |person: [u8; 32]| {
-        let body = serde_json::json!({
-            "userPublicKey": hex::encode(person),
-            "displayName": "Cy",
-        })
-        .to_string();
-        let head = format!(
-            "POST {API_PREFIX}/directory/{workspace}/join HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        );
-        async move { exchange(addr, &head, body.as_bytes()).await }
-    };
-    let (status, head, body) = ask([31; 32]).await;
-    assert_eq!(status, 200, "{head}");
-    assert_eq!(
-        header_value(&head, "access-control-allow-origin"),
-        Some("*")
-    );
-    let answer: tilo_relay_protocol::directory::DoorAnswer = serde_json::from_slice(&body).unwrap();
-    assert!(!answer.invitation.is_empty());
-
-    // The door keeps one open grant: the next person is told when to come back,
-    // and the page may read that header cross-origin.
-    let (status, head, body) = ask([32; 32]).await;
-    assert_eq!(status, 503, "{head}");
-    assert!(
-        header_value(&head, "retry-after").is_some(),
-        "no Retry-After: {head}"
-    );
-    assert!(
-        header_value(&head, "access-control-expose-headers")
-            .unwrap_or_default()
-            .contains("retry-after"),
-        "{head}"
-    );
-    assert_eq!(
-        header_value(&head, "access-control-allow-origin"),
-        Some("*")
-    );
-    eprintln!("full door: {}", String::from_utf8_lossy(&body));
-
-    // The preflight a page on another site sends before asking.
+    // Asking the door to let someone in over HTTP finds no such route.
+    let body = serde_json::json!({
+        "userPublicKey": hex::encode([31; 32]),
+        "displayName": "Cy",
+    })
+    .to_string();
     let head = format!(
-        "OPTIONS {API_PREFIX}/directory/{workspace}/join HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\n\r\n"
+        "POST {API_PREFIX}/directory/{workspace}/join HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    let (status, head, _) = exchange(addr, &head, body.as_bytes()).await;
+    assert_eq!(status, 404, "{head}");
+    assert!(
+        !workspaces
+            .membership(&workspace)
+            .await
+            .unwrap()
+            .1
+            .contains_key(&hex::encode([31; 32])),
+        "nobody became a member over HTTP"
+    );
+
+    // The preflight a page on another site sends before reporting.
+    let head = format!(
+        "OPTIONS {API_PREFIX}/directory/{workspace}/report HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\n\r\n"
     );
     let (status, head, _) = exchange(addr, &head, b"").await;
     assert_eq!(status, 204, "{head}");
@@ -1698,23 +1672,20 @@ async fn an_invitation_only_door_keeps_an_address_confirms_it_and_takes_it_off()
     let (addr, serving) = serve_web(Arc::new(web)).await;
 
     // Someone the door turns away is told it keeps a wait list, where the
-    // contact is, and that it mails.
-    let join = serde_json::json!({
-        "userPublicKey": hex::encode([41u8; 32]),
-        "displayName": "Ada",
-    })
-    .to_string();
-    let (status, head, body) = exchange(
-        addr,
-        &format!(
-            "POST {API_PREFIX}/directory/{workspace}/join HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-            join.len()
-        ),
-        join.as_bytes(),
-    )
-    .await;
-    assert_eq!(status, 403, "{head}");
-    let refused: DoorRefused = serde_json::from_slice(&body).unwrap();
+    // contact is, and that it mails: the refusal their entry hears on its
+    // session.
+    let workspaces = relay.workspaces().unwrap();
+    let refusal = workspaces
+        .admit_listed(
+            &workspace,
+            &tilo_relay_protocol::directory::DoorJoin {
+                user_public_key: hex::encode([41u8; 32]),
+                display_name: "Ada".into(),
+            },
+        )
+        .await
+        .expect_err("an invitation-only door turns a stranger away");
+    let refused: DoorRefused = refusal.answer_with(workspaces.wait_list_door());
     assert_eq!(refused.code, DoorRefusalCode::InvitationOnly);
     assert!(refused.wait_list, "{refused:?}");
     assert_eq!(refused.contact.as_deref(), Some("hello@tilo.example"));

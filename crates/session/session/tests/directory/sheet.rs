@@ -4,13 +4,12 @@
 
 use std::time::Duration;
 
-use test_http::Reply;
 use tilo_session::Session;
 use tilo_sheets::Seat as _;
 
 use crate::{
-    CLUB_WORKSPACE, ask_to_join, club_entry, common, community_entry, community_site,
-    invitation_for, joining_site, now_ms, open_directory, page_of, session, site, this_computer,
+    CLUB_WORKSPACE, ask_to_join, club_entry, common, community_entry, community_site, joining_site,
+    now_ms, open_directory, page_of, session, site, this_computer,
 };
 use common::window::{Client, KEY_ESCAPE, click, tap_key};
 
@@ -194,16 +193,8 @@ fn sheet_control(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> 
 fn choosing_join_closes_the_sheet() {
     let _settled = ui::motion::testing::settled();
     let mut env = tilo_test_env::ScopedEnv::new();
-    let (_identity, person) = this_computer(&mut env);
-    let responder = joining_site(
-        CLUB_WORKSPACE,
-        vec![community_entry(34, now_ms()), club_entry(now_ms())],
-        move |_| {
-            Reply::status(200)
-                .header("content-type", "application/json")
-                .body(invitation_for(CLUB_WORKSPACE, person))
-        },
-    );
+    let (_identity, _person) = this_computer(&mut env);
+    let responder = joining_site(vec![community_entry(34, now_ms()), club_entry(now_ms())]);
     let _config = community_site(&mut env, &responder.url());
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();

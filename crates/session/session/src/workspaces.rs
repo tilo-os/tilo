@@ -1005,8 +1005,9 @@ impl crate::Shared {
         self.ask_of_desk("new-workspace", &args)
     }
 
-    /// Give this computer the workspace a join was granted, and redeem the invitation it was
-    /// granted with: what the workspace held before this device arrived comes with it.
+    /// Give this computer the workspace a join chose, and come into it the way the join named:
+    /// through its door, or with the invitation it holds. What the workspace held before this
+    /// device arrived comes with it.
     /// A joined workspace the desk does not already hold is admitted before it gets a slot
     /// ([`Self::redeem_invitation`]): a host that refuses leaves the person where they were, with
     /// no empty workspace to arrive in and vanish from.
@@ -1030,8 +1031,9 @@ impl crate::Shared {
         Ok(())
     }
 
-    /// Redeem the invitation a join was granted with, off the loop: this
-    /// device becomes a member of the workspace and takes in its state. A
+    /// Come into the workspace a join chose, off the loop, through its door or
+    /// with its invitation: this device becomes a member of the workspace and
+    /// takes in its state. A
     /// session that holds no workspaces, or takes no part in the collaboration
     /// plane,
     /// shows the workspace with what this computer itself keeps in it.
@@ -1078,7 +1080,11 @@ impl crate::Shared {
         let asked = sync.enroll(crate::sync::Enrolling {
             slot,
             workspace_id: workspace,
-            invitation: joined.granted.invitation.clone(),
+            way: joined.granted.way.clone(),
+            // A door's workspace learns the person by the name the desk knows them by.
+            name: crate::platform::directory::person()
+                .map(|person| person.name)
+                .unwrap_or_default(),
             renewal: self.fleet_renewal.clone(),
         });
         match asked {
@@ -1087,20 +1093,20 @@ impl crate::Shared {
                     target: JOIN_FLOW_TARGET,
                     workspace = %joined.granted.workspace,
                     slot = slot.0,
-                    "join: the invitation is presented to the workspace's host"
+                    "join: the way in is presented to the workspace's host"
                 );
                 self.directory_store
                     .expect_enrollment(&joined.granted.workspace);
             }
             Err(error) => {
-                tracing::warn!(%error, workspace = %joined.granted.workspace, "the invitation was not redeemed");
+                tracing::warn!(%error, workspace = %joined.granted.workspace, "the workspace was not asked to take this device in");
                 tracing::info!(
                     target: JOIN_FLOW_TARGET,
                     workspace = %joined.granted.workspace,
                     slot = slot.0,
                     %error,
                     outcome = "slot removed",
-                    "join: the invitation could not be presented, so the slot is taken away"
+                    "join: the way in could not be presented, so the slot is taken away"
                 );
                 engine.unbind(slot);
                 if on_desk {

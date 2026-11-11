@@ -26,10 +26,11 @@
 //! node, the key of the session beside it, which the root certifies at the
 //! same time as one of the person's devices.
 //!
-//! `/join` is the route a device calls without a session: a person a host
-//! does not know yet joins through it. A device certifies itself, and a
-//! member's root answers their own device's request, over the host's
-//! certification ALPN (`crate::certify`).
+//! A person a host does not know yet comes in on their device's session
+//! ([`crate::entering`]), through a workspace's door or with an invitation,
+//! not on a route here. A device certifies itself, and a member's root
+//! answers their own device's request, over the host's certification ALPN
+//! (`crate::certify`).
 
 use serde::{Deserialize, Serialize};
 

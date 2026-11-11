@@ -202,6 +202,14 @@ pub enum Entered {
         /// that decides it arrives; once it holds the governance, that
         /// decides. `None` when the governance names neither.
         desktop_scope: Option<collab_types::ChannelId>,
+        /// The host's own signed address for the workspace (a
+        /// `tilo_workspace_join::TransportHint`, postcard): where a device that
+        /// keeps the workspace's state itself (a desktop) takes it in, by the
+        /// membership exchange a member's devices use, now that the workspace
+        /// admitted it. A page takes the workspace on this session and reads
+        /// nothing here. `None` from a host that has no such address.
+        #[serde(with = "serde_bytes")]
+        host: Option<Vec<u8>>,
     },
     /// The workspace did not admit the device. The host closes the session.
     Refused(EnterRefusal),

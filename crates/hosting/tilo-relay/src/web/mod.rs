@@ -121,7 +121,7 @@ struct Web {
     context: WebContext,
     host_info: HostInfo,
     allowed_origins: Vec<String>,
-    /// The workspaces this relay governs, for `/join`.
+    /// The workspaces this relay governs, for their directory and doors.
     workspaces: Option<crate::workspaces::Workspaces>,
     /// Members' root envelopes, for `/envelope`.
     envelopes: envelopes::Envelopes,
@@ -483,8 +483,10 @@ fn json<T: serde::Serialize>(value: &T) -> Response<Body> {
     json_status(StatusCode::OK, value)
 }
 
-/// A public workspace's door (`/directory/<workspace>/join`, `…/report` or
-/// `…/errors`): JSON in, JSON out, a refusal as `{error}` the person reads.
+/// A public workspace's door (`/directory/<workspace>/report` or `…/errors`,
+/// and its wait list): JSON in, JSON out, a refusal as `{error}` the person
+/// reads. A person is let in through it on their device's session
+/// ([`tilo_relay_protocol::entering`]), not here.
 #[allow(
     clippy::result_large_err,
     reason = "the error is the response the handler sends as it is"
@@ -496,8 +498,7 @@ async fn directory_door(
     client: std::net::IpAddr,
 ) -> Result<Response<Body>, Response<Body>> {
     use tilo_relay_protocol::directory::{
-        DoorAnswer, DoorJoin, DoorReport, WAIT_LIST, WAIT_LIST_CONFIRM, WAIT_LIST_REMOVE,
-        WAIT_LIST_STANDING, door_route,
+        DoorReport, WAIT_LIST, WAIT_LIST_CONFIRM, WAIT_LIST_REMOVE, WAIT_LIST_STANDING, door_route,
     };
     let (workspace, step) =
         door_route(route).ok_or_else(|| status(StatusCode::NOT_FOUND, "not found"))?;
@@ -536,39 +537,7 @@ async fn directory_door(
             &serde_json::json!({ "error": error.to_string() }),
         )
     };
-    let door_refused = |error: crate::workspaces::DoorRefusal| {
-        let full = match &error {
-            crate::workspaces::DoorRefusal::Full { .. } => StatusCode::SERVICE_UNAVAILABLE,
-            crate::workspaces::DoorRefusal::Refused(_)
-            | crate::workspaces::DoorRefusal::Banned
-            | crate::workspaces::DoorRefusal::Removed
-            | crate::workspaces::DoorRefusal::InvitationOnly => StatusCode::FORBIDDEN,
-        };
-        let mut response = json_status(full, &error.answer_with(workspaces.wait_list_door()));
-        if let crate::workspaces::DoorRefusal::Full { retry_after_secs } = error
-            && let Ok(seconds) = header::HeaderValue::from_str(&retry_after_secs.to_string())
-        {
-            response.headers_mut().insert(header::RETRY_AFTER, seconds);
-        }
-        response
-    };
     match step {
-        "join" => {
-            let join: DoorJoin = serde_json::from_slice(bytes)
-                .map_err(|_| status(StatusCode::BAD_REQUEST, "not a join request"))?;
-            let (issued, token) = workspaces
-                .admit_listed(workspace, &join)
-                .await
-                .map_err(door_refused)?;
-            Ok(json(&DoorAnswer {
-                invitation: base64::Engine::encode(
-                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-                    issued.signed_invitation,
-                ),
-                admission_token: token,
-                origin: None,
-            }))
-        }
         "report" => {
             let report: DoorReport = serde_json::from_slice(bytes)
                 .map_err(|_| status(StatusCode::BAD_REQUEST, "not a report"))?;
@@ -621,7 +590,7 @@ fn public_directory_route(path: &str) -> bool {
 /// A relay's own routes live below [`API_PREFIX`]. A site names its directory
 /// in its `entry.json` and hangs each door off that address
 /// ([`tilo_relay_protocol::directory`]), so the same routes answer at the
-/// site's own paths — `/directory` and `/directory/<workspace>/join` — for a
+/// site's own paths — `/directory` and `/directory/<workspace>/report` — for a
 /// host a site's person reaches without the prefix: the ingress in front of
 /// it sends the site's paths to the relay.
 fn directory_route(path: &str) -> Option<&str> {
@@ -633,7 +602,7 @@ fn directory_route(path: &str) -> Option<&str> {
 
 /// CORS for the public directory: any origin, no credentials, and the
 /// `Retry-After` a full door answers with. A page on any site reads the
-/// listings and joins a workspace without going through its host.
+/// listings and reports a workspace without going through its host.
 fn public_cors(response: &mut Response<Body>) {
     let headers = response.headers_mut();
     headers.insert(

@@ -6,8 +6,9 @@
 //! and what one person does reaches everyone else. The workspace is listed in
 //! the host's directory at its default role, so its door admits each person
 //! on their own: every browser that opens the served join page creates a
-//! person of its own, asks the page server's `/join`, and the page server asks
-//! the host's door for them. The app is an author of the workspace
+//! person of its own, tells the page server's `/join` the name it goes by,
+//! and enters through the host's door on its session with the host. The app
+//! is an author of the workspace
 //! (`--author-app`), so members write through it.
 //!
 //! It is for development on this machine. Anyone who reaches the page is
@@ -27,7 +28,7 @@ use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::directory::door_path;
 use tilo_relay_protocol::web::API_PREFIX;
-use tilo_workspace_directory::{Person, client, join, web_origin};
+use tilo_workspace_directory::web_origin;
 
 use super::Project;
 
@@ -102,11 +103,10 @@ pub struct RecordClaim {
     pub open: bool,
 }
 
-/// What a page needs to join: the invitation the workspace's door issued for
-/// its person and the one-time token that redeems it at once.
+/// What a page needs to join: the workspace's door, which it enters through
+/// on its session with the host, whose origin is the door's own.
 pub struct Admission {
-    pub invitation: String,
-    pub admission_token: String,
+    pub door: String,
 }
 
 impl SharedWorkspace {
@@ -234,8 +234,9 @@ impl SharedWorkspace {
             .with_context(|| format!("writing {}", self.records_file.display()))
     }
 
-    /// Ask the workspace's door to admit the person `user_public_key` (hex),
-    /// named `label`, at the workspace's default role.
+    /// Note the person `user_public_key` (hex), named `label`, and answer the
+    /// door they enter through: the door itself admits them, at the
+    /// workspace's default role, on their page's session with the host.
     pub fn admit(&self, user_public_key: &str, label: &str) -> Result<Admission> {
         let mut user = [0_u8; 32];
         hex::decode_to_slice(user_public_key, &mut user)
@@ -246,20 +247,6 @@ impl SharedWorkspace {
             door_path(&self.relay_room)
         ))
         .map_err(anyhow::Error::msg)?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("starting the door's runtime")?;
-        let granted = runtime
-            .block_on(join(
-                &client().map_err(anyhow::Error::msg)?,
-                &door,
-                &Person {
-                    user,
-                    name: label.to_owned(),
-                },
-            ))
-            .map_err(anyhow::Error::msg)?;
         let people = {
             let mut people = self.people.lock_recover();
             people.insert(hex::encode(user), label.to_owned());
@@ -267,8 +254,7 @@ impl SharedWorkspace {
         };
         let _ = people.map(|json| std::fs::write(&self.people_file, json));
         Ok(Admission {
-            invitation: granted.invitation,
-            admission_token: granted.admission_token,
+            door: door.to_string(),
         })
     }
 }

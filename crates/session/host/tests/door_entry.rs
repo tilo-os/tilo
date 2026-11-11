@@ -360,6 +360,48 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     );
     probe.close();
 
+    // Its own entry, proved on its own connection, is admitted, and the answer names the host's
+    // own signed address for the workspace: where a device that keeps the workspace's state itself
+    // (a desktop) takes it in as a member's device, with nothing asked over HTTP.
+    let (_endpoint, connection, mut send, mut recv) = dial(&host).await;
+    write_frame(
+        &mut send,
+        &frame(&hello_on(&connection, entry(&lounge.workspace), None)),
+    )
+    .await
+    .unwrap();
+    let _: HelloAck = postcard::from_bytes(&read_frame(&mut recv, 1 << 20).await.unwrap()).unwrap();
+    let answer = tilo_delivery_protocol::transport_v2::decode(
+        &tokio::time::timeout(Duration::from_secs(20), read_frame(&mut recv, 1 << 20))
+            .await
+            .expect("the host answers the entry")
+            .unwrap(),
+    )
+    .unwrap();
+    let tilo_delivery_protocol::transport_v2::EnvelopeV2::State(Envelope::Entered(
+        Entered::Admitted {
+            workspace,
+            host: Some(address),
+            ..
+        },
+    )) = answer
+    else {
+        panic!("the door admits the stranger's own entry, naming its host: {answer:?}");
+    };
+    assert_eq!(workspace, lounge.workspace);
+    let hint: tilo_peer_state::join::TransportHint = postcard::from_bytes(&address).unwrap();
+    let (address, _) =
+        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+            &hint,
+        )
+        .expect("the host signed its address");
+    assert_eq!(address.room, lounge.workspace);
+    assert_eq!(address.workspace_id, lounge.workspace_id);
+    assert_eq!(
+        address.host_device_certificate.device_public_key, host_device.cert.device_public_key,
+        "the address is the admitting host's own"
+    );
+
     drop(host.web);
     host.relay.shutdown().await;
 }

@@ -200,17 +200,19 @@ export function heldWorkspaces({entered = [], current = null} = {}) {
 }
 
 /**
- * Join the workspace a site's directory let this person into
- * (`mountDesktop({onJoinGranted})`): the sheet's Join already asked the
- * door, so the page joins with what it answered — the invitation, and the
- * one-time token only this page can redeem — through the same join a link's
- * invitation takes (`join`, the page's `joinWorkspace`), then shows it.
- * Resolves to `{peer, origin, room, name}`.
+ * Join the workspace the person chose in a site's directory
+ * (`mountDesktop({onJoinGranted})`): through its `door` (`…/directory/<workspace>/`),
+ * which the page enters on the session it opens with the door's host at
+ * `origin`, the same entry the page's own door takes; or with the
+ * `invitation` a pasted link brought. Either goes through the page's join
+ * (`join`, its `joinWorkspace`), then the workspace shows. Resolves to
+ * `{peer, origin, room, name}`.
  */
-export async function joinGranted({origin, invitation, admissionToken = '', workspace = null, name = null}, {join, displayName = null, ...connectOptions} = {}) {
-  if (!origin || !invitation) throw new TypeError('a granted join names the origin that granted it, and its invitation');
+export async function joinGranted({origin, door = null, invitation = null, workspace = null, name = null}, {join, displayName = null, ...connectOptions} = {}) {
+  if (!origin || !(door || invitation)) throw new TypeError('a granted join names the origin of its host, and its door or its invitation');
   if (typeof join !== 'function') throw new TypeError('a granted join needs the page\'s join');
-  const peer = await join({...connectOptions, origin, invitation, admissionToken, ...(displayName ? {displayName} : {})});
+  const way = door ? {door} : {invitation};
+  const peer = await join({...connectOptions, origin, ...way, ...(displayName ? {displayName} : {})});
   const room = peer?.workspace ?? workspace;
   return {peer, origin: originOf(origin), room, name: name || room};
 }

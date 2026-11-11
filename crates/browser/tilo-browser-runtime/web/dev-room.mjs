@@ -2,9 +2,10 @@
  * The page side of `tilo-app run --platform web --share`: open an app in the
  * development workspace the CLI runs, as a person of this page's own.
  *
- * The CLI runs the SDK's workspace host on this machine and is the workspace's door
- * (`/__tilo/workspace/…` on the page's own origin): it admits every person who
- * asks as an Editor. Each page creates a person, so two tabs are two
+ * The CLI runs the SDK's workspace host on this machine (`/__tilo/room/…` on
+ * the page's own origin): it learns each person's name and answers the
+ * workspace's door, which the page enters through on its session with the
+ * host, as an Editor. Each page creates a person, so two tabs are two
  * participants with their own `me`, name and history. Everyone opens the
  * workspace's one record of the app: the first page to arrive creates it, every
  * later page waits until it has reached it and opens that one, so two pages
@@ -42,6 +43,7 @@ export async function openInRoom({surface, name, onStatus = () => {}}) {
   const workspace = await call('/');
   onStatus('joining');
   const {identity} = await createIdentity({passkey: false});
+  // The workspace's door and its host's origin: the page enters through it.
   const offer = await call('/join', {userPublicKey: identity.userPublicKey, name});
   const peer = await joinWorkspace({
     ...offer, identity, displayName: name, label: name,
