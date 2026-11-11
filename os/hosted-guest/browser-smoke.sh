@@ -80,8 +80,10 @@ wait "$engine_pid" 2>/dev/null || true
 # joining the workspace is what the session exists for.
 printf 'TILO_SESSION_ARGS=\n' > "$work/session.env"
 chown tilo-browser:tilo-browser "$work/session.env"
-as_browser_user setsid /usr/libexec/tilo/browser-session "$work/session.env" \
-    > "$work/session.log" 2>&1 &
+# Started directly, not through a function, so $! is the script itself, which
+# a VM host signals.
+setpriv --reuid=tilo-browser --regid=tilo-browser --init-groups env HOME=/home/tilo-browser \
+    /usr/libexec/tilo/browser-session "$work/session.env" > "$work/session.log" 2>&1 &
 session_pid=$!
 runtime_dir=/home/tilo-browser/.local/share/tilo/runtime
 tries=600
@@ -92,7 +94,7 @@ while [ "$tries" -gt 0 ] && [ -z "$display" ]; do
         exit 1
     fi
     # Until the session made its runtime directory, find has none to read.
-    display=$(find "$runtime_dir" -maxdepth 1 -name 'wayland-*' -print -quit 2>/dev/null || true)
+    display=$(find "$runtime_dir" -maxdepth 1 -name 'wayland-*' ! -name '*.lock' -print -quit 2>/dev/null || true)
     tries=$((tries - 1))
     [ -n "$display" ] || sleep 0.2
 done
@@ -103,7 +105,7 @@ fi
 printf 'session: the headless session serves %s\n' "$display"
 # SIGTERM ends it, and in time: the profile is saved after the session ended,
 # and a VM host kills what has not ended within its grace.
-kill -TERM -"$session_pid" 2>/dev/null || true
+kill -TERM "$session_pid" 2>/dev/null || true
 tries=50
 while [ "$tries" -gt 0 ] && kill -0 "$session_pid" 2>/dev/null; do
     tries=$((tries - 1))
@@ -112,7 +114,6 @@ done
 if kill -0 "$session_pid" 2>/dev/null; then
     echo 'the browser smoke: the session did not end within 10 s of SIGTERM' >&2
     ps -eo pid,pgid,stat,args >&2 || true
-    kill -KILL -"$session_pid" 2>/dev/null || true
     exit 1
 fi
 wait "$session_pid" 2>/dev/null || true

@@ -85,6 +85,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
       binutils \
       findutils \
       glib2 \
+      gsettings-desktop-schemas \
       gstreamer1 \
       gstreamer1-plugins-base \
       libxkbcommon \

@@ -20,7 +20,8 @@
 #   is kept in between runs, when the workspace keeps it.
 #
 # The process it starts is the sandbox's own: nothing here runs as root, and
-# SIGTERM to this script ends the session and the bus beside it.
+# SIGTERM to this script ends the session and the bus beside it, and the script
+# once they have.
 set -eu
 
 # Never the tenant: the tenant has sudo in their VM, and a page that got out of
@@ -39,8 +40,10 @@ if [ "$(id -un)" != "$user" ]; then
         as_browser --restore < "$profile" || echo 'browser-session: the saved profile did not restore' >&2
     fi
     # A background job's input is /dev/null unless named: the material is on 3.
+    # sudo itself, not a function in a subshell, so SIGTERM reaches it, and
+    # sudo hands it on.
     exec 3<&0
-    as_browser "$@" <&3 &
+    sudo -n -u "$user" -- "$0" "$@" <&3 &
     session=$!
     trap 'kill -TERM "$session" 2>/dev/null || true' TERM INT
     status=0
@@ -111,6 +114,21 @@ size=${TILO_HEADLESS_SIZE:-1280x800}
 # nothing here serves an X display. Word splitting is the point below:
 # TILO_SESSION_ARGS carries the session's own arguments as written in the
 # configuration file.
+#
+# The session and its bus are a process group of their own (setsid does not
+# fork here: a background job of this shell leads no group), because
+# dbus-run-session ends on SIGTERM without handing it on. SIGTERM goes to the
+# whole group, and this script ends once every process in it has, so the
+# profile is saved from a session that wrote its last.
+exec 3<&0
 # shellcheck disable=SC2086
-exec dbus-run-session -- /usr/bin/tilo-session --backend headless --no-x11 \
-    --size "$size" ${TILO_SESSION_ARGS:-}
+setsid dbus-run-session -- /usr/bin/tilo-session --backend headless --no-x11 \
+    --size "$size" ${TILO_SESSION_ARGS:-} <&3 &
+group=$!
+trap 'kill -TERM -"$group" 2>/dev/null || true' TERM INT
+status=0
+wait "$group" || status=$?
+while kill -0 -"$group" 2>/dev/null; do
+    sleep 0.1
+done
+exit "$status"
