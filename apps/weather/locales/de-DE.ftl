@@ -12,8 +12,8 @@ weather-weather-places = { $op ->
 weather-weather-default-place = Den Standardort geändert
 weather-place-name = { $item } umbenannt
 
-weather-morning-summary = { $temperature }, { $condition } · Beobachtung { $time }
-weather-morning-source = Open-Meteo · abgerufen { $fetched }
+weather-morning-summary = { $temperature }, { $condition }
+weather-morning-source = Open-Meteo, abgerufen { $fetched }
 weather-morning-fixture = Aufnahmebeispiel
 weather-morning-stale = Letzte gespeicherte Beobachtung
 weather-morning-freshness = Anbieterbeobachtung
