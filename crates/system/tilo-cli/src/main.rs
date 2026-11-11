@@ -63,7 +63,7 @@ fn helper() -> String {
 }
 
 /// What `tilo --version` prints: the release this program was built for, which
-/// `cli-release.sh build` sets from the tag it builds (TILO_CLI_VERSION), else the crate's own
+/// `cli-release.sh build` sets from the tag it builds (`TILO_CLI_VERSION`), else the crate's own
 /// version, for a build from the tree.
 fn release_version() -> &'static str {
     option_env!("TILO_CLI_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
