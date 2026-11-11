@@ -81,9 +81,12 @@ ignore = [
 unmaintained = "workspace"
 
 [licenses]
-# The desktop/host default is AGPL; the app SDK and its linked support libraries
-# are MIT (LICENSING.md). This policy covers the whole workspace. The narrower
-# app-distribution graph is also checked by tools/sdk/check_licenses.py.
+# The desktop/host default is AGPL; the app SDK and the client side that reaches
+# a workspace are MIT (LICENSING.md). This policy covers the whole workspace, so
+# AGPL is allowed here. The narrower graphs are checked by their own tools:
+# tools/sdk/check_licenses.py for an app distribution, and
+# tools/sdk/check_client_licenses.py for everything an SDK or a script builds on
+# to reach a workspace — no AGPL crate may appear in that one.
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",

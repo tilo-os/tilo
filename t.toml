@@ -456,6 +456,10 @@ name = "sdk-licenses"
 run = "python3 -m unittest tools/tests/test_sdk_licenses.py && python3 tools/sdk/check_licenses.py"
 
 [[check]]
+name = "client-licenses"
+run = "python3 -m unittest tools/tests/test_client_licenses.py && python3 tools/sdk/check_client_licenses.py"
+
+[[check]]
 name = "lockfile"
 run = "find . \\( -name target -o -path ./vendor -o -path ./fuzz \\) -prune -o -name Cargo.lock -print | sort | while read -r lock; do\n  cargo metadata --locked --format-version 1 --manifest-path \"${lock%.lock}.toml\" >/dev/null || exit 1\ndone\n"
 fix = "find . \\( -name target -o -path ./vendor -o -path ./fuzz \\) -prune -o -name Cargo.lock -print | sort | while read -r lock; do\n  cargo metadata --format-version 1 --manifest-path \"${lock%.lock}.toml\" >/dev/null || exit 1\ndone\n"

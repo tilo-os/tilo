@@ -2,7 +2,8 @@
 name = "tilo-workspace-join"
 version = "0.1.0"
 edition = "2024"
-license.workspace = true
+# Pure invitation and join types: what a client speaks before any workspace state.
+license = "MIT"
 # `tilo-relay-protocol` is published and re-exports the delegations, so this is too.
 publish = true
 repository.workspace = true

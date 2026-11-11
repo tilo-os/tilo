@@ -3,7 +3,8 @@ name = "neighbour-wire"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+# Pure wire vocabulary: a client of a workspace links it to speak to its host.
+license = "MIT"
 description = "Peer-sync wire vocabulary exchanged between Tilo peers: the NeighbourMsg envelope and the pure helpers that classify it."
 repository.workspace = true
 homepage.workspace = true
