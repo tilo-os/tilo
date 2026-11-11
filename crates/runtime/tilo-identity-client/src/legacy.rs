@@ -1,7 +1,7 @@
 use std::io::{self, Read, Write};
 use std::os::fd::{FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use wire_frame::{FrameError, Framing};
@@ -13,7 +13,18 @@ pub const BROKER_ENV_VAR: &str = "TILO_IDENTITY_BROKER_FD";
 pub const BROKER_CHILD_FD: RawFd = 15;
 pub const OP_METADATA: u8 = 1;
 pub const OP_SIGN: u8 = 2;
-static BROKER_FD_CLAIMED: AtomicBool = AtomicBool::new(false);
+
+/// The inherited broker descriptor, taken at most once per process.
+enum Claim {
+    Unclaimed,
+    /// The connection, kept for the process: every reader of the person's
+    /// public record shares it, as every caller of the service shares one.
+    Held(Arc<BrokerSigningIdentity>),
+    /// Taken, and its metadata exchange failed; the descriptor is closed.
+    Spent,
+}
+
+static BROKER: Mutex<Claim> = Mutex::new(Claim::Unclaimed);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PublicMetadata {
@@ -58,23 +69,27 @@ pub fn connect_from_env() -> Result<Arc<BrokerSigningIdentity>, NotAvailable> {
             "invalid identity broker fd",
         )));
     }
+    // The environment is process-global and read concurrently, so it is
+    // left untouched; the claim makes this process the descriptor's one owner.
+    let mut claim = BROKER.lock().map_err(|_| {
+        NotAvailable::ConnectionFailed(io::Error::other("identity broker claim poisoned"))
+    })?;
+    match &*claim {
+        Claim::Held(identity) => return Ok(Arc::clone(identity)),
+        Claim::Spent => {
+            return Err(NotAvailable::ConnectionFailed(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "the inherited identity broker failed earlier in this process",
+            )));
+        }
+        Claim::Unclaimed => {}
+    }
     // SAFETY: this checks the descriptor without taking ownership.
     let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
     if flags < 0 {
         return Err(NotAvailable::ConnectionFailed(io::Error::last_os_error()));
     }
-    // Atomically claim the inherited authority before constructing an owner.
-    // The environment is process-global and may be read concurrently, so it is
-    // intentionally left untouched. A second load() fails before it can create
-    // another UnixStream owner for the same raw descriptor.
-    BROKER_FD_CLAIMED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| {
-            NotAvailable::ConnectionFailed(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "identity broker fd has already been claimed by this process",
-            ))
-        })?;
+    *claim = Claim::Spent;
     // SAFETY: Tilo launcher transfers sole ownership of this inherited fd to
     // the app. load() consumes it once, matching runtime-portal's contract.
     let mut stream = unsafe { UnixStream::from_raw_fd(raw) };
@@ -93,9 +108,9 @@ pub fn connect_from_env() -> Result<Arc<BrokerSigningIdentity>, NotAvailable> {
     let metadata: PublicMetadata = serde_json::from_slice(&payload).map_err(|e| {
         NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, e))
     })?;
-    Ok(Arc::new(BrokerSigningIdentity::from_legacy_stream(
-        stream, metadata,
-    )))
+    let identity = Arc::new(BrokerSigningIdentity::from_legacy_stream(stream, metadata));
+    *claim = Claim::Held(Arc::clone(&identity));
+    Ok(identity)
 }
 
 pub(crate) fn exchange(
