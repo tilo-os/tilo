@@ -392,6 +392,70 @@ fn opening_an_action_shows_what_it_changed_and_reads_the_comparison() {
     );
 }
 
+/// The console open at Connect, its door listing one agent whose key does
+/// or does not operate web pages in Browser.
+fn connect(browser_pages: bool) -> TestApp<App> {
+    let mut app = TestApp::<App>::for_person("ada").expect("open");
+    let requests = asked(&mut app);
+    let runs = find(&requests, &wire::target(wire::RUNS));
+    let door_read = find(&requests, &door::target(door::DOOR));
+    answer(
+        &mut app,
+        runs.invocation,
+        serde_json::to_value(wire::Runs {
+            runs: vec![run()],
+            total: 1,
+            pending: false,
+            mutations: true,
+        })
+        .unwrap(),
+    );
+    let mut door = the_door(false);
+    door.grants[0].browser_pages = browser_pages;
+    answer(
+        &mut app,
+        door_read.invocation,
+        serde_json::to_value(door).unwrap(),
+    );
+    let targets: Vec<String> = app.harness().targets().into_keys().collect();
+    let connect = targets
+        .iter()
+        .find(|target| target.ends_with("NavList[0]/NavRow[2]"))
+        .cloned()
+        .unwrap_or_else(|| panic!("the sidebar offers Connect among {targets:?}"));
+    app.harness().click_named(&connect).unwrap();
+    app
+}
+
+/// A key that operates web pages in Browser says so in the connected
+/// agents list, beside what it reaches; a key asked about every page action
+/// says nothing of it, and revoking the agent whose key does takes that key
+/// back at the door.
+#[test]
+fn the_connected_agents_list_says_when_a_key_operates_web_pages() {
+    english();
+    let mut operating = connect(true);
+    assert!(
+        says(&mut operating, "operates web pages in Browser"),
+        "the agent's key operates web pages, and its row says so"
+    );
+    operating
+        .harness()
+        .click_named("console-grant-0-revoke")
+        .unwrap();
+    let requests = asked(&mut operating);
+    let revoke: door::GrantRef = argument(&find(&requests, &door::target(door::REVOKE)));
+    assert_eq!(
+        revoke.grant, "g1",
+        "revoking that agent ends the key that operates web pages"
+    );
+    let mut asked = connect(false);
+    assert!(
+        !says(&mut asked, "operates web pages in Browser"),
+        "a key asked about every page action says nothing of it"
+    );
+}
+
 #[test]
 fn revoking_a_grant_names_it_to_the_door() {
     english();

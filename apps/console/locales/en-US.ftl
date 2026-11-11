@@ -72,6 +72,7 @@ console-grants-empty = No agent connected yet
 console-grants-empty-message = Run one of the lines above where your agent runs, then let it in.
 console-reach-account = Every workspace, and may make new ones
 console-reach-workspace = Only { $workspace }
+console-reach-browser-pages = { $reach } · operates web pages in Browser
 console-grant-running = { $count ->
     [one] Working now
    *[other] { $count } runs working now

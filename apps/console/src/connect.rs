@@ -60,14 +60,21 @@ pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
     }))
 }
 
-/// Where `reach` lets the agent work, in words.
-fn reach(reach: &door::Reach) -> String {
-    match reach {
+/// Where `reach` lets the agent work, and what else its key may do, in
+/// words: the reach first, then whether the key operates web pages in
+/// Browser without asking, as the door's own grants page says it.
+pub(crate) fn access(grant: &door::Grant) -> String {
+    let reach = match &grant.reach {
         door::Reach::Account => tr("console-reach-account"),
         door::Reach::Workspace { name, .. } => trf(
             "console-reach-workspace",
             &[("workspace", name.clone().into())],
         ),
+    };
+    if grant.browser_pages {
+        trf("console-reach-browser-pages", &[("reach", reach.into())])
+    } else {
+        reach
     }
 }
 
@@ -112,7 +119,7 @@ fn grant_row(doors: &Doors, index: usize, grant: &door::Grant) -> Element {
         ListRow::new(format!("console-grant-{index}"), grant.agent.clone()),
         &agent,
     )
-    .secondary(reach(&grant.reach))
+    .secondary(access(grant))
     .secondary_lines(2)
     .meta(status)
     .trailing(Box::new(revoke));

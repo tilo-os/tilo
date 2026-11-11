@@ -278,6 +278,10 @@ fn agent_row(grant: &agent_door::Grant) -> TiloItem {
     let hue = agent_hue(grant);
     let (reach, in_sentence) = agent_reach(grant);
     let mut facts = vec![Fact::text(reach)];
+    if grant.browser_pages {
+        // Its key's own word on its pages: what it does in Browser without asking each time.
+        facts.push(Fact::text(t("overview-tilo-agent-browser-pages")));
+    }
     if !grant.runs.is_empty() {
         // What the agent is doing is the row's live state: a dot in its own colour, and the
         // fact that stays when the row is too narrow for both it and what the agent may reach.

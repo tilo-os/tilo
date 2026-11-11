@@ -265,6 +265,10 @@ It answers for nothing else either:
 `submit-page`, filling in a file or a password, and everything else Browser
 holds for the person still asks them, a key without the scope is asked about
 every page action, and revoking the key ends it with the key's certificate.
+Where the person sees it: the door's grants page says it on the key, and the
+lists of agents let in — the Tilo overview and the Console's Connect page —
+say it on the agent's row as it reads the key's certificate at the door, with
+the same Revoke.
 
 The page action is counted once the window answers that it ran, so an
 action the person did not allow is never counted.

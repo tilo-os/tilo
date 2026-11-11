@@ -164,6 +164,7 @@ fn tilo_desk(build_box: &str) -> TiloDesk {
                     name: "Claude Code #2".into(),
                     started_ms: 1,
                 }],
+                browser_pages: true,
                 ..Grant::default()
             }],
             ..Door::default()

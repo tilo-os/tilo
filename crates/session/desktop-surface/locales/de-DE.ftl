@@ -1105,6 +1105,7 @@ overview-tilo-host-provider = Hosting-Anbieter
 overview-tilo-manage-billing = Abrechnung verwalten
 overview-tilo-agent-everywhere = Alle deine Workspaces
 overview-tilo-agent-everywhere-lower = alle deine Workspaces
+overview-tilo-agent-browser-pages = Bedient Webseiten im Browser
 overview-tilo-agent-working = { $runs ->
         [one] Arbeitet gerade
        *[other] { $runs } Läufe gerade
