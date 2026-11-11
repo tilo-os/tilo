@@ -102,7 +102,7 @@ impl StatePeer {
         let workspace = self.core.workspace.clone();
         let target = members::rows(doc, &workspace);
         let old = self.core.workspace_doc.as_deref();
-        let live = old.is_some_and(|old| members::genesis(&members::ops(old)).is_some());
+        let live = old.is_some_and(|old| members::holds_genesis(old, &workspace));
         let cert = self
             .certificate(&key.verifying_key().to_bytes(), now)
             .map_err(|error| error.to_string())?;
@@ -132,7 +132,7 @@ impl StatePeer {
         let op = SignedMembershipOp::signed(
             cert,
             key,
-            members::heads(&members::ops(doc)),
+            members::heads_of(doc, &workspace),
             now_ns(now),
             MembershipOpCommand::Project { changes: steps },
         )?;
@@ -168,7 +168,7 @@ impl StatePeer {
         let op = SignedMembershipOp::signed(
             cert,
             key,
-            members::heads(&members::ops(doc)),
+            members::heads_of(doc, &workspace),
             now_ns(now),
             MembershipOpCommand::Governance { rows },
         )?;

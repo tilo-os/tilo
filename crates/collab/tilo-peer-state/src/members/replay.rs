@@ -106,35 +106,47 @@ struct Replayed {
     /// Operations the state's operations were written on top of that it does
     /// not hold: one arriving could let those apply.
     missing: BTreeSet<OpId>,
+    /// Whether an invitation receipt the state holds admitted no one
+    /// ([`redeem_values`]): a later change to the rows could let it.
+    turned_away: bool,
+    /// Who the state's operations name: their authors, and the people and
+    /// grants their changes are about.
+    named: BTreeSet<String>,
+    /// The state's membership heads ([`heads`]).
+    heads: BTreeSet<OpId>,
+    /// Who wrote the state's genesis operation ([`genesis`]), when it holds
+    /// one, and the
+    /// heads of the history it was read at (`None` when they do not read):
+    /// whether the log starts in a later state ([`start`]).
+    genesis_at: Option<(String, Option<Vec<automerge::ChangeHash>>)>,
 }
 
 /// The document states whose membership was read, by workspace and heads.
-type States =
-    std::sync::Mutex<std::collections::VecDeque<(String, Vec<automerge::ChangeHash>, Replayed)>>;
+type States = std::sync::Mutex<crate::kept_states::KeptStates<Replayed>>;
 
 fn states() -> &'static States {
     static STATES: std::sync::OnceLock<States> = std::sync::OnceLock::new();
-    STATES.get_or_init(States::default)
+    STATES.get_or_init(|| {
+        std::sync::Mutex::new(crate::kept_states::KeptStates::new(REMEMBERED, WORKSPACES))
+    })
 }
 
-/// The states a write and the admissions after it read again.
+/// The states of one workspace a write and the admissions after it read
+/// again.
 const REMEMBERED: usize = 8;
+/// The workspaces whose states are kept at once: a host's busy ones.
+const WORKSPACES: usize = 256;
 
 fn recall(workspace: &str, heads: &[automerge::ChangeHash]) -> Option<Replayed> {
-    states().lock().ok().and_then(|states| {
-        states
-            .iter()
-            .find(|(of, at, _)| of == workspace && at.as_slice() == heads)
-            .map(|(_, _, replayed)| replayed.clone())
-    })
+    states()
+        .lock()
+        .ok()
+        .and_then(|mut states| states.recall(workspace, heads))
 }
 
 fn keep(workspace: &str, heads: Vec<automerge::ChangeHash>, replayed: Replayed) {
     if let Ok(mut states) = states().lock() {
-        if states.len() >= REMEMBERED {
-            states.pop_front();
-        }
-        states.push_back((workspace.to_owned(), heads, replayed));
+        states.keep(workspace, heads, replayed);
     }
 }
 
@@ -196,9 +208,26 @@ pub(crate) fn carry(
     let Some(touched) = crate::workspace::rows::touched(after, changes) else {
         return;
     };
-    for key in touched.keys() {
+    // What an admission writes besides: its receipt, and its joiner's row
+    // and joining time.
+    let mut receipts: BTreeSet<&str> = BTreeSet::new();
+    let mut people: BTreeSet<&str> = BTreeSet::new();
+    for (key, wrote) in &touched {
         if REPLAY_KEYS.contains(&key.as_str()) {
-            return;
+            use crate::workspace::rows::Wrote;
+            use tilo_desktop_model::projection::{
+                WORKSPACE_MEMBERS_JOINED_KEY, WORKSPACE_MEMBERS_KEY,
+            };
+            match (key.as_str(), wrote) {
+                ("invitation_receipts_v1", Wrote::Entries(entries)) => {
+                    receipts.extend(entries.iter().map(String::as_str));
+                }
+                (WORKSPACE_MEMBERS_KEY | WORKSPACE_MEMBERS_JOINED_KEY, Wrote::Entries(entries)) => {
+                    people.extend(entries.iter().map(String::as_str));
+                }
+                _ => return,
+            }
+            continue;
         }
         if super::op::keyed(key).is_none() {
             continue;
@@ -222,7 +251,16 @@ pub(crate) fn carry(
                 return;
             }
             replayed.missing.extend(op.parents.iter().copied());
+            for parent in &op.parents {
+                replayed.heads.remove(parent);
+            }
+            replayed.heads.insert(id);
         }
+    }
+    if (!receipts.is_empty() || !people.is_empty())
+        && !admitted(&mut replayed, after, workspace, &receipts, &people)
+    {
+        return;
     }
     // Every carry a test makes is checked against replaying the state.
     #[cfg(test)]
@@ -234,6 +272,73 @@ pub(crate) fn carry(
         );
     }
     keep(workspace, after.base_heads(), replayed);
+}
+
+/// Fold into `replayed` the admissions a change wrote: `receipts`, the
+/// invitations whose receipts it wrote, and `people`, whose member rows or
+/// joining times it wrote. False when the change is not only that, and the
+/// state is replayed instead.
+///
+/// The replay folds every receipt in before it applies any operation, so a
+/// receipt for someone the operations never name and the membership does not
+/// hold yet admits them as it would anywhere in the order, and nothing else
+/// moves: no operation's author gains or loses standing by it. Where any
+/// receipt the state holds admitted no one, a change to the rows could let it,
+/// so that state is replayed whole. A workspace whose log has not begun is
+/// governed by its rows alone.
+fn admitted(
+    replayed: &mut Replayed,
+    after: &AutoCommit,
+    workspace: &str,
+    receipts: &BTreeSet<&str>,
+    people: &BTreeSet<&str>,
+) -> bool {
+    // A workspace whose log does not start is governed by its rows, which
+    // are read from the state before with what the change wrote read again:
+    // a log without a genesis, or one whose genesis is not by the owner the
+    // rows name ([`start`]), still does not.
+    if !replayed.started {
+        let owner = rows(after, workspace).owner;
+        let starts = replayed.genesis_at.as_ref().is_some_and(|(author, at)| {
+            owner.as_ref() == Some(author)
+                && at.as_ref().is_some_and(|heads| {
+                    heads
+                        .iter()
+                        .all(|head| after.get_change_by_hash(head).is_some())
+                })
+        });
+        if starts {
+            return false;
+        }
+        replayed.policy = rows(after, workspace);
+        return true;
+    }
+    if replayed.turned_away {
+        return false;
+    }
+    let new = |person: &str| {
+        !replayed.policy.members.contains_key(person)
+            && !replayed.policy.joined.contains_key(person)
+            && !replayed.named.iter().any(|named| named.contains(person))
+    };
+    if !people.iter().all(|person| new(person)) {
+        return false;
+    }
+    let rows = crate::workspace::policy_of(after, workspace);
+    for invite in receipts {
+        let Ok(values) = crate::workspace::invitation_receipts_of(after, invite) else {
+            return false;
+        };
+        let for_new = values.iter().all(|value| {
+            serde_json::from_slice::<crate::state::RedemptionReceipt>(value)
+                .is_ok_and(|receipt| people.contains(hex::encode(receipt.user_public_key).as_str()))
+        });
+        if !for_new || !redeem_values(&rows, workspace, &mut replayed.policy, values) {
+            return false;
+        }
+    }
+    order(&mut replayed.policy);
+    true
 }
 
 /// [`remembered`], read from the document.
@@ -260,29 +365,133 @@ fn read_replay(doc: &AutoCommit, workspace: &str) -> Replayed {
         .flat_map(|op| op.parents.iter().copied())
         .filter(|parent| !held.contains_key(parent))
         .collect();
-    let (policy, started) = replay_held(doc, workspace, &held);
+    let (policy, started, turned_away) = replay_held(doc, workspace, &held);
     Replayed {
         policy,
         started,
         op_keys,
         missing,
+        turned_away,
+        named: named(&held),
+        heads: heads(&held).into_iter().collect(),
+        genesis_at: genesis(&held).and_then(|id| held.get(&id)).map(|op| {
+            let at = match &op.command {
+                MembershipOpCommand::Genesis { legacy_heads, .. } => legacy_heads
+                    .iter()
+                    .map(|bytes| automerge::ChangeHash::try_from(bytes.as_slice()).ok())
+                    .collect(),
+                _ => None,
+            };
+            (op.person(), at)
+        }),
     }
 }
 
-/// The membership `held`, `doc`'s operations, give, and whether the log
-/// starts.
-fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspacePolicy, bool) {
+/// [`heads`] of `doc`'s operations: those of a state whose membership was
+/// read ([`replay`]) as it was remembered with it, so a write on a workspace
+/// whose log holds an operation for every admission does not decode the log
+/// to name its parents.
+#[must_use]
+pub fn heads_of(doc: &AutoCommit, workspace: &str) -> Vec<OpId> {
+    match remembered_state(doc, workspace) {
+        Some(replayed) => replayed.heads.into_iter().collect(),
+        None => heads(&ops(doc)),
+    }
+}
+
+/// Whether `doc` holds a genesis operation ([`genesis`]), as [`heads_of`]
+/// reads it.
+#[must_use]
+pub fn holds_genesis(doc: &AutoCommit, workspace: &str) -> bool {
+    match remembered_state(doc, workspace) {
+        Some(replayed) => replayed.genesis_at.is_some(),
+        None => genesis(&ops(doc)).is_some(),
+    }
+}
+
+/// What was remembered of `doc`'s state, when it was.
+fn remembered_state(doc: &AutoCommit, workspace: &str) -> Option<Replayed> {
+    if doc.pending_ops() > 0 {
+        return None;
+    }
+    let found = recall(workspace, &doc.base_heads())?;
+    #[cfg(test)]
+    {
+        let held = ops(doc);
+        assert_eq!(
+            found.heads,
+            heads(&held).into_iter().collect(),
+            "remembered membership heads are the state's"
+        );
+        assert_eq!(found.genesis_at.is_some(), genesis(&held).is_some());
+    }
+    Some(found)
+}
+
+/// Who `held`'s operations name ([`Replayed::named`]).
+fn named(held: &HeldOps) -> BTreeSet<String> {
+    use tilo_action_policy::Subject;
+    let mut named = BTreeSet::new();
+    let subject = |named: &mut BTreeSet<String>, subject: &Subject| {
+        if let Subject::Person(person) = subject {
+            named.insert(person.clone());
+        }
+    };
+    for op in held.values() {
+        named.insert(op.person());
+        match &op.command {
+            MembershipOpCommand::Genesis { membership, .. } => {
+                let policy = membership.policy();
+                named.extend(policy.members.into_keys());
+                named.extend(policy.joined.into_keys());
+                for grant in &policy.grants {
+                    subject(&mut named, &grant.subject);
+                    subject(&mut named, &grant.granted_by);
+                }
+            }
+            MembershipOpCommand::Project { changes } => {
+                for change in changes {
+                    match change {
+                        Change::AddMember { person, .. }
+                        | Change::RemoveMember { person }
+                        | Change::Ban { person }
+                        | Change::Unban { person }
+                        | Change::Restrict { person, .. }
+                        | Change::Unrestrict { person }
+                        | Change::SetRole { person, .. } => {
+                            named.insert(person.clone());
+                        }
+                        Change::Grant(grant) => {
+                            subject(&mut named, &grant.subject);
+                            subject(&mut named, &grant.granted_by);
+                            named.insert(grant.id.as_str().to_owned());
+                        }
+                        Change::Revoke(id) => {
+                            named.insert(id.as_str().to_owned());
+                        }
+                    }
+                }
+            }
+            MembershipOpCommand::Governance { .. } => {}
+        }
+    }
+    named
+}
+
+/// The membership `held`, `doc`'s operations, give, whether the log
+/// starts, and whether a receipt admitted no one ([`redeem`]).
+fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspacePolicy, bool, bool) {
     let Some(mut policy) = start(doc, workspace, held) else {
         // No log to replay: the rows govern, read the one order every device
         // reads them in.
         let mut policy = crate::workspace::policy_of(doc, workspace);
         order(&mut policy);
-        return (policy, false);
+        return (policy, false, false);
     };
-    redeem(doc, workspace, &mut policy);
+    let turned_away = redeem(doc, workspace, &mut policy);
     let Some(genesis) = genesis(held) else {
         order(&mut policy);
-        return (policy, true);
+        return (policy, true, turned_away);
     };
     order(&mut policy);
     // Each operation waits for the parents it was written on top of; one
@@ -332,7 +541,7 @@ fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspaceP
             }
         }
     }
-    (policy, true)
+    (policy, true, turned_away)
 }
 
 /// The membership `doc`'s rows hold, its grants in the one order the log's
@@ -401,66 +610,89 @@ fn start(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> Option<WorkspaceP
 /// them, and the membership the log starts from need not name them yet. A
 /// grant the workspace's rows do not hold admits no one here, as at the
 /// admission each device received.
-fn redeem(doc: &AutoCommit, workspace: &str, policy: &mut WorkspacePolicy) {
-    use base64::Engine as _;
+fn redeem(doc: &AutoCommit, workspace: &str, policy: &mut WorkspacePolicy) -> bool {
     // ignored-failure: a ledger this device cannot read admits no one
     let Ok(receipts) = crate::workspace::invitation_receipts(doc) else {
-        return;
+        return true;
     };
     let rows = crate::workspace::policy_of(doc, workspace);
+    let mut turned_away = false;
     for (_invite, values) in receipts {
-        let mut values = values;
-        // The order the ledger holds an invitation's receipts in is the order
-        // they were written in, which is not the same on every device.
-        values.sort();
-        for value in values {
-            // ignored-failure: a receipt that does not decode admits no one
-            let Ok(receipt) = serde_json::from_slice::<crate::state::RedemptionReceipt>(&value)
-            else {
-                continue;
-            };
-            let Some(text) = receipt.invitation.as_deref() else {
-                continue;
-            };
-            // ignored-failure: an invitation that does not decode admits no one
-            let Ok(signed) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(text) else {
-                continue;
-            };
-            if *blake3::hash(&signed).as_bytes() != receipt.invite_id {
-                continue;
-            }
-            let person = hex::encode(receipt.user_public_key);
-            let Some(joined_ms) = policy
-                .joined
-                .get(&person)
-                .or_else(|| rows.joined.get(&person))
-                .copied()
-            else {
-                continue;
-            };
-            let at_ns = joined_ms.saturating_mul(1_000_000);
-            // ignored-failure: an invitation that does not admit its joiner admits no one
-            let Ok(grant) = crate::workspace::membership::invitation_admits(
-                &rows,
-                workspace,
-                &signed,
-                receipt.user_public_key,
-                at_ns,
-            ) else {
-                continue;
-            };
-            if rows.is_owner(&person) || rows.is_banned(&person) {
-                continue;
-            }
-            // A redemption is how someone entered the workspace, not what
-            // role they hold now: the membership reached before it decides.
-            policy.joined.entry(person.clone()).or_insert(joined_ms);
-            policy
-                .members
-                .entry(person)
-                .or_insert_with(|| Role::from(grant.role));
-        }
+        turned_away |= !redeem_values(&rows, workspace, policy, values);
     }
+    turned_away
+}
+
+/// Fold one invitation's receipts (`values`, as the ledger holds them under
+/// its key) into `policy`, judged by `rows` ([`redeem`]). False when one of
+/// them admitted no one: it did not decode, does not name its invitation,
+/// names a joiner the workspace records no time for, or an invitation the
+/// rows do not honour.
+fn redeem_values(
+    rows: &WorkspacePolicy,
+    workspace: &str,
+    policy: &mut WorkspacePolicy,
+    mut values: Vec<Vec<u8>>,
+) -> bool {
+    use base64::Engine as _;
+    let mut all = true;
+    // The order the ledger holds an invitation's receipts in is the order
+    // they were written in, which is not the same on every device.
+    values.sort();
+    for value in values {
+        // ignored-failure: a receipt that does not decode admits no one
+        let Ok(receipt) = serde_json::from_slice::<crate::state::RedemptionReceipt>(&value) else {
+            all = false;
+            continue;
+        };
+        let Some(text) = receipt.invitation.as_deref() else {
+            all = false;
+            continue;
+        };
+        // ignored-failure: an invitation that does not decode admits no one
+        let Ok(signed) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(text) else {
+            all = false;
+            continue;
+        };
+        if *blake3::hash(&signed).as_bytes() != receipt.invite_id {
+            all = false;
+            continue;
+        }
+        let person = hex::encode(receipt.user_public_key);
+        let Some(joined_ms) = policy
+            .joined
+            .get(&person)
+            .or_else(|| rows.joined.get(&person))
+            .copied()
+        else {
+            all = false;
+            continue;
+        };
+        let at_ns = joined_ms.saturating_mul(1_000_000);
+        // ignored-failure: an invitation that does not admit its joiner admits no one
+        let Ok(grant) = crate::workspace::membership::invitation_admits(
+            rows,
+            workspace,
+            &signed,
+            receipt.user_public_key,
+            at_ns,
+        ) else {
+            all = false;
+            continue;
+        };
+        if rows.is_owner(&person) || rows.is_banned(&person) {
+            all = false;
+            continue;
+        }
+        // A redemption is how someone entered the workspace, not what
+        // role they hold now: the membership reached before it decides.
+        policy.joined.entry(person.clone()).or_insert(joined_ms);
+        policy
+            .members
+            .entry(person)
+            .or_insert_with(|| Role::from(grant.role));
+    }
+    all
 }
 
 /// An author's standing in the workspace as the order reaches them: an owner

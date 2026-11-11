@@ -228,16 +228,21 @@ fn person_device(n: usize) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-/// A workspace of `people` editors and its owner, whose grants keep the first
+/// Workspace `workspace` of `people` editors and its owner, whose grants keep the first
 /// person from `named` records: the governed peer, and the people's devices.
-fn crowded_workspace(people: usize, named: usize, now: SystemTime) -> (StatePeer, Vec<DeviceCert>) {
+fn crowded_workspace(
+    workspace: &str,
+    people: usize,
+    named: usize,
+    now: SystemTime,
+) -> (StatePeer, Vec<DeviceCert>) {
     let (owner_key, owner) = person_device(people);
     let people: Vec<DeviceCert> = (0..people).map(|n| person_device(n).1).collect();
     let roster: Vec<DeviceCert> = std::iter::once(owner.clone())
         .chain(people.iter().cloned())
         .collect();
     let mut doc =
-        crate::workspace::candidate(None, &seed_workspace(WORKSPACE, &owner, &roster).unwrap())
+        crate::workspace::candidate(None, &seed_workspace(workspace, &owner, &roster).unwrap())
             .unwrap();
     let members = doc.get(ROOT, "members").unwrap().unwrap().1;
     for cert in &people {
@@ -254,7 +259,7 @@ fn crowded_workspace(people: usize, named: usize, now: SystemTime) -> (StatePeer
         let grant = Grant::new(
             format!("hidden-{n}"),
             Subject::person(hidden.as_str()),
-            collab_types::document_node(WORKSPACE, "so.tilo.chat", &format!("tab:{n}")),
+            collab_types::document_node(workspace, "so.tilo.chat", &format!("tab:{n}")),
             tilo_action_policy::KindSet::READ,
             tilo_action_policy::Answer::Deny,
             Subject::person(hex::encode(owner.user_public_key)),
@@ -271,7 +276,7 @@ fn crowded_workspace(people: usize, named: usize, now: SystemTime) -> (StatePeer
         .into_iter()
         .map(|change| change.raw_bytes().to_vec())
         .collect();
-    let mut peer = StatePeer::new(WORKSPACE, owner, roster, RevocationList::new(), now).unwrap();
+    let mut peer = StatePeer::new(workspace, owner, roster, RevocationList::new(), now).unwrap();
     peer.install_seed(
         SeedState {
             workspace_changes,
@@ -299,7 +304,7 @@ fn a_channels_readers_cost_no_more_with_the_workspaces_people_and_named_records(
         .checked_add(Duration::from_secs(2000))
         .unwrap();
     // The first person may not read any of the 20 records the grants name.
-    let (peer, people) = crowded_workspace(PEOPLE, 20, now);
+    let (peer, people) = crowded_workspace(WORKSPACE, PEOPLE, 20, now);
 
     let named = collab_types::document_channel_id("so.tilo.chat", WORKSPACE, "tab:0");
     let scope = collab_types::workspace_scope(WORKSPACE);
@@ -362,11 +367,15 @@ fn a_channels_readers_cost_no_more_with_the_workspaces_people_and_named_records(
 /// are as many among 300 people as among 30.
 #[test]
 fn a_newcomer_reads_each_members_identity_once_however_many_people() {
+    // A workspace of its own: what was read of a workspace's last states is
+    // remembered for the whole process, and other tests reading theirs at the
+    // same time under the same name would make this one read it again.
+    const CROWDED: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
     let work = |people: usize| {
         let now = SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_secs(2000))
             .unwrap();
-        let (governor, _) = crowded_workspace(people, 0, now);
+        let (governor, _) = crowded_workspace(CROWDED, people, 0, now);
         let owner = governor
             .core
             .certificates
@@ -377,7 +386,7 @@ fn a_newcomer_reads_each_members_identity_once_however_many_people() {
             .clone();
         let (_, newcomer) = person_device(people + 1);
         let mut page = StatePeer::from_join(
-            WORKSPACE,
+            CROWDED,
             owner.clone(),
             vec![owner.clone(), newcomer],
             &[],
@@ -400,7 +409,7 @@ fn a_newcomer_reads_each_members_identity_once_however_many_people() {
             "every member's device"
         );
         page.governance()
-            .channel_readers(now, collab_types::workspace_scope(WORKSPACE), None)
+            .channel_readers(now, collab_types::workspace_scope(CROWDED), None)
             .unwrap();
         page.security_basis().unwrap().unwrap();
         page.durable().unwrap();

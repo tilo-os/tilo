@@ -42,6 +42,16 @@ pub fn take() -> GovernanceWork {
     work
 }
 
+/// `work`, its reading uncounted: a test's check of a narrowed reading against
+/// the whole one is no part of the work it checks.
+#[cfg(test)]
+pub(crate) fn uncounted<T>(work: impl FnOnce() -> T) -> T {
+    let counted = WORK.with(Cell::get);
+    let done = work();
+    WORK.with(|work| work.set(counted));
+    done
+}
+
 fn add(count: impl FnOnce(&mut GovernanceWork)) {
     WORK.with(|work| {
         let mut counted = work.get();

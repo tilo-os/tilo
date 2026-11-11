@@ -205,6 +205,10 @@ pub(crate) enum Wrote {
     Entries(std::collections::BTreeSet<String>),
 }
 
+/// The document key an object lies under, and whether directly (its entries
+/// are that key's map's) or deeper.
+type Placed = (String, bool);
+
 /// The document keys `changes` wrote under, each with where, read against
 /// `after`, the document holding them. `None` when an operation names an
 /// object that cannot be placed under a key.
@@ -213,15 +217,25 @@ pub(crate) fn touched(
     changes: &[automerge::Change],
 ) -> Option<BTreeMap<String, Wrote>> {
     use automerge::legacy::{Key, ObjectId};
-    // The objects held directly under a document key, by their id.
-    let mut roots: BTreeMap<(u64, Vec<u8>), String> = BTreeMap::new();
-    for key in after.keys(ROOT) {
-        for (value, object) in after.get_all(ROOT, key.as_str()).ok()? {
-            if let (Value::Object(_), ObjId::Id(counter, actor, _)) = (value, object) {
-                roots.insert((counter, actor.to_bytes().to_vec()), key.clone());
-            }
-        }
-    }
+    // Where each object an operation names lies: the document key it is held
+    // under, and whether directly (its entries are that key's map's) or
+    // deeper. Placed through its own parents, never by reading every key of
+    // the document, whose operation log grows with every admission.
+    let mut placed: BTreeMap<(u64, Vec<u8>), Option<Placed>> = BTreeMap::new();
+    let mut place = |id: &automerge::legacy::OpId| -> Option<Placed> {
+        placed
+            .entry((id.0, id.1.to_bytes().to_vec()))
+            .or_insert_with(|| {
+                let (object, _) = after.import(&format!("{}@{}", id.0, id.1)).ok()?;
+                let parents: Vec<_> = after.parents(&object).ok()?.collect();
+                let top = parents.last()?;
+                let Prop::Map(key) = &top.prop else {
+                    return None;
+                };
+                Some((key.clone(), parents.len() == 1))
+            })
+            .clone()
+    };
     let mut touched: BTreeMap<String, Wrote> = BTreeMap::new();
     let whole = |touched: &mut BTreeMap<String, Wrote>, key: String| {
         touched.insert(key, Wrote::Whole);
@@ -232,29 +246,19 @@ pub(crate) fn touched(
                 (ObjectId::Root, Key::Map(key)) => whole(&mut touched, key.to_string()),
                 (ObjectId::Root, Key::Seq(_)) => return None,
                 (ObjectId::Id(id), key) => {
-                    if let Some(root) = roots.get(&(id.0, id.1.to_bytes().to_vec())) {
-                        match (key, touched.get_mut(root)) {
-                            (_, Some(Wrote::Whole)) => {}
-                            (Key::Map(entry), Some(Wrote::Entries(entries))) => {
-                                entries.insert(entry.to_string());
-                            }
-                            (Key::Map(entry), None) => {
-                                touched.insert(
-                                    root.clone(),
-                                    Wrote::Entries([entry.to_string()].into()),
-                                );
-                            }
-                            (Key::Seq(_), _) => whole(&mut touched, root.clone()),
+                    let (root, direct) = place(id)?;
+                    match (direct, key, touched.get_mut(&root)) {
+                        (_, _, Some(Wrote::Whole)) => {}
+                        (true, Key::Map(entry), Some(Wrote::Entries(entries))) => {
+                            entries.insert(entry.to_string());
                         }
-                        continue;
+                        (true, Key::Map(entry), None) => {
+                            touched.insert(root, Wrote::Entries([entry.to_string()].into()));
+                        }
+                        // A list's element, or something nested deeper: the
+                        // key it lies under, rewritten whole.
+                        _ => whole(&mut touched, root),
                     }
-                    // Nested deeper: the key it lies under, rewritten whole.
-                    let (object, _) = after.import(&format!("{}@{}", id.0, id.1)).ok()?;
-                    let top = after.parents(&object).ok()?.last()?;
-                    let Prop::Map(key) = top.prop else {
-                        return None;
-                    };
-                    whole(&mut touched, key);
                 }
             }
         }

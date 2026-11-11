@@ -70,12 +70,20 @@ impl WorkspaceGovernance {
 #[cfg(test)]
 thread_local! { pub(crate) static POLICY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 /// The workspace's authority as `doc`'s rows record it
-/// ([`tilo_desktop_model::projection::workspace_policy_of`]): a whole read of
-/// its governance, counted as one ([`crate::governance_work`]).
+/// ([`tilo_desktop_model::projection::workspace_policy_of`]), read as
+/// [`policy::read`] reads them: from the last states read, with what the
+/// changes since wrote read again, or whole (and counted so,
+/// [`crate::governance_work`]).
 #[must_use]
 pub fn policy_of(doc: &AutoCommit, workspace: &str) -> tilo_action_policy::WorkspacePolicy {
-    crate::governance_work::governance_read();
-    tilo_desktop_model::projection::workspace_policy_of(doc, workspace)
+    let policy = policy::read(doc).workspace_policy(workspace);
+    #[cfg(test)]
+    assert_eq!(
+        policy,
+        tilo_desktop_model::projection::workspace_policy_of(doc, workspace),
+        "the governance reading gives the workspace's authority its rows record"
+    );
+    policy
 }
 pub fn governance_of(doc: Option<&AutoCommit>) -> WorkspaceGovernance {
     let Some(doc) = doc else {

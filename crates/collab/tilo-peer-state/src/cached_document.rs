@@ -13,7 +13,7 @@ use std::sync::{Arc, OnceLock};
 pub(crate) struct CachedDocument {
     doc: Arc<AutoCommit>,
     serialized: Arc<OnceLock<Vec<u8>>>,
-    policy: Arc<OnceLock<PolicyData>>,
+    policy: Arc<OnceLock<Arc<PolicyData>>>,
     identities: Arc<OnceLock<IdentityViews>>,
     certificates: Arc<OnceLock<IdentityCertificates>>,
     /// [`Self::redemptions`], once read.
@@ -47,7 +47,7 @@ struct Stored {
 }
 /// The derived views of one document state.
 struct Views {
-    policy: Arc<OnceLock<PolicyData>>,
+    policy: Arc<OnceLock<Arc<PolicyData>>>,
     identities: Arc<OnceLock<IdentityViews>>,
     certificates: Arc<OnceLock<IdentityCertificates>>,
 }
@@ -61,6 +61,7 @@ pub(crate) type IdentityViews = std::collections::BTreeMap<
     String,
     Result<crate::state::GovernedIdentity, std::sync::Arc<serde_json::Error>>,
 >;
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PolicyData {
     pub owner: Option<String>,
     pub members: std::collections::BTreeMap<String, tilo_action_policy::Role>,
@@ -211,7 +212,7 @@ impl CachedDocument {
     /// decisions must still be evaluated against the caller's current inputs.
     pub(crate) fn policy(&self) -> &PolicyData {
         self.policy
-            .get_or_init(|| crate::workspace::policy::legacy(&self.doc))
+            .get_or_init(|| crate::workspace::policy::read(&self.doc))
     }
     /// The governed identity rows of [`Self::policy`], each decoded once per
     /// document state rather than on every membership lookup. Data only, like
