@@ -161,9 +161,15 @@ impl Holds {
         dropped
     }
 
-    /// The requests waiting for the person, oldest first.
+    /// The requests nobody's page action reached, oldest first: the ones the
+    /// window publishes, and answers from there. A hold a page action's run
+    /// reached is not among them — its caller is told that it needs the
+    /// person, and their allow runs that same invocation again — so nobody is
+    /// asked about one departure twice.
     pub(crate) fn waiting(&self) -> impl Iterator<Item = &Held> {
-        self.held.iter().filter(|held| !held.answered())
+        self.held
+            .iter()
+            .filter(|held| !held.answered() && held.asked.is_none())
     }
 }
 

@@ -244,10 +244,21 @@ so the person who allows it sends exactly what was filled in. The page action
 whose run reached the hold answers that it needs the person, naming the method
 and where it goes, and their allow releases that one request — the invocation
 does not run the page action again — while a denial or a question nobody
-answers drops it and leaves the page as it was. A departure no action asked
-for, such as a page posting on its own, is published on the window as the wait
-it is, and answered from there. A person's own window holds none of this: what
-they click leaves as they click it.
+answers drops it and leaves the page as it was. Such a hold is the
+invocation's, and the window publishes no second way to answer it, so nobody
+is asked about one departure twice.
+
+A departure no action asked for, such as a page posting on its own or a
+download the page started, waits on nobody's invocation. The window publishes
+it as the wait it is — `send-held-request` and `keep-held-request` of
+`browser.page`, each bound to the hold's id and stating it as their one
+accepted argument — and the session in the VM reports each one it publishes to
+the relay, naming that invocation. The relay puts it to the person as it puts
+any page action, and their answer comes back to the session as the
+confirmation their allow runs it with: the same witness the relay signs for a
+page action, for that one request. Denied or unanswered, the session runs
+`keep-held-request` instead and the page stays as it was filled. A person's
+own window holds none of this: what they click leaves as they click it.
 
 A key can carry the authority to operate the pages its workspaces' Browser
 holds without asking each time: the person ticks **Operate web pages in

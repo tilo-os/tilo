@@ -5799,8 +5799,10 @@ impl AppBrokerState {
     }
 
     /// A receiver that sees every later published-surface change; what it
-    /// has seen so far counts as seen.
-    pub(crate) fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+    /// has seen so far counts as seen. What a session holding a window reads
+    /// to notice the app publishing what it now offers — a page holding a
+    /// request that nothing has answered yet — without asking again.
+    pub fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.surface_changes.subscribe()
     }
 

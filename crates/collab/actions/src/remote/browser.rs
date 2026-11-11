@@ -41,6 +41,11 @@ pub const RESOURCE: &str = "environment";
 pub const OPEN: &str = "open-browser";
 /// End it now.
 pub const STOP: &str = "stop-browser";
+/// The page action that lets a held request leave, by the id the window
+/// published it with: what a departure nothing asked for is answered with.
+pub const SEND_HELD: &str = "send-held-request";
+/// The page action that drops a held request, leaving the page as it was.
+pub const KEEP_HELD: &str = "keep-held-request";
 
 /// Set in the session's own environment: it serves a browser
 /// environment, and reports on its standard output.

@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 
 use tilo_actions::remote::host_account::{NextStepKind, Reason, Refusal};
 use tilo_actions::remote::{
-    ActionHostError, Caller, Confirmation, InvocationReceipt, InvokeArgument, InvokeRequest,
-    ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
+    ActionHostError, Caller, Confirmation, ConfirmedInvocation, InvocationReceipt, InvokeArgument,
+    InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_relay::certify::ConfirmationAnswer;
@@ -1608,5 +1608,182 @@ async fn an_environment_stops_when_the_session_that_held_it_ends() {
         fixture.environments.stops(),
         1,
         "the session in the VM was ended"
+    );
+}
+
+/// The device holding the workspace's window, connected: what the session in
+/// the VM is, reporting the departures its page holds to the relay.
+async fn window_device(fixture: &Fixture, material: &Material) -> RelayClient {
+    let device = DeviceIdentity::of(material);
+    subscribe(&fixture.relay.relay, &fixture.user, &device).await
+}
+
+/// A departure the window holds, reported as the session in the VM reports
+/// one: the invocation that would answer it, named by the id the window
+/// published it with.
+fn held(correlation: u64, id: u32) -> RemoteActionMessage {
+    RemoteActionMessage::Confirm {
+        correlation,
+        request: Box::new(InvokeRequest {
+            on_behalf_of: None,
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: WINDOW.into(),
+                address: ActionAddress::new(PAGE_RESOURCE, "send-held-request"),
+            },
+            argument: InvokeArgument::Json(serde_json::Map::from_iter([(
+                "id".to_owned(),
+                id.to_string().into(),
+            )])),
+            context: Some(tilo_actions::ActionContext {
+                purpose: Some("POST https://orders.example".into()),
+                ..tilo_actions::ActionContext::default()
+            }),
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        }),
+    }
+}
+
+/// What the relay answered the report `correlation` names, once it did.
+async fn hold_answer(
+    window: &RelayClient,
+    correlation: u64,
+) -> Result<Box<ConfirmedInvocation>, ActionHostError> {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let Envelope::RemoteAction { frame, .. } = next(window, "window").await else {
+            panic!("the window is answered");
+        };
+        match RemoteActionFrame::decode(&frame).unwrap().message {
+            RemoteActionMessage::ConfirmResponse {
+                correlation: answered,
+                result,
+            } if answered == correlation => return result,
+            _ => {}
+        }
+        assert!(Instant::now() < deadline, "the hold was never answered");
+    }
+}
+
+/// A departure the page started on its own waits on nobody's invocation, so
+/// the session holding the window reports it: the relay puts it to the person
+/// once, and their allow is the witness that releases that one request.
+#[tokio::test]
+async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_names_it() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let material = fixture.environments.material();
+    let window = window_device(&fixture, &material).await;
+    let (_endpoint, mut approver) = fixture.approving_device().await;
+
+    window
+        .send(to_host(WS, fixture.home, frame(held(1, 2))))
+        .unwrap();
+    let question = asked(&mut approver).await;
+    assert_eq!(
+        question.action_label, "POST https://orders.example",
+        "the person is told what leaves"
+    );
+    assert_eq!(question.resource_label, PAGE_RESOURCE);
+
+    // The same departure reported again is not put to them twice.
+    window
+        .send(to_host(WS, fixture.home, frame(held(2, 2))))
+        .unwrap();
+    assert!(
+        hold_answer(&window, 2).await.is_err(),
+        "the second report is told it is already asked"
+    );
+    assert_eq!(
+        approver.list_confirmations().await.unwrap().len(),
+        1,
+        "one departure is one question"
+    );
+
+    approver
+        .answer(question.id, ConfirmationAnswer::AllowOnce)
+        .await
+        .expect("the person answers");
+    let confirmed = hold_answer(&window, 1)
+        .await
+        .expect("their answer is the confirmation the request runs with");
+    let Some(Confirmation::Witnessed(token)) = Some(confirmed.confirmation) else {
+        panic!("the person's answer travels as the host's witness");
+    };
+    let witness = HostWitness::decode(&token).expect("the witness is the relay's");
+    assert_eq!(
+        witness.host_device_public_key, fixture.home,
+        "signed by the host that certified the window"
+    );
+    assert_eq!(
+        witness.target_device_public_key, material.device.device_public_key,
+        "for the window the request runs on"
+    );
+    assert_eq!(witness.action, "send-held-request");
+    assert!(
+        witness.verify(tilo_clock::unix_now_ns()).is_ok(),
+        "the witness is good now"
+    );
+    assert_eq!(
+        *fixture.meter.recorded.lock().unwrap(),
+        0,
+        "a departure the person releases is no page action of their allowance"
+    );
+}
+
+/// A departure the person denies is answered as refused, and one they never
+/// answer ends the same way: the page stays as it was filled.
+#[tokio::test]
+async fn a_departure_the_person_does_not_allow_is_answered_kept() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let material = fixture.environments.material();
+    let window = window_device(&fixture, &material).await;
+    let (_endpoint, mut approver) = fixture.approving_device().await;
+
+    window
+        .send(to_host(WS, fixture.home, frame(held(1, 3))))
+        .unwrap();
+    let question = asked(&mut approver).await;
+    approver
+        .answer(question.id, ConfirmationAnswer::Deny)
+        .await
+        .expect("the person answers");
+    assert_eq!(
+        hold_answer(&window, 1).await,
+        Err(ActionHostError::NotPermitted),
+        "kept: the session drops the held request and nothing leaves"
+    );
+    assert_eq!(*fixture.meter.recorded.lock().unwrap(), 0);
+}
+
+/// Only the environment's own device reports the departures of its own
+/// window: another device of the workspace is answered nothing, and nobody is
+/// asked.
+#[tokio::test]
+async fn only_the_windows_own_device_reports_what_it_holds() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let (_endpoint, mut approver) = fixture.approving_device().await;
+
+    caller
+        .send(to_host(WS, fixture.home, frame(held(1, 4))))
+        .unwrap();
+    let answer = next(&caller, "caller").await;
+    if let Envelope::RemoteAction { frame, .. } = answer
+        && let Ok(frame) = RemoteActionFrame::decode(&frame)
+    {
+        assert!(
+            !matches!(frame.message, RemoteActionMessage::ConfirmResponse { .. }),
+            "another device does not answer for the window's page"
+        );
+    }
+    assert!(
+        approver.list_confirmations().await.unwrap().is_empty(),
+        "nobody is asked about a hold another device reports"
     );
 }

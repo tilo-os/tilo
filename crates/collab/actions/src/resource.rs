@@ -1464,6 +1464,40 @@ impl ActionSpec {
         self
     }
 
+    /// The bound argument `name`, stated in what this action publishes: an
+    /// optional parameter whose only accepted value is the one this action
+    /// is bound to, described as `description`. A row of a person's own
+    /// window invokes it without naming anything — it is bound here — while
+    /// a caller reading the published action learns which item this one is
+    /// bound to, and answers that one among several a page or a list
+    /// publishes side by side.
+    ///
+    /// Nothing an invocation carries changes: the value invocations run is
+    /// still the bound one ([`Self::with_bound`]), and naming it is how a
+    /// caller says which of several bound rows it means.
+    #[must_use]
+    pub fn stating_bound(mut self, name: &str, description: &str) -> Self {
+        let Some((_, value)) = self.bound().iter().find(|(bound, _)| bound == name) else {
+            return self;
+        };
+        let value = match value {
+            serde_json::Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        let ty = Arc::make_mut(&mut self.ty);
+        ty.params = vec![crate::ActionParam {
+            name: name.to_owned().into(),
+            ty: crate::ParamType::Text,
+            required: false,
+            entry: false,
+            description: description.to_owned().into(),
+            choices: vec![value.into()],
+            schema: None,
+            nullable: false,
+        }];
+        self
+    }
+
     /// `supplied` without the bound arguments it repeats
     /// ([`Self::with_bound`]).
     fn without_bound<'a>(

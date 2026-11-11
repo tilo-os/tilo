@@ -1075,7 +1075,11 @@ impl Session {
         // loop when the relay answers, and what the broker admits of its window's page.
         if let Some(hosted) = &mut options.hosted_browser {
             hosted.waking(options.wake.handle());
-            hosted.watching(action_plane.as_ref().and_then(Plane::agent_broker).as_ref());
+            hosted.watching(
+                action_plane.as_ref().and_then(Plane::agent_broker).as_ref(),
+                action_plane.as_ref().and_then(Plane::hosted_workspaces),
+                &options.person,
+            );
         }
         // What Files may read, and where a received file may land, is what
         // this session's workspaces grant it: read off the desk the broker

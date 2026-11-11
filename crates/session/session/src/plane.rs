@@ -1151,6 +1151,16 @@ impl Plane {
     ) -> Option<std::sync::Arc<tilo_action_broker::collab_app_broker::AppBrokerState>> {
         self.broker.fanout.app_broker()
     }
+
+    /// The hosts of the workspaces this device takes part in but does not
+    /// host, while the broker reaches them: where a page of a hosted window
+    /// asks the host holding it about a departure it holds for the person.
+    pub(crate) fn hosted_workspaces(
+        &self,
+    ) -> Option<std::sync::Arc<dyn tilo_action_broker::services::HostedWorkspaces>> {
+        self.action_broker()
+            .and_then(|broker| broker.hosted_workspaces())
+    }
 }
 
 /// Whether the shortcut catalogue the services hand an app on this machine names every

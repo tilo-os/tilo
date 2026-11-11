@@ -36,7 +36,12 @@
 //!   ([`DeviceCapabilities::browser_pages`]) is not asked about the page
 //!   actions that lets it take — [`OPERATING_ACTIONS`], never a submission —
 //!   and this host answers for them where their answer would have: the
-//!   window runs it once, as theirs, and counts it.
+//!   window runs it once, as theirs, and counts it. A departure the page
+//!   started on its own — a script posting, a download — waits on nobody's
+//!   invocation, so the session holding the window reports it here
+//!   ([`Self::held_reported`]) and the person is asked about it just the
+//!   same: their allow answers the session with the witness that releases
+//!   that one request, and a denial keeps the page as it is.
 //! - **Meter** ([`BrowserMeter`]): every page action is admitted for the
 //!   workspace's account before it is handed over, and counted once the
 //!   window answers that it ran. A refused one is answered with the host's
@@ -102,6 +107,11 @@ pub const OPERATING_ACTIONS: [&str; 9] = [
     "pointer-path",
     "pointer-page",
 ];
+/// The page action that keeps the page as it is, dropping the held request.
+pub use tilo_actions::remote::browser::KEEP_HELD;
+/// The page action that lets a held request leave, by the id the window
+/// publishes it with: what a hold nothing called for is answered with.
+pub use tilo_actions::remote::browser::SEND_HELD;
 /// How long a device certified for a session lasts: as long as the session
 /// may run.
 pub const DEVICE_LIFETIME: Duration = Duration::from_secs(2 * 60 * 60);
@@ -315,6 +325,10 @@ pub struct HostedBrowsers {
     /// The page actions handed to a window and not yet answered, by
     /// invocation: what a count is owed for once it ran, and what asks first.
     handed: Arc<Mutex<HashMap<tilo_actions::InvocationId, Handed>>>,
+    /// The held requests the person is being asked about, by workspace and
+    /// the id the window published them with: a session that reports one
+    /// again is told it is asked already rather than asked twice.
+    asking: Arc<Mutex<std::collections::HashSet<(u64, u32)>>>,
     /// The number naming the next caller waiting for an invocation to move.
     next_waiter: AtomicU64,
     /// How long an environment device that disconnected has to come back
@@ -344,6 +358,7 @@ impl HostedBrowsers {
             open: Mutex::default(),
             authority: Mutex::default(),
             handed: Arc::default(),
+            asking: Arc::default(),
             next_waiter: AtomicU64::new(0),
             reconnect: RECONNECT,
             answer_wait: ANSWER_WAIT,
@@ -471,6 +486,13 @@ impl HostedBrowsers {
         message: &RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
         let RemoteActionMessage::Invoke(request) = message else {
+            if let RemoteActionMessage::Confirm {
+                correlation,
+                request,
+            } = message
+            {
+                return self.held_reported(workspace_id, caller, *correlation, request);
+            }
             return self.asked_after(caller, message);
         };
         let (provider, window) = {
@@ -546,6 +568,89 @@ impl HostedBrowsers {
                 },
             ),
         }
+    }
+
+    /// A departure a window holds that no page action is waiting on — the
+    /// page posted on its own, or started a download — is put to the person
+    /// here: the session holding the window reports it
+    /// ([`RemoteActionMessage::Confirm`] naming the window's [`SEND_HELD`]),
+    /// this host asks the person once, and their answer is the witness that
+    /// releases that one request, made for the invocation the report names.
+    /// A denial, or a question nobody answers, is the answer that keeps the
+    /// page as it is: the session runs [`KEEP_HELD`] with it.
+    ///
+    /// Only the environment's own device reports a hold of its own window,
+    /// and a hold it reports again while the person is being asked is told
+    /// so, never asked about twice. `None` for a message that is not this
+    /// host's: it is served, or refused, as it was.
+    fn held_reported(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        correlation: u64,
+        request: &InvokeRequest,
+    ) -> Option<crate::app_serving::Routing> {
+        let (provider, window) = {
+            let open = self.open.lock_recover();
+            let up = open.get(&workspace_id)?;
+            (up.window.provider.clone(), up.window.device)
+        };
+        if *caller.device_public_key()? != window
+            || !page_action(&request.target, &provider)
+            || request.target.address.action != SEND_HELD
+        {
+            return None;
+        }
+        let refused = |error: ActionHostError| {
+            Some(crate::app_serving::Routing::Answer(Pending::ready(
+                RemoteActionMessage::ConfirmResponse {
+                    correlation,
+                    result: Err(error),
+                },
+            )))
+        };
+        if request.confirmation.is_some() {
+            return refused(ActionHostError::NotPermitted);
+        }
+        let Some(held) = held_of(&request.argument) else {
+            return refused(ActionHostError::InvalidRequest {
+                reason: "a held request is named by the id it was published with".to_owned(),
+            });
+        };
+        let (Some(&person), Some(device)) = (caller.user_public_key(), caller.device_public_key())
+        else {
+            return refused(ActionHostError::NotPermitted);
+        };
+        let (Some((certification, key)), Some(_)) = (self.certifying(), self.hand()) else {
+            return refused(ActionHostError::Unavailable {
+                reason: "this host asks nobody about a page".into(),
+            });
+        };
+        if !self.asking.lock_recover().insert((workspace_id, held)) {
+            return refused(ActionHostError::Unavailable {
+                reason: "the person is already being asked about that request".into(),
+            });
+        }
+        let asked = Asked {
+            person,
+            window,
+            device: *device,
+            request: request.clone(),
+            until_ns: tilo_clock::unix_now_ns().saturating_add(answer_wait_ns(self.answer_wait)),
+        };
+        let question = asked.question(caller);
+        let (answer, answered) = pending();
+        let asking = Arc::clone(&self.asking);
+        tokio::runtime::Handle::current().spawn(async move {
+            let answered_by_person = certification.confirm_for(person, question).await;
+            let result = asked.confirmed(&answered_by_person, &key).map(Box::new);
+            asking.lock_recover().remove(&(workspace_id, held));
+            answer.complete(RemoteActionMessage::ConfirmResponse {
+                correlation,
+                result,
+            });
+        });
+        Some(crate::app_serving::Routing::Answer(answered))
     }
 
     /// The window's answer to a page action this host handed it: it ran
@@ -1161,6 +1266,20 @@ fn certified(stand_in: &DeviceCert, key: &SigningKey) -> Result<(DeviceCert, [u8
 #[must_use]
 pub fn page_action(target: &RemoteActionTarget, provider: &str) -> bool {
     target.provider == provider && logical_resource_id(&target.address.resource) == PAGE_RESOURCE
+}
+
+/// The held request `argument` names (`{"id": "4"}`), as the window publishes
+/// each hold's answer action with the id it holds.
+#[must_use]
+pub fn held_of(argument: &tilo_actions::remote::InvokeArgument) -> Option<u32> {
+    let tilo_actions::remote::InvokeArgument::Json(arguments) = argument else {
+        return None;
+    };
+    match arguments.get("id")? {
+        serde_json::Value::String(id) => id.parse().ok(),
+        serde_json::Value::Number(id) => id.as_u64().and_then(|id| id.try_into().ok()),
+        _ => None,
+    }
 }
 
 /// Whether `certificate` is a key its person let operate web pages in

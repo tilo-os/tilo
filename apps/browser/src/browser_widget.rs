@@ -5455,14 +5455,21 @@ impl BrowserWidget {
         // whoever reads the page answers it there, next to the page's other
         // buttons, and never has to find the prompt in the chrome.
         page.actions.extend(self.capabilities.permission_answers());
-        // A request the window holds waits on the person: whoever may ask the
-        // page answers it here, by its id, and nothing leaves until they do.
+        // A request the page started on its own waits on the person: whoever
+        // may ask the page answers it here, by the id it holds, and nothing
+        // leaves until they do. The id is stated on the action, so a caller
+        // that is not the person at this window — the host holding a window
+        // in a VM of theirs — answers that one departure among several.
         for held in self.holds.waiting() {
             let id = held.request.id.to_string();
-            let mut send = E::SendHeldRequest { id: id.clone() }.bound();
+            let mut send = E::SendHeldRequest { id: id.clone() }
+                .bound()
+                .stating_bound("id", "The held request's id");
             send.type_mut().label = format!("Let it leave: {}", held.describing());
             page.actions.push(send);
-            let mut keep = E::KeepHeldRequest { id }.bound();
+            let mut keep = E::KeepHeldRequest { id }
+                .bound()
+                .stating_bound("id", "The held request's id");
             keep.type_mut().label = "Keep the page as it is".into();
             page.actions.push(keep);
         }

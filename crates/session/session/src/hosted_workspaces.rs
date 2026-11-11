@@ -18,8 +18,8 @@ use std::sync::{Arc, Mutex};
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeRequest, Pending, pending,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
+    InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
 };
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_desktop_model::WorkspaceId;
@@ -315,6 +315,20 @@ impl ActionHost for OnHost {
             Some(actions) => actions.cancel(caller, id),
             None => Pending::ready(Err(ActionHostError::UnknownInvocation)),
         }
+    }
+
+    /// The person's answer to `request`, asked of the workspace's host: the
+    /// host is the one that reaches their approving devices, so a request a
+    /// page needs their word for is put to them there and answered here with
+    /// the confirmation it runs with.
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
+        let caller = caller.clone();
+        let request = request.clone();
+        self.asking(move |actions| actions.confirm(&caller, &request))
     }
 }
 

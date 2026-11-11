@@ -277,29 +277,56 @@ fn a_click_on_the_submit_button_is_held_and_the_page_stays() {
         }],
         "the click reached the page and the submission it started is held"
     );
-    // The person kept the page as it is: the submission is dropped and the
-    // page is left as it was filled.
+    // The hold waits on the person through the invocation that reached it:
+    // its answer runs that same invocation again, so the window publishes no
+    // second way to answer it, and nobody is asked about it twice.
     let resource = page_resource(&widget);
-    let keep = resource
+    assert!(
+        !resource
+            .actions
+            .iter()
+            .any(|action| action.id == "keep-held-request" || action.id == "send-held-request"),
+        "a hold an action reached is answered by that action, not beside it"
+    );
+    assert_eq!(
+        held_answers(&engine),
+        Vec::new(),
+        "nothing was sent and nothing was dropped while the person decides"
+    );
+}
+
+#[test]
+fn a_hold_one_departure_names_does_not_answer_another() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://shop.example/order");
+    for (id, origin) in [(4, "https://orders.example"), (5, "https://pay.example")] {
+        let mut request = HeldRequest::new(id, HeldKind::Request);
+        request.method = "POST".into();
+        request.origin = origin.into();
+        engine.hold(request);
+    }
+    widget.sync(&doc, &root);
+    // Each departure is answered by the id it is published with: the page
+    // names both, and neither answers the other.
+    let named: Vec<String> = page_resource(&widget)
         .actions
         .into_iter()
-        .find(|action| action.id == "keep-held-request")
-        .expect("a held request is answered on the page");
-    let encoded = keep
-        .build_json(serde_json::json!({"id": "2"}).as_object().expect("an id"))
-        .expect("the answer names the held request");
-    let answer = ui::tilo_actions::InvocationId::new();
-    assert!(
-        widget
-            .admit(answer, effect_operation(&encoded.payload))
-            .is_ok()
-    );
-    assert_eq!(held_answers(&engine), vec![(2, false)]);
-    engine.push_event(WebViewEvent::HeldRequestClosed { id: 2 });
-    widget.sync(&doc, &root);
-    assert!(
-        page_requests(&engine).len() == 1,
-        "nothing was sent a second time"
+        .filter(|action| action.id == "send-held-request")
+        .filter_map(|action| {
+            let id = action
+                .params()
+                .iter()
+                .find(|param| param.name == "id")?
+                .choices
+                .first()?
+                .to_string();
+            Some(id)
+        })
+        .collect();
+    assert_eq!(
+        named,
+        ["4", "5"],
+        "each wait names the departure it answers"
     );
 }
 
@@ -370,8 +397,7 @@ fn a_request_the_page_sends_on_its_own_is_published_and_answered() {
 
 #[test]
 fn a_download_is_held_like_every_other_departure_the_page_starts() {
-    let (engine, mut widget, mut doc, root) =
-        page_in(BrowsingMode::Visitor, "https://files.example/");
+    let (engine, mut widget, doc, root) = page_in(BrowsingMode::Visitor, "https://files.example/");
     engine.push_event(WebViewEvent::NativeDownloadRequested {
         id: 9,
         url: "https://files.example/return.pdf".into(),
@@ -406,7 +432,7 @@ fn a_download_is_held_like_every_other_departure_the_page_starts() {
 
 #[test]
 fn a_hold_nobody_answers_is_dropped_and_the_page_stays() {
-    let (engine, mut widget, mut doc, root) =
+    let (engine, mut widget, doc, root) =
         page_in(BrowsingMode::Visitor, "https://visa.example/apply");
     let mut request = held_submit(5);
     request.origin = "https://visa.example".into();
