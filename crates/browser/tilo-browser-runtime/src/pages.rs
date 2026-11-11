@@ -135,13 +135,13 @@ pub(crate) fn heard(id: u32, workspace_id: u64, tab: u64, body: &[u8]) {
 /// page view's code is still on its way, so the host's own tile answers that tab.
 pub(crate) fn tile(tab: u64, title: &str) -> Option<TileHost> {
     let (page, alt) = PAGES.with_borrow_mut(|pages| {
-        let tile = pages.tiles.get_mut(&tab)?;
+        let entry = pages.tiles.get_mut(&tab)?;
         let alt = if title.is_empty() {
-            tile.title.clone()
+            entry.title.clone()
         } else {
             title.to_owned()
         };
-        Some((tile.open()?, alt))
+        Some((entry.open()?, alt))
     })?;
     Some(TileHost::new(TileContent::App(page.tile(alt))))
 }

@@ -42,7 +42,7 @@ thread_local! {
     /// The hosts whose questions the page was asked to answer while the code
     /// was still to come: an address (`hostInfo().address`, JSON) and the
     /// root the page answers as.
-    static ASKED: RefCell<Vec<(String, JsValue)>> = RefCell::new(Vec::new());
+    static ASKED: RefCell<Vec<(String, JsValue)>> = const { RefCell::new(Vec::new()) };
     /// Whether the page was asked to answer at all, under any host: only
     /// then is the sheet worth drawing, and its code worth fetching.
     static ANSWERING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -64,12 +64,11 @@ pub(crate) fn answering() -> bool {
 #[wasm_bindgen(js_name = answerAgentQuestions)]
 pub fn answer_agent_questions(address: &str, root: &JsValue) -> Result<(), JsError> {
     ANSWERING.with(|answering| answering.set(true));
-    match QUESTIONS.get() {
-        Some(code) => (code.answer)(address, root),
-        None => {
-            ASKED.with_borrow_mut(|asked| asked.push((address.to_owned(), root.clone())));
-            Ok(())
-        }
+    if let Some(code) = QUESTIONS.get() {
+        (code.answer)(address, root)
+    } else {
+        ASKED.with_borrow_mut(|asked| asked.push((address.to_owned(), root.clone())));
+        Ok(())
     }
 }
 

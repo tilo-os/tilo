@@ -984,6 +984,16 @@ impl Joined {
             }
         }
         self.after_merging(compactions, opened, &mut woken);
+        self.wakes(woken, content_arrived)
+    }
+
+    /// What wakes the mounts in `woken`, each marked changed, and every
+    /// mount besides when content arrived.
+    fn wakes(
+        &self,
+        woken: HashSet<u64>,
+        content_arrived: bool,
+    ) -> Vec<Arc<dyn Fn() + Send + Sync>> {
         let mut notify: Vec<Arc<dyn Fn() + Send + Sync>> = woken
             .into_iter()
             .filter_map(|mount| self.mounts.get(&mount))
