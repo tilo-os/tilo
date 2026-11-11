@@ -2608,6 +2608,12 @@ fn synced_local_profile(
                 .iter()
                 .find(|old| old.id == model.package.id)
                 .and_then(|old| old.context_window),
+            // What the model itself declared, kept from a previous listing.
+            max_output_tokens: profile
+                .models
+                .iter()
+                .find(|old| old.id == model.package.id)
+                .and_then(|old| old.max_output_tokens),
             request_limits: profile
                 .models
                 .iter()

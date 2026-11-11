@@ -112,6 +112,9 @@ fn reading_fixture(
 fn model_with_context() -> agent_provider_config::ModelDescriptor {
     agent_provider_config::ModelDescriptor {
         context_window: Some(CONTEXT),
+        // What the model may answer with, declared as a small local model's
+        // server declares it: the rest of its context is for reading.
+        max_output_tokens: Some(4_096),
         ..agent_provider_config::ModelDescriptor::new("scripted-long")
     }
 }

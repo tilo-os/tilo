@@ -31,9 +31,13 @@ pub(crate) const UNKNOWN_CONTEXT_TOKENS: u32 = 32_000;
 /// Text in English is about four; JSON punctuation and identifiers are
 /// fewer, so three keeps the estimate above the provider's count.
 const CHARS_PER_TOKEN: usize = 3;
-/// Tokens of the context left for the model's answer and for the results
-/// of the turn about to run.
+/// Tokens of the context kept for the turn's own answer and for the results
+/// of the turn about to run, when the model declares no output limit.
 const ANSWER_ROOM_TOKENS: usize = 4_096 + 4_096;
+/// The most the answer's own room may take out of a context: a model with a
+/// large declared output limit still leaves most of its context for what it
+/// reads.
+const MOST_ANSWER_ROOM: usize = 32_768;
 /// The share of the context the conversation may fill before older results
 /// are put aside, in percent.
 const FILL_PERCENT: usize = 60;
@@ -64,11 +68,18 @@ pub(crate) struct Context {
 }
 
 impl Context {
-    /// The context of a model reading `tokens` at once, when it is known.
-    pub(crate) fn of(tokens: Option<u32>) -> Self {
+    /// The context of a model reading `tokens` at once and declaring `output`
+    /// as the most one answer may take: what the answer needs is room taken
+    /// from the conversation, so a bigger declared limit compacts earlier.
+    pub(crate) fn of_context(tokens: Option<u32>, output: Option<u32>) -> Self {
         let tokens =
             usize::try_from(tokens.unwrap_or(UNKNOWN_CONTEXT_TOKENS)).unwrap_or(usize::MAX);
-        let usable = tokens.saturating_sub(ANSWER_ROOM_TOKENS);
+        let answer = output.map_or(ANSWER_ROOM_TOKENS, |output| {
+            usize::try_from(output)
+                .unwrap_or(usize::MAX)
+                .min(MOST_ANSWER_ROOM)
+        });
+        let usable = tokens.saturating_sub(answer.max(ANSWER_ROOM_TOKENS));
         Self {
             fill_tokens: usable.saturating_mul(FILL_PERCENT) / 100,
             handles: std::collections::HashMap::new(),
