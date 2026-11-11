@@ -1431,6 +1431,39 @@ impl ProfileCard {
         self.model.as_ref().map_or(&[], |model| &model.linked)
     }
 
+    /// Whether the card already shows `model`: someone else's card says what is said of them now
+    /// ([`Self::updated`]), so a host reads this before laying the card out again. Their own card
+    /// says yes always: it is not built again for anyone else's word.
+    #[must_use]
+    pub fn shows(&self, model: &ProfileModel) -> bool {
+        match self.model.as_ref() {
+            Some(held) if held.other.is_some() && model.other.is_some() => held == model,
+            _ => true,
+        }
+    }
+
+    /// Someone else's card kept to what is said of them now: what they are doing, where they are
+    /// and whose view they follow move while their card stands (an agent narrates every action),
+    /// so the card says now, never what was said when it opened. Their own card is left as it is:
+    /// what the person types there is theirs, and a field rebuilt is a field they lost. Whether
+    /// anything changed.
+    pub fn updated(&mut self, model: &ProfileModel) -> bool {
+        if self.shows(model) {
+            return false;
+        }
+        self.model = Some(model.clone());
+        if self.is_open() {
+            // The same card, its contents built again: the popover keeps where it is and the
+            // pointer it is tracking.
+            let body = Box::new(self.body(model));
+            self.popover.content_mut().set_child(body);
+            self.replaced = true;
+            // The control under the pointer is gone; focus goes back into the card.
+            self.focus_reset = true;
+        }
+        true
+    }
+
     /// Close the card. A name typed but not yet entered is kept, as a field that loses focus keeps
     /// what was typed.
     pub fn close(&mut self) {
@@ -2548,6 +2581,78 @@ mod tests {
             Rect::new(0.0, 0.0, 1280.0, 720.0),
         );
         ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
+    }
+
+    fn claude(now: &str) -> ProfileModel {
+        ProfileModel {
+            name: "Claude Code".into(),
+            identity: "claude-run".into(),
+            other: Some(OtherPerson {
+                id: "claude-run".into(),
+                status: Some(crate::collaborators::RosterStatus {
+                    text: now.into(),
+                    source: crate::collaborators::LineSource::Observed,
+                }),
+                place: None,
+                presence: None,
+                following: false,
+                can_follow: true,
+                can_message: false,
+                linked: Vec::new(),
+                agent: Some(AgentFacts {
+                    client: "Claude Code".into(),
+                }),
+            }),
+            ..ProfileModel::default()
+        }
+    }
+
+    /// An agent's card says what it is at now: the run narrates each action while its card stands,
+    /// and the card must not go on quoting what it was at when it opened.
+    #[test]
+    fn an_agents_card_says_what_it_is_doing_now_while_it_stands() {
+        let mut frame = framed_model(&claude("Looking at the apps"));
+        let said = says(&mut frame);
+        assert!(said.contains("Looking at the apps"), "{said}");
+        assert!(
+            said.contains("Now"),
+            "it reads as what it is at now: {said}"
+        );
+        let (card, _) = ui::headless::Framed::split(&mut frame);
+        assert!(
+            !card.shows(&claude("Working in Notes")),
+            "the row moved past the card"
+        );
+        assert!(card.updated(&claude("Working in Notes")), "the line moved");
+        assert!(
+            card.shows(&claude("Working in Notes")),
+            "and the card has it"
+        );
+        let said = says(&mut frame);
+        assert!(said.contains("Working in Notes"), "{said}");
+        assert!(
+            !said.contains("Looking at the apps"),
+            "not what it opened with: {said}"
+        );
+        assert!(frame.is_open(), "the card keeps standing");
+        let (card, _) = ui::headless::Framed::split(&mut frame);
+        assert!(
+            !card.updated(&claude("Working in Notes")),
+            "the same line again builds nothing"
+        );
+    }
+
+    /// Your own card is yours to type in: what is said of other people never rebuilds it.
+    #[test]
+    fn your_own_card_is_never_built_again_from_what_is_said_of_someone_else() {
+        let mut frame = framed_model(&model());
+        assert!(says(&mut frame).contains("Your name"));
+        let (card, _) = ui::headless::Framed::split(&mut frame);
+        assert!(!card.updated(&claude("Working in Notes")));
+        assert!(
+            says(&mut frame).contains("Your name"),
+            "still your own card, untouched"
+        );
     }
 
     #[test]

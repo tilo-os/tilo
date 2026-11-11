@@ -555,6 +555,7 @@ pub fn mount(
         asks: Rc::clone(&asks),
         profile: ProfileCard::default(),
         card_node: None,
+        live_card: Cell::new(false),
         chats: RefCell::default(),
         motion_until: Cell::new(0.0),
         followed: RefCell::default(),
@@ -624,6 +625,9 @@ struct Panel {
     profile: ProfileCard,
     /// Where the card stands among this panel's children, while it is open.
     card_node: Option<NodeId>,
+    /// Someone else's card no longer says what the rows say of them: the next layout builds it
+    /// again, as the frame that opens one does ([`Self::settle_card`]).
+    live_card: Cell<bool>,
     /// What everyone here says beside their pointer, as the toolkit times it for every host.
     chats: RefCell<ui::presence::CursorChats>,
     /// Keep drawing until then: the newest pointer heard plus the window it eases to rest in.
@@ -685,6 +689,17 @@ impl Panel {
             self.profile.close();
             let _ = self.profile.take_choice();
             shown.card_open = None;
+        }
+        // The card standing is someone else's: what the roster says of them now is what it says,
+        // beside the row under it (an agent narrates every action). Built before the card is laid
+        // out, as it is opened here, never while the frame draws.
+        let standing = shown
+            .card_open
+            .clone()
+            .filter(|who| who != SELF_CARD)
+            .and_then(|who| self.person_model(&who, &shown.rows));
+        if let Some(model) = standing {
+            self.profile.updated(&model);
         }
         let asked = if shown.own_card {
             shown.own_card = false;
@@ -983,6 +998,16 @@ impl Panel {
         shown.rows = rows;
         shown.screens = screens;
         shown.workspace = workspace;
+        // The card standing is someone else's: when what the rows say of them moved (an agent
+        // narrates each action), this frame asks for the layout that builds the card with it.
+        // Widgets are never built while the frame draws ([`Self::settle_card`]).
+        if let Some(who) = shown.card_open.clone().filter(|who| who != SELF_CARD)
+            && self.profile.is_open()
+            && let Some(model) = self.person_model(&who, &shown.rows)
+            && !self.profile.shows(&model)
+        {
+            self.live_card.set(true);
+        }
     }
 
     /// Act on what a press or a key on the roster meant.
@@ -1652,7 +1677,9 @@ impl Widget for Panel {
     fn take_structure_dirty(&mut self) -> bool {
         let open = self.profile.is_open();
         let card = self.profile.take_structure_dirty();
-        card || open != self.card_node.is_some() || self.card_asked()
+        card || open != self.card_node.is_some()
+            || self.card_asked()
+            || self.live_card.replace(false)
     }
 
     fn draw(
