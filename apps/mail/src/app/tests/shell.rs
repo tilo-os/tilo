@@ -185,15 +185,26 @@ fn accessibility_routes_panes_reader_attachments_and_context_menu() {
                 .any(|node| node.role == A11yRole::Document),
             "the covered reader is omitted in the compact overview"
         );
-        let message_target = overview
+        let list = overview
             .children
             .iter()
             .find(|node| node.role == A11yRole::List)
-            .and_then(|list| {
-                list.children
-                    .iter()
-                    .find(|node| node.role == A11yRole::ListItem)
-            })
+            .expect("the compact overview exposes its visible message list");
+        let toggle = list
+            .children
+            .iter()
+            .find(|node| node.action_target.as_deref() == Some("mail.bulk:toggle"))
+            .and_then(|node| node.name.clone())
+            .expect("the list has a bulk-selection toggle");
+        assert_eq!(
+            toggle,
+            crate::i18n::t("mail-a11y-bulk-select"),
+            "the toggle reads as the menu entry that starts bulk selection"
+        );
+        let message_target = list
+            .children
+            .iter()
+            .find(|node| node.role == A11yRole::ListItem)
             .and_then(|row| row.action_target.clone())
             .expect("visible message row has a stable activation target");
 
@@ -596,12 +607,23 @@ fn opening_marks_read_through_the_document_action_and_preview_stays_neutral() {
             .iter()
             .find(|node| node.role == ui::a11y::Role::Document)
             .expect("reader document");
+        let banner = crate::i18n::t("mail-a11y-preview-unread");
+        assert_ne!(
+            banner, "mail-a11y-preview-unread",
+            "the preview banner is a catalogue message"
+        );
         assert!(
             reader
-                .description
-                .as_deref()
-                .is_some_and(|text| text.contains("without changing its read state")),
-            "assistive technology receives the same explicit preview distinction"
+                .children
+                .iter()
+                .any(|node| node.name.as_deref() == Some(banner.as_str())),
+            "assistive technology receives the reader's preview banner"
+        );
+        let count = app.shared.borrow().selected_thread_messages().len();
+        assert_eq!(
+            reader.description.as_deref(),
+            Some(MailApp::thread_messages(count).as_str()),
+            "the conversation's size is a catalogue message of its own"
         );
     }
 

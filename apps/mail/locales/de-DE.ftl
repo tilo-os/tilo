@@ -118,6 +118,13 @@ mail-a11y-outbox = Postausgang
 mail-a11y-outbox-empty = Nichts wartet auf das Senden
 mail-a11y-no-message = Keine Nachricht ausgewählt
 mail-a11y-message-actions = Aktionen für die Nachricht
+mail-a11y-bulk-select = Nachrichten auswählen
+mail-a11y-bulk-done = Auswahl beenden
+mail-a11y-thread-messages = { $count ->
+    [one] { $count } Nachricht in dieser Unterhaltung
+   *[other] { $count } Nachrichten in dieser Unterhaltung
+}
+mail-a11y-preview-unread = Vorschau, weiterhin ungelesen
 mail-a11y-download-first = Lade diesen Anhang herunter, bevor du ihn speicherst
 mail-a11y-syncing = Mail wird abgeglichen
 mail-compose-placeholder-body = Schreib deine Nachricht

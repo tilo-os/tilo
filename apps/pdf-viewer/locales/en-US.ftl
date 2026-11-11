@@ -112,7 +112,14 @@ pdf-note-link-file = Links to other files aren't opened from a PDF. Open { $path
 
 pdf-title = PDF Viewer
 pdf-a11y-opening = Opening PDF
+pdf-a11y-empty-heading = Open a PDF
 pdf-a11y-pages = Pages
+pdf-a11y-page-markup = Contains review markup
+pdf-a11y-tab-comments = Comments
+pdf-a11y-tab-contents = Contents
+pdf-a11y-tab-signatures = Signatures
+pdf-a11y-resolve-comment = Resolve comment
+pdf-a11y-reopen-comment = Reopen comment
 pdf-a11y-canvas = PDF page canvas. Arrow keys scroll; Page Up and Page Down change pages.
 pdf-a11y-search-results = Search results
 pdf-a11y-signer-name = Signer name

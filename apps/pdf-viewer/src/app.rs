@@ -188,6 +188,26 @@ pub enum SidebarTab {
     Signatures,
 }
 
+impl SidebarTab {
+    /// The catalogue message naming the tab for assistive technology.
+    fn name_key(self) -> &'static str {
+        match self {
+            Self::Comments => "pdf-a11y-tab-comments",
+            Self::Outline => "pdf-a11y-tab-contents",
+            Self::Signatures => "pdf-a11y-tab-signatures",
+        }
+    }
+
+    /// What an action target calls the tab.
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Comments => "comments",
+            Self::Outline => "contents",
+            Self::Signatures => "signatures",
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum FitMode {
     Page,
@@ -5010,19 +5030,21 @@ impl Widget for PdfApp {
         };
         let opening = self.opening();
         if !self.has_document {
-            let mut children = vec![
-                AccessNode::new(Role::Heading { level: 1 })
-                    .with_name(if opening { "Opening PDF" } else { "Open a PDF" })
-                    .with_hashed_key("pdf.empty.heading"),
-            ];
+            let mut children = Vec::new();
             if opening {
+                // Nothing to head yet: the wait itself is the state.
                 children.push(
                     AccessNode::new(Role::StaticText)
-                        .with_name(ui::i18n::I18nManager::lookup_plain("pdf-a11y-opening"))
+                        .with_name(crate::t("pdf-a11y-opening"))
                         .with_hashed_key("pdf.empty.loading")
                         .with_live(Politeness::Polite),
                 );
             } else {
+                children.push(
+                    AccessNode::new(Role::Heading { level: 1 })
+                        .with_name(crate::t("pdf-a11y-empty-heading"))
+                        .with_hashed_key("pdf.empty.heading"),
+                );
                 // Where the button is drawn, once it is; the canvas until then.
                 let drawn = self.empty_open_button_rect();
                 let bounds = if drawn.area() > 0.0 {
@@ -5070,6 +5092,7 @@ impl Widget for PdfApp {
             controls.extend(self.review.resize_accessibility());
         }
 
+        let marked = self.pages_with_markup();
         let page_nodes = self
             .page_sidebar
             .thumb_rects()
@@ -5080,17 +5103,16 @@ impl Widget for PdfApp {
                     .get(index)
                     .cloned()
                     .unwrap_or_else(|| format!("page-{}", index + 1));
-                AccessNode::new(Role::ListItem)
+                let mut node = AccessNode::new(Role::ListItem)
                     .with_name(format!("Page {}", index + 1))
-                    .with_description(if self.pages_with_markup().contains(&(index + 1)) {
-                        "Contains review markup"
-                    } else {
-                        "No review markup"
-                    })
                     .with_action_target(format!("pdf.page:{page_id}"))
                     .with_bounds(bounds)
                     .with_position(index + 1, pages)
-                    .with_state(focusable().selected(index + 1 == current))
+                    .with_state(focusable().selected(index + 1 == current));
+                if marked.contains(&(index + 1)) {
+                    node = node.with_description(crate::t("pdf-a11y-page-markup"));
+                }
+                node
             })
             .collect();
         let page_list = AccessNode::new(Role::List)
@@ -5141,14 +5163,9 @@ impl Widget for PdfApp {
                 .sidebar_tab_rects()
                 .into_iter()
                 .map(|(tab, bounds)| {
-                    let (name, tag) = match tab {
-                        SidebarTab::Comments => ("Comments", "comments"),
-                        SidebarTab::Outline => ("Contents", "contents"),
-                        SidebarTab::Signatures => ("Signatures", "signatures"),
-                    };
                     AccessNode::new(Role::Tab)
-                        .with_name(name)
-                        .with_action_target(format!("pdf.tab:{tag}"))
+                        .with_name(crate::t(tab.name_key()))
+                        .with_action_target(format!("pdf.tab:{}", tab.tag()))
                         .with_bounds(bounds)
                         .with_state(focusable().selected(tab == self.sidebar_tab))
                 })
@@ -5203,9 +5220,9 @@ impl Widget for PdfApp {
                                 ),
                                 AccessNode::new(Role::ToggleButton)
                                     .with_name(if comment.comment.resolved {
-                                        "Reopen comment"
+                                        crate::t("pdf-a11y-reopen-comment")
                                     } else {
-                                        "Resolve comment"
+                                        crate::t("pdf-a11y-resolve-comment")
                                     })
                                     .with_action_target(format!(
                                         "pdf.comment:{}.resolve",
@@ -5273,11 +5290,7 @@ impl Widget for PdfApp {
                             ))
                             .with_children(tabs),
                         AccessNode::new(Role::TabPanel)
-                            .with_name(match self.sidebar_tab {
-                                SidebarTab::Comments => "Comments",
-                                SidebarTab::Outline => "Contents",
-                                SidebarTab::Signatures => "Signatures",
-                            })
+                            .with_name(crate::t(self.sidebar_tab.name_key()))
                             .with_children(panel_children),
                     ]),
             );

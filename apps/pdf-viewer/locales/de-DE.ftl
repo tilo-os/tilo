@@ -112,7 +112,14 @@ pdf-note-link-file = Links zu anderen Dateien werden nicht aus einem PDF geöffn
 
 pdf-title = PDF-Viewer
 pdf-a11y-opening = PDF wird geöffnet
+pdf-a11y-empty-heading = PDF öffnen
 pdf-a11y-pages = Seiten
+pdf-a11y-page-markup = Enthält Markierungen
+pdf-a11y-tab-comments = Kommentare
+pdf-a11y-tab-contents = Inhalt
+pdf-a11y-tab-signatures = Unterschriften
+pdf-a11y-resolve-comment = Kommentar erledigen
+pdf-a11y-reopen-comment = Kommentar wieder öffnen
 pdf-a11y-canvas = Zeichenfläche der PDF-Seite. Pfeiltasten scrollen; Bild auf und Bild ab wechseln die Seite.
 pdf-a11y-search-results = Suchergebnisse
 pdf-a11y-signer-name = Name der unterzeichnenden Person

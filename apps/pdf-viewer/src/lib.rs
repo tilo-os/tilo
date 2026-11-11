@@ -89,6 +89,7 @@ mod german_window {
         );
         catalog.set_locale("de-DE");
         assert_eq!(catalog.t("pdf-title"), "PDF-Viewer");
+        assert_eq!(catalog.t("pdf-a11y-tab-comments"), "Kommentare");
         catalog.set_locale("en-US");
         assert_eq!(catalog.t("pdf-title"), "PDF Viewer");
     }

@@ -1150,3 +1150,87 @@ fn the_review_panel_gives_way_to_the_pages_and_its_edge_resizes_it() {
     rig.release();
     assert!(!rig.app.show_sidebar, "dragged shut, the panel closes");
 }
+
+/// The reader paints its own chrome, so the names assistive technology hears
+/// come from the catalogue: a translated window reads its tabs, its comment
+/// actions and its page states in its own language.
+#[test]
+fn the_reader_names_its_review_panel_from_the_catalogue() {
+    use ui::a11y::{AccessNode, Role};
+
+    fn collect(node: &AccessNode, role: Role, out: &mut Vec<String>) {
+        if node.role == role {
+            out.extend(node.name.clone());
+        }
+        for child in &node.children {
+            collect(child, role, out);
+        }
+    }
+
+    /// The description of every page row in the tree.
+    fn collect_pages(node: &AccessNode, out: &mut Vec<Option<String>>) {
+        if node.role == Role::ListItem
+            && node
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("Page "))
+        {
+            out.push(node.description.clone());
+        }
+        for child in &node.children {
+            collect_pages(child, out);
+        }
+    }
+
+    // One frame, so the page rail knows its pages, as in a live window.
+    let (app, st) = sample_app();
+    let app = ui::headless::Framed::new(
+        st,
+        app,
+        ui::headless::viewport((1280.0, 800.0)),
+        ui::theme::Theme::dark(),
+    );
+    assert!(app.show_sidebar, "the review panel is open");
+    let tree = ui::widget::Widget::accessibility(&*app).expect("reader semantics");
+
+    let mut tabs = Vec::new();
+    collect(&tree, Role::Tab, &mut tabs);
+    assert_eq!(
+        tabs,
+        [
+            crate::t("pdf-a11y-tab-comments"),
+            crate::t("pdf-a11y-tab-contents"),
+            crate::t("pdf-a11y-tab-signatures"),
+        ],
+        "each tab is named by its catalogue message"
+    );
+    assert!(
+        tabs.iter().all(|name| !name.starts_with("pdf-a11y")),
+        "the tabs are messages, not keys: {tabs:?}"
+    );
+
+    let mut toggles = Vec::new();
+    collect(&tree, Role::ToggleButton, &mut toggles);
+    assert!(
+        toggles.contains(&crate::t("pdf-a11y-resolve-comment"))
+            && toggles.contains(&crate::t("pdf-a11y-reopen-comment")),
+        "an open comment offers Resolve and a resolved one Reopen: {toggles:?}"
+    );
+
+    let markup = crate::t("pdf-a11y-page-markup");
+    let mut pages = Vec::new();
+    collect_pages(&tree, &mut pages);
+    assert!(!pages.is_empty(), "the page list is in the tree");
+    assert!(
+        pages
+            .iter()
+            .any(|page| page.as_deref() == Some(markup.as_str())),
+        "a page carrying markup says so: {pages:?}"
+    );
+    assert!(
+        pages
+            .iter()
+            .all(|page| page.as_deref().is_none_or(|text| text == markup)),
+        "a page without markup says nothing: {pages:?}"
+    );
+}
