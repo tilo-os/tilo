@@ -622,11 +622,7 @@ fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
     bar.center_rect = Rect::new(300.0, 7.0, 660.0, 41.0);
     bar.activity_headline = Some("Ada · 2 permission changes".into());
     bar.activity_unread = 4;
-    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-        ui::font_catalog::checkout_root(),
-        "en-US",
-    );
-    let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
+    let mut renderer = ui::font_catalog::fixture_renderer();
     let theme = Theme::default().with_text_scale(1.3);
     let style = theme.text(TextRole::Caption);
     let max_width = bar.activity_content_width(&theme);

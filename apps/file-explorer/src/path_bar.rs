@@ -702,12 +702,7 @@ mod tests {
                 bar.accessibility().unwrap().value.as_deref(),
                 expected.last().copied()
             );
-            let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-                ui::font_catalog::checkout_root(),
-                "en-US",
-            );
-            let mut text = TextRenderer::with_font_catalog(&catalog)
-                .expect("the breadcrumb uses the shipped font fixture");
+            let mut text = ui::font_catalog::fixture_renderer();
             for theme in [Theme::dark(), Theme::light()] {
                 assert!(
                     text.measure_style("Documents", None, &theme.text(ui::TextRole::Caption))

@@ -32,6 +32,7 @@ fn projection_of(workspace: &crate::testing::Workspace, identity: LocalIdentity)
 }
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ui::Widget;
+use ui::headless::fixture_runner_inputs;
 
 #[test]
 fn browser_media_reply_enables_voice_without_native_attachment_access() {
@@ -458,8 +459,9 @@ fn component_mount_as(
 ) {
     let (component, records) = component_as(cache, author, instance, workspace, role);
     let checkout = component.record().clone();
-    let frame = ui::headless::FrameHarness::from_component(component, (1280, 720), runner_inputs())
-        .unwrap();
+    let frame =
+        ui::headless::FrameHarness::from_component(component, (1280, 720), fixture_runner_inputs())
+            .unwrap();
     (frame, records, checkout)
 }
 
@@ -510,16 +512,17 @@ fn component_as(
     let component = definition
         .instantiate(context, target, RestoreInput::None)
         .unwrap();
-    (component, records)
-}
-
-fn runner_inputs() -> ui::application::ComponentRunnerInputs {
-    let font_root = ui::font_catalog::checkout_root();
-    let fonts = ui::font_catalog::FontCatalog::controlled_fixture(&font_root, "en-US");
-    ui::application::ComponentRunnerInputs {
-        theme: ui::Theme::dark(),
-        text_renderer: ui::TextRenderer::with_font_catalog(&fonts).unwrap(),
-    }
+    let checkout = component.record().clone();
+    let frame = ui::headless::FrameHarness::from_component(
+        component,
+        (1280, 720),
+        ComponentRunnerInputs {
+            theme: ui::Theme::dark(),
+            text_renderer: ui::font_catalog::fixture_renderer(),
+        },
+    )
+    .unwrap();
+    (frame, records, checkout)
 }
 
 fn semantic_owner_path(node: &ui::headless::InspectionNode, target: &str) -> Option<String> {
@@ -1804,7 +1807,7 @@ fn a_chat_with_no_window_publishes_what_a_window_of_it_does() {
         "workspace",
         ui::permissions::Role::Owner,
     );
-    let mut app = ui::App::from_component(component, runner_inputs()).unwrap();
+    let mut app = ui::App::from_component(component, fixture_runner_inputs()).unwrap();
     let catalogue = |app: &mut ui::App| {
         for _ in 0..3 {
             app.controlled_hosted_model_for_test();

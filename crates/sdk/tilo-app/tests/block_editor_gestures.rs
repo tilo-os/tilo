@@ -31,11 +31,7 @@ use ui_core::widget::DrawChild;
 /// A text renderer over the checkout's fixture fonts, so geometry does not
 /// depend on the machine's.
 fn renderer() -> ui::TextRenderer {
-    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-        ui::font_catalog::checkout_root(),
-        "en-US",
-    );
-    ui::TextRenderer::with_font_catalog(&catalog).unwrap()
+    ui::font_catalog::fixture_renderer()
 }
 
 /// Mount `editor` in the production frame host `width` wide at its content

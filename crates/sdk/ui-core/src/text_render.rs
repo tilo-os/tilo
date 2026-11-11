@@ -4049,11 +4049,7 @@ mod tests {
     #[test]
     fn renderer_font_system_pins_families_weights_and_fallbacks() {
         {
-            let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
-                crate::font_catalog::checkout_root(),
-                "en-US",
-            );
-            let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
+            let mut renderer = crate::font_catalog::fixture_renderer();
             let first = renderer.measure("Reading", 16.0, None);
             let second = renderer.measure("Reading", 16.0, None);
             assert_eq!(first, second);

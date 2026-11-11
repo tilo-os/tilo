@@ -160,6 +160,9 @@ tilo-broker-core = { path = "../../collab/broker-core" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 # The demo workspace and the helpers that write a chat as its people would.
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
+# Text a test lays out uses the pinned catalog, never the fonts the machine
+# running it has installed.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
 accounts = { path = "../../system/accounts", features = ["person"] }
 tempfile.workspace = true

@@ -66,6 +66,10 @@ fn no_catalog(errors: &[FontCatalogError]) {
 /// ([`mapped`]), so shaping never opens a file.
 #[cfg(not(test))]
 pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
+    // A test binary of another crate links this one without `cfg(test)`.
+    if cfg!(feature = "test-support") {
+        return Some(fixture_font_system());
+    }
     static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
     let database = DATABASE.get_or_init(|| {
         let roots = catalog_roots();
@@ -394,14 +398,36 @@ pub fn shipped_families() -> Vec<String> {
     families
 }
 
-#[cfg(any(test, all(feature = "native", feature = "test-support")))]
-pub(crate) fn fixture_catalog() -> FontCatalog {
-    FontCatalog::controlled_fixture(checkout_root(), "en-US")
+/// The catalog every test lays its text out in: this build's pinned faces,
+/// none of the machine's.
+#[cfg(any(test, feature = "test-support"))]
+pub fn fixture_catalog() -> FontCatalog {
+    fixture_catalog_in("en-US")
 }
 
-#[cfg(test)]
+/// [`fixture_catalog`] for a test that shows text in another language.
+#[cfg(any(test, feature = "test-support"))]
+pub fn fixture_catalog_in(locale: impl Into<String>) -> FontCatalog {
+    FontCatalog::controlled_fixture(fixture_root(), locale)
+}
+
+/// The roots the product reads: a build directory carried from another machine
+/// still finds the catalog its test environment prepared.
+fn fixture_root() -> PathBuf {
+    #[cfg(feature = "native")]
+    if let Some(root) = catalog_root() {
+        return root;
+    }
+    checkout_root()
+}
+
+/// [`fixture_catalog`] loaded: what a test's renderer is built from.
+#[allow(
+    clippy::expect_used,
+    reason = "test support only: the prepared fixture fonts always load, and a test cannot run without them"
+)]
 pub(crate) fn fixture_font_system() -> FontSystem {
-    fixture_catalog()
+    FontCatalog::controlled_fixture(fixture_root(), "en-US")
         .load()
         .expect("prepared canonical font fixture")
 }
@@ -413,12 +439,12 @@ pub(crate) fn catalog_font_system(root: &Path) -> Result<FontSystem, FontCatalog
     FontCatalog::product(root, "en-US").load_with_system(|_| {})
 }
 
-#[cfg(any(test, all(feature = "native", feature = "test-support")))]
+#[cfg(any(test, feature = "test-support"))]
 #[allow(
     clippy::expect_used,
     reason = "test support only: the prepared fixture fonts always load, and a test cannot run without them"
 )]
-pub(crate) fn fixture_renderer() -> crate::text_render::TextRenderer {
+pub fn fixture_renderer() -> crate::text_render::TextRenderer {
     crate::text_render::TextRenderer::with_font_catalog(&fixture_catalog())
         .expect("prepared canonical renderer fixture")
 }

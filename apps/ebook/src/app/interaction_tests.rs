@@ -732,13 +732,9 @@ fn render_scene(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) -> Sce
     app.resolve_drawers();
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
-    // Only the checked-in fonts: pixels drawn with whatever the host happens to
+    // Only the shipped fonts: pixels drawn with whatever the host happens to
     // have installed would make every committed baseline machine-specific.
-    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-        ui::font_catalog::checkout_root(),
-        "en-US",
-    );
-    let mut tr = TextRenderer::with_font_catalog(&catalog).expect("checked-in font catalog");
+    let mut tr = ui::font_catalog::fixture_renderer();
     let mut scene = Scene::new();
     draw_settled(app, &mut scene, &mut tr, &theme, &presence);
     scene
