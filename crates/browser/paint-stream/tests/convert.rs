@@ -10,19 +10,22 @@
 
 use tilo_paint_stream::snapshot::convert;
 use tilo_paint_stream::{
-    Anchor, BlobRef, Frame, Item, LayerId, Patch, PatchError, Point, ROOT, decode, encode,
+    Anchor, BlobRef, Color, Frame, Item, LayerId, Patch, PatchError, Point, ROOT, decode, encode,
 };
 
 const VIEWPORT: Point = Point { x: 800.0, y: 600.0 };
 
-fn frame(state: &str, seq: u64) -> Frame {
+fn snapshot(state: &str) -> serde_json::Value {
     let path = format!(
         "{}/tests/fixtures/layers.{state}.json",
         env!("CARGO_MANIFEST_DIR")
     );
     let raw = std::fs::read_to_string(&path).expect("fixture");
-    let snapshot: serde_json::Value = serde_json::from_str(&raw).expect("fixture json");
-    convert(&snapshot, VIEWPORT, seq).expect("convert")
+    serde_json::from_str(&raw).expect("fixture json")
+}
+
+fn frame(state: &str, seq: u64) -> Frame {
+    convert(&snapshot(state), VIEWPORT, seq).expect("convert")
 }
 
 fn texts(frame: &Frame, layer: LayerId) -> Vec<String> {
@@ -302,6 +305,60 @@ fn a_viewer_that_misses_a_patch_waits_for_the_next_keyframe() {
     viewer.apply(Payload::Key(c.clone()));
     assert!(!viewer.is_lost());
     assert_eq!(viewer.frame(), Some(&c));
+}
+
+#[test]
+#[allow(
+    clippy::float_cmp,
+    reason = "the widths and the radius are the fixture's whole CSS pixels, compared with what it states"
+)]
+fn decorations_belong_to_elements_and_every_border_side_shows() {
+    use std::collections::HashSet;
+
+    let snapshot = snapshot("top");
+    let nodes = &snapshot["documents"][0]["nodes"];
+    let elements: HashSet<u64> = nodes["nodeType"]
+        .as_array()
+        .expect("node types")
+        .iter()
+        .zip(nodes["backendNodeId"].as_array().expect("backend ids"))
+        .filter(|(kind, _)| kind.as_i64() == Some(1))
+        .filter_map(|(_, id)| id.as_u64())
+        .collect();
+    let f = convert(&snapshot, VIEWPORT, 1).expect("convert");
+    let (mut cards, mut dividers) = (0, 0);
+    for (id, layer) in &f.layers {
+        for item in &layer.items {
+            // A text box reports its parent's style, so a decoration drawn for
+            // one rings every run of text with the parent's border.
+            if !matches!(item, Item::Layer(_) | Item::Text { .. }) {
+                assert!(
+                    elements.contains(&item.key().node),
+                    "layer {id} decorates {} for a node that is not an element",
+                    item.key().node
+                );
+            }
+            let Item::Border {
+                widths,
+                colors,
+                radius,
+                ..
+            } = item
+            else {
+                continue;
+            };
+            if *widths == [1.0; 4] && colors[0] == Color([200, 200, 200, 255]) && *radius == 8.0 {
+                cards += 1;
+            }
+            // `.card`'s border above; a rule that sets one side only (`#side
+            // p`'s bottom divider) draws that side.
+            if *widths == [0.0, 0.0, 1.0, 0.0] && colors[2] == Color([220, 220, 220, 255]) {
+                dividers += 1;
+            }
+        }
+    }
+    assert_eq!(cards, 16, "the page's sixteen cards");
+    assert_eq!(dividers, 12, "the sidebar's twelve list dividers");
 }
 
 #[test]
