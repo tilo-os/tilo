@@ -78,7 +78,8 @@ fn title_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Body).strong()
 }
 
-fn message_style(theme: &Theme) -> TextStyle {
+/// The quieter lines a banner carries: what sent it, above the title, and its message under.
+fn caption_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Caption)
 }
 
@@ -88,8 +89,8 @@ fn well(theme: &Theme) -> Color {
 }
 
 /// What an immediate-mode [`Banner::paint`] shows: severity, leading icon,
-/// title, optional message, up to two actions and whether it offers a
-/// dismiss control.
+/// what sent it, title, optional message, up to two actions and whether it
+/// offers a dismiss control.
 #[derive(Clone, Debug)]
 pub struct BannerContent<'a> {
     pub kind: BannerKind,
@@ -98,6 +99,8 @@ pub struct BannerContent<'a> {
     /// The line under the title, in words the caller resolved (a catalogue's
     /// copy) rather than a literal.
     pub message: Option<Cow<'a, str>>,
+    /// What sent it: the app's name, above the title.
+    pub source: Option<&'a str>,
     pub dismissible: bool,
     /// The banner's one main action ("Try again", "Restore").
     pub action: Option<&'a str>,
@@ -113,6 +116,7 @@ impl<'a> BannerContent<'a> {
             icon: kind.default_icon(),
             title,
             message: None,
+            source: None,
             dismissible: false,
             action: None,
             secondary_action: None,
@@ -129,6 +133,18 @@ impl<'a> BannerContent<'a> {
     pub fn with_message(mut self, message: Option<impl Into<Cow<'a, str>>>) -> Self {
         self.message = message.map(Into::into);
         self
+    }
+
+    /// What sent it, above the title.
+    #[must_use]
+    pub fn with_source(mut self, source: Option<&'a str>) -> Self {
+        self.source = source;
+        self
+    }
+
+    /// The sender's line as it is drawn: a sender that names nothing shows no line.
+    fn source_line(&self) -> Option<&'a str> {
+        self.source.filter(|source| !source.is_empty())
     }
 
     #[must_use]
@@ -184,6 +200,8 @@ struct Geometry {
     icon: Rect,
     text: Point,
     text_width: f32,
+    /// The sender's line above the title, with the gap under it: 0 when it names none.
+    source_h: f64,
     title_h: f64,
     action: Option<Rect>,
     secondary_action: Option<Rect>,
@@ -246,14 +264,22 @@ fn geometry_with(
         text.measure_style(content.title, Some(text_width), &title_style(theme))
             .1,
     );
-    let message_h = content.message.as_deref().map_or(0.0, |message| {
+    let source_h = content.source_line().map_or(0.0, |source| {
         f64::from(theme.tokens.spacing.s1)
             + f64::from(
-                text.measure_style(message, Some(text_width), &message_style(theme))
+                text.measure_style(source, Some(text_width), &caption_style(theme))
                     .1,
             )
     });
-    let text_h = (title_h + message_h).max(m.icon);
+    let message_h = content.message.as_deref().map_or(0.0, |message| {
+        f64::from(theme.tokens.spacing.s1)
+            + f64::from(
+                text.measure_style(message, Some(text_width), &caption_style(theme))
+                    .1,
+            )
+    });
+    let lines_h = source_h + title_h + message_h;
+    let text_h = lines_h.max(m.icon);
     let (line_h, actions_y) = if widths.is_empty() {
         (text_h, 0.0)
     } else if beside {
@@ -273,10 +299,7 @@ fn geometry_with(
         Point::new(body_x0 + m.icon / 2.0, text_top + text_h / 2.0),
         (m.icon, m.icon),
     );
-    let text_origin = Point::new(
-        body_x0 + leading,
-        text_top + (text_h - (title_h + message_h)) / 2.0,
-    );
+    let text_origin = Point::new(body_x0 + leading, text_top + (text_h - lines_h) / 2.0);
     let actions_top = if beside {
         top + (line_h - control_h) / 2.0
     } else {
@@ -315,11 +338,11 @@ fn geometry_with(
     };
     let dismiss = content.dismissible.then(|| {
         let x1 = width - m.pad_x;
-        // The dismiss control centres on the first line of the banner.
+        // The dismiss control centres on the title line, under the sender's.
         let cy = if beside {
             height / 2.0
         } else {
-            text_top + title_h.max(m.icon) / 2.0
+            text_top + source_h + title_h.max(m.icon) / 2.0
         };
         Rect::new(
             x1 - dismiss_size,
@@ -333,6 +356,7 @@ fn geometry_with(
         icon,
         text: text_origin,
         text_width,
+        source_h,
         title_h,
         action,
         secondary_action,
@@ -353,17 +377,21 @@ fn paint_well(ctx: &mut PaintCtx<'_>, rect: Rect) {
 #[derive(Clone, Copy, Debug)]
 struct BodyPlace {
     icon: Rect,
+    /// The top of the text: the sender's line, where there is one, else the title.
     text: Point,
     text_width: f32,
+    /// The sender's line above the title, with the gap under it.
+    source_h: f64,
     title_h: f64,
 }
 
-/// Paint the icon, title and message of `content` at `place`.
+/// Paint the icon, sender, title and message of `content` at `place`.
 fn paint_body(ctx: &mut PaintCtx<'_>, content: &BannerContent<'_>, place: BodyPlace) {
     let BodyPlace {
         icon: icon_rect,
         text,
         text_width,
+        source_h,
         title_h,
     } = place;
     let (kind, icon, title) = (content.kind, content.icon, content.title);
@@ -371,18 +399,28 @@ fn paint_body(ctx: &mut PaintCtx<'_>, content: &BannerContent<'_>, place: BodyPl
     let theme = ctx.theme;
     let on_well = theme.on_ground(well(theme));
     icon.draw(ctx.scene, ctx.transform, icon_rect, kind.icon_ink(&on_well));
+    if let Some(source) = content.source_line() {
+        ctx.text(
+            source,
+            &caption_style(theme),
+            on_well.text_dim,
+            text,
+            Some(text_width),
+        );
+    }
+    let title_y = text.y + source_h;
     ctx.text(
         title,
         &title_style(theme),
         on_well.text_primary,
-        text,
+        Point::new(text.x, title_y),
         Some(text_width),
     );
     if let Some(message) = message {
-        let y = text.y + title_h + f64::from(theme.tokens.spacing.s1);
+        let y = title_y + title_h + f64::from(theme.tokens.spacing.s1);
         ctx.text(
             message,
-            &message_style(theme),
+            &caption_style(theme),
             on_well.text_dim,
             Point::new(text.x, y),
             Some(text_width),
@@ -415,6 +453,7 @@ fn paint_banner(
             icon: g.icon,
             text: g.text,
             text_width: g.text_width,
+            source_h: g.source_h,
             title_h: g.title_h,
         },
     );
@@ -511,6 +550,8 @@ pub struct BannerNotice {
     pub title: String,
     pub message: Option<String>,
     pub icon: Option<Icon>,
+    /// What sent it: the app's name, above the title. An empty one shows no line.
+    pub source: Option<String>,
 }
 
 impl BannerNotice {
@@ -520,6 +561,7 @@ impl BannerNotice {
             title: title.into(),
             message: None,
             icon: None,
+            source: None,
         }
     }
     pub fn neutral(title: impl Into<String>) -> Self {
@@ -545,6 +587,12 @@ impl BannerNotice {
     #[must_use]
     pub fn icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+    /// What sent it, above the title.
+    #[must_use]
+    pub fn source(mut self, source: impl Into<String>) -> Self {
+        self.source = Some(source.into());
         self
     }
 }
@@ -575,6 +623,7 @@ impl BannerBody {
         BannerContent::new(n.kind, &n.title)
             .with_icon(n.icon.unwrap_or_else(|| n.kind.default_icon()))
             .with_message(n.message.as_deref())
+            .with_source(n.source.as_deref())
             .dismissible(self.dismissible)
     }
 
@@ -661,6 +710,7 @@ impl Widget for BannerBody {
                 icon: g.icon + origin,
                 text: g.text + origin,
                 text_width: g.text_width,
+                source_h: g.source_h,
                 title_h: g.title_h,
             },
         );
@@ -814,6 +864,14 @@ impl Banner {
     #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.body.notice.message = Some(message.into());
+        self
+    }
+
+    /// What sent it: the app's name, in a caption line above the title. An empty one shows no
+    /// line.
+    #[must_use]
+    pub fn with_source(mut self, source: impl Into<String>) -> Self {
+        self.body.notice.source = Some(source.into());
         self
     }
 
@@ -1470,8 +1528,16 @@ impl Widget for Banner {
         if let Some(id) = &self.id {
             node = node.with_semantic_key(id.clone());
         }
-        if let Some(message) = &notice.message {
-            node = node.with_description(message.clone());
+        // What it says, and who sent it: a reader announces the sender with the message rather
+        // than only showing it above the title.
+        let source = self.body.content().source_line().map(str::to_owned);
+        let description = match (source, &notice.message) {
+            (Some(source), Some(message)) => Some(format!("{source}. {message}")),
+            (Some(source), None) => Some(source),
+            (None, message) => message.clone(),
+        };
+        if let Some(description) = description {
+            node = node.with_description(description);
         }
         Some(node)
     }

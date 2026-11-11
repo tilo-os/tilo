@@ -881,3 +881,87 @@ fn the_layout_places_the_controls_without_a_paint() {
         "inside the banner's slot: {placed:?} in {slot:?}"
     );
 }
+
+/// A banner painted at `width`: its box, and the tops of the lines it paints, each once.
+fn lines_of(content: &BannerContent<'_>, width: f64) -> (Rect, Vec<f64>) {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let height = Banner::height(content, width, &mut text, &theme);
+    let rect = Rect::new(0.0, 0.0, width, height);
+    let mut scene = Scene::new();
+    Banner::paint(
+        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+        rect,
+        content,
+        Point::new(-1.0, -1.0),
+    );
+    let mut tops: Vec<f64> = scene
+        .encoding()
+        .resources
+        .glyph_runs
+        .iter()
+        .map(|run| f64::from(run.transform.translation[1]))
+        .collect();
+    tops.sort_by(f64::total_cmp);
+    tops.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+    (rect, tops)
+}
+
+/// What sent a banner is a line of its own above the title, and a reader hears it with what the
+/// banner says; a banner that names no sender has no such line.
+#[test]
+fn a_banner_names_what_sent_it_above_the_title() {
+    let bare = BannerContent::new(BannerKind::Error, "Build failed")
+        .with_message(Some("The link check found 4 broken links."));
+    let sent = bare.with_source(Some("Forgejo"));
+    let (bare_box, lines) = lines_of(&bare, 600.0);
+    let (sent_box, with_sender) = lines_of(&sent, 600.0);
+    assert_eq!(lines.len(), 2, "the title and its message: {lines:?}");
+    assert_eq!(
+        with_sender.len(),
+        3,
+        "the sender above them: {with_sender:?}"
+    );
+    assert!(
+        with_sender[0] < lines[0],
+        "the sender is the first line: {with_sender:?} against {lines:?}"
+    );
+    let caption = f64::from(Theme::dark().tokens.typography.size(TextRole::Caption));
+    assert!(
+        sent_box.height() >= bare_box.height() + caption,
+        "the sender takes a line of its own: {bare_box:?} -> {sent_box:?}"
+    );
+    assert!(
+        with_sender
+            .iter()
+            .all(|top| *top >= sent_box.y0 && top + caption <= sent_box.y1),
+        "every line stands inside the banner: {with_sender:?} in {sent_box:?}"
+    );
+    assert_eq!(
+        lines_of(&bare.with_source(Some("")), 600.0),
+        (bare_box, lines.clone()),
+        "a sender that names nothing shows no line"
+    );
+
+    let announced = Banner::error("Build failed")
+        .with_message("The link check found 4 broken links.")
+        .with_source("Forgejo");
+    let node = Widget::accessibility(&announced).expect("banner exposes a11y");
+    assert_eq!(node.name.as_deref(), Some("Build failed"));
+    let description = node.description.unwrap_or_default();
+    assert!(
+        description.contains("Forgejo")
+            && description.contains("The link check found 4 broken links."),
+        "the reader hears who sent it and what it says: {description}"
+    );
+    let unnamed =
+        Banner::error("Build failed").with_message("The link check found 4 broken links.");
+    assert_eq!(
+        Widget::accessibility(&unnamed)
+            .unwrap()
+            .description
+            .as_deref(),
+        Some("The link check found 4 broken links."),
+        "a banner with no sender says only what it says"
+    );
+}

@@ -16,8 +16,8 @@ crate::component::choice!(BannerKind, "BannerKind", {
 
 /// A message that stays in the page until it is resolved or dismissed: "You're offline", "This
 /// file changed on disk", "Storage is almost full". Its kind decides its glyph and colour; it
-/// carries a title, a message under it, up to two actions inside its box, and a dismiss button.
-/// It opens and closes in place, what follows moving with its edge.
+/// carries what sent it above a title, a message under it, up to two actions inside its box, and
+/// a dismiss button. It opens and closes in place, what follows moving with its edge.
 #[derive(Component, Default)]
 #[component(name = "Banner", role = "Group", label = "title")]
 pub struct BannerProps {
@@ -26,6 +26,8 @@ pub struct BannerProps {
     pub title: String,
     /// What it means or what to do, under the title.
     pub message: Option<String>,
+    /// What sent it: the app's name, in a caption line above the title. Empty shows no line.
+    pub source: Option<String>,
     /// What kind of message it is: `neutral` unless said. A warning or an error is announced at
     /// once; the others when assistive technology is idle.
     pub kind: Option<BannerKind>,
@@ -64,6 +66,7 @@ impl BannerProps {
             title: self.title.clone(),
             message: self.message.clone(),
             icon: self.icon,
+            source: self.source.clone(),
         }
     }
 }
