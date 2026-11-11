@@ -16,6 +16,8 @@ hyper-util = { version = "0.1.20", features = ["tokio"] }
 ed25519-dalek.workspace = true
 iroh-base.workspace = true
 iroh.workspace = true
+# The relays the grant's endpoint dials the person's devices through.
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-session-host = { path = "../../session/host" }

@@ -448,8 +448,17 @@ impl Connection {
     pub async fn endpoint(&self) -> Result<iroh::Endpoint, RelayError> {
         self.endpoint
             .get_or_try_init(|| async {
-                iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+                // It only dials: the relays and directory the setting names find the
+                // person's device, and nothing about the grant is published.
+                let relays = tilo_endpoint_reachability::relays();
+                let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
                     .secret_key(iroh::SecretKey::from_bytes(&self.key.key().to_bytes()))
+                    .relay_mode(iroh::RelayMode::Custom(relays.relays));
+                if relays.n0_dns {
+                    builder =
+                        builder.address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns());
+                }
+                builder
                     .bind()
                     .await
                     .map_err(|error| RelayError::Unavailable(error.to_string()))
