@@ -555,8 +555,8 @@ impl HostedBrowsers {
         let mut run = request.clone();
         let handed = Arc::clone(&self.handed);
         tokio::runtime::Handle::current().spawn(async move {
-            let confirmed =
-                asked.confirmed(certification.confirm_for(person, question).await, &key);
+            let answered = certification.confirm_for(person, question).await;
+            let confirmed = asked.confirmed(&answered, &key);
             let mut handed = handed.lock_recover();
             let Some(entry) = handed.get_mut(&invocation) else {
                 // The caller stopped waiting while the person decided: the
@@ -772,7 +772,13 @@ impl HostedBrowsers {
             .map(|up| up.workspace.clone())
             .unwrap_or_default();
         let mut handed = self.handed.lock_recover();
-        if handed.len() >= HANDED && !handed.contains_key(&request.invocation) {
+        // One invocation is one run: what is already known about it — what
+        // the window answers a caller that asks again, and how far the person
+        // has come with it — stays.
+        if handed.contains_key(&request.invocation) {
+            return;
+        }
+        if handed.len() >= HANDED {
             handed.clear();
         }
         handed.insert(
@@ -1105,7 +1111,7 @@ impl Asked {
     /// arguments, naming this caller and this window.
     fn confirmed(
         &self,
-        answer: Result<ConfirmationAnswer, String>,
+        answer: &Result<ConfirmationAnswer, String>,
         key: &SigningKey,
     ) -> Result<ConfirmedInvocation, ActionHostError> {
         match answer {

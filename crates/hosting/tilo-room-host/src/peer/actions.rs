@@ -107,33 +107,14 @@ pub(super) async fn handle_remote_action(
                     return hand_over(peer, session, &mut wr, workspace_id, version, holder, frame);
                 }
                 crate::app_serving::Routing::Answer(answer) => {
-                    let abandoned = tilo_actions::remote::refuse(
-                        &decoded.message,
-                        tilo_actions::remote::ActionHostError::Unavailable {
-                            reason: "the host dropped the request".into(),
-                        },
+                    return answered_by_plane(
+                        session,
+                        peer,
+                        workspace_id,
+                        version,
+                        &decoded,
+                        answer,
                     );
-                    let outbound = session.outbound.clone();
-                    let to_device_public_key = peer.device_public_key;
-                    let from_device_public_key = *session.own_device_public_key;
-                    let from_user_public_key = *session.own_user_public_key;
-                    answer_later(answer, abandoned, move |answer| {
-                        let frame = tilo_actions::remote::RemoteActionFrame::new(answer)
-                            .encode()
-                            .ok()?;
-                        Some((
-                            outbound,
-                            Envelope::RemoteAction {
-                                workspace_id,
-                                version,
-                                to_device_public_key,
-                                from_device_public_key,
-                                from_user_public_key,
-                                frame,
-                            },
-                        ))
-                    });
-                    return None;
                 }
             }
         }
@@ -152,6 +133,47 @@ pub(super) async fn handle_remote_action(
             .unwrap_or_else(|(reason, detail)| refuse(reason, &detail));
     }
     hand_over(peer, session, &mut wr, workspace_id, version, to, frame)
+}
+
+/// Write the answer the plane routed a request to, on the connection of the
+/// device that asked, whenever the plane has it: an answer it drops is the
+/// refusal the request's kind takes. `None`: nothing is returned to the
+/// connection handler, which is how a later answer is written.
+fn answered_by_plane(
+    session: &SessionCtx<'_>,
+    peer: &AuthenticatedPeer,
+    workspace_id: u64,
+    version: u16,
+    request: &tilo_actions::remote::RemoteActionFrame,
+    answer: tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>,
+) -> Option<Envelope> {
+    let abandoned = tilo_actions::remote::refuse(
+        &request.message,
+        tilo_actions::remote::ActionHostError::Unavailable {
+            reason: "the host dropped the request".into(),
+        },
+    );
+    let outbound = session.outbound.clone();
+    let to_device_public_key = peer.device_public_key;
+    let from_device_public_key = *session.own_device_public_key;
+    let from_user_public_key = *session.own_user_public_key;
+    answer_later(answer, abandoned, move |answer| {
+        let frame = tilo_actions::remote::RemoteActionFrame::new(answer)
+            .encode()
+            .ok()?;
+        Some((
+            outbound,
+            Envelope::RemoteAction {
+                workspace_id,
+                version,
+                to_device_public_key,
+                from_device_public_key,
+                from_user_public_key,
+                frame,
+            },
+        ))
+    });
+    None
 }
 
 /// Hand `frame` to the connected device `to` of the workspace, stamped with
