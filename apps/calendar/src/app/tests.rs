@@ -1374,6 +1374,31 @@ fn large_text_layouts_stay_in_bounds() {
             );
         }
     }
+    // Case `event_time_buttons_fit_the_times_they_show`.
+    {
+        for text_scale in [1.0, 2.0] {
+            let mut app = CalendarApp::new_demo();
+            let Some(Sel::Event(selected)) = app.selection else {
+                panic!("demo opens an event editor");
+            };
+            let event = app.model.event(selected).expect("selected event").clone();
+            laid_out(&mut app, 1280.0, 800.0, text_scale);
+            let theme = app.layout_theme.clone();
+            let mut text = TextRenderer::new();
+            for (rect, label) in [
+                (app.form.start_time, crate::date::fmt_time(&event.start)),
+                (app.form.end_time, crate::date::fmt_time(&event.end)),
+            ] {
+                let needed = ui::widget::ButtonFace::new(Rect::ZERO, &label)
+                    .intrinsic_width(&mut text, &theme);
+                assert!(
+                    rect.width() + 0.5 >= needed,
+                    "{label:?} at {text_scale}x needs {needed} but its button is {}",
+                    rect.width()
+                );
+            }
+        }
+    }
 }
 
 #[test]

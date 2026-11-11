@@ -750,8 +750,15 @@ impl CalendarApp {
         let date_w = |text: &mut TextRenderer, d: NaiveDate| {
             ButtonFace::new(Rect::ZERO, &date::fmt_day_long(d)).intrinsic_width(text, theme)
         };
+        // Both time buttons are as wide as the wider of the two times they
+        // show, in the person's clock ("11:00 AM" is wider than "00:00"), so
+        // neither is cut off and the two stay aligned.
+        let time_labels = [date::fmt_time(&event.start), date::fmt_time(&event.end)];
         let time_w = |text: &mut TextRenderer| {
-            ButtonFace::new(Rect::ZERO, "00:00").intrinsic_width(text, theme)
+            time_labels
+                .iter()
+                .map(|label| ButtonFace::new(Rect::ZERO, label).intrinsic_width(text, theme))
+                .fold(0.0, f64::max)
         };
         let gap = f64::from(sp.rhythm.related);
         let widest = date_w(text, event.start.date()).max(date_w(text, event.end.date()))
