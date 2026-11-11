@@ -397,7 +397,10 @@ const names = nodes => nodes.map(node => node.name || node.description).filter(B
  * what the agent is doing there ("Claude Code: Appending paragraph"). The agent's face stands in
  * the top bar, named after them alone, so the words after the name tell the cursor from it. */
 const agentCursor = nodes => nodes.find(node => node.role === 'Image'
-  && /^claude code\s*:/i.test(node.name));
+  && /^claude code\s*:/i.test(node.name)
+  // The mark the text draws at the caret stands where it is drawn; a node with no bounds is
+  // the agent at work with nothing drawn in text, which is not the cursor on what it writes.
+  && node.rect && node.rect.x1 - node.rect.x0 > 0 && node.rect.y1 - node.rect.y0 > 0);
 /** Where a control the page publishes for assistive technology stands, read
  * from the page's semantic mirror: the elements it lays over what it draws,
  * which carry the bounds of the node they speak for. A role's own rows and
