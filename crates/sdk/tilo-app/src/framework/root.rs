@@ -61,7 +61,10 @@ pub(crate) use widget::{RootApp, RootModel, RootPublishes, RootSearch, RootWidge
 pub(crate) struct ResourceRoot {
     title: &'static str,
     icon: IconDescriptor,
-    label: String,
+    /// The name the app gives the state it holds: [`ResourceApp::label`](super::ResourceApp::label),
+    /// published with every state the root publishes, so a library of one
+    /// book is named "1 books" the moment the book is on its shelf.
+    label_of: fn(&dyn std::any::Any) -> String,
     /// The resource type the root shows, and what it says of itself.
     resource: ResourceType,
     /// What depends on the resource type: its live state, the views'
@@ -458,13 +461,12 @@ impl ResourceRoot {
     pub(crate) fn new<R: Resource>(
         title: &'static str,
         icon: IconDescriptor,
-        label: String,
+        label_of: fn(&dyn std::any::Any) -> String,
         cx: ViewCx<R>,
         alive: Rc<()>,
         content: Element,
     ) -> Self {
         let native_presentation = crate::runner::Presentation::new(&cx);
-        cx.dispatch.name_resource(&label);
         let ViewCx {
             env,
             updaters,
@@ -484,7 +486,7 @@ impl ResourceRoot {
             effects: env.effects,
         };
         Self::assemble(
-            (title, icon, label),
+            (title, icon, label_of),
             ResourceType::of::<R>(),
             Box::new(typed),
             action_bindings.table(),
@@ -505,7 +507,11 @@ impl ResourceRoot {
 
     /// [`Self::new`] past what names the resource type.
     fn assemble(
-        (title, icon, label): (&'static str, IconDescriptor, String),
+        (title, icon, label_of): (
+            &'static str,
+            IconDescriptor,
+            fn(&dyn std::any::Any) -> String,
+        ),
         resource: ResourceType,
         typed: Box<dyn TypedRoot>,
         action_bindings: super::controls::ActionTable,
@@ -526,7 +532,7 @@ impl ResourceRoot {
         Self {
             title,
             icon,
-            label,
+            label_of,
             resource,
             typed,
             action_bindings,
@@ -800,6 +806,12 @@ impl ResourceRoot {
         (self.typed.revision(), self.typed.loads())
     }
 
+    /// What the app calls the resource `state` is: the name it is published
+    /// and named in history and the catalogue by, as of what it holds now.
+    fn name_of(&self, state: &dyn std::any::Any) -> String {
+        (self.label_of)(state)
+    }
+
     /// The document-owned part of what controls bind to: the live
     /// resource's identity and own actions, without its children, published
     /// without building a child, so it costs the same however many items
@@ -807,6 +819,7 @@ impl ResourceRoot {
     #[inline(never)]
     fn binding_head(&self) -> BindingHead {
         let state = self.typed.state();
+        let label = self.name_of(&*state);
         let version = (self.version(), ui_core::i18n::I18nManager::revision());
         let epoch = self.typed.cache_epoch(&*state);
         let resource = if let Some(reason) = &self.typed.unreadable() {
@@ -815,18 +828,18 @@ impl ResourceRoot {
             // offered: every document action says why it does not apply.
             let mut head = self
                 .typed
-                .head(self.dispatch.resource_id(), &self.label, &*state);
+                .head(self.dispatch.resource_id(), &label, &*state);
             tilo_resource::withhold_document_actions(&mut head, reason);
             head.actions
                 .retain(|spec| spec.id != tilo_resource::FIELD_EDIT);
             Rc::new(head)
         } else if let Some(epoch) = &epoch {
-            self.live_head(&*state, epoch)
+            self.live_head(&*state, epoch, &label)
         } else {
             let _profile = tilo_resource::profiling::Phase::start("framework.resource_head");
             Rc::new(
                 self.typed
-                    .head(self.dispatch.resource_id(), &self.label, &*state),
+                    .head(self.dispatch.resource_id(), &label, &*state),
             )
         };
         BindingHead {
@@ -1049,6 +1062,9 @@ impl ResourceRoot {
         mut resource: ResourceSpec,
         decoration: Decoration,
     ) -> ResourceSpec {
+        // The name the app gives the state it holds now: what History names a
+        // change by, and what the catalogue lists the record as.
+        self.dispatch.name_resource(&self.name_of(state));
         let children = decoration == Decoration::Tree;
         let bound = {
             let _profile = tilo_resource::profiling::Phase::start("framework.bound_declarations");

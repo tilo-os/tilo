@@ -193,6 +193,12 @@ impl DispatchCore {
     pub(crate) fn nested_resources(&self) -> Vec<(String, tilo_actions::ResourceSpec)> {
         self.nested.borrow().clone()
     }
+
+    /// Name this resource `label`, as history, the palette and an agent read
+    /// it: the name its app gives the state it holds now.
+    pub(crate) fn name_resource(&self, label: &str) {
+        self.resource_label.set(label.to_owned());
+    }
 }
 
 impl std::ops::Deref for DispatchCore {
@@ -2051,7 +2057,7 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     pub(crate) fn name_resource(&self, label: &str) {
-        self.core.resource_label.set(label.to_owned());
+        self.core.name_resource(label);
     }
 
     /// The id of the app whose resource this is, which presence keys name
