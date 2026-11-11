@@ -2707,6 +2707,8 @@ pub struct AppBrokerState {
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
+    /// Builds the catalogue its subscribers follow, off the connection thread.
+    catalogue_refresh: surface_publication::CatalogueRefresh,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
     approved_check_jobs: Mutex<approved_checks::Registry>,
     external_moderation_jobs: Mutex<external_moderation::Registry>,
@@ -3445,7 +3447,8 @@ impl AppBrokerState {
             .and_then(Option::as_ref)
             .map_or(1, InvocationJournal::next_wire_id);
         (
-            Arc::new(Self {
+            Arc::new_cyclic(|state| Self {
+                catalogue_refresh: surface_publication::CatalogueRefresh::new(state.clone()),
                 channels: Mutex::new(HashMap::new()),
                 committed_waits: Mutex::new(HashMap::new()),
                 lifecycle: RwLock::new(()),
@@ -4680,14 +4683,14 @@ impl AppBrokerState {
     /// Invalidate retained discovery only after a real service-surface mutation.
     fn publish_changed_action_catalogue(&self) {
         self.surfaces_changed();
-        self.publish_action_catalogue();
+        self.catalogue_changed();
     }
 
     /// The host's own steps changed what they offer (the session's
     /// arrangement gained a place, a window opened): every connection
     /// following the catalogue is handed it again.
     pub fn host_steps_changed(&self) {
-        self.publish_action_catalogue();
+        self.catalogue_changed();
     }
 
     fn publish_action_catalogue(&self) {
@@ -6364,7 +6367,7 @@ impl AppBrokerState {
         }
         self.disconnect_native_task_stream(peer_id);
         self.fail_pending_invocations_of(peer_id);
-        self.publish_action_catalogue();
+        self.catalogue_changed();
     }
 
     /// Fail every invocation still pending on `peer_id`, which went away
