@@ -9990,19 +9990,72 @@ mod tests {
         assert!(channel_key_requests_on_route(false) > 0);
     }
 
+    /// A certified identity service that, like the real one, refuses channel
+    /// keys for a route that names no app (a cluster route) and answers a
+    /// real app route with keys. Counts every question.
+    #[cfg(unix)]
+    struct ClusterRefusingIdentity {
+        asked: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[cfg(unix)]
+    impl SdkCertifiedIdentity for ClusterRefusingIdentity {
+        fn channel_keys(
+            &self,
+            _: &str,
+            app_id: &str,
+            _: &str,
+            _: u64,
+        ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>
+        {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            if app_id.is_empty() {
+                // The identity service refuses a route of no app.
+                return Err(runtime_portal::NotAvailable::ConnectionFailed(
+                    std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "channel keys requested for a different launch route",
+                    ),
+                ));
+            }
+            Ok(ready_channel_keys())
+        }
+        fn device_certificate(&self) -> Option<&[u8]> {
+            Some(b"fixture")
+        }
+        fn signing_public_key(&self) -> [u8; 32] {
+            [5; 32]
+        }
+        fn sign_collaboration_join(
+            &self,
+            _: &str,
+        ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+            Ok([7; 64])
+        }
+        fn sign_collaboration_op(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[u8],
+        ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+            Ok([9; 64])
+        }
+    }
+
     /// A cluster-scope route (an empty app id, the workspace-wide discovery
-    /// route an agent joins) names no app, so the identity service could
-    /// never grant it channel keys — it refuses the question, and a route
-    /// left waiting for that answer is asked again every second by the key
-    /// timer for the whole life of the connection. It carries no record and
-    /// writes nothing, so it asks for no keys at all, and its timer never
-    /// names it.
+    /// route an agent joins) names no app, so the identity service refuses
+    /// it channel keys — and a route left waiting for an answer it cannot get
+    /// is asked again every second by the key timer for the whole life of the
+    /// connection. It carries no record and writes nothing, so it asks for no
+    /// keys at all and the timer never names it.
     ///
-    /// The broker here pushes channel changes, so the timer asks only a
-    /// route still waiting for keys. The app's own route holds the keys its
-    /// join round got; the cluster route holds none but, being plaintext,
-    /// is not asked. Across several timer rounds the count must not move —
-    /// pre-fix, one more question a second named the cluster route forever.
+    /// The broker here pushes channel changes, so the timer asks nothing once
+    /// every route either holds its keys or is plaintext. Before the join the
+    /// app's own route settles to holding its keys, which disarms the timer;
+    /// after a cluster route joins, the timer must stay disarmed and no more
+    /// question may be asked. Pre-fix the cluster route waits for keys it can
+    /// never get, which arms the timer and asks it every round.
     #[test]
     #[cfg(unix)]
     fn a_cluster_route_asks_for_no_channel_keys_and_polls_nothing() {
@@ -10021,7 +10074,7 @@ mod tests {
             Some(SdkJoinIdentity {
                 presentation: harness_presentation(),
                 participant_kind: "person",
-                signer: SdkDocumentSigner::Certified(Arc::new(KeyedIdentity {
+                signer: SdkDocumentSigner::Certified(Arc::new(ClusterRefusingIdentity {
                     asked: Arc::clone(&asked),
                 })),
             }),
@@ -10037,38 +10090,31 @@ mod tests {
             handle: None,
         }));
         manager.await_primary_route().unwrap();
-        // The app's route learns its keys at its join round and holds them:
-        // its timer is disarmed from then on.
+        // The app's own route learns its keys at its join round and holds
+        // them; the timer is then disarmed (a pushing broker asks nothing
+        // that holds keys and nothing that is plaintext).
         tilo_test_env::wait_until("the app route's join round to be applied", || {
-            asked.load(std::sync::atomic::Ordering::Acquire) > 0
+            !key_schedule(&manager).armed
         });
+        let settled = asked.load(std::sync::atomic::Ordering::Acquire);
+        assert!(settled > 0, "the app's own route asked for its keys");
         manager.join_route(
             RouteSpec::cluster(Uuid::new_v4()),
             crate::record::RecordKind::new(""),
         );
         // The join's key round, were there one, has run before this probe is
         // answered (the shovel serves its commands in order, and the probe
-        // applies any round still out). Pre-fix the cluster route is still
-        // waiting and arms the timer; post-fix nothing does.
-        let before = key_schedule(&manager).timer_rounds;
-        tilo_test_env::wait_until("five key timer rounds after the cluster join", || {
-            key_schedule(&manager).timer_rounds >= before + 5
-        });
-        let settled = asked.load(std::sync::atomic::Ordering::Acquire);
-        // The app's route is told its channel changed once more; the cluster
-        // route is never asked by the timer. One more ask than the join's is
-        // the app's own change, never a cluster-route question.
-        changes.send_replace(9);
-        tilo_test_env::wait_until(
-            "the app route to be asked after its channel changed",
-            || asked.load(std::sync::atomic::Ordering::Acquire) > settled,
+        // applies any round still out). A cluster route asks nothing, so the
+        // timer stays disarmed and no route was asked for keys.
+        let seen = key_schedule(&manager);
+        assert!(
+            !seen.armed && seen.timer_rounds == 0,
+            "a cluster route leaves the key timer armed to ask forever: {seen:?}"
         );
-        let after = asked.load(std::sync::atomic::Ordering::Acquire);
         assert_eq!(
-            after,
-            settled + 1,
-            "only the app route's own one change asked; the cluster route was asked for keys it \
-             cannot be granted"
+            asked.load(std::sync::atomic::Ordering::Acquire),
+            settled,
+            "a cluster route asked the identity service for channel keys it cannot be granted"
         );
         drop(manager);
         thread.join().unwrap();
