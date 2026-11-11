@@ -542,13 +542,19 @@ impl Mailer for Resend {
             .post(&self.endpoint)
             .bearer_auth(&*self.key)
             .header("idempotency-key", id)
-            .json(&serde_json::json!({
-                "from": self.from,
-                "to": [mail.to],
-                "subject": mail.subject,
-                "text": mail.text,
-                "html": mail.html,
-            }));
+            // Built here rather than with the client's `json`, an optional
+            // feature a build of the relay alone does not turn on.
+            .header("content-type", "application/json")
+            .body(
+                serde_json::json!({
+                    "from": self.from,
+                    "to": [mail.to],
+                    "subject": mail.subject,
+                    "text": mail.text,
+                    "html": mail.html,
+                })
+                .to_string(),
+            );
         Box::pin(async move {
             let response = match request.send().await {
                 Ok(response) => response,
