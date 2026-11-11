@@ -34,7 +34,6 @@ impl NoteDates {
     where
         Tz::Offset: std::fmt::Display,
     {
-        use ui::i18n::I18nManager;
         let date = |value: Option<i64>| {
             value
                 .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
@@ -75,7 +74,6 @@ impl NoteDates {
     /// zone, read against `now`. A date the history does not know is left
     /// out; a note with no known date shows nothing.
     pub fn labels_at(self, now: chrono::DateTime<chrono::Local>) -> Vec<String> {
-        use ui::i18n::I18nManager;
         let created = self.created.map(|seconds| when(seconds, now));
         let edited = self.edited.map(|seconds| when(seconds, now));
         let line = match (created, edited) {
@@ -99,7 +97,6 @@ impl NoteDates {
 /// year when it is not this one), in the local time zone.
 fn when(seconds: i64, now: chrono::DateTime<chrono::Local>) -> String {
     use chrono::{Datelike, TimeZone};
-    use ui::i18n::I18nManager;
     let Some(moment) = chrono::Local.timestamp_opt(seconds, 0).single() else {
         return String::new();
     };
