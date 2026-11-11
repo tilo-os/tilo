@@ -53,7 +53,6 @@ browser-continuity-retry = Erneut versuchen
 browser-service-forget = Konto auf diesem Gerät vergessen
 browser-service-forgetting = Dieses Konto wird auf diesem Gerät vergessen …
 browser-service-forgotten = Lokale Websitesitzung entfernt
-browser-service-custody-backend-needed = Gespeicherte Kontozugangsdaten wurden nicht widerrufen. Zum Entfernen wird ein Verwahrungsdienst benötigt.
 browser-service-forget-open-first = Öffne zuerst das ausgewählte Konto in diesem Fenster.
 browser-service-forget-wait = Warte, bis das ausgewählte Konto fertig geöffnet ist.
 browser-service-forget-fence-failed = Das ausgewählte Konto konnte zum Vergessen nicht abgeschottet werden.

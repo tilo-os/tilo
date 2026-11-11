@@ -115,7 +115,6 @@ windows-temporary-connection-starting = Connecting Windows temporarily and openi
 ## The Windows appliance: how it stands, what it says and what it refuses.
 ## Each of these is a sentence a person reads, never a literal in the code.
 
-windows-appliance-checking-status = Checking the Windows appliance…
 
 windows-power-running = Running
 windows-power-suspended = Suspended

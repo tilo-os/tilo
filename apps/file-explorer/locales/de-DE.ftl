@@ -21,8 +21,6 @@ files-shortcuts-size = Größere, kleinere Elemente
 files-shortcuts-refresh = Aktualisieren
 
 ## Verfügbarkeit: Aktionen und Status
-files-opening-document = Dokument wird geöffnet…
-files-document-opening-cancelled = Das Öffnen des Dokuments wurde abgebrochen
 files-keep-offline = Offline verfügbar halten
 files-use-automatic-storage = Automatische Speicherverwaltung verwenden
 files-pinned-by-parent = Durch übergeordneten Ordner offline gehalten
@@ -83,8 +81,6 @@ files-empty-trash-summary = { $count ->
 files-empty-trash-confirm = Papierkorb leeren
 
 ## Eigenschaften und Verfügbarkeit
-files-property-collaborative-record = Kollaborativer Datensatz: { $record }
-files-property-content = Inhalt: { $hash }…
 files-residency-metadata-only = nur Metadaten
 files-residency-partly-local = teilweise lokal ({ $bytes } Byte)
 files-residency-local = lokal ({ $bytes } Byte)
@@ -145,7 +141,6 @@ files-cloud-converted-slides = Google-Präsentation. Wird als .pptx importiert; 
 files-cloud-loading = Cloud-Ordner wird gelesen…
 files-cloud-busy = Eine Cloud-Anfrage läuft bereits.
 files-cloud-invalid-reply = Der Cloud-Dienst hat eine unerwartete Antwort gesendet.
-files-cloud-selected = Ausgewählt: { $name }
 files-cloud-select = Auswählen
 files-cloud-more = Weitere laden
 files-cloud-import = Einmal importieren…
@@ -162,39 +157,18 @@ files-version-history = Versionsverlauf…
 files-restore-previous = Vorherige Version wiederherstellen
 files-resolve-keep-current = { $conflict } lösen — Aktuelle behalten
 files-resolve-use-other = { $conflict } lösen — Andere verwenden (Gerät { $device })
-files-history-version-line = { $action } { $time } von { $person } auf Gerät { $device }
-files-history-older = Ältere Versionen sind noch nicht auf diesem Gerät
-files-conflict-needs-review = Überprüfung erforderlich
-files-conflict-resolved-strategy = Gelöst: { $strategy }
 files-conflict-resolved = Gelöst
 files-strategy-keep-current = Aktuelle behalten
 files-strategy-use-other = Andere verwenden
 files-strategy-keep-both = Beide behalten
 files-strategy-merge = Zusammenführen
-files-conflict-line = Konflikt { $conflict }: { $count } { $count ->
-    [one] Version
-   *[other] Versionen
-}, { $state }
-files-conflict-resolve-hint = Über das Kontextmenü lösen: Aktuelle behalten oder Andere verwenden
-files-conflict-unsupported-hint = „Beide behalten“ und „Zusammenführen“ sind für diese Datei noch nicht verfügbar
-files-history-title = Versionsverlauf von { $name }
-files-history-summary = { $versions } { $versions ->
-    [one] Version
-   *[other] Versionen
-}, { $heads } aktuelle { $heads ->
-    [one] Spitze
-   *[other] Spitzen
-}
 files-history-change-pending = Eine Verlaufsänderung wird bereits ausgeführt
 files-select-file-with-history = Zuerst eine kollaborative Datei mit Verlauf auswählen
-files-version-restored = Version als neuer Verlaufseintrag wiederhergestellt
-files-restoring-version = Diese Version wird wiederhergestellt…
 files-keeping-current = Die aktuelle Version wird beibehalten…
 files-applying-other = Die andere Version wird angewendet…
 files-merging-versions = Nicht überlappende Änderungen werden sicher zusammengeführt…
 files-merge-review-menu = Zusammenführung prüfen
 files-merge-review-title = Zusammenführung von { $name } prüfen
-files-merge-review-summary = Es wurden noch keine Änderungen vorgenommen
 files-merge-review-checking = Die beiden Versionen werden verglichen …
 files-merge-review-checking-detail = Währenddessen ändert sich nichts.
 files-merge-review-safe = Sicher zusammenführbar
@@ -202,8 +176,6 @@ files-merge-review-needs-review = Prüfung nötig. Es wird nichts zusammengefüh
 files-merge-review-unavailable = Die Versionen lassen sich gerade nicht vergleichen. Aktualisiere die Datei und vergleiche sie im Versionsverlauf.
 files-merge-review-no-apply = Behalte beide oder wähle eine, nachdem du sie verglichen hast.
 files-merge-review-incoming = Eingehende Version von Gerät { $device }
-files-merge-review-diff = Der Versionsverlauf zeigt beide Versionen nebeneinander.
-files-merge-review-guard = Ändert sich eine der Versionen vor dem Anwenden, wird nichts zusammengeführt.
 files-merge-review-undo = Du kannst danach jede frühere Version wiederherstellen, ohne spätere Arbeit zu verlieren.
 files-merge-apply-safe = Sichere Zusammenführung anwenden
 files-merge-apply-safe-detail = Wird nur angewendet, wenn beide Versionen noch vollständig erhalten bleiben.
@@ -216,26 +188,6 @@ files-history-action-moved = Verschoben
 files-history-action-deleted = Gelöscht
 files-history-action-conflict-resolved = Konflikt gelöst
 files-history-action-restored = Wiederhergestellt
-files-history-action-changed = Geändert
-files-history-current-version = { $action } (aktuelle Version)
-files-history-preview-title = Ausgewählte Version
-files-history-compare-title = Mit aktueller Version vergleichen
-files-history-selected-action = Aktion: { $action }
-files-history-selected-by = Von: { $person }
-files-history-selected-at = Zeitpunkt: { $time }
-files-history-version-id = Version: { $id }
-files-history-content-identity = Inhaltsidentität: { $hash }
-files-history-metadata-identity = Metadatenidentität: { $hash }
-files-history-no-content = kein Dateiinhalt
-files-history-compare-content = Inhalt: { $state }
-files-history-compare-metadata = Metadaten: { $state }
-files-history-same = unverändert
-files-history-different = geändert
-files-history-show-activity = In Workspace-Aktivität anzeigen
-files-history-compare = Mit aktueller Version vergleichen
-files-history-hide-compare = Versionsdetails anzeigen
-files-history-restore-selected = Diese Version wiederherstellen
-files-history-current-version-label = Aktuelle Version
 
 ## Barrierefreier kollaborativer Status
 files-a11y-transfer-failed = Übertragung fehlgeschlagen
@@ -325,9 +277,6 @@ files-a11y-current-folder = Aktueller Ordner: { $path }
 files-a11y-places = Orte
 files-a11y-favourite = Favorit
 files-a11y-system-location = Systemort
-files-a11y-place-description = { $section }, { $path }
-files-a11y-current-breadcrumb = Aktueller Ordner, { $path }. Zum Bearbeiten des Pfads Eingabe drücken
-files-a11y-open-folder = { $path } öffnen
 files-empty-trash = Der Papierkorb ist leer
 files-empty-folder = Dieser Ordner ist leer
 files-item-count = { $count } { $count ->
@@ -448,7 +397,6 @@ files-archive-create-failed-title = Komprimieren fehlgeschlagen
 
 ## Validierung von Dateivorgängen
 files-folder-name-empty = Ordnername darf nicht leer sein
-files-folder-name-slash = Ordnername darf kein „/“ enthalten
 files-name-empty = Name darf nicht leer sein
 files-name-slash = Name darf kein „/“ enthalten
 files-no-parent = Kein übergeordneter Ordner
@@ -499,14 +447,6 @@ files-open-with-default = { $app } (Standard)
 files-open-with-app = Mit { $app } öffnen
 files-open-with-app-param = Anwendung
 files-open-with-not-a-candidate = { $app } öffnet diese Datei nicht
-files-open-with-launch-unavailable = Die Anwendung wurde nicht gestartet. Öffne die Datei mit einer anderen.
-files-open-with-selection-changed = Die Datei hat sich geändert. Öffne sie erneut.
-files-open-with-action-unavailable = „Öffnen mit“ ist gerade nicht verfügbar.
-files-open-with-write-required = Du hast keine Berechtigung, diese Datei zu bearbeiten.
-files-open-with-default-unavailable = Eine Standardanwendung lässt sich auf diesem Gerät nicht wählen.
-files-open-with-access-unavailable = Diese Anwendung kann die Datei so nicht öffnen.
-files-open-with-busy = Eine andere Datei wird noch geöffnet. Versuche es gleich noch einmal.
-files-open-with-timeout = Die Datei wurde nicht geöffnet. Versuche es erneut.
 files-open-with-no-workspace = Es gibt keinen Arbeitsbereich, in den diese Datei kommen kann.
 files-place-recent = Zuletzt verwendet
 files-empty-recent = Noch keine zuletzt verwendeten Dateien

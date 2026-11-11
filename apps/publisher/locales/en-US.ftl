@@ -4,7 +4,6 @@ publisher-create-key = Create key
 publisher-public-key-label = Public key
 publisher-proof-label = Proof line
 publisher-proof-help = Publish this line where only you can write, to prove a namespace.
-publisher-verbatim = { $text }
 publisher-copy-proof = Copy proof line
 publisher-copy-secret = Copy key for CI
 publisher-check-status = Check application

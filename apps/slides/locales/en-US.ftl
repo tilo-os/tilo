@@ -63,10 +63,6 @@ slides-colour-amber = Amber
 slides-colour-red = Red
 slides-colour-violet = Violet
 
-## Version history
-slides-history-no-slides = This version has no slides.
-slides-history-no-deck = This version has no presentation to restore.
-
 ## Slide content placeholders
 slides-prompt-title = Add a title
 slides-prompt-text = Add text
@@ -127,7 +123,6 @@ slides-a11y-send-back = Send to back
 slides-a11y-duplicate-element = Duplicate object
 slides-a11y-delete-element = Delete object
 slides-a11y-layout = Layout { $name }
-slides-a11y-layout-menu = Slide layout, { $name }
 slides-a11y-background = Background { $name }
 slides-a11y-deck-theme = Deck theme { $name }
 slides-a11y-deck-look = Deck look { $name }
