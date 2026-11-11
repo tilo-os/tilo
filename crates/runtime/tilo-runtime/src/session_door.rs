@@ -44,7 +44,7 @@ pub fn desktop_door() -> io::Result<Option<PathBuf>> {
 /// # Errors
 /// Nothing answers at `door`, or the lines could not be carried.
 pub fn bridge(door: &Path) -> io::Result<()> {
-    let stream = std::os::unix::net::UnixStream::connect(door)
+    let stream = tilo_files::native::socket::connect(door)
         .map_err(|error| unreachable_door(door, &error))?;
     crate::daemon::bridge_stdio(stream, None)
 }
