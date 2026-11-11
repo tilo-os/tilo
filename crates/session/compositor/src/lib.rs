@@ -1897,6 +1897,24 @@ impl Compositor {
         if drew {
             self.data.state.mark_redraw_all();
         }
+        // A hosted surface that drew its layers and drew none this frame leaves what it drew
+        // behind it — a sheet whose card has gone, a panel taken down — and nothing else redraws
+        // the screen it stood on: the display keeps its last frame, the card at whatever it had
+        // faded to, until the next thing that happens to damage it. What the hosts draw now is
+        // compared with the last frame, and a screen that lost a layer is drawn again.
+        let layer_counts: Vec<(usize, usize)> = self
+            .data
+            .state
+            .hosts
+            .iter()
+            .enumerate()
+            .map(|(index, host)| (index, host.layers().len()))
+            .filter(|(_, count)| *count > 0)
+            .collect();
+        if layer_counts != self.data.state.layer_counts {
+            self.data.state.layer_counts = layer_counts;
+            self.data.state.mark_redraw_all();
+        }
         // What the surfaces draw over the windows, by the window each part is of: a floating window
         // stands over the ones beneath it whole, so they are drawn around what the desk covers them
         // with for it, and a press there is the desk's.

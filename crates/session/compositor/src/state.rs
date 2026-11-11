@@ -231,6 +231,9 @@ pub struct State {
     /// the desk draws a floating window's bar and its lift around it, and the window beneath the
     /// card is drawn around it, as a window under a floating one is.
     pub(crate) covers: std::collections::BTreeMap<u64, smithay::utils::Rectangle<i32, Logical>>,
+    /// How many layers each hosted surface drew in the last frame, by its index in `hosts`: what a
+    /// host drew and no longer draws is what the screen keeps until it is drawn again.
+    pub(crate) layer_counts: Vec<(usize, usize)>,
     /// The shadows and edges drawn so far.
     pub(crate) frame_images: crate::window_frame::FrameImages,
     /// The windows that closed, kept so the desktop can animate them away.
@@ -393,6 +396,7 @@ impl State {
             frame: crate::window_frame::WindowFrame::default(),
             window_frames: std::collections::HashMap::new(),
             covers: std::collections::BTreeMap::new(),
+            layer_counts: Vec::new(),
             frame_images: crate::window_frame::FrameImages::default(),
             closing: Vec::new(),
             snapshots: crate::snapshot::Snapshots::default(),
