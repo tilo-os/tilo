@@ -840,3 +840,183 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
     );
     shot(&mut session, root.path(), "dragged-out.png");
 }
+
+/// Press Enter on the keyboard, as the person does.
+fn press_enter(session: &mut Session) {
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(tilo_compositor::InputEvent::Key {
+                keycode: 28,
+                pressed,
+            })
+            .expect("a key");
+        session
+            .step(std::time::Duration::from_millis(1))
+            .expect("a frame");
+    }
+}
+
+/// The reproduction of the live composer, as a person met it: a real session whose conversation
+/// was placed by the canvas's own ask (so the page is drawn from the session's `ChatViewService`
+/// over Chat's record, never the development fixture), real typed keys into the composer, and
+/// Enter. What was typed draws once — erasing it returns the field to the empty field it was —
+/// and Enter posts the message into the channel's own record.
+#[test]
+fn typing_in_the_ask_conversations_composer_posts_on_enter_and_draws_the_text_once() {
+    let _settled = ui::motion::testing::settled();
+    let root = common::private_home();
+    let mut session = common::seeded_session(root.path());
+    common::until(&mut session, "the canvas", |session| {
+        common::on_screen(session, common::CANVAS_ENTRY).is_some()
+    });
+    common::press(&mut session, common::CANVAS_ENTRY);
+    common::type_text(&mut session, "what is left?");
+    press_enter(&mut session);
+    let address = common::wait_for(&mut session, "the conversation placed", |session| {
+        common::places(session)
+            .into_iter()
+            .find(|place| place.record.starts_with("chat.workspace/channels/"))
+            .map(|place| place.record)
+    });
+    let name = common::wait_for(&mut session, "the conversation's reading", |session| {
+        session
+            .read(&address)
+            .and_then(|reading| reading["name"].as_str().map(str::to_owned))
+    });
+    // The composer's field takes the keyboard, as a person's click on it does.
+    let placeholder = format!("Message #{name}");
+    let (x, y, w, h) = common::wait_for(&mut session, "the composer's field", |session| {
+        session.shell_text_bounds(&placeholder)
+    });
+    let socket = root.path().join("test-control.sock");
+    assert_eq!(
+        common::control(
+            &mut session,
+            &socket,
+            &json!({"op": "click_at", "x": x + w / 2.0, "y": y + h / 2.0})
+        ),
+        json!({"ok": {}}),
+        "the click on the composer is taken"
+    );
+    let empty = common::shot(&mut session, "ask-composer-empty.png");
+    common::type_text(&mut session, "hello there");
+    common::until(&mut session, "the typed draft", |session| {
+        session.shell_says("hello there")
+    });
+    let typed = common::shot(&mut session, "ask-composer-typed.png");
+    // Erase it again: the field shows the empty field it showed before, never the remains of
+    // the erased glyphs drawn over.
+    for _ in 0.."hello there".len() {
+        for pressed in [true, false] {
+            session
+                .compositor()
+                .input(tilo_compositor::InputEvent::Key {
+                    keycode: 14,
+                    pressed,
+                })
+                .expect("backspace");
+            session
+                .step(std::time::Duration::from_millis(1))
+                .expect("a frame");
+        }
+    }
+    common::until(&mut session, "the field empty again", |session| {
+        !session.shell_says("hello there")
+    });
+    let erased = common::shot(&mut session, "ask-composer-erased.png");
+    // The field draws what was typed once: the screen after erasing is the screen before
+    // typing, up to the caret's blink.
+    let changed = common::changed(&empty, &erased);
+    assert!(
+        changed < 600,
+        "the field draws the text once: {changed} pixels still differ after erasing it"
+    );
+    assert_ne!(
+        common::changed(&empty, &typed),
+        0,
+        "the typed text is drawn at all"
+    );
+    // The words sent: typing them again and pressing Enter posts the message through the
+    // channel's own `post`, which the session's record holds.
+    common::type_text(&mut session, "hello there");
+    common::until(&mut session, "the draft again", |session| {
+        session.shell_says("hello there")
+    });
+    press_enter(&mut session);
+    let posted = |session: &Session| {
+        session.read(&address).and_then(|reading| {
+            reading["messages"]
+                .as_array()
+                .is_some_and(|messages| {
+                    messages
+                        .iter()
+                        .any(|message| message["text"].as_str() == Some("hello there"))
+                })
+                .then_some(())
+        })
+    };
+    common::until(&mut session, "the message in the channel", |session| {
+        posted(session).is_some()
+    });
+    assert!(
+        posted(&session).is_some(),
+        "Enter posts what the field holds: {:?}; the shell refused {:?}",
+        session.read(&address),
+        session.shell_refusals()
+    );
+    // The field let go of the message it sent: it draws its prompt again, and what the person
+    // types next is a new message, never the sent words with more typed after them — the stale
+    // draft the live composer kept when its send was refused.
+    common::until(&mut session, "the field empty after sending", |session| {
+        session.shell_text_bounds(&placeholder).is_some()
+    });
+    common::shot(&mut session, "ask-composer-posted.png");
+    common::type_text(&mut session, "and then");
+    // The field shows its prompt no longer (the empty field's prompt is gone), and it says what
+    // was typed into it now: the draft is the person's new words alone.
+    common::until(
+        &mut session,
+        "the second draft is the new words",
+        |session| {
+            session.shell_text_bounds(&placeholder).is_none() && session.shell_says("and then")
+        },
+    );
+    press_enter(&mut session);
+    let second = |session: &Session| {
+        session.read(&address).and_then(|reading| {
+            reading["messages"]
+                .as_array()
+                .is_some_and(|messages| {
+                    messages
+                        .iter()
+                        .any(|message| message["text"].as_str() == Some("and then"))
+                })
+                .then_some(())
+        })
+    };
+    common::until(
+        &mut session,
+        "the second message in the channel",
+        |session| second(session).is_some(),
+    );
+    // The second message is the new words alone: no message holds the sent words with more
+    // after them, which is what typing into a stale draft would post.
+    let reading = session.read(&address).unwrap_or_default();
+    let stale = reading["messages"].as_array().is_some_and(|messages| {
+        messages.iter().any(|message| {
+            message["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("hello there") && text.contains("and then"))
+        })
+    });
+    assert!(
+        !stale,
+        "the sent words never ride with the next message: {reading}"
+    );
+    // The field let go of the second message too.
+    common::until(&mut session, "the field empty again", |session| {
+        session.shell_text_bounds(&placeholder).is_some()
+    });
+    common::shot(&mut session, "ask-composer-second.png");
+}

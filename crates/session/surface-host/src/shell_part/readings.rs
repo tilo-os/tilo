@@ -26,6 +26,22 @@ impl SessionLink {
         true
     }
 
+    /// The address the session published the resource `reference` under, when it published it:
+    /// the shell's runtime names another app's resource as its document and item
+    /// (`chat.workspace/c_general`), while the session's catalogue names the same resource by its
+    /// own address (`chat.workspace/channels/c_general`). A menu, a sheet or a press the shell
+    /// sends back to the session's door must name it as the session published it, or the door
+    /// finds no such action.
+    #[must_use]
+    pub fn published_address(&self, reference: &str) -> Option<String> {
+        let reference = tilolang_tilo::runtime::value::flat_id(reference);
+        let readings = self.readings.borrow();
+        readings
+            .iter()
+            .find(|(id, _)| tilolang_tilo::runtime::value::flat_id(id) == reference)
+            .map(|(id, _)| id.clone())
+    }
+
     /// The verbs the session's resources publish that no loaded package declares, by resource
     /// and verb ([`tilolang_tilo::runtime::published`]): the shell's runtime sends a view's action of
     /// one to the app publishing it, as it sends any other app's action to that app's door.
@@ -604,7 +620,12 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                     arguments.insert(name.clone(), argument_text(value));
                 }
                 Ask {
-                    resource: subject_id,
+                    // The session's own address for the resource, never the runtime's flattened
+                    // reference: the door finds an action by the id its catalogue published.
+                    resource: self
+                        .link
+                        .published_address(&subject_id)
+                        .unwrap_or(subject_id),
                     action: action.clone(),
                     arguments,
                     from: from
@@ -642,7 +663,11 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                     _ => tilolang_tilo::action::EDIT_TEXT_ACTION,
                 };
                 Ask {
-                    resource: target.id_string(),
+                    // As a press: the session's own address, never the flattened reference.
+                    resource: self
+                        .link
+                        .published_address(&target.id_string())
+                        .unwrap_or_else(|| target.id_string()),
                     action: action.to_owned(),
                     arguments: BTreeMap::from([
                         ("field".to_owned(), field_id.clone()),

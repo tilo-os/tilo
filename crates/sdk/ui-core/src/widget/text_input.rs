@@ -4468,6 +4468,24 @@ impl TextInput {
         }
         if self.entry {
             self.set_text("");
+            self.report_cleared();
+        }
+    }
+
+    /// An entry let go of what it sent: report the empty text as the field's latest edit, so the
+    /// state it is bound to (`ui.TextInput(bind: draft)`, a composer's draft) is emptied too. A
+    /// binding that kept the sent words would be pushed back into the field on the shell's next
+    /// reading, and the person's next words would be typed into the message they already sent.
+    ///
+    /// The submit ran before this ([`Self::fire_submit`]), so the action a press runs has the
+    /// words; only the state it is bound to is cleared after them.
+    fn report_cleared(&mut self) {
+        if let Some(verb) = &mut self.change_verb {
+            verb.emit(String::new());
+            return;
+        }
+        if let Some(callback) = self.on_change.as_mut() {
+            callback("");
         }
     }
 

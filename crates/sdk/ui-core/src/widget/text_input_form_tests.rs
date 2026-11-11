@@ -680,3 +680,49 @@ fn a_field_with_a_change_and_a_submit_publishes_one_resource_with_both() {
     );
     assert_eq!(submitted.borrow().as_slice(), ["42"]);
 }
+
+/// A bound entry lets go of what it sent: pressing Enter on a field with `entry: true` (a
+/// `ui.TextInput(entry: true, bind: draft)`, Chat's composer) submits the words and then reports
+/// the emptied field as its latest edit, so the state it is bound to is emptied too. Without it
+/// the shell pushed the sent draft back into the field on its next reading, and the person's
+/// next words were typed into the message already sent — the live composer's ghost copies.
+#[test]
+fn an_entry_reports_its_emptied_state_after_it_submits() {
+    let _settled = crate::motion::testing::settled();
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let (change_sink, submit_sink) = (changes.clone(), submitted.clone());
+    let mut ti = TextInput::local()
+        .with_id("composer")
+        .with_entry(true)
+        .on_change_view(move |value| change_sink.borrow_mut().push(value.to_owned()))
+        .on_submit_view(move |text| submit_sink.borrow_mut().push(text.to_owned()));
+    ti.insert_at_cursor("hello");
+    assert_eq!(
+        crate::testing::answer_controls(&mut ti),
+        1,
+        "the typed words reach the change verb"
+    );
+    assert_eq!(changes.borrow().as_slice(), ["hello"]);
+    ti.set_focus(true);
+    let mut doc = AutoCommit::new();
+    assert!(drive(
+        &mut ti,
+        &mut doc,
+        &named_key(NamedKey::Enter),
+        mods(false, false)
+    ));
+    // The submit carries the words as they were, and the field let go of them.
+    assert_eq!(ti.value(), "", "the entry emptied itself");
+    assert_eq!(
+        crate::testing::answer_controls(&mut ti),
+        2,
+        "the submit and the clearing are both reported"
+    );
+    assert_eq!(submitted.borrow().as_slice(), ["hello"]);
+    assert_eq!(
+        changes.borrow().as_slice(),
+        ["hello", ""],
+        "the emptied field is reported after the submit, so the bound draft is emptied too"
+    );
+}
