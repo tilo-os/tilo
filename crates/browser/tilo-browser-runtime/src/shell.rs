@@ -971,6 +971,11 @@ impl BrowserShell {
                 tilo_session::people::PeopleAsk::Settings(_) => {
                     self.launch(SETTINGS_APP);
                 }
+                // What the host offers about who they are, which their own card lists: performed
+                // as a host action, as search's rows and a banner's buttons are.
+                tilo_session::people::PeopleAsk::HostAction(id) => {
+                    self.requests.borrow_mut().push(HostRequest::Action(id));
+                }
             }
         }
         true
