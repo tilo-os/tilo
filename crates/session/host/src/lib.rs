@@ -68,7 +68,7 @@ pub use session::{
 pub use tilo_peer_state::document_frame::DocumentRoute;
 /// The identity layer's device side, re-exported for this crate's own tests
 /// and its peers.
-pub use tilo_relay_client::https::{HttpClient, HttpFuture, host_info};
+pub use tilo_relay_client::https::{HttpClient, HttpFuture, host_info, workspace_deleted};
 pub use tilo_relay_client::{
     Carrier, CertifyError, DeviceSigner, Host, IssuedRole, LinkError, MemberApprover, SignError,
     SignFuture, answer_pairing, certify, certify_with_root, decide_pairing, invite,

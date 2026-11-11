@@ -85,8 +85,9 @@ pub fn forget_gone_workspaces(
 }
 
 /// Opening the remembered `place` failed and its origin answers as `answering` (a host's device
-/// key, hex), or did not answer ([`entered::settle_failed`]). Answers `{entered, unchoose,
-/// settled}`, `settled` being `gone`, `unavailable` or `unknown`.
+/// key, hex), or did not answer, and said whether its owner `deleted` it
+/// ([`entered::settle_failed`]). Answers `{entered, unchoose, settled}`, `settled` being `gone`,
+/// `deleted`, `unavailable` or `unknown`.
 ///
 /// # Errors
 ///
@@ -100,9 +101,14 @@ pub fn settle_failed_workspace(
     stored: &str,
     place_json: &str,
     answering: Option<String>,
+    deleted: bool,
 ) -> Result<String, JsError> {
-    let (changed, settled) =
-        entered::settle_failed(list(stored), &place(place_json)?, answering.as_deref());
+    let (changed, settled) = entered::settle_failed(
+        list(stored),
+        &place(place_json)?,
+        answering.as_deref(),
+        deleted,
+    );
     answer(&serde_json::json!({
         "entered": changed.entered,
         "unchoose": changed.unchoose,

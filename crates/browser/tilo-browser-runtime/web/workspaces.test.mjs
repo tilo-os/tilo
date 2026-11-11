@@ -610,6 +610,26 @@ test('a workspace that did not open is settled by what its origin answers now, a
   assert.equal(rulesAsked.length, 2, 'a workspace this browser does not remember is not asked about');
 });
 
+test('a workspace whose origin says its owner deleted it is settled as deleted, and only that answer says so', async () => {
+  const store = memoryStore();
+  seed(store, [kept('https://acme.example', 'GONE', {name: 'Acme'})]);
+  const hostInfo = async () => ({device_public_key: Array(32).fill(0xab)});
+  const named = [];
+  const deleted = async (origin, room) => { named.push([origin, room]); return room === 'GONE'; };
+  const {runtime, asked} = rules((name, list, place, answering, gone) => ({entered: [], unchoose: [JSON.parse(place)],
+    settled: gone ? 'deleted' : 'unavailable'}));
+  assert.equal(await settleFailedWorkspace(runtime, {origin: 'https://acme.example/', room: 'GONE'}, {hostInfo, deleted, store}), 'deleted');
+  assert.deepEqual(named, [['https://acme.example', 'GONE']], 'the origin is asked about the workspace by its id');
+  assert.deepEqual(asked[0].slice(3), [HOST, true], 'the rules hear the host answering and that it said deleted');
+  assert.deepEqual(enteredWorkspaces(store), [], 'forgotten');
+  // A host that cannot be reached, or answers anything but yes, deletes nothing.
+  for (const answer of [async () => { throw new TypeError('Failed to fetch'); }, async () => 'yes', async () => false]) {
+    seed(store, [kept('https://acme.example', 'GONE')]);
+    assert.equal(await settleFailedWorkspace(runtime, {origin: 'https://acme.example', room: 'GONE'}, {hostInfo, deleted: answer, store}), 'unavailable');
+    assert.equal(asked.at(-1)[4], false);
+  }
+});
+
 test('a host\'s certificate names its device key as the list keeps it', () => {
   assert.equal(hostDeviceOf({device_public_key: Array(32).fill(0xcd)}), 'cd'.repeat(32));
   assert.equal(hostDeviceOf({device_public_key: 'not hex'}), null);

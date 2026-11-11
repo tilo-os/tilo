@@ -83,6 +83,8 @@ pub enum Settled {
     Unavailable,
     /// Not a workspace this device remembers.
     Unknown,
+    /// Its origin said its owner deleted it: forgotten.
+    Deleted,
 }
 
 /// `list` as kept: what is no entry dropped, at most [`MAX_ENTERED`].
@@ -190,13 +192,15 @@ pub fn forget_deleted(list: Vec<Entered>, place: &Place) -> Changed {
 }
 
 /// Opening the remembered `place` failed, and its origin answers as `answering` (the device key
-/// of the host there now), or did not answer at all (`None`). Another host than the one that held
-/// it means it is gone; anything else says nothing about it.
+/// of the host there now), or did not answer at all (`None`), and says whether its owner
+/// `deleted` it (`false` when it did not answer). A deleted workspace, or another host than the
+/// one that held it, means it is gone; anything else says nothing about it.
 #[must_use]
 pub fn settle_failed(
     list: Vec<Entered>,
     place: &Place,
     answering: Option<&str>,
+    deleted: bool,
 ) -> (Changed, Settled) {
     let list = kept(list);
     let Some(entry) = list.iter().find(|entry| entry.is(place)).cloned() else {
@@ -208,6 +212,9 @@ pub fn settle_failed(
             Settled::Unknown,
         );
     };
+    if deleted {
+        return (forget_deleted(list, place), Settled::Deleted);
+    }
     match answering.filter(|key| host_device(key)) {
         Some(answering) if answering != entry.host_device => {
             (forget_gone(list, &entry.origin, answering), Settled::Gone)
@@ -296,7 +303,7 @@ mod tests {
     #[test]
     fn a_failed_open_forgets_only_what_another_host_now_answers_for() {
         let list = remember(Vec::new(), entry("https://a", "1", HOST)).entered;
-        let (changed, settled) = settle_failed(list.clone(), &place("https://a", "1"), None);
+        let (changed, settled) = settle_failed(list.clone(), &place("https://a", "1"), None, false);
         assert_eq!(settled, Settled::Unavailable);
         assert!(changed.entered[0].unavailable);
         assert_eq!(
@@ -304,14 +311,22 @@ mod tests {
             [place("https://a", "1")],
             "a bare entry stops reopening it"
         );
-        let (changed, settled) = settle_failed(list.clone(), &place("https://a", "1"), Some(HOST));
+        let (changed, settled) =
+            settle_failed(list.clone(), &place("https://a", "1"), Some(HOST), false);
         assert_eq!(settled, Settled::Unavailable);
         assert_eq!(changed.entered.len(), 1);
-        let (changed, settled) = settle_failed(list.clone(), &place("https://a", "1"), Some(OTHER));
+        let (changed, settled) =
+            settle_failed(list.clone(), &place("https://a", "1"), Some(OTHER), false);
         assert_eq!(settled, Settled::Gone);
         assert!(changed.entered.is_empty());
+        // The host that held it says its owner deleted it: forgotten.
+        let (changed, settled) =
+            settle_failed(list.clone(), &place("https://a", "1"), Some(HOST), true);
+        assert_eq!(settled, Settled::Deleted);
+        assert!(changed.entered.is_empty());
+        assert_eq!(changed.unchoose, [place("https://a", "1")]);
         assert_eq!(
-            settle_failed(list, &place("https://a", "9"), None).1,
+            settle_failed(list, &place("https://a", "9"), None, false).1,
             Settled::Unknown
         );
     }

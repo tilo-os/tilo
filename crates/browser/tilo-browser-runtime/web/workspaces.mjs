@@ -48,9 +48,12 @@
  * A workspace lives in its host's state, so once another host answers at that
  * origin (it was set up again on fresh state) the workspace is gone, and this
  * browser forgets it (`forgetGoneWorkspaces`) rather than offer a workspace that
- * can never open. Only that answer, from the origin itself, forgets one: a
- * host that cannot be reached, or fails, says nothing about its workspaces, so
- * they stay, marked as not opening last time (`settleFailedWorkspace`).
+ * can never open. The host that held one says, too, whether its owner deleted
+ * it, to any browser that names it: one it no longer lets in, as a person
+ * invited to only that workspace, learns so there and forgets it. Only an
+ * answer from the origin itself forgets one: a host that cannot be reached, or
+ * fails, says nothing about its workspaces, so they stay, marked as not
+ * opening last time (`settleFailedWorkspace`).
  */
 import {AdmissionError} from './admission.mjs';
 import {connectPeer, fitDisplayName, identityProfile, joinWorkspace, pairDevice, renewDevice, withCustody} from './peer.mjs';

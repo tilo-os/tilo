@@ -129,6 +129,73 @@ async fn heard_deleted(page: &tilo_session_host::session::PeerHandle, workspace_
     }
 }
 
+/// `page`, a member of only `workspace` (`workspace_id`), comes back after it
+/// was deleted: its host no longer lets the device in, and says nothing to it
+/// at the handshake, but its address says the workspace was deleted, so the
+/// device forgets it.
+async fn only_member_hears_deleted(
+    on_relay: &OnRelay,
+    page: &Device,
+    workspace: &str,
+    workspace_id: u64,
+) {
+    let back = start_peer(
+        on_relay.relay_host(),
+        page.cert.clone(),
+        on_relay.host.cert.clone(),
+        page.key.clone(),
+    );
+    back.join(workspace_id).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    while !back
+        .status()
+        .failures
+        .iter()
+        .any(|failure| failure.code == "not-admitted")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the host never turned the device away: {:?}",
+            back.status()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    back.close();
+    let client = tilo_net::Client::builder().build().unwrap();
+    let host = tilo_relay_client::https::Origin::new(&client, &on_relay.relay);
+    assert!(
+        tilo_session_host::workspace_deleted(&host, workspace)
+            .await
+            .unwrap(),
+        "the host's address says the workspace was deleted"
+    );
+    // The device settles what it remembered by that answer: forgotten.
+    let host_device = hex::encode(on_relay.host.cert.device_public_key);
+    let place = tilo_session_host::entered::Place {
+        origin: on_relay.relay.clone(),
+        room: workspace.to_owned(),
+    };
+    let remembered = tilo_session_host::entered::remember(
+        Vec::new(),
+        tilo_session_host::entered::Entered {
+            origin: place.origin.clone(),
+            room: place.room.clone(),
+            host_device: host_device.clone(),
+            name: Some("Applicant: Jane Doe".into()),
+            unavailable: false,
+        },
+    );
+    let (changed, settled) = tilo_session_host::entered::settle_failed(
+        remembered.entered,
+        &place,
+        Some(&host_device),
+        true,
+    );
+    assert_eq!(settled, tilo_session_host::entered::Settled::Deleted);
+    assert!(changed.entered.is_empty(), "{changed:?}");
+    assert_eq!(changed.unchoose, [place]);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::too_many_lines,
@@ -209,6 +276,18 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
     away.join(workspace_id).unwrap();
     ready(&[&away]).await;
     away.close();
+    // A customer, invited to only this workspace, had it open earlier too.
+    let (lin, _) = tilo_user_identity::UserIdentity::generate("Lin Park", 1);
+    let lin_page = invite(&mut account, &on_relay, &workspace, &lin).await;
+    let lin_away = start_peer(
+        on_relay.relay_host(),
+        lin_page.cert.clone(),
+        on_relay.host.cert.clone(),
+        lin_page.key.clone(),
+    );
+    lin_away.join(workspace_id).unwrap();
+    ready(&[&lin_away]).await;
+    lin_away.close();
 
     let state = on_relay.state.path();
     let before = traces(state, &workspace, workspace_id);
@@ -289,6 +368,7 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
     );
     back.join(workspace_id).unwrap();
     heard_deleted(&back, workspace_id).await;
+    only_member_hears_deleted(&on_relay, &lin_page, &workspace, workspace_id).await;
     // Deleting it again finds no such workspace.
     let again = account
         .tilo_do(json!({"path": "account/workspaces#delete", "args": {"workspace": workspace}}))

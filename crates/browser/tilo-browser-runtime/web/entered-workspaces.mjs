@@ -141,22 +141,23 @@ export function forgetGoneWorkspaces(runtime, {origin, hostDevice}, store = glob
 /**
  * Opening the remembered workspace `{origin, room}` failed: ask its origin which
  * host answers there now (`hostInfo(origin)`, resolving to that host's
- * certificate), and settle it by the shared rules (`settleFailedWorkspace` in
- * `runtime`): `'gone'` when another host answers there now (forgotten),
+ * certificate) and whether its owner deleted it (`deleted(origin, room)`,
+ * resolving to a boolean), and settle it by the shared rules
+ * (`settleFailedWorkspace` in `runtime`): `'deleted'` when the origin says so
+ * and `'gone'` when another host answers there now (both forgotten),
  * `'unavailable'` otherwise (it stays, marked as not opening last time), and
  * `null` for a workspace this browser does not remember.
  */
-export async function settleFailedWorkspace(runtime, {origin, room}, {hostInfo, store = globalThis.localStorage} = {}) {
+export async function settleFailedWorkspace(runtime, {origin, room}, {hostInfo, deleted, store = globalThis.localStorage} = {}) {
   let at;
   try { at = originOf(origin); } catch { return null; }
   if (!enteredWorkspaces(store).some(kept => sameEntry(kept, {origin: at, room}))) return null;
-  let answering = null;
-  try {
-    answering = hostDeviceOf(await hostInfo?.(at));
-  } catch {
-    // Not reached, or not answered: nothing the host said.
-  }
-  const {settled} = keep(store, runtime.settleFailedWorkspace(stored(store), JSON.stringify({origin: at, room}), answering ?? undefined));
+  // Not reached, or not answered: nothing the host said.
+  const [answering, gone] = await Promise.all([
+    Promise.resolve().then(() => hostInfo?.(at)).then(hostDeviceOf, () => null),
+    Promise.resolve().then(() => deleted?.(at, room)).then(said => said === true, () => false),
+  ]);
+  const {settled} = keep(store, runtime.settleFailedWorkspace(stored(store), JSON.stringify({origin: at, room}), answering ?? undefined, gone));
   return settled === 'unknown' ? null : settled;
 }
 

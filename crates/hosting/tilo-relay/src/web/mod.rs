@@ -848,6 +848,14 @@ async fn route(
     }
     match route {
         "/host" => Ok(encoded(&web.host_info)),
+        tilo_relay_protocol::web::WORKSPACE_DELETED_PATH => {
+            let workspace: String = decode(&bytes)?;
+            let deleted = web.workspaces.as_ref().is_some_and(|workspaces| {
+                tilo_relay_protocol::room_workspace_id(&workspace)
+                    .is_ok_and(|workspace_id| workspaces.deleted(workspace_id))
+            });
+            Ok(encoded(&deleted))
+        }
         "/join" => {
             let workspaces = web
                 .workspaces

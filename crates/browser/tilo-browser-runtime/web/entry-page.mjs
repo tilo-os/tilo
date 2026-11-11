@@ -67,15 +67,17 @@ async function hostCertificate(runtime, origin, {timeoutMs = 15_000} = {}) {
 const HOST_CHECK_MS = 5_000;
 
 /** Whether the remembered workspace `known` is gone, asked of its origin after
- * opening it failed (`settleFailedWorkspace`): `gone`, `unavailable` or `null`. */
+ * opening it failed (`settleFailedWorkspace`): `deleted`, `gone`, `unavailable`
+ * or `null`. */
 async function settleWorkspace(known, runtime) {
-  const hostInfo = async origin => {
+  const post = origin => {
     if (!runtime) throw new Error('no runtime to ask the host with');
-    const fetcher = (url, init) => globalThis.fetch(url, {...init, signal: AbortSignal.timeout(HOST_CHECK_MS)});
-    return JSON.parse(await runtime.hostInfo(httpsPost(origin, fetcher))).hostCert;
+    return httpsPost(origin, (url, init) => globalThis.fetch(url, {...init, signal: AbortSignal.timeout(HOST_CHECK_MS)}));
   };
+  const hostInfo = async origin => JSON.parse(await runtime.hostInfo(post(origin))).hostCert;
+  const deleted = async (origin, room) => runtime.workspaceDeleted(post(origin), room);
   try {
-    return await settleFailedWorkspace(runtime, known, {hostInfo});
+    return await settleFailedWorkspace(runtime, known, {hostInfo, deleted});
   } catch (error) {
     console.warn('workspaces: this browser cannot remember them', error);
     return null;
@@ -1222,14 +1224,15 @@ export async function startEntryPage({mode}) {
         },
         refuse: async code => {
           tell('unavailable');
-          document.documentElement.dataset.refusal = code;
           const known = remembering(() => rememberedWorkspace(here));
           // A workspace its owner deleted is forgotten; anything else is
-          // asked of its origin.
+          // asked of its origin, which says so too to a browser it no longer
+          // lets in (a person invited to only that workspace).
           if (known && code === 'workspace-deleted') remembering(() => forgetDeletedWorkspace(runtime, known));
-          else if (known) void settleWorkspace(known, runtime);
+          else if (known && await settleWorkspace(known, runtime) === 'deleted') code = 'workspace-deleted';
+          document.documentElement.dataset.refusal = code;
           if (embed) return;
-          const own = await card(refusalText(code, workspaceName),
+          const own = await card(refusalText(code, workspaceName ?? known?.name),
             await ownDesktopAllowed(page.entry?.home) ? [['Open your own desktop', true]] : []);
           if (!own) return;
           await closeWorkspace(page);
@@ -1325,6 +1328,8 @@ export async function startEntryPage({mode}) {
       const settled = await settleWorkspace(known, runtime);
       if (settled === 'gone') {
         status.textContent = `${known.name ?? 'This workspace'} no longer exists: its host was set up again since this browser opened it.`;
+      } else if (settled === 'deleted') {
+        status.textContent = refusalText('workspace-deleted', known.name);
       } else if (error instanceof AdmissionError && error.code === 'no-access') {
         status.textContent = `${known.name ?? 'This workspace'} did not let this browser in. You may have been removed from it, or it no longer exists.`;
       }

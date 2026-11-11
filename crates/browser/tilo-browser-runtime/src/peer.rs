@@ -467,6 +467,15 @@ pub async fn host_info(post: Function) -> Result<String, JsError> {
     .map_err(js_error)
 }
 
+/// Whether the owner of `workspace` (its id) deleted it, as the host `post` reaches says to
+/// any device that names it ([`tilo_relay_client::https::workspace_deleted`]).
+#[wasm_bindgen(js_name = workspaceDeleted)]
+pub async fn workspace_deleted(post: Function, workspace: String) -> Result<bool, JsError> {
+    tilo_relay_client::https::workspace_deleted(&PageHttp(post), &workspace)
+        .await
+        .map_err(js_error)
+}
+
 /// Certify this page's device key with the host its address names, as the
 /// answer to the pairing invite `inviteHex` (16 bytes as hex) the person's
 /// link named, if any. Calls `onPairingCode(code)` once the host queued the

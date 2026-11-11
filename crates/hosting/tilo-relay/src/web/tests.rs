@@ -128,7 +128,6 @@ async fn stop(relay: Relay, serving: tokio::task::JoinHandle<()>) {
     crate::daemon::Relay::shutdown(relay).await;
 }
 
-#[cfg(feature = "agents")]
 async fn post(addr: SocketAddr, path: &str, body: Vec<u8>) -> (u16, Vec<u8>) {
     let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
     let header = format!(
@@ -247,6 +246,55 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
         "a page is handed no content keys over HTTPS: {}",
         String::from_utf8_lossy(&body)
     );
+
+    stop(relay, serving).await;
+}
+
+/// A workspace its owner deleted is said to be deleted to any device that
+/// names it, though the host no longer lets in who was in it; a workspace that
+/// stays, or that the host never held, is not.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay governs the workspaces until it shuts down at the end"
+)]
+async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
+    let root = SigningKey::from_bytes(&[131; 32]);
+    let host = host(
+        &root,
+        132,
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let state = tempfile::tempdir().unwrap();
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
+    let workspaces = relay.workspaces().unwrap().clone();
+    let deleted = workspaces.create("Applicant").await.unwrap().workspace;
+    let kept = workspaces
+        .create("Other applicant")
+        .await
+        .unwrap()
+        .workspace;
+    workspaces.delete(&deleted).await.unwrap();
+    let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
+
+    let path = tilo_relay_protocol::web::WORKSPACE_DELETED_PATH;
+    let asked = |workspace: &str| post(addr, path, postcard::to_allocvec(workspace).unwrap());
+    for (workspace, said) in [
+        (deleted.as_str(), true),
+        (kept.as_str(), false),
+        ("00000000-0000-4000-8000-000000000000", false),
+        ("not a workspace", false),
+    ] {
+        let (status, body) = asked(workspace).await;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(
+            postcard::from_bytes::<bool>(&body).unwrap(),
+            said,
+            "{workspace}"
+        );
+    }
+    let (status, _) = post(addr, path, vec![0xff]).await;
+    assert_eq!(status, 400, "a body that names nothing is malformed");
 
     stop(relay, serving).await;
 }

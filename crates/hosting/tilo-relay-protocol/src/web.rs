@@ -9,6 +9,7 @@
 //! |---|---|---|
 //! | `/host` | — | [`HostInfo`] |
 //! | `/join` | [`JoinStep`](crate::workspaces::JoinStep) | [`JoinReply`](crate::workspaces::JoinReply) |
+//! | `/workspace-deleted` ([`WORKSPACE_DELETED_PATH`]) | a workspace's id (`String`) | `bool` |
 //! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
 //!
 //! `/fetch` is the host's fetch proxy: through it a page reads the sites that
@@ -111,6 +112,12 @@ pub struct HostAddress {
     /// the endpoint through it rather than over the network's own relays.
     pub relay_url: Option<String>,
 }
+
+/// Whether its owner deleted the workspace a device names by its id, below
+/// [`API_PREFIX`]: what a device the host no longer lets in (it was a member
+/// of only that workspace) learns about it. Any device that names it is told:
+/// the id is random, so naming it says the device already knew it.
+pub const WORKSPACE_DELETED_PATH: &str = "/workspace-deleted";
 
 /// The host's fetch proxy, below [`API_PREFIX`].
 pub const FETCH_PATH: &str = "/fetch";

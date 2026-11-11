@@ -195,6 +195,21 @@ pub async fn host_info(
     call(client, "/host", Vec::new()).await
 }
 
+/// Whether its owner deleted `workspace` (its id), as the host says to any device that names it
+/// ([`WORKSPACE_DELETED_PATH`](tilo_relay_protocol::web::WORKSPACE_DELETED_PATH)): what a device
+/// the host no longer lets in learns about a workspace it was a member of.
+pub async fn workspace_deleted(
+    client: &dyn HttpClient,
+    workspace: &str,
+) -> Result<bool, LinkError> {
+    call(
+        client,
+        tilo_relay_protocol::web::WORKSPACE_DELETED_PATH,
+        encode(&workspace)?,
+    )
+    .await
+}
+
 /// One step of joining a workspace with no session (`/join`).
 pub async fn join(
     client: &dyn HttpClient,
