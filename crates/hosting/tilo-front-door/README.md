@@ -92,5 +92,9 @@ for anyone who asks, and run its workspaces' records (its agents, or
 deployment runs, `registry.tilo.so/tilo/front-door` (`dev-<commit>` from main's
 dispatch, signed releases from stable): uid/gid 65532, plain HTTP on 8080/tcp,
 its state on the `/state` volume, and nothing else written, so the root
-filesystem can be read-only. Every variable above is the deployment's; the
-image carries none of them. `GET /health` answers `{"ok":true}`.
+filesystem can be read-only. t compiles the door (`front-door-binaries`,
+tools/ci/publish/server-binaries.sh) and the image only packages it with the
+pinned Fedora base and the frozen RPM snapshot the relay and VM host images use
+(tools/ci/publish/front-door-build.sh). Every variable above is the
+deployment's; the image carries none of them. `GET /health` answers
+`{"ok":true}`.

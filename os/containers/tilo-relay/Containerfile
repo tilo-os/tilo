@@ -146,7 +146,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && /build/os/scripts/verify-elf-hardening.sh /out
 
 # ---- Stage 2: runtime --------------------------------------------------------
-FROM quay.io/fedora/fedora-minimal:44
+# Fedora's minimal base, pinned by digest on registry.fedoraproject.org, which keeps
+# superseded digests; quay.io prunes them, so a pin there stops resolving.
+FROM registry.fedoraproject.org/fedora-minimal:44@sha256:694cfd38a85e4c48bae777d37e4ca8d5f0ee0dd36ace04294f23b72bf9bd3475
 
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF

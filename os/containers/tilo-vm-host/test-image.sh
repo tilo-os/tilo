@@ -17,6 +17,9 @@ trap 'b rm "$container" >/dev/null 2>&1 || true' EXIT
 root=$(b mount "$container")
 inside() { b run "$container" -- "$@"; }
 
+# Every Tilo image is Fedora, the OS included: a host that boots the guest and
+# joins the relay trusts the same libraries and certificates the OS ships.
+inside grep -qx 'ID=fedora' /etc/os-release || die 'the runtime is not a Fedora base'
 [[ $(inside firecracker --version | head -1) == 'Firecracker v1.17.0' ]] || die 'not Firecracker 1.17.0'
 # Each answer is read whole before it is searched: under pipefail, `grep -q` leaving at its
 # first match can cut off the program mid-write and fail the check on an answer that was right.

@@ -4986,22 +4986,39 @@ requires = ["arch=any"]
 on = ["dispatch", "stable"]
 
 # The hosted VM host (os/containers/tilo-vm-host): the service that runs tilo.sh workspaces'
-# Linux programs in jailed Firecracker VMs, its jail helper, Firecracker and pasta. Built like
-# the registry server (this tree is its context, the pinned Firecracker release a named one),
-# tested in a micro-VM, and published on dispatch as dev-<commit> for the infra repository's
-# apps/tilo-sh-vm-host to pin, signed on stable.
+# Linux programs in jailed Firecracker VMs, its jail helper, Firecracker and pasta. Its programs
+# are t's own compile (vm-host-binaries, cached like every other build here), so the image is
+# packaging only: the pinned Fedora base, the runtime packages from the frozen RPM snapshot and
+# the pinned Firecracker release as a named context. Tested in a micro-VM, and published on
+# dispatch as dev-<commit> for the infra repository's apps/tilo-sh-vm-host to pin, signed on
+# stable.
+[[check]]
+name = "vm-host-binaries"
+run = "bash tools/ci/publish/server-binaries.sh vm-host /target/publish/vm-host/binaries"
+# One feature resolution for the three programs; the link is most of a server build, and the
+# compiler cache the builder gives this check is what keeps a one-crate change at a relink.
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/vm-host/binaries/**"]
+timeout_secs = 7200
+default = false
+
 [[check]]
 name = "image-vm-host"
-build = { containerfile = "os/containers/tilo-vm-host/Containerfile", context = ".", contexts = { github-assets = { check = "os-assets", path = "os/external-assets/cache" } } }
-needs = ["os-assets"]
+run = "bash tools/ci/publish/vm-host-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/vm-host/binaries /target/publish/vm-host"
+needs = ["vm-host-binaries", "rpm-snapshot", "image-rpms-x86_64", "os-assets"]
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
+isolation = "vm"
+git = true
+outputs = ["/target/publish/vm-host/image.oci.tar", "/target/publish/vm-host/digest", "/target/publish/vm-host/rpms-source"]
 timeout_secs = 7200
 default = false
 
 [[check]]
 name = "test-image-vm-host"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
-run = "bash os/containers/tilo-vm-host/test-image.sh /target/images/image-vm-host/image.oci.tar"
+run = "bash os/containers/tilo-vm-host/test-image.sh /target/publish/vm-host/image.oci.tar"
 needs = ["image-vm-host"]
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -5011,7 +5028,7 @@ default = false
 [[check]]
 name = "sign-vm-host"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "install -d /target/publish/vm-host\ncp /target/images/image-vm-host/image.oci.tar /target/images/image-vm-host/digest /target/publish/vm-host/\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/vm-host /target/publish/vm-host"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/vm-host /target/publish/vm-host"
 needs = ["image-vm-host", "test-image-vm-host", "signing-tools"]
 outputs = ["/target/publish/vm-host/payload.json", "/target/publish/vm-host/signature", "/target/publish/vm-host/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
@@ -5022,7 +5039,7 @@ on = ["stable"]
 [[check]]
 name = "publish-vm-host"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "install -d /target/publish/vm-host\ncp /target/images/image-vm-host/image.oci.tar /target/images/image-vm-host/digest /target/publish/vm-host/\nbash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/vm-host /target/publish/vm-host 'dev:dev-{commit}' 'release:sha-{commit}'"
+run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/vm-host /target/publish/vm-host 'dev:dev-{commit}' 'release:sha-{commit}'"
 needs = ["image-vm-host", "test-image-vm-host", "signing-tools"]
 optional_needs = ["sign-vm-host"]
 outputs = ["/target/publish/vm-host/receipt.json"]
@@ -5050,20 +5067,36 @@ default = false
 
 # The front door of hosted Tilo (os/containers/tilo-front-door): the MCP endpoint behind
 # https://mcp.tilo.sh, with OAuth for agents and routing to the workspace's host. It is
-# configured entirely by its environment, so the deployment's values never enter the image;
-# it is built here, tested in a micro-VM against a real start, and published on dispatch as
-# dev-<commit> for the infra repository's deployment to pin, signed on stable.
+# configured entirely by its environment, so the deployment's values never enter the image. Its
+# program is t's own compile (front-door-binaries), so the image is packaging only: the pinned
+# Fedora base and the packages from the frozen RPM snapshot. Tested in a micro-VM against a real
+# start, and published on dispatch as dev-<commit> for the infra repository's deployment to pin,
+# signed on stable.
+[[check]]
+name = "front-door-binaries"
+run = "bash tools/ci/publish/server-binaries.sh front-door /target/publish/front-door/binaries"
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/front-door/binaries/**"]
+timeout_secs = 7200
+default = false
+
 [[check]]
 name = "image-front-door"
-build = { containerfile = "os/containers/tilo-front-door/Containerfile", context = "." }
+run = "bash tools/ci/publish/front-door-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/front-door/binaries /target/publish/front-door"
+needs = ["front-door-binaries", "rpm-snapshot", "image-rpms-x86_64"]
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
+isolation = "vm"
+git = true
+outputs = ["/target/publish/front-door/image.oci.tar", "/target/publish/front-door/digest", "/target/publish/front-door/rpms-source"]
 timeout_secs = 7200
 default = false
 
 [[check]]
 name = "test-image-front-door"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
-run = "bash os/containers/tilo-front-door/test-image.sh /target/images/image-front-door/image.oci.tar"
+run = "bash os/containers/tilo-front-door/test-image.sh /target/publish/front-door/image.oci.tar"
 needs = ["image-front-door"]
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -5073,7 +5106,7 @@ default = false
 [[check]]
 name = "sign-front-door"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "install -d /target/publish/front-door\ncp /target/images/image-front-door/image.oci.tar /target/images/image-front-door/digest /target/publish/front-door/\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/front-door /target/publish/front-door"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/front-door /target/publish/front-door"
 needs = ["image-front-door", "test-image-front-door", "signing-tools"]
 outputs = ["/target/publish/front-door/payload.json", "/target/publish/front-door/signature", "/target/publish/front-door/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
@@ -5084,7 +5117,7 @@ on = ["stable", "dispatch"]
 [[check]]
 name = "publish-front-door"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "install -d /target/publish/front-door\ncp /target/images/image-front-door/image.oci.tar /target/images/image-front-door/digest /target/publish/front-door/\nbash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/front-door /target/publish/front-door 'dev:dev-{commit}' 'release:sha-{commit}'"
+run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/front-door /target/publish/front-door 'dev:dev-{commit}' 'release:sha-{commit}'"
 needs = ["image-front-door", "test-image-front-door", "signing-tools"]
 optional_needs = ["sign-front-door"]
 outputs = ["/target/publish/front-door/receipt.json"]
