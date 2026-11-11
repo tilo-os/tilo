@@ -574,8 +574,10 @@ impl ChatApp {
         unavailable
     }
 
+    /// Show the conversation `channel`: a channel the sidebar lists, or a direct conversation
+    /// (with a person or an agent) that is one by its id, as the window a send floats opens on.
     fn open_channel(&mut self, channel: &str) -> Result<(), String> {
-        if !self.channels.iter().any(|item| item.id == channel) {
+        if !self.is_conversation(channel) {
             return Err("conversation no longer exists".into());
         }
         channel.clone_into(&mut self.active_channel);

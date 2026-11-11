@@ -313,6 +313,51 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
     assert_eq!(rows[0].text, "please look");
 }
 
+/// The window a box's send floats over the desk opens on the item the send answered, as a
+/// window launched to reveal it does: a conversation with an agent is one by its id, listed in
+/// the sidebar or not, so the window shows the message that was sent instead of the first channel.
+#[test]
+fn the_conversation_a_send_answers_opens_in_a_window() {
+    use crate::effects::ChatEffect;
+    use ui::floating_surface::{Recipient, RecipientKind};
+
+    const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000f";
+    let ada = "ad".repeat(32);
+    let bob = "b0".repeat(32);
+    let (_, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
+    let agent = "a5".repeat(16);
+    let sent = bob_window
+        .effect(&ChatEffect::Send {
+            to: vec![Recipient::found(RecipientKind::Agent, agent, "Ada")],
+            attached: Vec::new(),
+            text: "please look".into(),
+        })
+        .expect("Bob's box sends");
+    let anchor = sent.value.expect("the send answers its conversation")["anchor"]
+        .as_str()
+        .expect("an item")
+        .to_owned();
+    let Some((_, conversation)) = ui::tilo_resource::items::item_of_resource::<Chat>(&anchor)
+    else {
+        panic!("the anchor names an item of the chat: {anchor}");
+    };
+
+    // The window opens the item as one launched to reveal it does.
+    bob_window.with_chat(|chat| chat.opener()(&anchor));
+    bob_window.harness().relayout();
+    bob_window.with_chat(|chat| {
+        assert_eq!(chat.active_channel, conversation.to_string());
+        assert_eq!(
+            chat.messages
+                .iter()
+                .map(|m| m.text.as_str())
+                .collect::<Vec<_>>(),
+            ["please look"],
+            "it shows the message that was sent"
+        );
+    });
+}
+
 /// A send made in a box answers the conversation it landed in as the item
 /// that names it: the desk opens the window on it where the box stood, so the
 /// message and the conversation it reached are one gesture there. The window
