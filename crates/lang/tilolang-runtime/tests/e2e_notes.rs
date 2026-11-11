@@ -125,6 +125,17 @@ mod cases {
             .unwrap_or_else(|| panic!("no tree in\n{}", dump(view.tree())))
     }
 
+    /// What the slot `name` of the window's shell holds: a pane of it.
+    fn slot<'a>(shell: &'a UiNode, name: &str) -> &'a UiNode {
+        shell
+            .children
+            .iter()
+            .find(|child| {
+                child.kind == "slot" && child.props.get("name") == Some(&Value::text(name))
+            })
+            .unwrap_or_else(|| panic!("no {name} in\n{}", dump(shell)))
+    }
+
     /// The notes the window's tree draws, in its order.
     fn labels(view: &ViewInstance) -> Vec<String> {
         of_kind(the_tree(view), "ui.TreeViewNode")
@@ -251,47 +262,67 @@ mod cases {
     }
 
     /// The window is two panes: the notes as a tree in the sidebar, and the note chosen beside
-    /// it — no list of them between. The sidebar's header carries the "+" that starts one.
+    /// it — no list of them between. A window wide enough docks the tree beside the page it
+    /// opens; one too narrow for both makes the tree its first screen and pushes the page in
+    /// front of it, with the way back. The bar carries the "+" that starts a note, once.
     #[test]
     fn the_notebook_is_the_tree_beside_the_note_it_opens() {
         let n = Notes::new();
         let plan = n.titled("Q3 plan");
         n.call("pin", vec![Value::resource(&plan)]);
         let mut view = n.window();
+        let shell = of_kind(view.tree(), "ui.NavShell")[0];
         assert_eq!(
-            text_prop(of_kind(view.tree(), "ui.NavShell")[0], "content_kind"),
-            "document",
-            "the window is a document with a sidebar: {}",
+            text_prop(shell, "content_kind"),
+            "reading",
+            "the window is a reading column: wide, the tree docks beside the page, and narrow, \
+             the tree is its first screen: {}",
             dump(view.tree())
         );
-        assert_eq!(
-            text_prop(of_kind(view.tree(), "ui.NavShell")[0], "sidebar_title"),
-            "Notes"
-        );
+        assert_eq!(text_prop(shell, "sidebar_title"), "Notes");
+        // The notes stand in the sidebar and the note the window shows in the content beside
+        // them: the two panes a wide window docks side by side.
+        let sidebar = slot(shell, "sidebar");
+        let content = slot(shell, "content");
         assert_eq!(
             labels(&view),
             ["Q3 plan"],
             "the tree holds the notes: {}",
             dump(view.tree())
         );
-        // The window's "+", in the sidebar's header.
-        let head = of_kind(view.tree(), "ui.Button")
+        assert!(
+            of_kind(sidebar, "ui.TreeView")
+                .iter()
+                .any(|tree| tree.key == the_tree(&view).key),
+            "the tree is the sidebar's: {}",
+            dump(view.tree())
+        );
+        assert_eq!(
+            of_kind(content, "ui.BlockEditor").len(),
+            1,
+            "the open note's body stands in the content, beside the tree: {}",
+            dump(view.tree())
+        );
+        assert!(
+            of_kind(sidebar, "ui.BlockEditor").is_empty(),
+            "the page stands beside the tree, not in it: {}",
+            dump(view.tree())
+        );
+        // The window's "+": the primary action that makes a note, in the window's bar, where a
+        // narrow window's page keeps it too rather than in the sidebar's header.
+        let head = of_kind(slot(shell, "actions"), "ui.Button")
             .into_iter()
             .find(|button| text_prop(button, "label") == "New note")
             .unwrap_or_else(|| panic!("no New note button in\n{}", dump(view.tree())));
         assert!(
-            of_kind(view.tree(), "ui.NavShell")[0]
-                .children
+            of_kind(sidebar, "ui.Button")
                 .iter()
-                .flat_map(|child| of_kind(child, "ui.Button"))
-                .any(|button| button.key == head.key),
-            "it stands in the sidebar's header, not in the bar"
+                .all(|button| button.key != head.key),
+            "the bar offers it once, not again over the tree: {}",
+            dump(view.tree())
         );
-        // The note the window opens is the first of the tree, drawn beside it.
-        let body = of_kind(view.tree(), "ui.BlockEditor");
-        assert_eq!(body.len(), 1, "the open note's body stands beside the tree");
         assert_eq!(
-            text_prop(of_kind(view.tree(), "ui.TextInput")[0], "placeholder"),
+            text_prop(of_kind(content, "ui.TextInput")[0], "placeholder"),
             "Untitled",
             "the page edits the open note's title"
         );
