@@ -378,6 +378,10 @@ struct ConnectConfig {
     /// moment each entry names.
     #[serde(default)]
     revocations: Vec<RevocationEntry>,
+    /// The workspace this device enters through its door as its session
+    /// opens ([`door_entry`]), when the host has not admitted it yet.
+    #[serde(default)]
+    entering: Option<tilo_relay_protocol::entering::Entering>,
 }
 
 /// The certified user as the toolkit's local identity.
@@ -782,21 +786,21 @@ fn entered_json(
     )
 }
 
-/// Go through a workspace's door as this page's device (`custody`), through the one entry every
-/// device takes ([`tilo_session_host::device::enter_through_door`]): `doorPost` reaches the door's
-/// origin and `doorPath` is its `join` below it; `post` reaches the host the door admits into.
-/// `root` and `options` as [`accept_invitation`] takes them. Resolves as it does.
+/// What this page's device (`custody`) enters `workspace` through its door with, on the host whose
+/// certificate is `hostCert` (JSON), through the one entry every device takes
+/// ([`tilo_session_host::device::door_entry`]): the certificate it enters under (the one it holds
+/// from that host where it still serves, else one the person's root `root` certifies now) and the
+/// entry the session it starts asks for as it opens. `options` is [`Accepting`] JSON. Resolves to
+/// `{certificate: {cert, hostCert}, entering}` JSON; [`WasmPeer::start`] takes both, and the host's
+/// answer arrives in the session's snapshot (`entry`).
 ///
 /// # Errors
 ///
-/// Rejects with an `Error` named `HostRefusal` whose `code` is the door's own (`banned`,
-/// `removed`, `invitation-only`, `full`, with `retry_after_secs` the wait it asked for) or the
-/// entry's (`not_admitted`, `no_certificate`, `unanswered`).
-#[wasm_bindgen(js_name = enterThroughDoor)]
-pub async fn enter_through_door(
-    door_post: Function,
-    door_path: String,
-    post: Function,
+/// Rejects with an `Error` named `HostRefusal` whose `code` is `no_certificate`.
+#[wasm_bindgen(js_name = doorEntry)]
+pub async fn door_entry(
+    host_cert: String,
+    workspace: String,
     custody: JsValue,
     root: JsValue,
     options: String,
@@ -809,20 +813,16 @@ pub async fn enter_through_door(
         .map(serde_json::from_str)
         .transpose()
         .map_err(js_error)?;
+    let host_cert: DeviceCert = serde_json::from_str(&host_cert).map_err(js_error)?;
     let device = PageSigner::from_js(&custody)?;
     let root = if root.is_undefined() || root.is_null() {
         None
     } else {
         Some(PageSigner::from_js(&root)?)
     };
-    let door_http = PageHttp(door_post);
-    let door = tilo_relay_client::login::Door {
-        client: &door_http,
-        path: door_path,
-    };
-    let (admission, cert, host) = tilo_session_host::device::enter_through_door(
-        &PageHttp(post),
-        &door,
+    let (cert, entering) = tilo_session_host::device::door_entry(
+        &host_cert,
+        &workspace,
         &device,
         Entering {
             held: held.as_ref(),
@@ -834,7 +834,11 @@ pub async fn enter_through_door(
     )
     .await
     .map_err(|refusal| refusal_error(&refusal))?;
-    entered_json(&admission, &cert, host)
+    Ok(serde_json::json!({
+        "certificate": {"cert": cert, "hostCert": host_cert},
+        "entering": entering,
+    })
+    .to_string())
 }
 
 /// The canonical encoding of a certificate (JSON in): what a native device
@@ -1672,6 +1676,7 @@ impl WasmPeer {
                 cert: config.cert,
                 host_cert: config.host_cert,
                 revocations,
+                entering: config.entering,
             },
             signer.clone(),
             store,

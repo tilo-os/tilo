@@ -27,13 +27,11 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_client::login::Door;
-use tilo_relay_protocol::web::API_PREFIX;
-use tilo_session_host::device::{Entering, enter_through_door};
+use tilo_session_host::device::{Entering, door_entry};
 use tilo_session_host::{Host, MemoryPeerStore, PeerEvent, PeerHandle, TransportPhase};
 use tilo_user_identity::UserIdentity;
 
-use support::{enrol, start_page, start_workspace_host_relaying, wait_for};
+use support::{enrol, enter_page, start_page, start_workspace_host_relaying, wait_for};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -247,7 +245,6 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         .await
         .unwrap();
     let https = host.https();
-    let door_path = format!("{API_PREFIX}/directory/{}/join", lounge.workspace);
     let address = host.relay.node_addr();
     let relay_url = address.relay_urls().next().cloned();
     let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
@@ -268,30 +265,12 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         {
             crowd.push(entered.unwrap());
         }
-        let https = https.clone();
-        let door_path = door_path.clone();
+        let host_cert = host_device.cert.clone();
+        let workspace = lounge.workspace.clone();
+        let doors = workspaces.clone();
         arriving.spawn(async move {
-            let root = new_key();
-            let key = new_key();
-            let door = Door {
-                client: &*https,
-                path: door_path,
-            };
-            let (_, cert, answered) = enter_through_door(
-                &*https,
-                &door,
-                &key,
-                Entering {
-                    held: None,
-                    root: Some(&root),
-                    label: "Browser",
-                    name: &format!("Member {n}"),
-                    token: None,
-                },
-            )
-            .await
-            .unwrap_or_else(|error| panic!("member {n} enters: {error:?}"));
-            (key, cert, answered.host_cert)
+            let (key, cert) = through_the_door(&doors, &workspace, &format!("Member {n}")).await;
+            (key, cert, host_cert)
         });
     }
     while let Some(entered) = arriving.join_next().await {
@@ -399,7 +378,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     // round trips the guest waited through, one after another.
     let place = Place {
         https: &*https,
-        door: &door_path,
+        host_cert: &host_device.cert,
         workspace: &lounge.workspace,
         workspace_id: lounge.workspace_id,
         host: address.id,
@@ -441,11 +420,68 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     }
 }
 
+/// A person coming through `workspace`'s door with a device of their own, as the host's door
+/// and the workspace's join take them, in process: the crowd that came before leaves no session
+/// behind it, only the members it made.
+async fn through_the_door(
+    workspaces: &tilo_relay::workspaces::Workspaces,
+    workspace: &str,
+    name: &str,
+) -> (SigningKey, tilo_user_identity::DeviceCert) {
+    use ed25519_dalek::Signer as _;
+    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, join_proof_digest};
+    let root = new_key();
+    let key = new_key();
+    let cert = tilo_relay_client::invite::guest_certificate(
+        &root,
+        key.verifying_key().to_bytes(),
+        "Browser",
+        tilo_clock::unix_now_ns(),
+    )
+    .await
+    .unwrap();
+    let (issued, token) = workspaces
+        .admit_listed(
+            workspace,
+            &tilo_relay_protocol::directory::DoorJoin {
+                user_public_key: hex::encode(cert.user_public_key),
+                display_name: name.to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    let JoinReply::Challenge { challenge } = workspaces
+        .page_join(JoinStep::Ask {
+            invitation: issued.signed_invitation,
+            device_cert: cert.clone(),
+            request_id: rand::random(),
+        })
+        .await
+    else {
+        panic!("{name} is not challenged");
+    };
+    let signature = key.sign(&join_proof_digest(&challenge)).to_bytes();
+    let admitted = workspaces
+        .page_join(JoinStep::ProvePreAdmitted {
+            challenge,
+            signature,
+            name: name.to_owned(),
+            token: token.into_bytes(),
+        })
+        .await;
+    assert!(
+        matches!(admitted, JoinReply::Admitted { .. }),
+        "{admitted:?}"
+    );
+    (key, cert)
+}
+
 /// What every guest enters: the host's door and session, and the record it
 /// shows first.
 struct Place<'a> {
     https: &'a dyn tilo_session_host::HttpClient,
-    door: &'a str,
+    /// The host's certificate, as it answers who it is.
+    host_cert: &'a tilo_user_identity::DeviceCert,
     workspace: &'a str,
     workspace_id: u64,
     host: iroh::EndpointId,
@@ -457,16 +493,17 @@ struct Place<'a> {
 const ROUND_TRIP: Duration = Duration::from_millis(400);
 
 /// How many round trips a fresh guest may wait, one after another, from its
-/// first request until its desktop shows: four HTTPS requests to enter, the
-/// session's handshake through the packet relay, and the replay of the
-/// workspace's governance and desktop, which a new connection's congestion
-/// window takes several round trips to carry. It waits about 11.
-const MAX_ROUND_TRIPS: f64 = 12.5;
+/// first request until its desktop shows: the host's certificate over HTTPS,
+/// the session's handshake through the packet relay, which carries the entry
+/// through the door with it, and the replay of the workspace's governance and
+/// desktop, which a new connection's congestion window takes several round
+/// trips to carry. It waits about 7; the host's own work for each entry varies
+/// between the two guests and moves the count by about one.
+const MAX_ROUND_TRIPS: f64 = 8.5;
 
-/// The HTTPS requests a fresh guest makes to enter: the host's certificate,
-/// the door, and the join's ask and proof. The session dials the host the
-/// entry already named.
-const MAX_REQUESTS: usize = 4;
+/// The HTTPS requests a fresh guest makes to enter: the host's certificate.
+/// The door, the workspace's challenge and the admission ride the session.
+const MAX_REQUESTS: usize = 1;
 
 /// What a fresh guest may receive before its desktop shows. Its keys to the
 /// desktop come only after the workspace's eager records (3.5 MB here) and its
@@ -534,13 +571,13 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     let mut marks: Vec<(&'static str, Duration)> = Vec::new();
     let root = new_key();
     let key = new_key();
-    let door = Door {
-        client: &network,
-        path: place.door.to_owned(),
-    };
-    let (admission, cert, answered) = enter_through_door(
-        &network,
-        &door,
+    // The page asks the host who it is, the one HTTPS request of its entry; its session enters
+    // through the door as it opens.
+    let info = tilo_relay_client::https::host_info(&network).await.unwrap();
+    assert_eq!(&info.host_cert, place.host_cert);
+    let (cert, entry) = door_entry(
+        &info.host_cert,
+        place.workspace,
         &key,
         Entering {
             held: None,
@@ -552,27 +589,38 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     )
     .await
     .unwrap();
-    marks.push(("door, certificate and admission", started.elapsed()));
-    assert_eq!(admission.workspace, place.workspace);
-    let page = start_page(
+    marks.push(("host asked and certificate made", started.elapsed()));
+    let page = enter_page(
         // Only through the relay, as a page reaches its host: it holds no UDP
         // socket, so its session never takes a direct path.
         Host::through(iroh::EndpointAddr::new(place.host), Some(relay.into()))
             .over(tilo_session_host::Carrier::Relay),
         cert,
-        answered.host_cert,
+        info.host_cert,
         key,
         std::sync::Arc::new(MemoryPeerStore::default()),
+        entry,
     );
     page.join(place.workspace_id).unwrap();
     page.open_route(place.desktop.clone()).unwrap();
-    let (mut connected, mut ready, mut keyed_desktop, mut desktop_doc) = (None, None, None, None);
+    let (mut connected, mut admitted, mut ready, mut keyed_desktop, mut desktop_doc) =
+        (None, None, None, None, None);
     let deadline = Instant::now() + Duration::from_secs(300);
     while desktop_doc.is_none() || keyed_desktop.is_none() {
         let status = page.status();
         if connected.is_none() && status.phase == TransportPhase::Connected && status.authenticated
         {
             connected = Some(started.elapsed());
+        }
+        if admitted.is_none() {
+            match &status.entry {
+                Some(tilo_session_host::Entry::Admitted { workspace, .. }) => {
+                    assert_eq!(workspace, place.workspace);
+                    admitted = Some(started.elapsed());
+                }
+                Some(refused) => panic!("the door did not let the guest in: {refused:?}"),
+                None => {}
+            }
         }
         if ready.is_none() && status.workspaces.get(&place.workspace_id) == Some(&true) {
             ready = Some(started.elapsed());
@@ -597,6 +645,7 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     let shown = started.elapsed();
     let (received, sent) = link.bytes();
     marks.push(("session connected", connected.unwrap_or_default()));
+    marks.push(("door admitted the guest", admitted.unwrap_or_default()));
     marks.push(("host admitted the subscription", ready.unwrap_or(shown)));
     marks.push(("desktop keyed", keyed_desktop.unwrap_or_default()));
     marks.push(("desktop record", desktop_doc.unwrap_or_default()));

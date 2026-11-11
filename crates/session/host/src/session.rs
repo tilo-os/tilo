@@ -41,6 +41,7 @@ use tilo_relay_client::LinkError;
 use tilo_relay_session::RelayClient;
 
 mod connect;
+mod entry;
 mod governance;
 mod inbound;
 mod plane;
@@ -49,6 +50,8 @@ mod voice;
 use connect::Dial;
 #[cfg(test)]
 use connect::{connect, iroh_link_error};
+pub use entry::Entry;
+use entry::{Refusal, refusal};
 use governance::HostGovernance;
 use inbound::{HeldFrame, HoldReason};
 
@@ -83,48 +86,6 @@ pub(crate) const WORKSPACE_DELETED: (&str, &str) = (
     "This workspace was deleted by its owner.",
 );
 
-/// What a failed connection says about this device.
-#[derive(Debug, PartialEq, Eq)]
-enum Refusal {
-    /// The host was not reached, or something in front of it answered:
-    /// retried with backoff, never counted against the device.
-    Reachability,
-    /// The host turned the device away without saying why: counted, and
-    /// taken as [`NOT_ADMITTED`] after [`REFUSALS_BEFORE_FAILING`] in a row.
-    Unexplained,
-    /// The host said why: the session stops with this failure code and copy
-    /// until the page acts on it.
-    Final(&'static str, &'static str),
-}
-
-fn refusal(error: &LinkError) -> Refusal {
-    match error {
-        LinkError::HostChanged => {
-            Refusal::Final("host-changed", "This workspace’s host was set up again.")
-        }
-        LinkError::Unavailable(_) | LinkError::Malformed(_) | LinkError::Sign(_) => {
-            Refusal::Reachability
-        }
-        // A host that turns a device away closes its handshake without a
-        // word, so its own reason never reaches the page.
-        LinkError::Refused(_) => Refusal::Unexplained,
-        // Another peer protocol version: whichever side is behind updates
-        // (docs/architecture/compatibility.md). This page is the host's
-        // build, so a newer host means a reload brings it up to date.
-        LinkError::PeerVersion { theirs }
-            if tilo_relay_protocol::auth::this_device_is_behind(*theirs) =>
-        {
-            Refusal::Final(
-                "update-required",
-                "This page is out of date. Reload it to keep working together.",
-            )
-        }
-        LinkError::PeerVersion { .. } => Refusal::Final(
-            "host-update-required",
-            "This workspace’s host needs to update to keep working together.",
-        ),
-    }
-}
 /// How long a connected session waits for the host to admit its workspaces before
 /// it reports `admission-timeout`. Checked on the keep-alive tick.
 const ADMISSION_TIMEOUT_MS: u64 = 30_000;
@@ -146,6 +107,25 @@ pub struct PeerConfig {
     pub host_cert: DeviceCert,
     /// Root-signed revocations this device knows about.
     pub revocations: RevocationList,
+    /// The workspace this device enters through its door on its first
+    /// session, when the host has not admitted it yet
+    /// ([`tilo_relay_protocol::entering`]); taken once the host answered.
+    pub entering: Option<tilo_relay_protocol::entering::Entering>,
+}
+
+impl PeerConfig {
+    /// A member device's session with `host`, whose certificate is
+    /// `host_cert`: no revocations of its own to announce, no entry to ask for.
+    #[must_use]
+    pub fn member(host: Host, cert: DeviceCert, host_cert: DeviceCert) -> Self {
+        Self {
+            host,
+            cert,
+            host_cert,
+            revocations: RevocationList::new(),
+            entering: None,
+        }
+    }
 }
 
 /// Transport phase, in `SessionHealth` v1 vocabulary.
@@ -298,6 +278,9 @@ pub struct PeerStatus {
     /// (root key, hex), as the workspace's governance admitted them. Who is here is shown by
     /// person from it, so someone the live plane never certified to this page is still theirs.
     pub room_devices: BTreeMap<String, BTreeMap<String, String>>,
+    /// What the host answered the entry this session asked for
+    /// ([`PeerConfig::entering`]), once it did.
+    pub entry: Option<Entry>,
 }
 
 impl PeerStatus {
@@ -318,6 +301,7 @@ impl PeerStatus {
             channels: String::new(),
             room_members: BTreeMap::new(),
             room_devices: BTreeMap::new(),
+            entry: None,
         }
     }
 }
@@ -1252,6 +1236,9 @@ enum Exit {
     Closed,
     Reconnect,
     Lost(String),
+    /// The door this session entered by refused it, as the host said: the
+    /// session stops until the page acts.
+    Refused(&'static str, String),
 }
 
 struct Task {
@@ -1762,14 +1749,24 @@ impl Task {
                         Exit::Closed => return self.closed().await,
                         Exit::Reconnect => continue,
                         Exit::Lost(reason) => self.fail("transport-ended", reason),
+                        Exit::Refused(code, message) => {
+                            if !self.stop_until_asked(code, message, &mut commands).await {
+                                return self.closed().await;
+                            }
+                            continue;
+                        }
                     }
                 }
                 Err(error) => {
+                    if let LinkError::Entry(refused) = &error {
+                        self.update(|status| status.entry = Some(Entry::refused(refused)));
+                    }
                     let stop = match refusal(&error) {
                         Refusal::Final(code, message) => Some((code, message)),
                         Refusal::Unexplained => {
                             refusals = refusals.saturating_add(1);
-                            (refusals >= REFUSALS_BEFORE_FAILING).then_some(NOT_ADMITTED)
+                            (refusals >= REFUSALS_BEFORE_FAILING)
+                                .then(|| (NOT_ADMITTED.0, NOT_ADMITTED.1.to_owned()))
                         }
                         Refusal::Reachability => {
                             refusals = 0;
@@ -1777,12 +1774,7 @@ impl Task {
                         }
                     };
                     if let Some((code, message)) = stop {
-                        self.fail(code, message);
-                        self.update(|status| {
-                            status.phase = TransportPhase::Failed;
-                            status.authenticated = false;
-                        });
-                        if !self.wait_for_reconnect(&mut commands).await {
+                        if !self.stop_until_asked(code, message, &mut commands).await {
                             return self.closed().await;
                         }
                         attempt = 0;
@@ -1793,18 +1785,7 @@ impl Task {
                 }
             }
             attempt = attempt.saturating_add(1);
-            let delay = MAX_BACKOFF.min(Duration::from_millis(
-                250u64.saturating_mul(1u64 << attempt.min(7)),
-            ));
-            let delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
-            self.update(|status| {
-                status.phase = TransportPhase::Offline;
-                status.authenticated = false;
-                status.attempt = attempt;
-                status.next_attempt_at_ms =
-                    Some(tilo_clock::unix_now_ms().saturating_add(delay_ms));
-            });
-            let sleep = n0_future::time::sleep(delay);
+            let sleep = n0_future::time::sleep(self.offline(attempt));
             tokio::pin!(sleep);
             loop {
                 tokio::select! {
@@ -2006,6 +1987,11 @@ impl Task {
         // anything after it is decided.
         if !matches!(envelope, Envelope::Delta { .. }) {
             self.admit_governance();
+        }
+        // The host's answer to this session's entry, before anything else it
+        // says.
+        if let Envelope::Entered(entered) = envelope {
+            return self.entered(entered).map_or(Ok(()), Err);
         }
         if let Some((event, reply)) = self.voice.inbound(&envelope) {
             if let Some(reply) = reply
@@ -3313,6 +3299,7 @@ mod tests {
             channels: String::new(),
             room_members: BTreeMap::new(),
             room_devices: BTreeMap::new(),
+            entry: None,
         }
     }
 

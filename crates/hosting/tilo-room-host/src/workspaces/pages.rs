@@ -828,7 +828,7 @@ impl Workspaces {
 
     /// What a device the workspace just admitted hears: the workspace it is in
     /// and the part it holds there.
-    fn admitted(
+    pub(super) fn admitted(
         workspace: &GovernedWorkspace,
         device: [u8; 32],
         now: u64,

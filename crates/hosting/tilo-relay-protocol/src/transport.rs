@@ -645,6 +645,11 @@ pub enum Envelope {
     /// ([`Self::AgentRun`]), said just before the host ends it: the device
     /// does not connect again, so the agent and its presence end here.
     AgentRunStopped,
+
+    /// The host's answer to the entry the session's hello asked for
+    /// ([`crate::entering`]): the first envelope of that session, before
+    /// anything else it is sent.
+    Entered(crate::entering::Entered),
 }
 
 impl Envelope {
@@ -703,6 +708,7 @@ impl Envelope {
             Self::AgentRun { .. } => "AgentRun",
             Self::AgentRunAnswer { .. } => "AgentRunAnswer",
             Self::AgentRunStopped => "AgentRunStopped",
+            Self::Entered(_) => "Entered",
         }
     }
 
@@ -761,6 +767,7 @@ impl Envelope {
             | Self::AgentRun { .. }
             | Self::AgentRunAnswer { .. }
             | Self::AgentRunStopped
+            | Self::Entered(_)
             | Self::FetchGrant { .. } => None,
         }
     }

@@ -85,6 +85,12 @@ function fakeRuntime({phase = 'ready'} = {}) {
       const host = memberText(info, 'hostCert');
       return `{"admission":{"workspace":"${WORKSPACE}","workspace_id":7,"name":"Acme","role":"Editor"},"certificate":{"cert":${cert},"hostCert":${host}},"host":${info}}`;
     },
+    /** The shared entry through a door: the certificate the root makes now, as text, and the
+     * entry the session asks for as it opens. */
+    async doorEntry(hostCert, workspace, custody, root, options) {
+      calls.doorEntry = {hostCert, workspace, root, ...JSON.parse(options)};
+      return `{"certificate":{"cert":${LINUX_CERT},"hostCert":${hostCert}},"entering":{"workspace":"${workspace}","name":"Ana","request_id":[${Array(32).fill(7)}]}}`;
+    },
     /** The platform secret store's channel vault key of a namespace. */
     async channelVault(namespace) {
       calls.vaults = [...(calls.vaults ?? []), namespace];
@@ -103,7 +109,8 @@ function fakeRuntime({phase = 'ready'} = {}) {
           admission: 'ready',
           failures: [],
           refreshes: 0,
-          snapshot: () => JSON.stringify({phase: peer.phase, deviceId: 'dd', outgoingPending: 0, health: {version: 1, admission: {phase: peer.admission, pendingPrerequisites: peer.admission === 'ready' ? 0 : 1}}}),
+          snapshot: () => JSON.stringify({phase: peer.phase, deviceId: 'dd', outgoingPending: 0, health: {version: 1, admission: {phase: peer.admission, pendingPrerequisites: peer.admission === 'ready' ? 0 : 1}},
+            ...(peer.entry ? {entry: peer.entry} : {})}),
           subscribe: listener => listeners.push(listener),
           sessionToken: () => 'ce'.repeat(32),
           joinWorkspace: workspace => { peer.workspace = workspace; },
@@ -142,6 +149,11 @@ function fakeRuntime({phase = 'ready'} = {}) {
           emit(phase = peer.phase, events = [], said = []) { peer.phase = phase; durable.push(...events); liveEvents.push(...said); for (const listener of listeners) listener(); },
         };
         calls.started.push(peer);
+        // A session that enters through a door hears the host's answer soon after it starts.
+        if (peer.config.entering) {
+          const started = peer;
+          setTimeout(() => { started.entry = calls.entry ?? {outcome: 'admitted', workspace: WORKSPACE, name: 'Lounge', role: 'editor'}; started.emit(); }, 1);
+        }
         return peer;
       },
     },
@@ -220,6 +232,46 @@ test('a guest certificate from an invitation reaches the session byte for byte',
   assert.ok(runtime.peer.configText.includes(`"cert":${LINUX_CERT}`), runtime.peer.configText);
   assert.ok(runtime.peer.configText.includes(`"hostCert":{"issued_at_ns":${NANOS}}`));
   await peer.dispose();
+});
+
+test('a door is entered on the session itself: its first connect asks, and the host answers in its status', async () => {
+  const runtime = fakeRuntime();
+  let asked = 0;
+  runtime.hostInfo = async () => { asked += 1; return `{"address":${JSON.stringify(HOST_ADDRESS)},"hostCert":{"issued_at_ns":${NANOS}}}`; };
+  const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
+  const progress = [];
+  const peer = await joinWorkspace({
+    origin: 'https://host.example:8443', door: `https://host.example:8443/peer/v1/directory/${WORKSPACE}/`, identity,
+    displayName: 'Ana', runtime, custody, store: memoryStore(), storage: null, onProgress: event => progress.push(event),
+    fetch: async () => { throw new Error('no network in tests'); },
+  });
+  assert.equal(asked, 1, 'the host is asked who it is once, and nothing else over HTTPS');
+  assert.equal(runtime.calls.doorEntry.workspace, WORKSPACE);
+  assert.equal(runtime.calls.doorEntry.hostCert, `{"issued_at_ns":${NANOS}}`, 'the host certificate reaches the entry byte for byte');
+  assert.equal(runtime.peer.config.entering.workspace, WORKSPACE, 'the session asks to enter as it opens');
+  assert.ok(runtime.peer.configText.includes(`"cert":${LINUX_CERT}`), runtime.peer.configText);
+  assert.equal(runtime.peer.workspace, WORKSPACE);
+  assert.deepEqual(progress.at(-1), {phase: 'admitted', room: WORKSPACE, workspaceName: 'Lounge', role: 'editor'});
+  await peer.dispose();
+});
+
+test('a door that refuses on the session says so in its own code, and a workspace refusal is a refused join', async () => {
+  for (const [entry, check] of [
+    [{outcome: 'refused', code: 'full', message: 'come back later', retryAfterSecs: 30},
+      error => error.name === 'HostRefusal' && error.code === 'full' && error.retryAfter === 30],
+    [{outcome: 'refused', code: 'not-admitted', message: 'key known under another certificate'},
+      error => error.name === 'AdmissionError' && error.code === 'refused' && error.message === REFUSED_JOIN],
+  ]) {
+    const runtime = fakeRuntime();
+    runtime.calls.entry = entry;
+    const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
+    await assert.rejects(joinWorkspace({
+      origin: 'https://host.example:8443', door: `https://host.example:8443/peer/v1/directory/${WORKSPACE}/`, identity,
+      runtime, custody, store: memoryStore(), storage: null,
+      fetch: async () => { throw new Error('no network in tests'); },
+    }), check);
+    assert.ok(runtime.peer.disposed, 'a refused session is let go');
+  }
 });
 
 test('a session after an entry dials the host the entry asked, without asking it again', async () => {

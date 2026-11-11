@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_relay_client::CertifyError;
 use tilo_relay_client::https::{self, Origin};
-use tilo_relay_client::login::{Door, door_at, through_door};
+use tilo_relay_client::login::door_at;
 use tilo_session_host::PeerConfig;
 use tilo_session_host::device::{Device, HostRefusal};
 use tilo_user_identity::AgentScope;
@@ -145,21 +145,43 @@ impl Relay {
             .ok_or_else(|| {
                 RelayError::Unavailable("the relay takes no device sessions".to_owned())
             })?;
+        // A key reaching all the person's workspaces asks the relay its own operations in the
+        // site's home workspace: its session enters it through the site's door as it opens.
+        let lobby = if key.scope() == AgentScope::AllWorkspaces {
+            door_at(&self.site, self.host.name())
+                .await
+                .and_then(|door| door.workspace())
+        } else {
+            None
+        };
+        let label = key.cert().device_label.clone();
+        let mut request_id = [0; 32];
+        getrandom::fill(&mut request_id)
+            .map_err(|error| RelayError::Unavailable(error.to_string()))?;
+        let entering = lobby
+            .clone()
+            .map(|workspace| tilo_relay_protocol::entering::Entering {
+                workspace,
+                name: label.clone(),
+                request_id,
+            });
         let device = Device::over(
             PeerConfig {
                 host,
                 cert: key.cert().clone(),
                 host_cert: info.host_cert,
                 revocations: tilo_user_identity::RevocationList::new(),
+                entering,
             },
             Arc::new(key.key().clone()),
-            &key.cert().device_label,
+            &label,
         );
         Ok(Connection {
             device,
             key: key.clone(),
             relay: self.host.clone(),
             host: self.name.clone(),
+            lobby_workspace: lobby,
             lobby: tokio::sync::Mutex::new(None),
             entered: Mutex::default(),
         })
@@ -178,26 +200,10 @@ impl Relay {
                 "a key for one workspace reaches no other".to_owned(),
             ));
         }
-        let (client, path) = door_at(&self.site, self.host.name()).await.ok_or_else(|| {
+        let workspace = connection.lobby_workspace.clone().ok_or_else(|| {
             RelayError::Unavailable("the site names no door to its workspace".to_owned())
         })?;
-        let door = Door {
-            client: &client,
-            path,
-        };
-        let workspace = door.workspace().ok_or_else(|| {
-            RelayError::Unavailable("the site's door names no workspace".to_owned())
-        })?;
-        let label = connection.key.cert().device_label.clone();
-        through_door(
-            &self.host,
-            &door,
-            connection.key.cert(),
-            connection.key.key(),
-            &label,
-            &label,
-        )
-        .await?;
+        tilo_session_host::device::entered(connection.device.session()).await?;
         let id = connection.join(&workspace).await?;
         *lobby = Some(id);
         drop(lobby);
@@ -403,6 +409,10 @@ pub struct Connection {
     pub key: GrantKey,
     relay: Origin,
     host: String,
+    /// The site's home workspace, which the session entered through its door
+    /// as it opened: a key reaching all the person's workspaces asks the relay
+    /// its own operations there.
+    lobby_workspace: Option<String>,
     lobby: tokio::sync::Mutex<Option<u64>>,
     /// The workspaces it entered or is entering, by id: each joined once,
     /// and left with the session.

@@ -7,9 +7,14 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use super::{ClientError, ExpectedServer, handshake_frame};
 use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck};
 use crate::transport::MAX_FRAME_BYTES;
+use tilo_relay_protocol::entering::{EnterProof, EnterStep};
 
 /// The client half of the mutual handshake over `send`/`recv`: hello, the
 /// server's proof checked against `server`, and this device's own proof.
+/// With `entering`, this device enters a workspace through its door on the
+/// same exchange ([`tilo_relay_protocol::entering`]): the host's step follows
+/// its ack, and this device's proof of the workspace's challenge follows its
+/// own.
 pub(super) async fn authenticate_server<R, W>(
     send: &mut W,
     recv: &mut R,
@@ -17,6 +22,7 @@ pub(super) async fn authenticate_server<R, W>(
     signer: &dyn DeviceSigner,
     revocations: &RevocationList,
     server: &ExpectedServer,
+    entering: Option<tilo_relay_protocol::entering::Entering>,
 ) -> Result<AuthenticatedPeer, ClientError>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -27,7 +33,11 @@ where
         use rand::Rng;
         rand::rng().fill_bytes(&mut client_nonce);
     }
-    let hello = Hello::new(own_cert.clone(), client_nonce);
+    let entered = entering.is_some();
+    let hello = match entering {
+        Some(entering) => Hello::entering(own_cert.clone(), client_nonce, entering),
+        None => Hello::new(own_cert.clone(), client_nonce),
+    };
     let hello_bytes =
         postcard::to_allocvec(&hello).map_err(|e| ClientError::Codec(e.to_string()))?;
     write_frame(send, &hello_bytes).await?;
@@ -78,11 +88,32 @@ where
         }
     };
 
+    // The door's step comes right behind the ack: read before this device
+    // proves anything, so a refusal ends the exchange here.
+    let challenge = if entered {
+        let step = tilo_relay_client::frame::read_frame(recv, MAX_FRAME_BYTES).await?;
+        match postcard::from_bytes(&step).map_err(|e| ClientError::Codec(e.to_string()))? {
+            EnterStep::Challenge { challenge } => Some(challenge),
+            EnterStep::In => None,
+            EnterStep::Refused(refusal) => return Err(ClientError::Refused(refusal)),
+        }
+    } else {
+        None
+    };
     let ack2 = tilo_relay_client::signer::signed_ack2(signer, &ack.server_nonce)
         .await
         .map_err(ClientError::Sign)?;
     let own_ack2_bytes =
         postcard::to_allocvec(&ack2).map_err(|e| ClientError::Codec(e.to_string()))?;
     write_frame(send, &own_ack2_bytes).await?;
+    if let Some(challenge) = challenge {
+        let signature = signer
+            .sign(tilo_relay_protocol::workspaces::join_proof_digest(&challenge).to_vec())
+            .await
+            .map_err(|error| ClientError::Sign(error.0))?;
+        let proof = postcard::to_allocvec(&EnterProof { signature })
+            .map_err(|e| ClientError::Codec(e.to_string()))?;
+        write_frame(send, &proof).await?;
+    }
     Ok(relay_peer)
 }

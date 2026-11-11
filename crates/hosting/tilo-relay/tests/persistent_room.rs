@@ -533,6 +533,7 @@ fn page(
             cert,
             host_cert: host_cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
+            entering: None,
         },
         std::sync::Arc::new(key),
         std::sync::Arc::new(tilo_session_host::MemoryPeerStore::default()),

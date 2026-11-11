@@ -153,7 +153,7 @@ macro_rules! lazy_exports {
 lazy_exports!("peer":
     "hostRefusal", "hostInfo", "certifyDevice", "channelVault", "issueDeviceCert",
     "redeemInvitation", "inspectInvitation", "reconnectCertificate",
-    "acceptInvitation", "enterThroughDoor", "deviceCertCanonical", "certifyWithRoot",
+    "acceptInvitation", "doorEntry", "deviceCertCanonical", "certifyWithRoot",
     "createLoginCode", "followLoginCode", "keepStandIn", "retireStandIn", "revokeDevice",
     "wasmpeer_*", "__wbg_wasmpeer_*", "pairinghost_*", "__wbg_pairinghost_*",
     "rootNew", "rootHeld", "rootOpenRecovery", "rootOpenPasskey", "rootEnvelopeEmpty",

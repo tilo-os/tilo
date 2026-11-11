@@ -102,6 +102,7 @@ impl HostedWorkspaces {
                 cert: identity.device_cert.clone(),
                 host_cert: placed.host.host_device_certificate.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
+                entering: None,
             },
             Arc::clone(&identity.signer),
             &identity.device_cert.device_label,

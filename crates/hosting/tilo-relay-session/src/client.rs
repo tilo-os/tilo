@@ -76,10 +76,13 @@ struct ExpectedServer {
 /// This device's own relay credential: its certificate, the signer holding
 /// its device key (a key in memory, or a browser's non-extractable one) and
 /// the revocation list it checks the server against.
-struct ClientCredentials<'a> {
-    cert: DeviceCert,
-    signer: &'a dyn DeviceSigner,
-    revocations: RevocationList,
+pub struct ClientCredentials<'a> {
+    pub cert: DeviceCert,
+    pub signer: &'a dyn DeviceSigner,
+    pub revocations: RevocationList,
+    /// The workspace a device the host has not admitted yet enters on this
+    /// session ([`tilo_relay_protocol::entering`]).
+    pub entering: Option<tilo_relay_protocol::entering::Entering>,
 }
 
 fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> bool {
@@ -132,6 +135,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::AgentRun { .. }
         | Envelope::AgentRunAnswer { .. }
         | Envelope::AgentRunStopped
+        | Envelope::Entered(_)
         | Envelope::FetchGrant { .. } => false,
     }
 }
@@ -197,6 +201,10 @@ pub enum ClientError {
     /// hello; [`RelayClient::probe_handshake_version`] tells the two apart.
     #[error("the host closed the stream without answering: {0}")]
     NoHandshakeAnswer(String),
+    /// The door this device entered by, or its workspace, did not let it in
+    /// ([`tilo_relay_protocol::entering`]).
+    #[error("{}", .0.reason())]
+    Refused(tilo_relay_protocol::entering::EnterRefusal),
 }
 
 /// What a host answered a hello without a leading version
@@ -625,24 +633,28 @@ impl RelayClient {
         .await
     }
 
-    /// Connect with a device key held by `signer`, for devices that cannot
-    /// hand over the key bytes (a browser's non-extractable `WebCrypto` key).
+    /// Connect with a device key held by `credentials`' signer, for devices
+    /// that cannot hand over the key bytes (a browser's non-extractable
+    /// `WebCrypto` key).
     /// `expected_server_user` pins the relay's user root (`None` accepts any
     /// valid host certificate behind the pinned endpoint);
-    /// `expected_server_device` additionally pins its device key.
+    /// `expected_server_device` additionally pins its device key. With
+    /// `credentials.entering`, a device the host has not admitted yet enters a workspace
+    /// through its door on this session: the host's answer is the session's
+    /// first envelope ([`Envelope::Entered`]), and requests sent before it are
+    /// read once the workspace admitted the device.
     ///
     /// # Errors
     ///
-    /// Returns [`ClientError`] as [`Self::connect`] does, or
-    /// [`ClientError::Sign`] when the signer fails.
+    /// Returns [`ClientError`] as [`Self::connect`] does,
+    /// [`ClientError::Sign`] when the signer fails, or
+    /// [`ClientError::Refused`] when the door did not let the device in.
     pub async fn connect_with_signer(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
         expected_server_user: Option<[u8; 32]>,
         expected_server_device: Option<[u8; 32]>,
-        own_cert: DeviceCert,
-        signer: &dyn DeviceSigner,
-        revocations: RevocationList,
+        credentials: ClientCredentials<'_>,
     ) -> Result<Self, ClientError> {
         Self::connect_version(
             endpoint,
@@ -653,11 +665,7 @@ impl RelayClient {
                 own_device: false,
                 interactive_scope: None,
             },
-            ClientCredentials {
-                cert: own_cert,
-                signer,
-                revocations,
-            },
+            credentials,
         )
         .await
     }
@@ -684,6 +692,7 @@ impl RelayClient {
                 cert: own_cert,
                 signer: &own_sk,
                 revocations,
+                entering: None,
             },
         )
         .await
@@ -713,6 +722,7 @@ impl RelayClient {
                 cert: own_cert,
                 signer: &own_sk,
                 revocations,
+                entering: None,
             },
         )
         .await
@@ -753,6 +763,7 @@ impl RelayClient {
                 cert: own_cert,
                 signer: &own_sk,
                 revocations,
+                entering: None,
             },
         )
         .await
@@ -791,6 +802,7 @@ impl RelayClient {
                 own_device: true,
                 interactive_scope: None,
             },
+            None,
         )
         .await?;
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(256);
@@ -844,6 +856,7 @@ impl RelayClient {
                 cert: own_cert,
                 signer: &own_sk,
                 revocations,
+                entering: None,
             },
         )
         .await
@@ -860,6 +873,7 @@ impl RelayClient {
             cert: own_cert,
             signer,
             revocations,
+            entering,
         } = credentials;
         if signer.device_public_key() != own_cert.device_public_key {
             return Err(ClientError::Sign(
@@ -879,6 +893,7 @@ impl RelayClient {
             signer,
             &revocations,
             &server,
+            entering,
         )
         .await?;
 

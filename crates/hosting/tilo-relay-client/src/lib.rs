@@ -51,8 +51,7 @@ pub mod invite;
 /// into a workspace with it: through the site's door, and by an invitation.
 /// Reading a login code is a computer's work alone (a page writes the code,
 /// never reads it), so that part of the module is native only; the ways in
-/// are a page's too ([`login::Door`], [`login::through_door`],
-/// [`login::redeem`]).
+/// are a page's too ([`login::Door`], [`login::redeem`]).
 #[cfg(feature = "iroh")]
 pub mod login;
 /// A host's login codes and the person's stand-in approver, for the tab and the computer alike.

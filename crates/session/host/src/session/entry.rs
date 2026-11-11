@@ -1,0 +1,191 @@
+//! A session's entry through a workspace's door ([`tilo_relay_protocol::entering`]), and what
+//! a failed connection says about this device: the host's answer to the entry, kept in the
+//! session's status, the failure each refusal stops the session with, and the wait before the
+//! next attempt.
+
+use tilo_relay_client::LinkError;
+
+use std::time::Duration;
+
+use tokio::sync::mpsc;
+
+use super::{Command, Exit, MAX_BACKOFF, NOT_ADMITTED, Task, TransportPhase};
+
+/// What a failed connection says about this device.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Refusal {
+    /// The host was not reached, or something in front of it answered:
+    /// retried with backoff, never counted against the device.
+    Reachability,
+    /// The host turned the device away without saying why: counted, and
+    /// taken as [`NOT_ADMITTED`] after
+    /// [`REFUSALS_BEFORE_FAILING`](super::REFUSALS_BEFORE_FAILING) in a row.
+    Unexplained,
+    /// The host said why: the session stops with this failure code and copy
+    /// until the page acts on it.
+    Final(&'static str, String),
+}
+
+pub(super) fn refusal(error: &LinkError) -> Refusal {
+    match error {
+        LinkError::HostChanged => Refusal::Final(
+            "host-changed",
+            "This workspace’s host was set up again.".to_owned(),
+        ),
+        LinkError::Entry(refusal) => {
+            Refusal::Final(door_code(refusal), refusal.reason().to_owned())
+        }
+        LinkError::Unavailable(_) | LinkError::Malformed(_) | LinkError::Sign(_) => {
+            Refusal::Reachability
+        }
+        // A host that turns a device away closes its handshake without a
+        // word, so its own reason never reaches the page.
+        LinkError::Refused(_) => Refusal::Unexplained,
+        // Another peer protocol version: whichever side is behind updates
+        // (docs/architecture/compatibility.md). This page is the host's
+        // build, so a newer host means a reload brings it up to date.
+        LinkError::PeerVersion { theirs }
+            if tilo_relay_protocol::auth::this_device_is_behind(*theirs) =>
+        {
+            Refusal::Final(
+                "update-required",
+                "This page is out of date. Reload it to keep working together.".to_owned(),
+            )
+        }
+        LinkError::PeerVersion { .. } => Refusal::Final(
+            "host-update-required",
+            "This workspace’s host needs to update to keep working together.".to_owned(),
+        ),
+    }
+}
+
+/// The failure code of an entry's refusal: the door's own code, as its page
+/// reads it, or `not-admitted` when the workspace refused the device the door
+/// let in.
+pub(super) const fn door_code(
+    refusal: &tilo_relay_protocol::entering::EnterRefusal,
+) -> &'static str {
+    use tilo_relay_protocol::directory::DoorRefusalCode;
+    use tilo_relay_protocol::entering::EnterRefusal;
+    match refusal {
+        EnterRefusal::Workspace(_) => NOT_ADMITTED.0,
+        EnterRefusal::Door { refused, .. } => match refused.code {
+            DoorRefusalCode::Banned => "banned",
+            DoorRefusalCode::Removed => "removed",
+            DoorRefusalCode::InvitationOnly => "invitation-only",
+            DoorRefusalCode::Full => "full",
+            DoorRefusalCode::Refused => "refused",
+        },
+    }
+}
+
+/// The host's answer to a session's entry through a workspace's door.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Entry {
+    /// The workspace admitted this device.
+    Admitted {
+        /// The workspace's UUID.
+        workspace: String,
+        /// Its relay workspace.
+        workspace_id: u64,
+        /// Its name.
+        name: String,
+        /// What the person may do there.
+        role: tilo_relay_protocol::workspaces::WorkspaceRole,
+    },
+    /// The door or the workspace did not let it in: the door's `code`
+    /// (`banned`, `removed`, `invitation-only`, `full`, `refused`), or
+    /// `not-admitted` when the workspace refused the device the door let in;
+    /// what was said, and how long the door asked to wait before the next try.
+    Refused {
+        code: &'static str,
+        message: String,
+        retry_after_secs: Option<u64>,
+    },
+}
+
+impl Entry {
+    pub(super) fn refused(refusal: &tilo_relay_protocol::entering::EnterRefusal) -> Self {
+        use tilo_relay_protocol::entering::EnterRefusal;
+        Self::Refused {
+            code: door_code(refusal),
+            message: refusal.reason().to_owned(),
+            retry_after_secs: match refusal {
+                EnterRefusal::Door {
+                    retry_after_secs, ..
+                } => *retry_after_secs,
+                EnterRefusal::Workspace(_) => None,
+            },
+        }
+    }
+}
+
+impl Task {
+    /// Take the host's answer to this session's entry: in, the session is a
+    /// member's from here and enters no more; refused, it stops.
+    pub(super) fn entered(
+        &mut self,
+        entered: tilo_relay_protocol::entering::Entered,
+    ) -> Option<Exit> {
+        use tilo_relay_protocol::entering::Entered;
+        match entered {
+            Entered::Admitted {
+                workspace,
+                workspace_id,
+                name,
+                role,
+            } => {
+                self.config.entering = None;
+                self.update(|status| {
+                    status.entry = Some(Entry::Admitted {
+                        workspace,
+                        workspace_id,
+                        name,
+                        role,
+                    });
+                });
+                None
+            }
+            Entered::Refused(refused) => {
+                let entry = Entry::refused(&refused);
+                self.update(|status| status.entry = Some(entry));
+                Some(Exit::Refused(
+                    door_code(&refused),
+                    refused.reason().to_owned(),
+                ))
+            }
+        }
+    }
+
+    /// The session is offline after its `attempt`th failed one in a row:
+    /// how long it waits before the next, which its status says.
+    pub(super) fn offline(&self, attempt: u32) -> Duration {
+        let delay = MAX_BACKOFF.min(Duration::from_millis(
+            250u64.saturating_mul(1u64 << attempt.min(7)),
+        ));
+        let delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
+        self.update(|status| {
+            status.phase = TransportPhase::Offline;
+            status.authenticated = false;
+            status.attempt = attempt;
+            status.next_attempt_at_ms = Some(tilo_clock::unix_now_ms().saturating_add(delay_ms));
+        });
+        delay
+    }
+
+    /// The session stops, failed with `code` and `message`, until the page
+    /// asks it to connect again (`true`) or closes it (`false`).
+    pub(super) async fn stop_until_asked(
+        &mut self,
+        code: &'static str,
+        message: String,
+        commands: &mut mpsc::UnboundedReceiver<Command>,
+    ) -> bool {
+        self.fail(code, message);
+        self.update(|status| {
+            status.phase = TransportPhase::Failed;
+            status.authenticated = false;
+        });
+        self.wait_for_reconnect(commands).await
+    }
+}

@@ -75,6 +75,11 @@ pub struct Hello {
     /// Fresh 32-byte challenge nonce the client wants the server to
     /// sign.
     pub client_nonce: [u8; 32],
+    /// The workspace a device the host has not admitted yet asks to enter
+    /// through its door ([`crate::entering`]). Only the host's session
+    /// endpoint takes it; every other endpoint refuses a hello that carries
+    /// one.
+    pub entering: Option<crate::entering::Entering>,
 }
 
 /// Second message: server → client.
@@ -103,6 +108,21 @@ impl Hello {
             protocol: PEER_PROTOCOL_VERSION,
             cert,
             client_nonce,
+            entering: None,
+        }
+    }
+
+    /// The hello of a device the host has not admitted yet, asking to come
+    /// in as `entering` says.
+    #[must_use]
+    pub fn entering(
+        cert: DeviceCert,
+        client_nonce: [u8; 32],
+        entering: crate::entering::Entering,
+    ) -> Self {
+        Self {
+            entering: Some(entering),
+            ..Self::new(cert, client_nonce)
         }
     }
 }

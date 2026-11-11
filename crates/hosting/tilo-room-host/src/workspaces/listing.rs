@@ -20,6 +20,8 @@
 //! is a [`WorkspaceNotice::PreAdmitted`] the owner sees, and a report of the
 //! workspace through its door is a [`WorkspaceNotice::Reported`].
 
+mod entering;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 

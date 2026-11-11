@@ -174,7 +174,6 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
     // It enters the Lounge as Bob, through the door as the page would, its
     // session the agent's run.
     let door = Door {
-        client: &*https,
         path: format!("{API_PREFIX}/directory/{}/join", lounge.workspace),
     };
     let agent = Device::enter(&*https, Some(&door), &signed, Arc::new(cli_key.clone()))

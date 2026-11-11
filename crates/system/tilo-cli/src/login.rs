@@ -32,7 +32,7 @@ use serde_json::Value;
 use tilo_relay_client::CertifyError;
 use tilo_relay_client::HttpClient;
 use tilo_relay_client::https::{self, Origin};
-use tilo_relay_client::login::{Door, PairingLink, SignIn, door_at, sign_in};
+use tilo_relay_client::login::{PairingLink, SignIn, door_at, sign_in};
 use tilo_relay_client::login_code;
 use tilo_relay_protocol::login_code::{self as protocol, Claimed, Report, Resolved, Step};
 use tilo_relay_protocol::web::API_PREFIX;
@@ -256,10 +256,6 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
         host_cert,
     };
     let door = door_at(&Origin::new(&http(), &device.site), &device.host_origin).await;
-    let door = door.as_ref().map(|(client, path)| Door {
-        client,
-        path: path.clone(),
-    });
     Ok(Entered::enter(&host_web, door.as_ref(), &signed, Arc::new(key.clone())).await?)
 }
 

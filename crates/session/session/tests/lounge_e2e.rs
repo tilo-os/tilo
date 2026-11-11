@@ -335,6 +335,7 @@ fn page(room: &Room, member: &Member) -> PeerHandle {
             cert: member.cert.clone(),
             host_cert: room.host_cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
+            entering: None,
         },
         Arc::new(member.key.clone()) as Arc<dyn tilo_relay_client::DeviceSigner>,
         Arc::new(MemoryPeerStore::default()),

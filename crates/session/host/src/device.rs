@@ -11,7 +11,7 @@ use tilo_actions::remote::{
 };
 use tilo_relay_client::login::{Admission, redeem};
 #[cfg(not(target_arch = "wasm32"))]
-use tilo_relay_client::login::{Door, SignIn, through_door};
+use tilo_relay_client::login::{Door, SignIn};
 use tilo_relay_client::{CertifyError, DeviceSigner, HttpClient};
 use tilo_relay_protocol::web::HostInfo;
 use tilo_relay_session::workspaces::{
@@ -28,6 +28,9 @@ use crate::{MemoryPeerStore, PeerStore};
 const ADMITTING: Wait = Wait::from_secs(20);
 /// How often a join looks at the session while it waits.
 const POLL: Wait = Wait::from_millis(100);
+/// How often an entry looks at its session while it waits for the host's answer: a page
+/// waits for nothing else, so it looks often.
+const ENTRY_POLL: Wait = Wait::from_millis(5);
 /// How long a workspace's host has to answer an operation of its own.
 const ANSWERING: u32 = 20_000;
 
@@ -99,12 +102,23 @@ impl Device {
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn connect(sign_in: &SignIn, signer: Arc<dyn DeviceSigner>) -> Self {
+        Self::entering(sign_in, signer, None)
+    }
+
+    /// [`Self::connect`], its session entering a workspace through its door as it opens.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn entering(
+        sign_in: &SignIn,
+        signer: Arc<dyn DeviceSigner>,
+        entering: Option<tilo_relay_protocol::entering::Entering>,
+    ) -> Self {
         Self::over(
             PeerConfig {
                 host: sign_in.host.clone(),
                 cert: sign_in.cert.clone(),
                 host_cert: sign_in.host_cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
+                entering,
             },
             signer,
             &sign_in.label,
@@ -119,30 +133,33 @@ impl Device {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn enter(
         client: &dyn HttpClient,
-        door: Option<&Door<'_>>,
+        door: Option<&Door>,
         sign_in: &SignIn,
         signer: Arc<dyn DeviceSigner>,
     ) -> Result<Self, CertifyError> {
         let workspace = sign_in.link.workspace_id();
         tilo_relay_protocol::room_workspace_id(&workspace)
             .map_err(|error| CertifyError::Request(error.to_string()))?;
-        let device = Self::connect(sign_in, signer);
-        // The site's door lets the person in on this device; without one, the host must already
-        // admit this device.
-        if let Some(door) = door {
-            through_door(
-                client,
-                door,
-                &sign_in.cert,
-                device.signer.as_ref(),
-                &sign_in.agent,
-                &sign_in.label,
-            )
-            .await?;
+        // The site's door lets the person in on this device's session as it opens; without one,
+        // the host must already admit this device.
+        let lobby = door.and_then(Door::workspace);
+        let entering = lobby
+            .clone()
+            .map(|workspace| tilo_relay_protocol::entering::Entering {
+                workspace,
+                name: tilo_relay_protocol::web::kept(
+                    &sign_in.agent,
+                    tilo_relay_protocol::web::MAX_DISPLAY_NAME_CHARS,
+                ),
+                request_id: rand::random(),
+            });
+        let door_entered = entering.is_some();
+        let device = Self::entering(sign_in, signer, entering);
+        if door_entered {
+            entered(&device.peer).await?;
         }
         // The door lets the person into the site's home workspace, which admits the person's own
         // by an invitation this device asks for and redeems.
-        let lobby = door.and_then(Door::workspace);
         if let Some(lobby) = lobby.as_deref().filter(|lobby| *lobby != workspace) {
             let lobby_id = device.join(lobby).await.map_err(|error| {
                 refused(
@@ -595,46 +612,92 @@ pub async fn accept_invitation(
     Ok((admission, cert, host))
 }
 
-/// Go through `door` on the host `client` reaches, as `device`: the host says who it is, the device
-/// takes the certificate [`entering_certificate`] chooses (`entering.token` is not read: the door
-/// hands out its own), the door lets the person in, and the workspace admits the device with what
-/// the door answered. Resolves as [`accept_invitation`].
+/// What `device` enters `workspace` through its door with, on the host whose certificate is
+/// `host`: the certificate [`entering_certificate`] chooses (`entering.token` is not read: the
+/// door hands out its own) and the entry its session asks for as it opens
+/// ([`PeerConfig::entering`]). The door, the workspace's challenge and the admission all happen on
+/// that session's handshake; [`entered`] waits for the host's answer.
 ///
 /// # Errors
-/// The host or the door was not reached, the device holds no certificate it could enter with, the
-/// door refused (its own code: `banned`, `removed`, `invitation-only`, `full` with the wait it
-/// asked for), or the workspace did not admit the device.
-pub async fn enter_through_door(
-    client: &dyn HttpClient,
-    door: &tilo_relay_client::login::Door<'_>,
+/// The device holds no certificate it could enter with.
+pub async fn door_entry(
+    host: &DeviceCert,
+    workspace: &str,
     device: &dyn DeviceSigner,
     entering: Entering<'_>,
-) -> Result<(Admission, DeviceCert, HostInfo), HostRefusal> {
-    let host = tilo_relay_client::https::host_info(client)
-        .await
-        .map_err(|error| HostRefusal::unanswered(&error.to_string()))?;
+) -> Result<(DeviceCert, tilo_relay_protocol::entering::Entering), HostRefusal> {
     let cert = entering_certificate(
         entering.held,
-        &host.host_cert,
+        host,
         device,
         entering.root,
         entering.label,
         tilo_clock::unix_now_ns(),
     )
     .await?;
-    let (invitation, token) =
-        tilo_relay_client::login::ask_door(door, &cert, entering.name).await?;
-    let admission = redeem(
-        client,
-        &invitation,
-        &cert,
-        device,
-        entering.name,
-        Some(token.as_bytes()),
-    )
-    .await
-    .map_err(HostRefusal::from)?;
-    Ok((admission, cert, host))
+    let entry = tilo_relay_protocol::entering::Entering {
+        workspace: workspace.to_owned(),
+        name: tilo_relay_protocol::web::kept(
+            entering.name,
+            tilo_relay_protocol::web::MAX_DISPLAY_NAME_CHARS,
+        ),
+        request_id: rand::random(),
+    };
+    Ok((cert, entry))
+}
+
+/// Wait for the host's answer to the entry `peer`'s session asked for ([`door_entry`]).
+///
+/// # Errors
+/// The door or the workspace refused (the door's own code: `banned`, `removed`,
+/// `invitation-only`, `full` with the wait it asked for, `refused`), or no answer came in time.
+pub async fn entered(peer: &PeerHandle) -> Result<Admission, HostRefusal> {
+    let started = Instant::now();
+    let waits = ADMITTING.max(tilo_relay_protocol::entering::ENTERING_DEADLINE);
+    loop {
+        let status = peer.status();
+        match status.entry {
+            Some(crate::session::Entry::Admitted {
+                workspace,
+                workspace_id,
+                name,
+                role,
+            }) => {
+                return Ok(Admission {
+                    workspace,
+                    workspace_id,
+                    name,
+                    role,
+                });
+            }
+            Some(crate::session::Entry::Refused {
+                code,
+                message,
+                retry_after_secs,
+            }) => {
+                return Err(HostRefusal {
+                    code: code.to_owned(),
+                    message,
+                    refusal: None,
+                    retry_after_ms: retry_after_secs.map(|secs| secs.saturating_mul(1000)),
+                });
+            }
+            None => {}
+        }
+        if let Some(failure) = status
+            .failures
+            .iter()
+            .find(|_| status.phase == TransportPhase::Failed)
+        {
+            return Err(HostRefusal::failed(&failure.message));
+        }
+        if started.elapsed() >= waits {
+            return Err(HostRefusal::unanswered(
+                "the workspace's host did not answer the entry in time",
+            ));
+        }
+        n0_future::time::sleep(ENTRY_POLL).await;
+    }
 }
 
 /// Why a workspace's host did not do what a device asked of it, as the host said it: what every
@@ -770,28 +833,6 @@ impl From<CertifyError> for HostRefusal {
             },
             CertifyError::RateLimited { retry_after_ms } => Self::rate_limited(retry_after_ms),
             other => Self::unanswered(&other.to_string()),
-        }
-    }
-}
-
-/// A door's refusal reads with the door's own code (`banned`, `removed`, `invitation-only`,
-/// `full`, `refused`) and the wait it asked for; anything else as a device's entry fails.
-impl From<tilo_relay_client::login::DoorError> for HostRefusal {
-    fn from(error: tilo_relay_client::login::DoorError) -> Self {
-        match error {
-            tilo_relay_client::login::DoorError::Refused {
-                refused,
-                retry_after_secs,
-            } => Self {
-                code: serde_json::to_value(refused.code)
-                    .ok()
-                    .and_then(|code| code.as_str().map(str::to_owned))
-                    .unwrap_or_else(|| "refused".to_owned()),
-                message: refused.error,
-                refusal: None,
-                retry_after_ms: retry_after_secs.map(|secs| secs.saturating_mul(1000)),
-            },
-            tilo_relay_client::login::DoorError::Entry(error) => error.into(),
         }
     }
 }

@@ -142,9 +142,12 @@ async fn root_holder_certifies_a_browser_device_through_the_host() {
         host,
         Some(user.user_pk),
         Some(host_cert.device_public_key),
-        issued,
-        &browser_key,
-        RevocationList::new(),
+        tilo_relay_session::ClientCredentials {
+            cert: issued,
+            signer: &browser_key,
+            revocations: RevocationList::new(),
+            entering: None,
+        },
     )
     .await
     .unwrap();

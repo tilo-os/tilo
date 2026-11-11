@@ -58,9 +58,9 @@ pub mod way_in;
 
 pub use custody::{MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore};
 pub use document::{document_admission, document_history_admission};
-pub use health::{PeerSnapshot, SessionHealth};
+pub use health::{EntryHealth, PeerSnapshot, SessionHealth};
 pub use session::{
-    CallFrame, CallPicture, CallShown, Completion, Failure, FailureSubject, LocalState,
+    CallFrame, CallPicture, CallShown, Completion, Entry, Failure, FailureSubject, LocalState,
     PAGE_FAILURE_CODES, PageShown, PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerStatus,
     RoomsCompletion, TransportPhase,
 };

@@ -9,14 +9,12 @@
 //!
 //! Reading the code and signing in are a computer's work: a page writes the
 //! code and never reads one. The ways into the workspace a signed-in device
-//! takes — its site's door ([`through_door`]) and an invitation
-//! ([`redeem`]) — are a page's as much as a computer's, so only the first part
-//! is native.
+//! takes — its site's door ([`Door`], entered on the device's session) and an
+//! invitation ([`redeem`]) — are a page's as much as a computer's, so only the
+//! first part is native.
 
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_reference::link::{Link, Mode, Scope, WebEntries, WebEntry};
-use tilo_relay_protocol::directory::{DoorAnswer, DoorJoin};
-use tilo_relay_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
 use tilo_user_identity::DeviceCert;
 #[cfg(not(target_arch = "wasm32"))]
 use uuid::Uuid;
@@ -182,15 +180,15 @@ fn pair_of(pair: &str) -> Result<([u8; 32], Option<[u8; 16]>), String> {
 }
 
 /// A workspace's public door, as the site names it (`entry.json`'s home
-/// `admission`): `client` posts below the door's origin, `path` is its `join`.
-pub struct Door<'a> {
-    /// Posts to the door's origin.
-    pub client: &'a dyn HttpClient,
-    /// The door's `join`, below that origin.
+/// `admission`): its `join` path, which names the workspace it lets people
+/// into. A device enters through it on its session with the workspace's host
+/// ([`tilo_relay_protocol::entering`]).
+pub struct Door {
+    /// The door's `join`, below its origin.
     pub path: String,
 }
 
-impl Door<'_> {
+impl Door {
     /// The workspace the door lets people into, as its path names it.
     #[must_use]
     pub fn workspace(&self) -> Option<String> {
@@ -232,14 +230,14 @@ pub fn site_door(entry: &serde_json::Value, host_origin: &str) -> Option<(String
 /// `host_origin`, as its `entry.json` names it. A computer reads a site's
 /// `entry.json` through its own HTTPS client; a page's entry names its door.
 #[cfg(not(target_arch = "wasm32"))]
-pub async fn door_at(site: &https::Origin, host_origin: &str) -> Option<(https::Origin, String)> {
+pub async fn door_at(site: &https::Origin, host_origin: &str) -> Option<Door> {
     let (status, body) = site.get("/entry.json").await.ok()?;
     if status != 200 {
         return None;
     }
     let entry: serde_json::Value = serde_json::from_slice(&body).ok()?;
-    let (origin, path) = site_door(&entry, host_origin)?;
-    Some((site.sibling(&origin), path))
+    let (_, path) = site_door(&entry, host_origin)?;
+    Some(Door { path })
 }
 
 /// A computer that is now one of the person's devices.
@@ -307,36 +305,6 @@ pub async fn sign_in(
     })
 }
 
-/// Go through `door` on the device `cert` certifies, as the page does: the
-/// door lets its person in (`name` is how it greets them) and the device,
-/// labeled `label`, redeems what it answers on the host `client` posts to.
-///
-/// # Errors
-///
-/// The door or the host was not reached, or either refused.
-pub async fn through_door(
-    client: &dyn HttpClient,
-    door: &Door<'_>,
-    cert: &DeviceCert,
-    signer: &dyn DeviceSigner,
-    name: &str,
-    label: &str,
-) -> Result<(), CertifyError> {
-    let (invitation, token) = ask_door(door, cert, name)
-        .await
-        .map_err(CertifyError::from)?;
-    redeem(
-        client,
-        &invitation,
-        cert,
-        signer,
-        label,
-        Some(token.as_bytes()),
-    )
-    .await
-    .map(drop)
-}
-
 /// What a workspace said as it admitted a device.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Admission {
@@ -399,90 +367,6 @@ pub async fn redeem(
             ))
         }
     }
-}
-
-/// Ask `door` to let the person in on this device, as the page asks it: the
-/// invitation bound to them and the one-time token that admits them.
-/// Why a door did not let a person in.
-#[derive(Debug, thiserror::Error)]
-pub enum DoorError {
-    /// The door said no, as it typed it ([`tilo_relay_protocol::directory::DoorRefused`]), and
-    /// how long it asks to wait before the next try.
-    #[error("{}", .refused.error)]
-    Refused {
-        refused: tilo_relay_protocol::directory::DoorRefused,
-        retry_after_secs: Option<u64>,
-    },
-    /// The door was not reached, answered something else, or the workspace did not admit what it
-    /// let in.
-    #[error(transparent)]
-    Entry(#[from] CertifyError),
-}
-
-/// What a computer's entry reports of a door: its refusal is a denial.
-impl From<DoorError> for CertifyError {
-    fn from(error: DoorError) -> Self {
-        match error {
-            DoorError::Refused { refused, .. } => Self::Denied(format!(
-                "This workspace's door did not let this device in: {}",
-                refused.error
-            )),
-            DoorError::Entry(error) => error,
-        }
-    }
-}
-
-/// Ask `door` to let the person `cert` names in, shown as `name`: the invitation bound to them and
-/// the one-time token that admits them.
-///
-/// # Errors
-/// The door was not reached, refused ([`DoorError::Refused`]), or answered something else.
-pub async fn ask_door(
-    door: &Door<'_>,
-    cert: &DeviceCert,
-    name: &str,
-) -> Result<(Vec<u8>, String), DoorError> {
-    use base64::Engine as _;
-    let join = DoorJoin {
-        user_public_key: hex::encode(cert.user_public_key),
-        display_name: kept(name, MAX_DISPLAY_NAME_CHARS),
-    };
-    let body =
-        serde_json::to_vec(&join).map_err(|error| CertifyError::Request(error.to_string()))?;
-    let answer = door
-        .client
-        .post_answer(&door.path, body)
-        .await
-        .map_err(|error| {
-            CertifyError::Transport(crate::LinkError::Unavailable(format!(
-                "The workspace's door was not reached: {error}"
-            )))
-        })?;
-    if answer.status != 200 {
-        let refused = serde_json::from_slice(&answer.body).unwrap_or_else(|_| {
-            tilo_relay_protocol::directory::DoorRefused {
-                code: tilo_relay_protocol::directory::DoorRefusalCode::Refused,
-                error: format!(
-                    "the door answered {}: {}",
-                    answer.status,
-                    kept(&String::from_utf8_lossy(&answer.body), 200)
-                ),
-            }
-        });
-        return Err(DoorError::Refused {
-            refused,
-            retry_after_secs: answer.retry_after_secs,
-        });
-    }
-    let answer: DoorAnswer = serde_json::from_slice(&answer.body).map_err(|error| {
-        CertifyError::Denied(format!("The door answered something else: {error}"))
-    })?;
-    let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(answer.invitation.trim_end_matches('='))
-        .map_err(|error| {
-            CertifyError::Denied(format!("The door's invitation is damaged: {error}"))
-        })?;
-    Ok((invitation, answer.admission_token))
 }
 
 #[cfg(test)]

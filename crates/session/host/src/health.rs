@@ -28,6 +28,69 @@ pub struct PeerSnapshot {
     pub synchronization: &'static str,
     /// Full health.
     pub health: SessionHealth,
+    /// What the host answered the entry through a workspace's door this
+    /// session asked for, once it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry: Option<EntryHealth>,
+}
+
+/// The host's answer to a session's entry through a workspace's door.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase", tag = "outcome")]
+pub enum EntryHealth {
+    /// The workspace admitted this device.
+    #[serde(rename_all = "camelCase")]
+    Admitted {
+        /// The workspace's UUID.
+        workspace: String,
+        /// Its name.
+        name: String,
+        /// `viewer` | `commenter` | `editor` | `moderator`.
+        role: &'static str,
+    },
+    /// The door or the workspace did not let it in.
+    #[serde(rename_all = "camelCase")]
+    Refused {
+        /// `banned` | `removed` | `invitation-only` | `full` | `refused`, or
+        /// `not-admitted` when the workspace refused the device the door let in.
+        code: &'static str,
+        /// What the door said.
+        message: String,
+        /// How long the door asked to wait before the next try.
+        retry_after_secs: Option<u64>,
+    },
+}
+
+impl EntryHealth {
+    fn of(entry: &crate::session::Entry) -> Self {
+        use tilo_relay_protocol::workspaces::WorkspaceRole;
+        match entry {
+            crate::session::Entry::Admitted {
+                workspace,
+                name,
+                role,
+                ..
+            } => Self::Admitted {
+                workspace: workspace.clone(),
+                name: name.clone(),
+                role: match role {
+                    WorkspaceRole::Viewer => "viewer",
+                    WorkspaceRole::Commenter => "commenter",
+                    WorkspaceRole::Editor => "editor",
+                    WorkspaceRole::Moderator => "moderator",
+                },
+            },
+            crate::session::Entry::Refused {
+                code,
+                message,
+                retry_after_secs,
+            } => Self::Refused {
+                code,
+                message: message.clone(),
+                retry_after_secs: *retry_after_secs,
+            },
+        }
+    }
 }
 
 /// `SessionHealth` v1.
@@ -361,6 +424,7 @@ impl PeerSnapshot {
             .collect();
         let newest = status.failures.last();
         Self {
+            entry: status.entry.as_ref().map(EntryHealth::of),
             phase,
             device_id: hex::encode(status.device),
             error: newest.map(|failure| failure.message.clone()),
@@ -437,6 +501,7 @@ mod tests {
             channels: String::new(),
             room_members: std::collections::BTreeMap::new(),
             room_devices: std::collections::BTreeMap::new(),
+            entry: None,
         };
         serde_json::to_value(PeerSnapshot::from_status(&status).health).unwrap_or_default()
     }

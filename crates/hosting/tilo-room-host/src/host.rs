@@ -1162,24 +1162,55 @@ where
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     ctx.metrics.inc_conns_accepted();
-    let client_peer = match ctx
+    // A device the host has not admitted yet may enter a workspace through
+    // its door on this session, where the host governs workspaces.
+    let doorway = ctx.admin.get().cloned();
+    let (client_peer, entered) = match ctx
         .identity
-        .authenticate(
+        .authenticate_or_enter(
             EndpointTrust::Live(&ctx.trust_policy),
             &mut recv,
             &mut send,
             MAX_FRAME_BYTES,
+            doorway
+                .as_deref()
+                .map(|workspaces| workspaces as &dyn crate::handshake::Doorway),
         )
         .await
     {
-        Ok(peer) => peer,
+        Ok(entered) => entered,
         Err(error) => {
-            if matches!(error, HandshakeError::Auth(_)) {
+            if matches!(error, HandshakeError::Auth(_) | HandshakeError::Refused(_)) {
                 ctx.metrics.inc_auth_rejected();
+            }
+            if matches!(error, HandshakeError::Refused(_)) {
+                told_then_closed(&mut send, closed).await;
             }
             return Err(HostError::Handshake(error.to_string()));
         }
     };
+    if let Some(entered) = entered {
+        // The answer is the session's first envelope; a refused device hears
+        // it and nothing else.
+        let admitted = matches!(
+            entered,
+            tilo_relay_protocol::entering::Entered::Admitted { .. }
+        );
+        let frame = tilo_delivery_protocol::transport_v2::encode(
+            &tilo_delivery_protocol::transport_v2::EnvelopeV2::State(
+                crate::transport::Envelope::Entered(entered),
+            ),
+        )
+        .map_err(|error| HostError::Handshake(error.to_string()))?;
+        tokio::io::AsyncWriteExt::write_all(&mut send, &frame)
+            .await
+            .map_err(|error| HostError::Handshake(error.to_string()))?;
+        if !admitted {
+            ctx.metrics.inc_auth_rejected();
+            told_then_closed(&mut send, closed).await;
+            return Err(HostError::Handshake("the entry was refused".to_owned()));
+        }
+    }
     ctx.metrics.inc_conns_authed();
     ctx.arrivals.arrived(client_peer.device_public_key);
     let context = ctx.peer_context();
@@ -1187,6 +1218,21 @@ where
         tracing::debug!("peer session ended with error: {e}");
     }
     Ok(())
+}
+
+/// How long a refused entry's stream stays open for its device to read why.
+const REFUSAL_READ: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// End a refused entry's stream once its device was told why: the stream
+/// finishes, and the connection closes when the device closes it, or after
+/// [`REFUSAL_READ`]. Closed at once, the connection would drop the answer
+/// still on its way.
+async fn told_then_closed<W>(send: &mut W, closed: impl std::future::Future<Output = ()>)
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let _ = tokio::io::AsyncWriteExt::shutdown(send).await;
+    let _ = tokio::time::timeout(REFUSAL_READ, closed).await;
 }
 
 /// The device's own host, as its native owner joins the workspaces placed on it.

@@ -441,7 +441,7 @@ async function connect({
   profile, device, displayName = '',
   fetch: fetcher, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
-  workspaceName, hostInfo: answered,
+  workspaceName, hostInfo: answered, entering,
 }) {
   userPublicKey ??= identity?.userPublicKey;
   // Only a peer in its profile's own namespace moves to a fresh one when the
@@ -527,6 +527,8 @@ async function connect({
   const publish = () => {
     if (!peer) return;
     snapshot = JSON.parse(peer.snapshot());
+    // Once in, a session started again (a recovery) is a member's and enters no more.
+    if (snapshot.entry?.outcome === 'admitted') entering = undefined;
     if (snapshot.phase === 'ready') admitted();
     if (live) {
       // The session's next frame carries both: the durable changes this page
@@ -708,6 +710,9 @@ async function connect({
         // certificate, so the host refuses those keys from the moment each
         // entry names on.
         revocations: identity?.revocations?.length ? identity.revocations : undefined,
+        // The workspace this device enters through its door as its session opens, until
+        // the host admitted it.
+        entering,
       }),
       custodyForWasm,
       storage ? JSON.stringify({profile, device}) : undefined,
@@ -1408,6 +1413,95 @@ async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop
 /** The codes a door refuses with (`DoorRefusalCode`), and its entry when not reached. */
 const DOOR_CODES = new Set(['banned', 'removed', 'invitation-only', 'full', 'refused', 'unanswered']);
 
+/** How long a page waits for its host's answer to the entry its session asked for: the host
+ * holds an entry for at most 30 seconds (`ENTERING_DEADLINE`), and a connection takes some. */
+const ENTRY_TIMEOUT_MS = 45_000;
+
+/** A refusal as the shared entry reads it (`HostRefusal`): its `code`, and the wait the door
+ * asked for in seconds. */
+function hostRefusal(code, message, retryAfter = null) {
+  const error = new Error(message);
+  error.name = 'HostRefusal';
+  error.code = code;
+  if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfter = retryAfter;
+  return error;
+}
+
+/** The workspace `door` (its base URL, `…/directory/<workspace>/`) lets people into. */
+function doorWorkspace(door) {
+  const segments = new URL(door).pathname.split('/').filter(Boolean);
+  const at = segments.lastIndexOf('directory');
+  return at >= 0 ? segments[at + 1] ?? null : null;
+}
+
+/** The host's answer to the entry `peer`'s session asked for, from its status (`entry`):
+ * resolves once the workspace admitted it, rejects with the refusal. */
+function entryAnswered(peer, timeoutMs = ENTRY_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    let stop = () => {};
+    const timer = setTimeout(() => finish(hostRefusal('unanswered', 'The workspace’s host did not answer in time.')), timeoutMs);
+    function finish(error, value) {
+      clearTimeout(timer);
+      stop();
+      if (error) reject(error); else resolve(value);
+    }
+    const check = snapshot => {
+      const entry = snapshot?.entry;
+      if (entry?.outcome === 'admitted') finish(undefined, entry);
+      else if (entry?.outcome === 'refused') finish(hostRefusal(entry.code, entry.message, entry.retryAfterSecs));
+      else if (snapshot?.phase === 'failed') finish(hostRefusal(snapshot.errorCode ?? 'refused', snapshot.error ?? 'The host refused this device.'));
+    };
+    stop = peer.onStatus(check);
+    check(peer.getSnapshot());
+  });
+}
+
+/** Enter through a workspace's door (`door`, its base URL) on the session itself: the host says
+ * who it is, the shared entry chooses the certificate (the one this very key holds from this host,
+ * else one the root makes now), and the session asks to enter as it opens. The door, the
+ * workspace's challenge and the admission ride the session's own handshake, so the page asks the
+ * host nothing else first, and its first requests follow its proof. */
+async function enterDoor({
+  origin, door, identity, person, label, displayName, signal, onProgress, runtime, custody, custodyForWasm,
+  profile, fetcher, accepting, connectOptions,
+}) {
+  const workspace = doorWorkspace(door);
+  if (!workspace) throw new TypeError('the door names no workspace');
+  let hostText;
+  let entered;
+  try {
+    hostText = await runtime.hostInfo(httpsPost(origin, fetcher));
+    entered = await runtime.doorEntry(memberText(hostText, 'hostCert'), workspace, custodyForWasm,
+      identity ?? undefined, accepting);
+  } catch (error) {
+    if (DOOR_CODES.has(error?.code)) throw error;
+    console.warn('join refused:', error?.code ?? error?.name, error?.message ?? error);
+    throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: error?.message ?? String(error), code: 'refused'});
+  }
+  const peer = await connect({
+    ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, workspace, label, displayName, custody, runtime, signal,
+    profile: connectOptions.store ? undefined : profile,
+    // As text: the certificate's nanosecond timestamps exceed what a JavaScript number holds
+    // exactly (json-text.mjs).
+    fetch: fetcher, deviceCertificate: memberText(entered, 'certificate'),
+    hostInfo: JSON.parse(hostText),
+    entering: JSON.parse(memberText(entered, 'entering')),
+  });
+  try {
+    const entry = await entryAnswered(peer);
+    onProgress?.({phase: 'admitted', room: entry.workspace, workspaceName: entry.name, role: entry.role});
+    return peer;
+  } catch (error) {
+    await peer.dispose?.().catch(() => {});
+    // A door's own refusal (its code, and the wait it asked for) is the caller's to show:
+    // `workspaces.mjs` reads it. The workspace refusing the device the door let in is a refusal
+    // of what this browser brings, which the caller answers by coming again as a new device.
+    if (DOOR_CODES.has(error?.code)) throw error;
+    console.warn('join refused:', error?.code ?? error?.name, error?.message ?? error);
+    throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: error?.message ?? String(error), code: 'refused'});
+  }
+}
+
 async function join({
   origin, invitation, door, identity, displayName = '', label = 'Browser', signal, onProgress,
   admissionToken, runtime, custody, profile, fetch: fetcher, certified, ...connectOptions
@@ -1431,22 +1525,17 @@ async function join({
   // this device under it.
   const accepting = JSON.stringify({held, label: fitDisplayName(label), name: fitDisplayName(displayName || label),
     ...(admissionToken ? {admissionToken} : {})});
+  if (door) {
+    return enterDoor({
+      origin, door, identity, person, label, displayName, signal, onProgress, runtime, custody, custodyForWasm,
+      profile, fetcher, accepting, connectOptions,
+    });
+  }
   let accepted;
   try {
-    if (door) {
-      // Through a workspace's door (`door`, its base URL): the shared entry
-      // asks it to let the person in and redeems what it answers.
-      const at = new URL('join', door);
-      accepted = await runtime.enterThroughDoor(httpsPost(at.origin, fetcher), at.pathname, httpsPost(origin, fetcher),
-        custodyForWasm, identity ?? undefined, accepting);
-    } else {
-      accepted = await runtime.acceptInvitation(httpsPost(origin, fetcher), invitationBytes(invitation), custodyForWasm,
-        identity ?? undefined, accepting);
-    }
+    accepted = await runtime.acceptInvitation(httpsPost(origin, fetcher), invitationBytes(invitation), custodyForWasm,
+      identity ?? undefined, accepting);
   } catch (error) {
-    // A door's own refusal (its code, and the wait it asked for) is the
-    // caller's to show: `workspaces.mjs` reads it.
-    if (door && DOOR_CODES.has(error?.code)) throw error;
     console.warn('join refused:', error?.code ?? error?.name, error?.message ?? error);
     throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: error?.message ?? String(error), code: 'refused'});
   }

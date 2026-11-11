@@ -42,7 +42,7 @@ use tilo_session_client::content::Kept;
 use tilo_session_host::{
     Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle, TransportPhase,
 };
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::DeviceCert;
 
 pub mod actions;
 mod authors;
@@ -388,7 +388,6 @@ impl AgentParticipant {
                 &identity.delegation.label,
                 std::env::var(crate::profile::DECOMPOSE_ENV).ok().as_deref(),
             );
-
         let planning = planning::Planning::start(planner, Arc::clone(&control))?;
         let (peer, events) = join(&config, &identity, workspace_id, store, &control)?;
         let presence = tilo_session_host::saying::enter(
@@ -2271,12 +2270,11 @@ fn join(
     control: &Arc<AgentControl>,
 ) -> Result<(PeerHandle, PeerEvents), String> {
     let peer = PeerHandle::start(
-        PeerConfig {
-            host: config.host.clone(),
-            cert: identity.cert.clone(),
-            host_cert: config.host_cert.clone(),
-            revocations: RevocationList::new(),
-        },
+        PeerConfig::member(
+            config.host.clone(),
+            identity.cert.clone(),
+            config.host_cert.clone(),
+        ),
         Arc::new(identity.key.clone()),
         store,
     );

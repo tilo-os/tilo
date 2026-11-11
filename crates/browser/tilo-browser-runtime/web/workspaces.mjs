@@ -16,7 +16,7 @@
  * Joining through the host takes the person's identity from the caller,
  * which owns creating and keeping it: a person who already joined that host
  * reconnects; otherwise the person goes through the door, by the entry every
- * device takes (`enterThroughDoor` in wasm, `device::enter_through_door`),
+ * device takes, on the session itself (`doorEntry` in wasm, `device::door_entry`),
  * with no pairing code. A door that says no says why in its own code: a
  * workspace that is full is waited out as long as it asked, until there is
  * a seat.

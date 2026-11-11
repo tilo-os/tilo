@@ -542,6 +542,7 @@ pub fn start_peer_with_store(
             cert,
             host_cert,
             revocations: RevocationList::new(),
+            entering: None,
         },
         Arc::new(key),
         store,
@@ -588,6 +589,30 @@ pub fn start_page(
             cert,
             host_cert,
             revocations: RevocationList::new(),
+            entering: None,
+        },
+        Arc::new(PageCustody(key)),
+        store,
+    )
+}
+
+/// [`start_page`], its session entering a workspace through its door as it
+/// opens, as a new visitor's page does.
+pub fn enter_page(
+    host: Host,
+    cert: DeviceCert,
+    host_cert: DeviceCert,
+    key: SigningKey,
+    store: Arc<MemoryPeerStore>,
+    entering: tilo_relay_protocol::entering::Entering,
+) -> PeerHandle {
+    PeerHandle::start(
+        PeerConfig {
+            host,
+            cert,
+            host_cert,
+            revocations: RevocationList::new(),
+            entering: Some(entering),
         },
         Arc::new(PageCustody(key)),
         store,

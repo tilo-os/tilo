@@ -172,6 +172,8 @@ pub(super) async fn handle_envelope(
         | Envelope::WorkspacesReply { .. }
         | Envelope::AgentRunAnswer { .. }
         | Envelope::AgentRunStopped
+        // Only the host answers an entry, once, before the session.
+        | Envelope::Entered(_)
         // Who is here is the live plane's alone: a device that still asks the host
         // is answered by nobody.
         | Envelope::RetiredHereRequest { .. }
