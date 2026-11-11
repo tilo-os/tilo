@@ -423,6 +423,31 @@ impl Presence {
     /// by: what shows which device a window of the workspace runs on.
     #[must_use]
     pub fn workspace_devices(&self, workspace: &str) -> Vec<(EndpointId, String)> {
+        self.devices_called(workspace, |member| {
+            if member.device.trim().is_empty() {
+                member.label().to_owned()
+            } else {
+                member.device.clone()
+            }
+        })
+    }
+
+    /// The devices heard in `workspace` beside this one, by publisher and what each calls itself,
+    /// from its certificate: nothing for a device that gave itself no name, or whose certificate
+    /// was not heard yet. Never the person's name, which names them and not one of their devices:
+    /// what a sentence about the device itself says.
+    #[must_use]
+    pub fn workspace_device_names(&self, workspace: &str) -> Vec<(EndpointId, String)> {
+        self.devices_called(workspace, |member| member.device.trim().to_owned())
+    }
+
+    /// The devices heard in `workspace` beside this one, by publisher, each with what `called`
+    /// says of it.
+    fn devices_called(
+        &self,
+        workspace: &str,
+        called: impl Fn(&presence::Member) -> String,
+    ) -> Vec<(EndpointId, String)> {
         self.plane
             .borrow()
             .workspaces
@@ -434,12 +459,7 @@ impl Presence {
                     .iter()
                     .filter_map(|member| {
                         let publisher = EndpointId::from_bytes(&member.publisher).ok()?;
-                        let name = if member.device.trim().is_empty() {
-                            member.label().to_owned()
-                        } else {
-                            member.device.clone()
-                        };
-                        Some((publisher, name))
+                        Some((publisher, called(member)))
                     })
                     .collect()
             })
