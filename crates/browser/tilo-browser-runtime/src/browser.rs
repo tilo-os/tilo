@@ -10,13 +10,10 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use js_sys::{Function, Reflect};
-use ui::application::{
-    ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
-};
-use ui::application_view::InstanceViewStore;
+use ui::application::{ComponentRunnerInputs, HostContext};
 use ui::headless::FrameHarness;
 use ui::permissions::{PermissionContext, SharedPermissions, UserId};
-use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
+use ui::record::{RecordCheckout, RecordStore};
 use wasm_bindgen::{JsCast, prelude::*};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
@@ -24,7 +21,6 @@ use winit::platform::web::{EventLoopExtWebSys as _, WindowAttributesExtWebSys as
 use winit::window::{Window, WindowId};
 
 use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
-use crate::workspace_records::in_page;
 use tilo_lock::MutexRecover as _;
 
 thread_local! {
@@ -455,6 +451,11 @@ pub(crate) struct Mount {
     checkout: Option<RecordCheckout>,
     /// The single application's package id; `None` for the desktop.
     app: Option<String>,
+    /// The page showing one application whose record the workspace still
+    /// sends: what builds the component once the record is here, or once the
+    /// workspace answered it holds none of it. Its window shows the app
+    /// arriving until then.
+    waiting: Option<Rc<AppPage>>,
     /// The workspace's presence board, as the last frame read it: who is
     /// here, where their pointers are, and when what they say animates.
     presence: presence::Presence,
@@ -784,6 +785,54 @@ impl Desktop {
 }
 
 impl Mount {
+    /// An app this page showed arriving builds once the workspace sent the
+    /// record its window opens, or answered it holds none of it: the component
+    /// takes the place the arrival stood in, and shows the record — the
+    /// workspace's own, or the new one it does not hold.
+    fn build_arriving(&mut self) -> Result<(), String> {
+        let Some(page) = self.waiting.clone() else {
+            return Ok(());
+        };
+        if page.arriving() {
+            return Ok(());
+        }
+        let presentation = page.present().map_err(|failure| {
+            failure
+                .as_string()
+                .unwrap_or_else(|| "the app's record did not open".to_owned())
+        })?;
+        let Presentation {
+            root,
+            stores,
+            checkout,
+            images,
+            image_owners,
+            waiting,
+            ..
+        } = presentation;
+        self.waiting = waiting;
+        let Root::Component(component) = root else {
+            // Still on its way: the window keeps showing the arrival.
+            return Ok(());
+        };
+        let wake = proxy().map_err(|failure| failure.as_string().unwrap_or_default())?;
+        let id = self.id;
+        self.frame
+            .show_component(
+                *component,
+                Arc::new(move || {
+                    let _ = wake.send_event(id);
+                }),
+            )
+            .map_err(|failure| failure.to_string())?;
+        self.stores = stores;
+        self.checkout = checkout;
+        self.images = images;
+        self.image_owners = image_owners;
+        self.pending = true;
+        Ok(())
+    }
+
     /// Send the workspace what an input just committed. An app applies the
     /// action a key or a click invokes while handling it (a message sent
     /// with Enter is in its record at once), so the others get it now,
@@ -1201,11 +1250,18 @@ struct Presentation {
     images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     image_owners: crate::page_content::ImageOwners,
     desktop: Option<Desktop>,
+    /// The page showing one app whose record the workspace still sends: what
+    /// builds its component once the record is here or the workspace answered
+    /// it holds none of it.
+    waiting: Option<Rc<AppPage>>,
 }
 
 enum Root {
     Component(Box<ui::application::AppComponent>),
     Desktop(Box<crate::shell::BrowserShell>),
+    /// A window standing in for its application until the record it opens
+    /// arrives: the place it reserves, showing its arrival.
+    Arriving(Box<dyn ui::widget::Widget>),
 }
 
 fn present_desktop(
@@ -1307,6 +1363,7 @@ fn present_desktop(
             workspace: config.workspace.clone(),
             finishing: RefCell::default(),
         }),
+        waiting: None,
     })
 }
 
@@ -1354,126 +1411,6 @@ fn desktop_shell(
     ))
 }
 
-fn present_component(
-    definition: &'static ui::application::ApplicationDefinition,
-    config: &Config,
-    dyn_store: &Rc<dyn durable_store::DurableStore>,
-    permissions: SharedPermissions,
-) -> Result<Presentation, JsValue> {
-    if definition.app_id() == tilo_desktop::feedback::PACKAGE {
-        return present_private_feedback(config);
-    }
-    let owners = RecordOwners::with_store(Rc::clone(dyn_store));
-    let record = owners
-        .clone()
-        .open(definition.app_id(), &config.workspace)
-        .map_err(error)?;
-    let stores = Rc::new(RefCell::new(vec![record.clone()]));
-    // The instance's default record, named by the host so a reload opens the
-    // same document, as a native launch does.
-    let default = RecordCheckout::new(
-        RecordId::derived("default", &RecordId::for_tab(config.instance)),
-        definition.record_kind.clone(),
-    );
-    let (checkout, named_new) = match &config.record {
-        // The workspace's own document of an app that keeps one: opened as a
-        // launch naming nothing opens it, so a link to it works before anyone
-        // wrote it (the first write founds it), as it does natively.
-        Some(existing)
-            if definition.keeps_workspace_record()
-                && existing == RecordId::package_primary().as_str() =>
-        {
-            (None, None)
-        }
-        Some(existing) => (
-            Some(RecordCheckout::new(
-                RecordId::parse(existing).ok_or_else(|| error("invalid record id"))?,
-                definition.record_kind.clone(),
-            )),
-            None,
-        ),
-        None if config.new_document || definition.keeps_workspace_record() => (None, None),
-        None => match record.try_open_record(&default) {
-            Ok(_) => (Some(default), None),
-            Err(ui::record::RecordOpenError::MissingRecord) => (None, Some(default.id)),
-            Err(open) => return Err(error(open)),
-        },
-    };
-    let target = match checkout {
-        Some(checkout) => LaunchTarget::Record {
-            checkout,
-            reveal: None,
-        },
-        None if named_new.is_some() => LaunchTarget::New,
-        None => definition.unsaved_target(&record).map_err(error)?,
-    };
-    let views = Rc::new(
-        InstanceViewStore::with_store(Rc::clone(dyn_store), &config.device, &config.workspace)
-            .map_err(error)?,
-    );
-    let restore = views
-        .load(config.instance)
-        .map_err(error)?
-        .map_or(RestoreInput::None, RestoreInput::Local);
-    let inputs = HostContextInputs {
-        records: record,
-        views,
-        device_id: config.device.clone(),
-        instance_id: config.instance,
-        permissions,
-        author: UserId(config.author()),
-        action_context: tilo_actions::ActionContext::default(),
-    };
-    let mut context = match named_new {
-        Some(id) => HostContext::prepare_new_record(definition, inputs, id),
-        None => HostContext::prepare(definition, inputs, &target),
-    }
-    .map_err(error)?;
-    context.provide_models(config.models()?);
-    context.provide_content(crate::page_content());
-    context.provide_workspace_records(in_page(
-        &owners,
-        &stores,
-        &config.workspace,
-        config.author(),
-        config.peer.is_some(),
-    ));
-    crate::person_records::provide(&mut context, dyn_store).map_err(error)?;
-    config.lend_provider_admin(&mut context)?;
-    let loaders = Rc::new(RefCell::new(Vec::new()));
-    let image_owners = crate::page_content::ImageOwners::default();
-    crate::page_content::serve_window(&context.wake_handle(), &loaders, &image_owners);
-    let component = definition
-        .instantiate(context, target, restore)
-        .map_err(error)?;
-    let checkout = component.record().clone();
-    Ok(Presentation {
-        root: Root::Component(Box::new(component)),
-        stores,
-        checkout: Some(checkout),
-        images: loaders,
-        image_owners,
-        desktop: None,
-    })
-}
-
-fn present_private_feedback(config: &Config) -> Result<Presentation, JsValue> {
-    // The page loads a deferred composer's code before mounting it alone
-    // (`load_application`).
-    let code = crate::feedback_composer::code()
-        .ok_or_else(|| error("the Feedback composer's code is not loaded"))?;
-    let component =
-        (code.prepare)(None, &config.device, &config.author(), config.instance).map_err(error)?;
-    Ok(Presentation {
-        root: Root::Component(Box::new(component)),
-        stores: Rc::default(),
-        checkout: None,
-        images: Rc::default(),
-        image_owners: crate::page_content::ImageOwners::default(),
-        desktop: None,
-    })
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "one ordered mount: storage, records, presentation, fonts, window, frame pipeline"
@@ -1486,6 +1423,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         hydrated,
         status,
     } = request;
+    let config = Rc::new(config);
     // Apps can measure shared controls while constructing their views. Publish
     // the verified browser fonts first: WASM has no system fonts to fall back
     // to when those constructor-time renderers shape their labels.
@@ -1524,10 +1462,14 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         images,
         image_owners,
         mut desktop,
+        waiting,
     } = match definition {
-        Some(definition) => {
-            present_component(definition, &config, &dyn_store, permissions.clone())?
-        }
+        Some(definition) => present_component(
+            definition,
+            Rc::clone(&config),
+            &dyn_store,
+            permissions.clone(),
+        )?,
         None => present_desktop(id, &config, dyn_store, permissions.clone())?,
     };
     let window = Arc::new(
@@ -1571,6 +1513,21 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             // The page is the app's window, outside any Tilo session: it
             // hosts the app's window-bar slots, search and History in a
             // row of its own, as a native window of its own does.
+            frame.host_window_slots();
+            frame
+        }
+        // The app's record is on its way: its window reserves the place,
+        // showing what it declared for it, and the app is built into it once
+        // the record is here (`Mount::build_arriving`).
+        Root::Arriving(shown) => {
+            let mut frame = FrameHarness::new_with_controlled_inputs(
+                ui::state::State::new(),
+                shown,
+                viewport.logical_size(),
+                crate::page_theme::current(),
+                text_renderer,
+                UserId(config.author()),
+            );
             frame.host_window_slots();
             frame
         }
@@ -1657,6 +1614,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         stores,
         checkout,
         app: definition.map(|definition| definition.app_id().to_owned()),
+        waiting,
         presence: presence::Presence::default(),
         id,
         desktop,
@@ -2182,6 +2140,9 @@ impl Mount {
             self.held = "an empty canvas";
             return Ok(());
         }
+        // What a page waiting for its app's record showed arriving becomes the
+        // app here, before the frame reads what the window shows.
+        self.build_arriving()?;
         // A window the last frame opened shows what its open named.
         self.reveal_opened();
         self.follow_view();
@@ -3014,6 +2975,9 @@ impl Mount {
 ///
 /// Rejects an unknown kind or a closed mount.
 mod agent_notices;
+mod app_window;
+use app_window::AppPage;
+use app_window::present_component;
 mod desktop_exports;
 mod dom;
 mod prepare;

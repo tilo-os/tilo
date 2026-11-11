@@ -307,6 +307,7 @@ mod profiling;
 mod retained_layout;
 mod root_access;
 pub use root_access::{Framed, RootAndStateMut, RootMut};
+mod root_component;
 mod root_wake;
 mod search_open;
 mod sidebar_button;
@@ -901,62 +902,6 @@ impl FrameHarness {
                 .setup_error(crate::launch::LaunchError::Operation(error.to_string())));
         }
         Ok((root, wake, history))
-    }
-
-    /// Show the record the component asked to open: close it keeping its recovery, and mount the
-    /// component it built in its place with everything the host set kept.
-    fn swap_requested_component(&mut self) {
-        let Some(replacement) = crate::component_lifecycle::take_replacement(self.root.as_mut())
-        else {
-            return;
-        };
-        let notify = self.component_wake.as_ref().map_or_else(
-            || std::sync::Arc::new(|| {}) as std::sync::Arc<dyn Fn() + Send + Sync>,
-            |wake| std::sync::Arc::clone(&wake.notify),
-        );
-        let (component, outcome) = replacement.into_parts();
-        let owner_queue = self.owner_wake_queue.clone().unwrap_or_default();
-        let (root, wake, history) = match Self::mount_component(component, notify, &owner_queue) {
-            Ok(mounted) => mounted,
-            Err(error) => {
-                outcome.answer(Err(error.to_string()));
-                return;
-            }
-        };
-        // The asking component answers the operation that asked before it
-        // closes.
-        outcome.answer(Ok(()));
-        self.poll_control_invocations();
-        let reports = {
-            self.close_components();
-            self.take_component_close_reports()
-        };
-        self.component_close_reports.extend(reports);
-        let mut root = root;
-        let control_domain = crate::control_custody::ControlDomain::outer();
-        crate::widget::controls::install_control_custody(
-            root.as_mut(),
-            &control_domain,
-            crate::control_custody::CustodyAttachment::Initial,
-        );
-        control_domain.finish_initial_installation();
-        self.control_domain = control_domain;
-        self.component_wake = Some(Box::new(wake));
-        self.history = None;
-        self.pending_history = None;
-        self.discard_layout_tree();
-        self.focused = None;
-        self.focus_before_trap = None;
-        self.focus_trap_node = None;
-        self.ordinary_palette_return_focus = None;
-        self.root_type = None;
-        self.root = root;
-        self.owner_wake_queue = Some(owner_queue);
-        if let Some(registration) = history
-            && let Err(error) = self.install_history(registration)
-        {
-            tracing::warn!(%error, "the reopened record shows without its history");
-        }
     }
 
     /// The lane the mounted component's record content travels on: the lane its window keeps, read
@@ -9236,6 +9181,41 @@ impl FrameHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A host that stood a window in for its application builds the application in
+    /// it once what it waited for came: the root it showed makes way for the
+    /// component, which shows its record, and the frame keeps the viewport it stood in.
+    #[test]
+    fn a_component_takes_the_place_of_the_root_a_host_waited_with() {
+        use crate::application_test_support::ProbeHost;
+        let mut frame = FrameHarness::new_with_controlled_inputs(
+            State::new(),
+            Box::new(Button::new("waiting", "Arriving")),
+            (400, 200),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("reader".into()),
+        );
+        assert!(
+            frame.component_record().is_none(),
+            "a bare root shows no component's record"
+        );
+        let owner = ProbeHost::new();
+        let (component, _) = crate::widget::control_result_probe::component(&owner, 11, true);
+        let record = component.record().id.clone();
+        frame
+            .show_component(
+                component,
+                std::sync::Arc::new(|| {}) as std::sync::Arc<dyn Fn() + Send + Sync>,
+            )
+            .unwrap();
+        assert_eq!(
+            frame.component_record().map(|shown| shown.id.clone()),
+            Some(record)
+        );
+        frame.resize((400, 200)).unwrap();
+        let _ = frame.poll_frame().unwrap();
+    }
 
     #[test]
     fn a_key_spec_holds_the_modifiers_it_names_and_leaves_a_plus_and_a_space_alone() {

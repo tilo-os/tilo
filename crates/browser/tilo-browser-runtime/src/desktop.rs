@@ -1045,8 +1045,8 @@ fn embed_instance(view: &ResourceView) -> TabId {
 }
 
 /// Where an app's code comes from: the host that served this page, by
-/// the name its address gives it.
-fn code_host() -> ui::arriving::Source {
+/// the name its address gives it. A window showing its app arrive says it.
+pub(crate) fn code_host() -> ui::arriving::Source {
     let host = js_sys::Reflect::get(&js_sys::global(), &"location".into())
         .and_then(|location| js_sys::Reflect::get(&location, &"host".into()))
         .ok()

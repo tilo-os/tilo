@@ -1335,11 +1335,14 @@ impl Joined {
             }
         }
         self.stored.insert((app, record));
+        // Every mount looks again: a desktop builds the windows that waited
+        // for it, and a page showing one app builds the app whose record it
+        // waited for.
         for (&id, mounted) in &self.mounts {
             if let Some((handle, shared)) = &mounted.attachment.desktop {
                 shared.retry_waiting(handle);
-                woken.insert(id);
             }
+            woken.insert(id);
         }
         Ok(())
     }

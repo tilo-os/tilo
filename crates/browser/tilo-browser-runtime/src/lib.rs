@@ -25,6 +25,13 @@
     allow(dead_code, reason = "only the browser page fetches deferred code")
 )]
 mod app_load;
+// The record a page showing one app opens: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser page opens an app alone")
+)]
+mod app_page;
 // The desk's arranging actions in the page: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(
