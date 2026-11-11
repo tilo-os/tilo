@@ -66,21 +66,10 @@ impl FrameHarness {
             .toolbar()
             .cloned()
             .ok_or("the window bar shows none of the app's slots")?;
-        // A narrow window's bar puts the button aside for the way back once a
-        // screen in front covers the sidebar's own: that bar shows it hidden.
         let back = toolbar
             .leading
             .iter()
             .any(|action| action.id == crate::widget::WINDOW_BACK);
-        let bar = match toolbar.sidebar {
-            Some(shown) => shown,
-            None if back => false,
-            None => {
-                return Err(format!(
-                    "the window bar shows no sidebar button: {toolbar:?}"
-                ));
-            }
-        };
         let shell = window_sidebar_shell(self.root.as_ref()).ok_or_else(|| {
             format!(
                 "no nav shell with a sidebar is laid out under the bar: {}",
@@ -88,6 +77,21 @@ impl FrameHarness {
             )
         })?;
         let geometry = shell.geometry();
+        // A narrow window's bar puts the button aside for the way back: on a screen in front of
+        // the sidebar's own, which that bar shows hidden, and on the sidebar's own screen, whose
+        // way out is Back to the screen the button covered, which shows it.
+        let bar = match toolbar.sidebar {
+            Some(shown) => shown,
+            None if back => {
+                geometry.sidebar == SidebarPlacement::Screen
+                    && shell.front_pane() == NavPane::Sidebar
+            }
+            None => {
+                return Err(format!(
+                    "the window bar shows no sidebar button: {toolbar:?}"
+                ));
+            }
+        };
         let frame = match geometry.sidebar {
             SidebarPlacement::None => false,
             SidebarPlacement::Screen => shell.front_pane() == NavPane::Sidebar,

@@ -1136,3 +1136,22 @@ fn a_past_version_reads_and_shows_its_channel() {
         "{texts:?}"
     );
 }
+
+/// A window too narrow for the channels beside the conversation opens on the conversation: it is
+/// the window's content, and the channels give way to it behind the bar's toggle.
+#[test]
+fn a_narrow_window_opens_on_the_conversation() {
+    let mut app = TestApp::<ChatShell>::capture_at(None, (600, 800)).unwrap();
+    app.settle();
+    let front = app.with_widget::<ui::widget::NavShell, _>(|shell| {
+        (shell.geometry().sidebar, shell.front_pane())
+    });
+    assert_eq!(
+        front,
+        Some((
+            ui::widget::SidebarPlacement::Screen,
+            ui::widget::NavPane::Content
+        )),
+        "the conversation is in front, the channels behind the toggle"
+    );
+}

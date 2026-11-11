@@ -962,10 +962,12 @@ fn list_pane(inputs: &Inputs, stack: &[NavPane]) -> Option<usize> {
     }
 }
 
-/// The screen a new window opens on: its first list of items, else the first screen of the stack
-/// (Settings' list, a library of shortcuts).
+/// The screen a new window opens on: its first list of items, else the first screen past the
+/// places where the bar's toggle reaches them (a conversation beside its channels: the places give
+/// way to the content they chose), else the first screen of the stack (Settings' list, a library
+/// of shortcuts).
 pub(super) fn opening_pane(inputs: &Inputs, stack: &[NavPane]) -> usize {
-    list_pane(inputs, stack).unwrap_or(0)
+    back_home(inputs, stack)
 }
 
 /// The screen a narrow window's Back walks toward: the window's first list of items — the screen it

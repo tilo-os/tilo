@@ -306,6 +306,10 @@ fn a_narrow_window_on_its_list_still_settles_the_content_behind_it() {
     let mut h = harness(shell, 480, 800, Theme::dark());
     settle(&mut h, 480, 800);
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
+    // The window opens on its content; the person brings the list up.
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+    h.root_mut::<NavShell>().show(NavPane::Sidebar);
+    settle(&mut h, 480, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
     let list = h.root::<NavShell>().sidebar_ref::<NavList>();
     assert!(list.and_then(|list| list.row_rect("later")).is_some());
