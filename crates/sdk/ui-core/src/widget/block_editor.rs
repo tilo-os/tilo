@@ -10902,6 +10902,9 @@ impl Widget for BlockEditor {
             self.drawn_table_focus.clone_from(&self.table_focus_paint);
         }
         self.paint_damage.mark_drawn();
+        for block in &mut self.blocks {
+            Widget::mark_drawn(&mut block.line);
+        }
     }
 
     fn take_structure_dirty(&mut self) -> bool {

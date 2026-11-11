@@ -81,6 +81,44 @@ pub enum LineSignal {
     },
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Lines painted and lines drawn again by moving what they drew, and the
+    /// words of each line painted, for the tests that pin a scroll frame's
+    /// work.
+    static FACE_WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+    static PAINTED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What the lines this thread drew painted and moved, since the last call.
+#[cfg(test)]
+pub(crate) fn take_face_work() -> (usize, usize) {
+    FACE_WORK.with(std::cell::Cell::take)
+}
+
+/// The words of every line painted since the last call.
+#[cfg(test)]
+pub(crate) fn take_painted_lines() -> Vec<String> {
+    PAINTED.with(|painted| std::mem::take(&mut *painted.borrow_mut()))
+}
+
+#[cfg(test)]
+fn note_face_work(painted: Option<&str>) {
+    FACE_WORK.with(|work| {
+        let (paints, moves) = work.get();
+        work.set(match painted {
+            Some(_) => (paints.saturating_add(1), moves),
+            None => (paints, moves.saturating_add(1)),
+        });
+    });
+    if let Some(text) = painted {
+        PAINTED.with(|lines| lines.borrow_mut().push(text.to_owned()));
+    }
+}
+
+#[cfg(not(test))]
+fn note_face_work(_painted: Option<&str>) {}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum ImagePreview {
     #[default]
@@ -125,6 +163,64 @@ struct RichTextDirty {
     styled_layout: bool,
 }
 
+/// What a line's drawing was made of: the words it shows, the marks over
+/// them, the paint-only colours a fenced run adds, the box it was painted
+/// in, and the theme roles it painted with. A line that still matches is
+/// drawn again by moving what it drew, not by shaping and encoding it anew:
+/// scrolling a note leaves every line that did not change as it was.
+#[derive(Clone, PartialEq)]
+struct LineFace {
+    text: String,
+    marks: Vec<MarkSpan>,
+    colors: Vec<TransientColorSpan>,
+    width: u64,
+    height: u64,
+    theme: LineFaceTheme,
+}
+
+/// The theme roles a line's drawing reads: the inks, a marked run's ground,
+/// the caret and the selection, the palette a fence's colours are resolved
+/// from, and the scale and motion it paints at. A theme change that keeps
+/// the layout (a new palette, an emphasis) repaints the line; one that only
+/// moves it does not.
+#[derive(Clone, PartialEq)]
+struct LineFaceTheme {
+    text_primary: vello::peniko::Color,
+    text_dim: vello::peniko::Color,
+    text_tertiary: vello::peniko::Color,
+    danger: vello::peniko::Color,
+    selection: vello::peniko::Color,
+    accent_ink: vello::peniko::Color,
+    raised: vello::peniko::Color,
+    content: vello::peniko::Color,
+    syntax: crate::tokens::SyntaxPalette,
+    radius: f32,
+    caret_width: f64,
+    text_scale: f32,
+    reduce_motion: bool,
+}
+
+impl LineFaceTheme {
+    fn of(theme: &Theme) -> Self {
+        let colors = &theme.tokens.colors;
+        Self {
+            text_primary: colors.text_primary,
+            text_dim: colors.text_dim,
+            text_tertiary: colors.text_tertiary,
+            danger: colors.semantic.danger,
+            selection: colors.intent.selection_tint,
+            accent_ink: colors.intent.accent_ink,
+            raised: colors.surfaces.raised,
+            content: colors.surfaces.content,
+            syntax: theme.tokens.syntax.clone(),
+            radius: theme.tokens.radii.control,
+            caret_width: theme.caret_width,
+            text_scale: theme.text_scale,
+            reduce_motion: theme.reduce_motion,
+        }
+    }
+}
+
 #[crate::component::not_a_component(part, "the line `ui.RichTextLine` edits its bound text in")]
 pub struct RichTextLine {
     inner: TextInput,
@@ -134,6 +230,9 @@ pub struct RichTextLine {
     /// (a heading block under the page zoom).
     font_size: f32,
     wrap: bool,
+    /// The rows sit as close as a document's prose (see
+    /// [`Self::set_compact_wrapped`]).
+    compact_wrapped: bool,
     inline_formatting: bool,
     /// Shared by every line of one editor: the editor hands out one `Arc`
     /// per theme, so preparing an unchanged theme is a pointer comparison.
@@ -169,6 +268,16 @@ pub struct RichTextLine {
     dirty: RichTextDirty,
     /// Its paint changed since the last frame drew it.
     paint_dirty: bool,
+    /// What the last frame drew, appended again while the line holds and
+    /// only moves ([`crate::widget::CachedPaint`]).
+    face: crate::widget::CachedPaint,
+    /// What `face` was drawn from, and the model and permission generations
+    /// it was drawn at: a sync hands the tree a changed document without a
+    /// flag of its own, and a permission change alters the field's gate.
+    /// `None` while nothing is kept.
+    face_key: Option<LineFace>,
+    face_model: u64,
+    face_permissions: u64,
     /// Cached theme colours used by unwrapped attributed single-line shaping.
     accent_rgb: Option<[u8; 3]>,
     /// The theme's syntax palette, captured when attributes are prepared.
@@ -217,6 +326,7 @@ impl RichTextLine {
             signal: None,
             font_size: crate::tokens::typography::stock().size(TextRole::Body),
             wrap: false,
+            compact_wrapped: false,
             inline_formatting: true,
             measurement_theme: default_measurement_theme(),
             stack_measures: Vec::new(),
@@ -231,6 +341,10 @@ impl RichTextLine {
             transient_key: None,
             dirty: RichTextDirty::default(),
             paint_dirty: true,
+            face: crate::widget::CachedPaint::default(),
+            face_key: None,
+            face_model: 0,
+            face_permissions: 0,
             accent_rgb: None,
             syntax: None,
             pending_marks: Vec::new(),
@@ -390,42 +504,47 @@ impl RichTextLine {
             .is_some_and(|found| found.kind == markdown_input::InlineKind::Code)
     }
 
+    /// A host that prepares its lines every layout says these repeatedly;
+    /// each one redraws the line only where it says something new.
     pub fn set_wrap(&mut self, wrap: bool) {
-        self.paint_dirty = true;
         if self.wrap != wrap {
+            self.paint_dirty = true;
             self.forget_stack_heights();
+            self.wrap = wrap;
         }
-        self.wrap = wrap;
         self.inner.set_multiline(wrap);
     }
 
     pub(super) fn set_compact_wrapped(&mut self, compact: bool) {
-        self.paint_dirty = true;
+        if self.compact_wrapped != compact {
+            self.paint_dirty = true;
+            self.compact_wrapped = compact;
+        }
         self.inner.set_compact_multiline(compact);
     }
 
     pub(super) fn set_layout_inset(&mut self, inset: f32) {
-        self.paint_dirty = true;
         if self.layout_inset.to_bits() != inset.to_bits() {
+            self.paint_dirty = true;
             self.forget_stack_heights();
+            self.layout_inset = inset;
         }
-        self.layout_inset = inset;
     }
 
     pub(super) fn set_layout_header_height(&mut self, height: f32) {
-        self.paint_dirty = true;
         if self.layout_header_height.to_bits() != height.to_bits() {
+            self.paint_dirty = true;
             self.forget_stack_heights();
+            self.layout_header_height = height;
         }
-        self.layout_header_height = height;
     }
 
     pub(super) fn set_table_preview(&mut self, visual: Option<bool>) {
-        self.paint_dirty = true;
         if self.table_preview != visual {
+            self.paint_dirty = true;
             self.forget_stack_heights();
+            self.table_preview = visual;
         }
-        self.table_preview = visual;
     }
 
     pub(super) fn table_source_height(&self) -> f32 {
@@ -633,7 +752,7 @@ impl RichTextLine {
     }
 
     pub fn set_transient_colors(&mut self, colors: Vec<TransientColorSpan>) {
-        self.paint_dirty = true;
+        self.paint_dirty |= self.transient_key.is_some() || self.transient_colors != colors;
         self.transient_key = None;
         self.replace_transient_colors(colors);
     }
@@ -642,7 +761,7 @@ impl RichTextLine {
     /// derived from; [`Self::transient_colors_key`] returns it until the
     /// colours are set again.
     pub fn set_keyed_transient_colors(&mut self, key: u64, colors: Vec<TransientColorSpan>) {
-        self.paint_dirty = true;
+        self.paint_dirty |= self.transient_key != Some(key) || self.transient_colors != colors;
         self.transient_key = Some(key);
         self.replace_transient_colors(colors);
     }
@@ -653,10 +772,10 @@ impl RichTextLine {
     }
 
     fn replace_transient_colors(&mut self, colors: Vec<TransientColorSpan>) {
-        self.paint_dirty = true;
         if self.transient_colors == colors {
             return;
         }
+        self.paint_dirty = true;
         self.dirty.styled_layout = true;
         self.transient_colors = colors;
         self.refresh_attributes();
@@ -949,8 +1068,11 @@ impl RichTextLine {
 
     /// Give the input attributed text before it measures or paints. Overpainting
     /// plain glyphs cannot preserve wrapping or pointer/caret geometry.
+    ///
+    /// Its paint changed only where the runs it hands over are another set
+    /// than the ones the field held: a line whose words, marks and colours
+    /// hold keeps its drawing.
     fn sync_wrapped_spans(&mut self, theme: &Theme) {
-        self.paint_dirty = true;
         if self.wrap && !self.inline_formatting && !self.transient_colors.is_empty() {
             let text = self.value();
             let mut boundaries = vec![0, text.len()];
@@ -985,19 +1107,21 @@ impl RichTextLine {
                     Some(span)
                 })
                 .collect();
-            self.inner.set_rich_spans(Some(spans));
+            self.paint_dirty |= self.inner.set_rich_spans(Some(spans));
             return;
         }
-        self.emoji_revision = window_emoji_revision();
+        let emoji = window_emoji_revision();
+        self.paint_dirty |= self.emoji_revision != emoji;
+        self.emoji_revision = emoji;
         if !self.wrap || !self.inline_formatting {
-            self.inner.set_rich_spans(None);
+            self.paint_dirty |= self.inner.set_rich_spans(None);
             return;
         }
         if self.marks.is_empty() {
             let text = self.value();
             let spans = inline_emoji::writes_window_emoji(text)
                 .then(|| inline_emoji::split_spans_in_window(vec![RichSpan::new(text)]));
-            self.inner.set_rich_spans(spans);
+            self.paint_dirty |= self.inner.set_rich_spans(spans);
             return;
         }
         let text = self.value();
@@ -1036,7 +1160,7 @@ impl RichTextLine {
         } else {
             spans
         };
-        self.inner.set_rich_spans(Some(spans));
+        self.paint_dirty |= self.inner.set_rich_spans(Some(spans));
     }
 
     /// Whether the window's workspace emoji changed since the line's runs
@@ -1107,10 +1231,115 @@ impl RichTextLine {
             self.inner.capture_layout_text_scale(theme.text_scale);
             self.measurement_theme = Arc::clone(theme);
             self.forget_stack_heights();
+            // What the line drew was drawn in the theme it no longer paints
+            // with. Its layout moved, so it is drawn again anyway; dropping
+            // the drawing here keeps that so whatever repaints it.
+            self.forget_face();
         }
         self.inner.set_base_size(self.font_size);
         self.inner.set_multiline(self.wrap);
         self.sync_wrapped_spans(theme);
+    }
+
+    /// Drop the drawing kept from the last frame, so the next one paints the
+    /// line anew.
+    fn forget_face(&mut self) {
+        self.face = crate::widget::CachedPaint::default();
+        self.face_key = None;
+    }
+
+    /// Draw everything this line shows into `scene`, which the line keeps and
+    /// moves while it holds (see [`Self::keeps_its_drawing`]).
+    fn paint_into(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        #[cfg(test)]
+        let attributes_probe = crate::profiling::frame_probe::span("line_attributes");
+        self.prepare_attributes(theme);
+        self.sync_wrapped_spans(theme);
+        #[cfg(test)]
+        drop(attributes_probe);
+        #[cfg(test)]
+        let input_probe = crate::profiling::frame_probe::span("text_input_draw");
+        // TextInput owns glyph shaping and painting. This wrapper supplies
+        // attributes and draws only mark decorations that are not glyphs.
+        self.inner
+            .draw_child(scene, transform, text_renderer, theme, presence);
+        #[cfg(test)]
+        drop(input_probe);
+
+        if self.marks.is_empty() && self.transient_colors.is_empty() {
+            return;
+        }
+
+        let text = self.inner.value();
+        let segments = if self.inline_formatting {
+            marks::segments_for(text.len(), &self.marks)
+        } else {
+            Vec::new()
+        };
+        if segments.is_empty() && self.transient_colors.is_empty() {
+            return;
+        }
+
+        if self.wrap {
+            self.draw_wrapped_mark_decorations(scene, transform, theme);
+        }
+    }
+
+    /// What this line's drawing is made of now.
+    fn face_of(&self, theme: &Theme) -> LineFace {
+        let rect = self.inner.get_rect();
+        LineFace {
+            text: self.inner.value().to_owned(),
+            marks: self.marks.clone(),
+            colors: self.transient_colors.clone(),
+            width: rect.width().to_bits(),
+            height: rect.height().to_bits(),
+            theme: LineFaceTheme::of(theme),
+        }
+    }
+
+    /// Whether the drawing kept from the last frame is still what this line
+    /// shows, so this frame only moves it: nothing of its own changed, the
+    /// document did not, and nothing in it moves on its own — the person's
+    /// own caret, a settling suggestion, a completion list, a scroll glide,
+    /// or someone else in the room.
+    fn keeps_its_drawing(&self, theme: &Theme, presence: &PresenceCtx) -> bool {
+        if self.paint_dirty || self.face.is_empty() {
+            return false;
+        }
+        if self.face_model != crate::input_generation::model()
+            || self.face_permissions != presence.paint_permission_generation()
+        {
+            return false;
+        }
+        // A changed document, a field the tree updated (a caret, a selection),
+        // and what moves on its own: all reach the drawing from outside the
+        // line's own words.
+        if self.inner.paint_changed() || self.inner.needs_animation_frame() {
+            return false;
+        }
+        // The person's own line blinks, settles its spelling and offers
+        // corrections; someone else's caret, selection or typing comes and
+        // goes without the line changing.
+        if self.inner.is_focused() || self.inner.shows_peers(presence) {
+            return false;
+        }
+        self.face_key.as_ref().is_some_and(|face| {
+            let rect = self.inner.get_rect();
+            face.text == self.inner.value()
+                && face.marks == self.marks
+                && face.colors == self.transient_colors
+                && face.width == rect.width().to_bits()
+                && face.height == rect.height().to_bits()
+                && face.theme == LineFaceTheme::of(theme)
+        })
     }
 
     /// The fixed row height of a line that is not measured, and the minimum
@@ -1455,38 +1684,35 @@ impl Widget for RichTextLine {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        #[cfg(test)]
-        let attributes_probe = crate::profiling::frame_probe::span("line_attributes");
-        self.prepare_attributes(theme);
-        self.sync_wrapped_spans(theme);
-        #[cfg(test)]
-        drop(attributes_probe);
-        #[cfg(test)]
-        let input_probe = crate::profiling::frame_probe::span("text_input_draw");
-        // TextInput owns glyph shaping and painting. This wrapper supplies
-        // attributes and draws only mark decorations that are not glyphs.
-        self.inner
-            .draw_child(scene, transform, text_renderer, theme, presence);
-        #[cfg(test)]
-        drop(input_probe);
-
-        if self.marks.is_empty() && self.transient_colors.is_empty() {
+        // A line the host's viewport culls paints nothing this frame, and
+        // keeps nothing either: a drawing recorded now would hold nothing but
+        // the clip it was left out of.
+        if presence.should_cull(self.inner.paint_bounds()) {
             return;
         }
-
-        let text = self.inner.value().to_string();
-        let segments = if self.inline_formatting {
-            marks::segments_for(text.len(), &self.marks)
+        if self.keeps_its_drawing(theme, presence) {
+            note_face_work(None);
         } else {
-            Vec::new()
-        };
-        if segments.is_empty() && self.transient_colors.is_empty() {
-            return;
+            let rect = self.inner.get_rect();
+            let mut face = std::mem::take(&mut self.face);
+            // The line draws itself where it stands, in logical pixels; the
+            // frame that appends it places it, under that frame's transform.
+            // So what is kept holds for any transform the line is drawn under
+            // (a page zoom, a slide drawn scaled to a thumbnail).
+            self.paint_into(
+                face.repaint(rect),
+                Affine::IDENTITY,
+                text_renderer,
+                theme,
+                presence,
+            );
+            self.face = face;
+            self.face_key = Some(self.face_of(theme));
+            self.face_model = crate::input_generation::model();
+            self.face_permissions = presence.paint_permission_generation();
+            note_face_work(Some(self.inner.value()));
         }
-
-        if self.wrap {
-            self.draw_wrapped_mark_decorations(scene, transform, theme);
-        }
+        self.face.append(scene, transform, self.inner.get_rect());
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1611,9 +1837,21 @@ impl Widget for RichTextLine {
         self.paint_dirty || (self.inner.needs_redraw() || self.inner.needs_animation_frame())
     }
 
+    /// After a frame drew this line. The block editor calls this for its own
+    /// lines, which are not widgets of the tree: without it, a line that drew
+    /// itself asks to be painted again for the rest of its life, instead of
+    /// only moving until something changes.
     fn mark_drawn(&mut self) {
         self.paint_dirty = false;
         Widget::mark_drawn(&mut self.inner);
+    }
+
+    /// An outer drawing that was kept stands for this line's pixels; keeping
+    /// them here too would only hold them twice. The line paints itself again
+    /// when the outer drawing is built anew.
+    fn release_scene_cache(&mut self) {
+        self.forget_face();
+        Widget::release_scene_cache(&mut self.inner);
     }
 
     fn name(&self) -> &'static str {
