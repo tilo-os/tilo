@@ -95,10 +95,7 @@ impl Channels {
         link: Arc<ChannelLink>,
         broker: Arc<Mutex<BrokerChannels>>,
     ) -> std::io::Result<Self> {
-        let directory = Box::new(OwnerDirectory::participant(
-            engine.owner().clone(),
-            Arc::clone(&link),
-        ));
+        let directory = Box::new(OwnerDirectory::participant(engine.owner().clone()));
         let gates: Arc<dyn ChannelGates> = Arc::new(BrokerGates(broker));
         let service = match MlsVault::open_for_session(
             &engine.identity().device_cert.device_public_key,
@@ -287,12 +284,7 @@ impl ChannelLink {
     /// which the workspace's devices settle their groups with between each other. Says whether
     /// `message` was one of them, and so never reaches the workspace's state.
     pub fn dispatch(&self, message: &NeighbourMsg) -> bool {
-        if !matches!(
-            message,
-            NeighbourMsg::MlsGovernance { .. }
-                | NeighbourMsg::MlsAccessRequest { .. }
-                | NeighbourMsg::MlsRoutedAccessRequest { .. }
-        ) {
+        if message.channel_workspace().is_none() {
             return false;
         }
         self.heard(message);
@@ -392,12 +384,9 @@ impl Members for tilo_peer_state::direct::Owning {
 
 /// The workspace `message`, a channel's governance, is of; `None` for any other message.
 fn governance_workspace(message: &NeighbourMsg) -> Option<ModelWorkspaceId> {
-    match message {
-        NeighbourMsg::MlsGovernance { workspace, .. }
-        | NeighbourMsg::MlsAccessRequest { workspace, .. } => ModelWorkspaceId::parse(workspace),
-        NeighbourMsg::MlsRoutedAccessRequest { room, .. } => ModelWorkspaceId::parse(room),
-        _ => None,
-    }
+    message
+        .channel_workspace()
+        .and_then(ModelWorkspaceId::parse)
 }
 
 /// The workspaces whose rosters this session has told the plane, by workspace topic: a roster is
@@ -464,29 +453,24 @@ pub struct OwnerDirectory {
     /// A reader also follows what the host it joined a workspace through and it itself sign: the
     /// host vouched for the workspace it was let into.
     reader: bool,
-    /// Where hosts say they replayed a workspace's history here.
-    link: Option<Arc<ChannelLink>>,
 }
 
 impl OwnerDirectory {
-    /// The directory of a device that settles its groups, its workspaces' histories arriving over
-    /// `link`.
+    /// The directory of a device that settles its groups.
     #[must_use]
-    pub fn participant(owner: NativeWorkspaceOwner, link: Arc<ChannelLink>) -> Self {
+    pub const fn participant(owner: NativeWorkspaceOwner) -> Self {
         Self {
             owner,
             reader: false,
-            link: Some(link),
         }
     }
 
     /// The directory of a [`tilo_channels::Role::Reader`] device.
     #[must_use]
-    pub fn reader(owner: NativeWorkspaceOwner) -> Self {
+    pub const fn reader(owner: NativeWorkspaceOwner) -> Self {
         Self {
             owner,
             reader: true,
-            link: None,
         }
     }
 }
@@ -543,17 +527,13 @@ impl ChannelDirectory for OwnerDirectory {
             .ok()
     }
 
-    /// A workspace entered while hosted elsewhere holds its channel governance once its host
-    /// replayed the history here.
-    fn history_held(&self, workspace: ModelWorkspaceId) -> bool {
-        let Some(link) = &self.link else {
-            return true;
-        };
-        let entered_elsewhere = self
+    /// A workspace entered while hosted elsewhere is its host's: the host answers whether a channel
+    /// has a group.
+    fn hosts(&self, workspace: ModelWorkspaceId) -> bool {
+        !self
             .owner
             .with_current(workspace, |view| Ok(view.entered() && !view.hosted_here()))
-            .unwrap_or(false);
-        !entered_elsewhere || link.has_replayed(workspace)
+            .unwrap_or(false)
     }
 
     /// Announced whenever a workspace's governance moves, so a group re-checks on the change itself

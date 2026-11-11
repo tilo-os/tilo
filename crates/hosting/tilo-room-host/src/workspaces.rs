@@ -1951,7 +1951,7 @@ impl Workspaces {
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> Result<Option<neighbour_wire::NeighbourMsg>, String> {
-        if channel_workspace(&message).is_some() {
+        if message.channel_workspace().is_some() {
             self.take_channel_governance(workspace, author, message)
                 .await?;
             return Ok(None);
@@ -1998,13 +1998,11 @@ impl Workspaces {
         // device's channel governance like any member's, for the other
         // participants: the host keeps no channels to have it already.
         if author == host.cert.device_public_key
+            && message.channel_workspace().is_none()
             && !matches!(
                 message,
                 neighbour_wire::NeighbourMsg::AppDocument { .. }
                     | neighbour_wire::NeighbourMsg::SyncResp { .. }
-                    | neighbour_wire::NeighbourMsg::MlsAccessRequest { .. }
-                    | neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest { .. }
-                    | neighbour_wire::NeighbourMsg::MlsGovernance { .. }
             )
         {
             return Ok(());
@@ -2645,16 +2643,6 @@ impl Workspaces {
 
     fn revocations(&self) -> RevocationList {
         self.inner.host.revocations.read_recover().clone()
-    }
-}
-
-/// The workspace a channel governance message names.
-fn channel_workspace(message: &neighbour_wire::NeighbourMsg) -> Option<&str> {
-    match message {
-        neighbour_wire::NeighbourMsg::MlsGovernance { workspace, .. }
-        | neighbour_wire::NeighbourMsg::MlsAccessRequest { workspace, .. } => Some(workspace),
-        neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest { room, .. } => Some(room),
-        _ => None,
     }
 }
 

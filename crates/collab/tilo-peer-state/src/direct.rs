@@ -345,10 +345,19 @@ struct Inner {
     hearing: Option<Hearing>,
     /// Handed with the catch-up ([`DirectSync::with_channel_history`]).
     channels: Option<ChannelHistory>,
+    /// The geneses of the workspace's channels this host carries.
+    geneses: Geneses,
     /// The other device's store, for a device that keeps none: where a reader
     /// that fell behind takes the frames it missed ([`Reader`]).
     other_store: Arc<std::sync::Mutex<Option<OtherStore>>>,
 }
+
+/// The geneses of a workspace's channels its host carries, each with its
+/// author, by channel: what it answers a member's access request with
+/// ([`DirectSync::answer_request`]). Taken from the channel history as a link
+/// starts, and from every frame the host sends its links.
+type Geneses =
+    Arc<std::sync::Mutex<std::collections::HashMap<collab_types::ChannelId, Vec<Authored>>>>;
 
 /// The store on the other end of a device's link.
 #[derive(Clone)]
@@ -415,40 +424,14 @@ impl DirectSync {
             fan_out: std::sync::atomic::AtomicBool::new(false),
             hearing: None,
             channels: None,
+            geneses: Geneses::default(),
             other_store: Arc::default(),
         }))
     }
 
-    /// The same link's channels and device, syncing `replica` and keeping
-    /// `store`: what a link with more of the workspace to itself is.
-    fn sharing(
-        &self,
-        replica: Replica,
-        admission: Option<Admission>,
-        store: Option<Arc<Store>>,
-    ) -> Self {
-        Self(Arc::new(Inner {
-            replica,
-            admission,
-            key: self.0.key.clone(),
-            store,
-            outgoing: self.0.outgoing.clone(),
-            heard: self.0.heard.clone(),
-            changed: self.0.changed.clone(),
-            caught_up: self.0.caught_up.clone(),
-            catch_up_written: self.0.catch_up_written.clone(),
-            ended: self.0.ended.clone(),
-            replay: Arc::clone(&self.0.replay),
-            fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
-            hearing: self.0.hearing.clone(),
-            channels: self.0.channels.clone(),
-            other_store: Arc::clone(&self.0.other_store),
-        }))
-    }
-
-    /// The same link, handing what it brings to `hearing`'s sinks too.
-    fn hearing(&self, hearing: Hearing) -> Self {
-        Self(Arc::new(Inner {
+    /// This link's channels, device and state, for a link built on it.
+    fn copied(&self) -> Inner {
+        Inner {
             replica: self.0.replica.clone(),
             admission: self.0.admission.clone(),
             key: self.0.key.clone(),
@@ -461,9 +444,18 @@ impl DirectSync {
             ended: self.0.ended.clone(),
             replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
-            hearing: Some(hearing),
+            hearing: self.0.hearing.clone(),
             channels: self.0.channels.clone(),
+            geneses: Arc::clone(&self.0.geneses),
             other_store: Arc::clone(&self.0.other_store),
+        }
+    }
+
+    /// The same link, handing what it brings to `hearing`'s sinks too.
+    fn hearing(&self, hearing: Hearing) -> Self {
+        Self(Arc::new(Inner {
+            hearing: Some(hearing),
+            ..self.copied()
         }))
     }
 
@@ -472,15 +464,10 @@ impl DirectSync {
     /// only. Call it before cloning the link to its handlers.
     #[must_use]
     pub fn with_channel_history(&self, channels: ChannelHistory) -> Self {
-        let mut link = self.sharing(
-            self.0.replica.clone(),
-            self.0.admission.clone(),
-            self.0.store.clone(),
-        );
-        if let Some(inner) = Arc::get_mut(&mut link.0) {
-            inner.channels = Some(channels);
-        }
-        link
+        Self(Arc::new(Inner {
+            channels: Some(channels),
+            ..self.copied()
+        }))
     }
 
     /// Keep this workspace's sealed history at `store` and hand it to the
@@ -488,11 +475,10 @@ impl DirectSync {
     /// before cloning the link to its handlers.
     #[must_use]
     pub fn with_store(&self, store: Arc<Store>) -> Self {
-        self.sharing(
-            self.0.replica.clone(),
-            self.0.admission.clone(),
-            Some(store),
-        )
+        Self(Arc::new(Inner {
+            store: Some(store),
+            ..self.copied()
+        }))
     }
 
     /// The same link onto the same replica and store, with room for `capacity`
@@ -503,21 +489,8 @@ impl DirectSync {
     #[must_use]
     pub fn with_heard_capacity(&self, capacity: usize) -> Self {
         Self(Arc::new(Inner {
-            replica: self.0.replica.clone(),
-            admission: self.0.admission.clone(),
-            key: self.0.key.clone(),
-            store: self.0.store.clone(),
-            outgoing: self.0.outgoing.clone(),
             heard: broadcast::channel(capacity).0,
-            changed: self.0.changed.clone(),
-            caught_up: self.0.caught_up.clone(),
-            catch_up_written: self.0.catch_up_written.clone(),
-            ended: self.0.ended.clone(),
-            replay: Arc::clone(&self.0.replay),
-            fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
-            hearing: self.0.hearing.clone(),
-            channels: self.0.channels.clone(),
-            other_store: Arc::clone(&self.0.other_store),
+            ..self.copied()
         }))
     }
 
@@ -531,11 +504,11 @@ impl DirectSync {
         workspace: tilo_desktop_model::WorkspaceId,
     ) -> Result<Self, String> {
         let replica = owner.replica(workspace)?;
-        Ok(self.sharing(
+        Ok(Self(Arc::new(Inner {
             replica,
-            Some(Admission { owner, workspace }),
-            self.0.store.clone(),
-        ))
+            admission: Some(Admission { owner, workspace }),
+            ..self.copied()
+        })))
     }
 
     /// The replica this link syncs.
@@ -712,7 +685,61 @@ impl DirectSync {
     /// Hand `authored` to every open link; no open link is no error, as the
     /// next one catches up from the replica.
     fn outgoing(&self, authored: Authored) {
+        if self.fans_out() {
+            self.note_genesis(&authored);
+        }
         let _ = self.0.outgoing.send(authored);
+    }
+
+    /// Note `authored` when it is a channel's genesis this host carries.
+    fn note_genesis(&self, authored: &Authored) {
+        let NeighbourMsg::MlsGovernance { frame, .. } = &authored.message else {
+            return;
+        };
+        if !matches!(frame.action, collab_types::MlsGovernanceAction::Genesis) {
+            return;
+        }
+        let mut geneses = self.0.geneses.lock_recover();
+        let known = geneses.entry(frame.channel).or_default();
+        if !known.iter().any(|kept| kept.message == authored.message) {
+            known.push(authored.clone());
+        }
+        drop(geneses);
+    }
+
+    /// Answer `message` when it is a member's access request: with the
+    /// geneses of its channel this host carries, so the device asks to join
+    /// the group rather than create one, or with word that it carries none
+    /// ([`NeighbourMsg::MlsChannelUnfounded`]), so the device creates the
+    /// group at once instead of waiting to hear of one. A genesis made beside
+    /// the one the answer names is resolved by the channel's members.
+    fn answer_request(&self, message: &NeighbourMsg) {
+        let (NeighbourMsg::MlsAccessRequest {
+            workspace, request, ..
+        }
+        | NeighbourMsg::MlsRoutedAccessRequest {
+            room: workspace,
+            request,
+            ..
+        }) = message
+        else {
+            return;
+        };
+        let known = self.0.geneses.lock_recover().get(&request.channel).cloned();
+        let answers = known.unwrap_or_else(|| {
+            vec![Authored {
+                from: self.device(),
+                message: NeighbourMsg::MlsChannelUnfounded {
+                    workspace: workspace.clone(),
+                    channel: request.channel,
+                    device: request.device,
+                },
+                published: true,
+            }]
+        });
+        for answer in answers {
+            let _ = self.0.outgoing.send(answer);
+        }
     }
 
     /// Whether this device is the workspace's host on its links
@@ -890,16 +917,19 @@ impl DirectSync {
             Vec::new()
         };
         if let Some(channels) = &self.0.channels {
-            catch_up.extend(
-                channels()
-                    .await
-                    .into_iter()
-                    .map(|(from, message)| Authored {
-                        from,
-                        message,
-                        published: false,
-                    }),
-            );
+            let history: Vec<Authored> = channels()
+                .await
+                .into_iter()
+                .map(|(from, message)| Authored {
+                    from,
+                    message,
+                    published: false,
+                })
+                .collect();
+            for authored in &history {
+                self.note_genesis(authored);
+            }
+            catch_up.extend(history);
         }
         let send = connection
             .open_uni()
@@ -1198,6 +1228,9 @@ impl DirectSync {
     ) -> Result<bool, String> {
         let author = store::author_of(&message).unwrap_or(claimed);
         if channel_governance(&message) {
+            if self.fans_out() && !retained {
+                self.answer_request(&message);
+            }
             self.carry_governance(author, message, retained);
             return Ok(false);
         }
@@ -1687,13 +1720,10 @@ impl Owning {
     /// another way. A member hears no other path to the rest of the
     /// workspace. Nothing goes out for a workspace no member reached here.
     pub fn carry_governance(&self, message: &NeighbourMsg) {
-        let workspace = match message {
-            NeighbourMsg::MlsGovernance { workspace, .. }
-            | NeighbourMsg::MlsAccessRequest { workspace, .. } => workspace,
-            NeighbourMsg::MlsRoutedAccessRequest { room, .. } => room,
-            _ => return,
-        };
-        if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(workspace) {
+        if let Some(workspace) = message
+            .channel_workspace()
+            .and_then(tilo_desktop_model::WorkspaceId::parse)
+        {
             self.carry(
                 workspace,
                 self.key.verifying_key().to_bytes(),
@@ -1791,12 +1821,7 @@ const NOT_WORKSPACE_STATE: &str =
 /// Whether `message` is a channel's governance: a frame of its group, or a
 /// device asking to join it.
 fn channel_governance(message: &NeighbourMsg) -> bool {
-    matches!(
-        message,
-        NeighbourMsg::MlsGovernance { .. }
-            | NeighbourMsg::MlsAccessRequest { .. }
-            | NeighbourMsg::MlsRoutedAccessRequest { .. }
-    )
+    message.channel_workspace().is_some()
 }
 
 /// Whether `authored` is the other end's already: the device `remote` sent it

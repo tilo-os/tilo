@@ -763,6 +763,18 @@ pub enum NeighbourMsg {
         user_public_key: [u8; 32],
         hosts: Vec<PersonalHost>,
     },
+    /// A workspace's host answering `device`'s access request for `channel`
+    /// when it carries no genesis of it: no group exists yet, so `device`
+    /// creates it now rather than waiting to hear of one. A host carrying a
+    /// genesis answers with it instead. Live only, never retained, and
+    /// unsigned: a false one makes a second genesis, which the channel's
+    /// members resolve to one. Appended to preserve every existing Postcard
+    /// discriminant.
+    MlsChannelUnfounded {
+        workspace: String,
+        channel: collab_types::ChannelId,
+        device: collab_types::Ed25519PublicKey,
+    },
 }
 
 /// Where one of the person's workspaces is hosted, as their other devices
@@ -837,7 +849,24 @@ impl NeighbourMsg {
             | Self::LivePresence { .. }
             | Self::SurfaceViewRequest { .. }
             | Self::WriteRefusals { .. }
-            | Self::PersonalHosts { .. } => false,
+            | Self::PersonalHosts { .. }
+            | Self::MlsChannelUnfounded { .. } => false,
+        }
+    }
+
+    /// The workspace a channel's governance names: a frame of a channel's
+    /// group, a device asking to join one, or a host's word that one has none.
+    /// `None` for any other message.
+    #[must_use]
+    pub fn channel_workspace(&self) -> Option<&str> {
+        match self {
+            Self::MlsGovernance { workspace, .. }
+            | Self::MlsAccessRequest { workspace, .. }
+            | Self::MlsRoutedAccessRequest {
+                room: workspace, ..
+            }
+            | Self::MlsChannelUnfounded { workspace, .. } => Some(workspace),
+            _ => None,
         }
     }
 
@@ -877,6 +906,7 @@ impl NeighbourMsg {
             Self::RecordContentLacks { .. } => "RecordContentLacks",
             Self::WriteRefusals { .. } => "WriteRefusals",
             Self::PersonalHosts { .. } => "PersonalHosts",
+            Self::MlsChannelUnfounded { .. } => "MlsChannelUnfounded",
         }
     }
 }
@@ -1114,6 +1144,14 @@ mod tests {
                     }),
                     route: Box::new(collab_types::ChannelRoute::new("so.tilo.sheets", "payroll")),
                     delivery: 10,
+                },
+            ),
+            (
+                "channel unfounded",
+                NeighbourMsg::MlsChannelUnfounded {
+                    workspace: WORKSPACE.into(),
+                    channel,
+                    device: Ed25519PublicKey::from_bytes([2; 32]),
                 },
             ),
         ]
@@ -1448,7 +1486,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 31;
+    const VARIANT_COUNT: usize = 32;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1643,6 +1681,14 @@ mod tests {
                 "40cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
                 "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
                 "cd0e736f2e74696c6f2e73686565747307706179726f6c6c0a",
+            ),
+        ),
+        (
+            "channel unfounded",
+            concat!(
+                "202436623366396131302d303030302d343030302d383030302d303030303030",
+                "3030303030631055555555555555555555555555555555020202020202020202",
+                "0202020202020202020202020202020202020202020202",
             ),
         ),
         ("live presence", "1b0303010203"),

@@ -71,8 +71,8 @@ fn run(devices: &mut [&mut Device], now: &mut Instant, seconds: u64) {
     }
 }
 
-/// `device` opens `channel` and creates its group, as it does once it
-/// waited its while and no genesis arrived.
+/// `device` opens `channel` and creates its group, as it does once the
+/// workspace's host said it carries no genesis of it.
 fn create(
     device: &mut Device,
     workspace_id: WorkspaceId,
@@ -81,7 +81,7 @@ fn create(
 ) -> ChannelAccess {
     device.service.access(workspace_id, channel, now);
     if let Some(entry) = device.service.peers.get_mut(&channel) {
-        entry.founding.at = now;
+        entry.founding.answered = true;
     }
     device.service.found(channel, now, 1_000);
     device.service.access(workspace_id, channel, now)
@@ -1732,7 +1732,8 @@ fn a_new_channel_announces_its_genesis_to_the_workspace() {
         .into_iter()
         .filter_map(|inbound| match inbound {
             InboundChannelGovernance::Frame { frame, .. } => Some(frame),
-            InboundChannelGovernance::AccessRequest { .. } => None,
+            InboundChannelGovernance::AccessRequest { .. }
+            | InboundChannelGovernance::Unfounded { .. } => None,
         })
         .collect();
     assert_eq!(genesis.len(), 1, "announced once per session");
@@ -2451,6 +2452,8 @@ fn requests(device: &Device) -> usize {
 #[test]
 fn a_waiting_request_is_asked_again_when_the_policy_moves() {
     let workspace = Arc::new(Workspace::default());
+    // A group the device is not in yet: its host answers nothing.
+    workspace.silent.store(true, Ordering::SeqCst);
     let workspace_id = WorkspaceId::new();
     let channel = ChannelId::new();
     let policy = Policy::readers([2]);
@@ -2661,7 +2664,8 @@ fn a_competing_genesis_is_judged_once_the_device_names_the_record() {
             .into_iter()
             .find_map(|inbound| match inbound {
                 InboundChannelGovernance::Frame { frame, .. } => Some(*frame),
-                InboundChannelGovernance::AccessRequest { .. } => None,
+                InboundChannelGovernance::AccessRequest { .. }
+                | InboundChannelGovernance::Unfounded { .. } => None,
             })
             .unwrap();
         (workspace, founder, genesis)

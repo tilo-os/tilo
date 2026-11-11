@@ -30,14 +30,15 @@ use tilo_relay_protocol::workspaces::WorkspaceRole;
 /// A studio and the two people in it, each on a laptop and a phone: Ada's site hosts the workspace
 /// and lets Chat author its records, Ada and Bob join as editors, and Chat is installed and open on
 /// all four.
+/// Dropped in this order: the devices stop while the site still hosts them.
 struct Studio {
-    site: Site,
-    ada: Person,
-    bob: Person,
     ada_laptop: Device,
     ada_phone: Device,
     bob_laptop: Device,
     bob_phone: Device,
+    ada: Person,
+    bob: Person,
+    site: Site,
 }
 
 impl Studio {

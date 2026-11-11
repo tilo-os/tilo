@@ -75,10 +75,11 @@ pub const fn founding_wait() -> Duration {
     REQUEST_FIRST.saturating_add(Duration::from_millis(FOUNDING_SPREAD_MS))
 }
 
-/// How long this device waits for a channel's genesis before creating the group
-/// itself ([`founding_wait`] at most), its own while set by its key and the
-/// channel: within a second or two of the next device's, so one creates the
-/// group and the others hear of it in time.
+/// How long a device that took a channel up for another one that asked
+/// ([`PeerEntry::wanted`]) waits to create its group, once no genesis is on
+/// its way: the asker creates it at once if it can, this one only for an
+/// asker that cannot (a reader). Each device waits its own while, set by its
+/// key and the channel, so one creates the group and the others hear of it.
 fn found_after(device: &Ed25519PublicKey, channel: ChannelId) -> Duration {
     let spread =
         device
@@ -111,8 +112,8 @@ pub enum ChannelAccess {
 }
 
 /// A channel governance message received from the workspace transport. Every
-/// variant is signed by a device key and verified by the channel service
-/// before it changes any state.
+/// frame and request is signed by a device key and verified by the channel
+/// service before it changes any state.
 #[derive(Debug, Clone)]
 pub enum InboundChannelGovernance {
     Frame {
@@ -126,6 +127,13 @@ pub enum InboundChannelGovernance {
         workspace: WorkspaceId,
         request: Box<collab_types::MlsAccessRequestV1>,
         route: Option<Box<ChannelRoute>>,
+    },
+    /// The workspace's host carries no genesis of `channel`, which `device`
+    /// asked for ([`NeighbourMsg::MlsChannelUnfounded`]).
+    Unfounded {
+        workspace: WorkspaceId,
+        channel: ChannelId,
+        device: Ed25519PublicKey,
     },
 }
 
@@ -153,6 +161,15 @@ impl InboundChannelGovernance {
                 workspace,
                 request,
                 route: Some(route),
+            }),
+            NeighbourMsg::MlsChannelUnfounded {
+                workspace,
+                channel,
+                device,
+            } => WorkspaceId::parse(&workspace).map(|workspace| Self::Unfounded {
+                workspace,
+                channel,
+                device,
             }),
             _ => None,
         }
@@ -240,11 +257,12 @@ pub trait ChannelDirectory: collab_types::signer::MaybeSendSync {
     fn announce_at(&self, at: u64) {
         tilo_identity_host::policy_change::wake_at(at.saturating_mul(1_000_000_000));
     }
-    /// `false` while a device that entered a workspace hosted elsewhere has
-    /// not had its host's history replayed: it founds no group before then
-    /// ([`ChannelEncryption::found`]), as a second genesis would split the
-    /// channel under its members.
-    fn history_held(&self, workspace: WorkspaceId) -> bool {
+    /// Whether this device hosts `workspace`: every genesis of its channels
+    /// passes through it, so it creates a group it holds none of as soon as
+    /// it needs it. A device of a workspace hosted elsewhere creates one only
+    /// once the host said it carries no genesis of the channel
+    /// ([`InboundChannelGovernance::Unfounded`]). `true` by default.
+    fn hosts(&self, workspace: WorkspaceId) -> bool {
         let _ = workspace;
         true
     }
@@ -581,14 +599,16 @@ impl Backoff {
 
 /// When this device may create a channel's group itself.
 struct Founding {
-    /// When it creates the group if no genesis has arrived.
+    /// When a device that took the channel up for another one creates the
+    /// group, if no genesis has arrived.
     at: Instant,
     /// Whether the policy, when last read, let this device read the channel
     /// and so create its group.
     allowed: bool,
-    /// Whether the workspace's history was here when last looked at: the
-    /// wait starts over once it arrives.
-    history: bool,
+    /// The workspace's host said it carries no genesis of the channel...
+    unfounded: bool,
+    /// ...in answer to this device's own request.
+    answered: bool,
 }
 
 /// One channel this device takes part in.
@@ -1405,7 +1425,8 @@ impl ChannelEncryption {
             .peers
             .iter()
             .filter(|(channel, entry)| {
-                entry.founding.allowed
+                !entry.wanted
+                    && entry.founding.allowed
                     && entry.founding.at > now
                     && !entry.peer.knows_group()
                     && !self.groups_seen.contains(channel)
@@ -1456,6 +1477,22 @@ impl ChannelEncryption {
 
     fn receive(&mut self, inbound: InboundChannelGovernance, now: Instant, wall: u64) {
         match inbound {
+            InboundChannelGovernance::Unfounded {
+                workspace,
+                channel,
+                device,
+            } => {
+                let this = self.device() == Some(device);
+                let Some(entry) = self
+                    .peers
+                    .get_mut(&channel)
+                    .filter(|entry| entry.workspace == workspace)
+                else {
+                    return;
+                };
+                entry.founding.unfounded = true;
+                entry.founding.answered |= this;
+            }
             InboundChannelGovernance::Frame { workspace, frame } => {
                 self.receive_frame(workspace, *frame, now, wall);
             }
@@ -1875,9 +1912,8 @@ impl ChannelEncryption {
         Ok(true)
     }
 
-    /// Create `channel`'s group when this device waited its while, holds the
-    /// workspace's history ([`ChannelDirectory::history_held`]) and no
-    /// genesis of the channel arrived, and the policy lets it read the
+    /// Create `channel`'s group once no genesis of it can be on its way
+    /// ([`ChannelDirectory::hosts`]) and the policy lets this device read the
     /// channel. A device that has seen a genesis never creates one.
     fn found(&mut self, channel: ChannelId, now: Instant, wall: u64) {
         let Some(entry) = self.peers.get(&channel) else {
@@ -1887,23 +1923,12 @@ impl ChannelEncryption {
             return;
         }
         let (workspace, route) = (entry.workspace, entry.route.clone());
-        let held = self.directory.history_held(workspace);
-        let Some(entry) = self.peers.get_mut(&channel) else {
-            return;
+        let hosted = self.directory.hosts(workspace);
+        let due = if entry.wanted {
+            hosted || entry.founding.answered
+        } else {
+            (hosted || entry.founding.unfounded) && now >= entry.founding.at
         };
-        if !held {
-            entry.founding.history = false;
-            return;
-        }
-        if !std::mem::replace(&mut entry.founding.history, true) {
-            // The history holds no genesis: its members get the wait to answer.
-            let device = entry.peer.device();
-            entry.founding.at = now
-                .checked_add(found_after(&device, channel))
-                .unwrap_or(now);
-            entry.retry = Backoff::now(now, REQUEST_FIRST);
-            return;
-        }
         let reads = self
             .directory
             .allowed_devices(workspace, channel, route.as_ref(), wall)
@@ -1914,7 +1939,7 @@ impl ChannelEncryption {
         };
         // Looked at again on every pass, a policy re-check's included.
         entry.founding.allowed = reads;
-        if !reads || now < entry.founding.at {
+        if !reads || !due {
             return;
         }
         match entry.peer.found_now(&store.vault) {
@@ -2020,7 +2045,8 @@ impl ChannelEncryption {
                 founding: Founding {
                     at: found_at,
                     allowed: !self.reads_only(),
-                    history: true,
+                    unfounded: false,
+                    answered: false,
                 },
                 wanted: true,
                 held: Vec::new(),

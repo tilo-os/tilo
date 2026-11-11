@@ -755,16 +755,7 @@ impl OwnerCommitService for Joined {
 /// presence out; it is signed end to end.
 impl GovernanceTransport for Joined {
     fn publish(&self, message: NeighbourMsg) -> bool {
-        let workspace = match &message {
-            NeighbourMsg::MlsGovernance {
-                workspace: room, ..
-            }
-            | NeighbourMsg::MlsAccessRequest {
-                workspace: room, ..
-            }
-            | NeighbourMsg::MlsRoutedAccessRequest { room, .. } => WorkspaceId::parse(room),
-            _ => None,
-        };
+        let workspace = message.channel_workspace().and_then(WorkspaceId::parse);
         let Some(live) = workspace.and_then(|workspace| self.live(workspace)) else {
             return false;
         };

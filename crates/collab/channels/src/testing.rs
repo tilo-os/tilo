@@ -1,5 +1,5 @@
 //! In-memory workspaces and directories the channel service's tests drive.
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -11,11 +11,15 @@ use tilo_desktop_model::WorkspaceId;
 use crate::encryption::{ChannelDirectory, GovernanceTransport, InboundChannelGovernance};
 
 /// An in-memory workspace: every endpoint publishes to all the others while
-/// the workspace is up, and loses what it publishes while it is down.
+/// the workspace is up, and loses what it publishes while it is down. Its host
+/// answers each access request for a channel it carries no genesis of
+/// ([`InboundChannelGovernance::Unfounded`]), unless it is `silent`.
 #[derive(Default)]
 pub struct Workspace {
     pub queues: Mutex<HashMap<usize, Vec<InboundChannelGovernance>>>,
     pub down: AtomicBool,
+    pub silent: AtomicBool,
+    geneses: Mutex<HashSet<ChannelId>>,
 }
 
 pub struct Endpoint {
@@ -43,6 +47,9 @@ impl GovernanceTransport for Endpoint {
         let workspace = self.workspace_id;
         let inbound = match message {
             NeighbourMsg::MlsGovernance { frame, .. } => {
+                if matches!(frame.action, collab_types::MlsGovernanceAction::Genesis) {
+                    self.workspace.geneses.lock().unwrap().insert(frame.channel);
+                }
                 InboundChannelGovernance::Frame { workspace, frame }
             }
             NeighbourMsg::MlsAccessRequest { request, .. } => {
@@ -61,9 +68,28 @@ impl GovernanceTransport for Endpoint {
             }
             _ => return false,
         };
-        for (id, queue) in self.workspace.queues.lock().unwrap().iter_mut() {
+        let mut queues = self.workspace.queues.lock().unwrap();
+        for (id, queue) in queues.iter_mut() {
             if *id != self.id {
                 queue.push(inbound.clone());
+            }
+        }
+        if let InboundChannelGovernance::AccessRequest { request, .. } = &inbound
+            && !self.workspace.silent.load(Ordering::SeqCst)
+            && !self
+                .workspace
+                .geneses
+                .lock()
+                .unwrap()
+                .contains(&request.channel)
+        {
+            let answer = InboundChannelGovernance::Unfounded {
+                workspace,
+                channel: request.channel,
+                device: request.device,
+            };
+            for queue in queues.values_mut() {
+                queue.push(answer.clone());
             }
         }
         true
@@ -103,9 +129,8 @@ pub struct Policy {
     /// Channels whose record no grant names: without a route the
     /// directory cannot tell who reads them.
     pub unnamed: Arc<Mutex<std::collections::HashSet<ChannelId>>>,
-    /// The workspace's history has not reached the device yet
-    /// ([`ChannelDirectory::history_held`]).
-    pub history_unheld: Arc<std::sync::atomic::AtomicBool>,
+    /// The device hosts the workspace ([`ChannelDirectory::hosts`]).
+    pub hosted: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The epoch a test [`Directory`] reports as its
@@ -164,8 +189,8 @@ impl ChannelDirectory for Directory {
     ) -> Option<ChannelId> {
         Some(route.channel(&workspace.to_string()))
     }
-    fn history_held(&self, _: WorkspaceId) -> bool {
-        !self.policy.history_unheld.load(Ordering::SeqCst)
+    fn hosts(&self, _: WorkspaceId) -> bool {
+        self.policy.hosted.load(Ordering::SeqCst)
     }
     fn policy_epoch(&self) -> Option<u64> {
         match &*self.policy.announces.lock().unwrap() {

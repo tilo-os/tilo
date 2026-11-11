@@ -112,6 +112,12 @@ impl ChannelDirectory for Directory {
     ) -> Option<collab_types::ChannelId> {
         self.joined.unit_scope(workspace, route, now)
     }
+
+    /// A workspace joined through another device's host is that host's to
+    /// answer for.
+    fn hosts(&self, workspace: WorkspaceId) -> bool {
+        !self.joined.hosted_elsewhere(workspace)
+    }
 }
 
 /// The workspace host this runtime runs holds no channel keys of its own: it

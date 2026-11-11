@@ -84,7 +84,8 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         // requests are how a reader obtains keys.
         | NeighbourMsg::MlsGovernance { .. }
         | NeighbourMsg::MlsAccessRequest { .. }
-        | NeighbourMsg::MlsRoutedAccessRequest { .. } => {
+        | NeighbourMsg::MlsRoutedAccessRequest { .. }
+        | NeighbourMsg::MlsChannelUnfounded { .. } => {
             Some((TreePath::root(), ActionKind::Read))
         }
         // Settled before the gate: identity is how a sender becomes known at all; a codec advert,

@@ -83,9 +83,7 @@ impl ShellPayloads for NeighbourPayloads {
             return None;
         }
         let kind = match &msg {
-            NeighbourMsg::MlsGovernance { .. }
-            | NeighbourMsg::MlsAccessRequest { .. }
-            | NeighbourMsg::MlsRoutedAccessRequest { .. } => CheckpointKind::Governance,
+            msg if msg.channel_workspace().is_some() => CheckpointKind::Governance,
             NeighbourMsg::PersonalWorkspaces {
                 user_public_key, ..
             } => CheckpointKind::Directory {

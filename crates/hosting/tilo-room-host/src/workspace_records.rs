@@ -319,14 +319,12 @@ impl WorkspaceRecords {
         retained
             .into_iter()
             .filter_map(|retained| {
-                let message = postcard::from_bytes(&retained.body).ok()?;
-                matches!(
-                    message,
-                    neighbour_wire::NeighbourMsg::MlsGovernance { .. }
-                        | neighbour_wire::NeighbourMsg::MlsAccessRequest { .. }
-                        | neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest { .. }
-                )
-                .then_some((retained.author, message))
+                let message: neighbour_wire::NeighbourMsg =
+                    postcard::from_bytes(&retained.body).ok()?;
+                message
+                    .channel_workspace()
+                    .is_some()
+                    .then_some((retained.author, message))
             })
             .collect()
     }

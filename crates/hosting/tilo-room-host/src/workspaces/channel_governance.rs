@@ -9,7 +9,6 @@ use std::sync::Arc;
 use web_time::SystemTime;
 
 use super::Workspaces;
-use super::channel_workspace;
 
 /// Notices one workspace hands its channel service at once; a device asks
 /// again when its request is dropped.
@@ -99,49 +98,57 @@ impl Workspaces {
 
     /// Take in `author`'s access request or commit for a channel of `workspace`.
     ///
-    /// This host holds no channel keys of its own. One whose device's channel
-    /// service it runs queues what members send for that service, which settles
-    /// the groups; one that is no device's peer keeps what the channels are
-    /// made of like any other governance, for whoever takes part; and one
-    /// beside a channel service running on the device itself keeps nothing,
-    /// since that service hears these on its own sessions.
+    /// This host holds no channel keys of its own. What a governed member
+    /// device sent, and only that, it keeps like any other governance, for
+    /// whoever takes part later: a device that links reads every channel's
+    /// genesis from it, and the host answers a request with what it keeps
+    /// ([`tilo_peer_state::direct::DirectSync`]). One whose device's channel
+    /// service it runs also queues it for that service, which settles the
+    /// groups.
     pub(super) async fn take_channel_governance(
         &self,
         workspace: &str,
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> Result<(), String> {
-        if channel_workspace(&message).is_none_or(|named| named != workspace) {
+        // A host's word that a channel has no group is its own to say.
+        if message.channel_workspace() != Some(workspace)
+            || matches!(
+                message,
+                neighbour_wire::NeighbourMsg::MlsChannelUnfounded { .. }
+            )
+        {
             return Ok(());
         }
-        let Some(channels) = &self.inner.host.channels else {
-            // What a governed member device sent, and only that.
-            let state = self
-                .workspace(workspace)
-                .await
-                .map_err(|error| error.to_string())?;
-            let (workspace_id, member) = {
-                let governed = state.lock().await;
-                (
-                    governed.workspace_id(),
-                    governed
-                        .peer()
-                        .governance()
-                        .governed_access(SystemTime::now())
-                        .is_ok_and(|access| access.member_devices.contains(&author)),
-                )
-            };
-            if !member {
-                return Ok(());
-            }
-            return self
-                .retain_channel_governance(workspace_id, vec![message])
-                .await;
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let (workspace_id, member) = {
+            let governed = state.lock().await;
+            (
+                governed.workspace_id(),
+                governed
+                    .peer()
+                    .governance()
+                    .governed_access(SystemTime::now())
+                    .is_ok_and(|access| access.member_devices.contains(&author)),
+            )
         };
-        if channels.sink.is_some() {
-            self.channel_notice(workspace, message)?;
+        if !member {
+            return Ok(());
         }
-        Ok(())
+        if self
+            .inner
+            .host
+            .channels
+            .as_ref()
+            .is_some_and(|channels| channels.sink.is_some())
+        {
+            self.channel_notice(workspace, message.clone())?;
+        }
+        self.retain_channel_governance(workspace_id, vec![message])
+            .await
     }
 
     /// Start handing `workspace`'s queued channel governance over. A crowd

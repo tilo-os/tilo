@@ -618,25 +618,33 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     // A channel's governance one member sends reaches the others through the device that holds
     // the workspace, which admits none of it into the workspace: a request to join a record's
     // channel that only its sender heard left each member founding the channel's group alone.
-    let mut c_heard = c.heard();
+    let (mut b_heard, mut c_heard) = (b.heard(), c.heard());
     let asking = NeighbourMsg::MlsAccessRequest {
         workspace: WORKSPACE.into(),
         request: Box::new(MlsAccessRequestV1::signed(channel(), vec![1], 1, &b_key).unwrap()),
         delivery: 0,
     };
     b.send(asking.clone()).unwrap();
-    let heard = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            match c_heard.recv().await {
-                Ok(heard) if heard.message == asking => return heard,
-                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(error) => panic!("the late joiner's link closed: {error}"),
-            }
-        }
-    })
-    .await
-    .expect("the joiner's channel governance reaches the late joiner");
+    let heard = hears(
+        &mut c_heard,
+        &asking,
+        "the joiner's request reaches the late joiner",
+    )
+    .await;
     assert_eq!(heard.author, b_key.verifying_key().to_bytes());
+    // The device holding the workspace carries no genesis of the channel: it tells the device that
+    // asked, which creates the group at once rather than waiting to hear of one.
+    let unfounded = NeighbourMsg::MlsChannelUnfounded {
+        workspace: WORKSPACE.into(),
+        channel: channel(),
+        device: collab_types::Ed25519PublicKey::from_bytes(b_key.verifying_key().to_bytes()),
+    };
+    hears(
+        &mut b_heard,
+        &unfounded,
+        "the host says it carries no group",
+    )
+    .await;
     assert!(
         !heard.landed,
         "channel governance is never the workspace's state"
@@ -661,17 +669,21 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         delivery: 1,
     };
     serving.carry_governance(&genesis);
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            match c_heard.recv().await {
-                Ok(heard) if heard.message == genesis => return,
-                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(error) => panic!("the late joiner's link closed: {error}"),
-            }
-        }
-    })
-    .await
-    .expect("what the device holding the workspace says of its channels reaches its members");
+    hears(
+        &mut c_heard,
+        &genesis,
+        "the host's own governance reaches its members",
+    )
+    .await;
+    // Asked again, the host answers with the genesis it carries: the device joins that group.
+    hears(&mut b_heard, &genesis, "the member hears the genesis").await;
+    b.send(asking.clone()).unwrap();
+    hears(
+        &mut b_heard,
+        &genesis,
+        "the host answers a request with the genesis",
+    )
+    .await;
 
     // A workspace this device does not hold is refused, rather than answered for.
     let elsewhere =
@@ -698,6 +710,25 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     host_endpoint.close().await;
     b_endpoint.close().await;
     c_endpoint.close().await;
+}
+
+/// The next frame `heard` brings that is `message`, within 30 seconds: `step` fails otherwise.
+async fn hears(
+    heard: &mut tokio::sync::broadcast::Receiver<tilo_peer_state::direct::Heard>,
+    message: &NeighbourMsg,
+    step: &str,
+) -> tilo_peer_state::direct::Heard {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match heard.recv().await {
+                Ok(heard) if heard.message == *message => return heard,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(error) => panic!("{step}: the link closed: {error}"),
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{step}"))
 }
 
 /// What the host wrote long before a member links reaches the member as history, however old:

@@ -80,21 +80,20 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
     );
 }
 
-/// A device that entered a workspace hosted elsewhere founds none of its
-/// channels before the workspace's history reached it, however long that
-/// takes: the history may hold the channel's genesis, and a second one would
-/// split the channel under the members already in it. Once the history is
-/// here and holds no genesis, its members get the founding wait to answer,
-/// and then the device founds the group itself.
+/// A device of a workspace hosted elsewhere founds none of its channels
+/// before the host answered its request, however long that takes: the host
+/// may carry the channel's genesis, and a second one would split the channel
+/// under the members already in it. Once the host says it carries none, the
+/// device founds the group at once.
 #[test]
-fn a_device_founds_no_channel_before_the_workspaces_history_reached_it() {
+fn a_device_founds_a_channel_once_the_host_says_it_has_no_group() {
     let workspace = Arc::new(Workspace::default());
+    workspace
+        .silent
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let workspace_id = WorkspaceId::new();
     let channel = ChannelId::new();
     let policy = Policy::readers([1]);
-    policy
-        .history_unheld
-        .store(true, std::sync::atomic::Ordering::SeqCst);
     let dir = tempfile::tempdir().unwrap();
     let mut entered = device(&workspace, workspace_id, 0, 1, &policy, dir.path());
     let mut now = Instant::now();
@@ -106,20 +105,26 @@ fn a_device_founds_no_channel_before_the_workspaces_history_reached_it() {
     run(&mut [&mut entered], &mut now, 30);
     assert!(
         !entered.service.peers[&channel].peer.knows_group(),
-        "no group is founded while the workspace's history is on its way"
+        "no group is founded while the host has not answered"
     );
 
-    policy
-        .history_unheld
+    workspace
+        .silent
         .store(false, std::sync::atomic::Ordering::SeqCst);
-    run(&mut [&mut entered], &mut now, 1);
-    assert!(
-        !entered.service.peers[&channel].peer.knows_group(),
-        "the members the history names are given the founding wait to answer first"
-    );
-    run(&mut [&mut entered], &mut now, 4);
+    let asked = now;
+    while matches!(
+        entered.service.access(workspace_id, channel, now),
+        ChannelAccess::Waiting
+    ) {
+        run(&mut [&mut entered], &mut now, 1);
+    }
     assert!(
         ready_epoch(&entered.service.access(workspace_id, channel, now)).is_some(),
-        "a history that holds no genesis leaves the channel to this device to found"
+        "a host that carries no genesis leaves the channel to this device to found"
+    );
+    assert!(
+        now.duration_since(asked) <= Duration::from_secs(1),
+        "founded as soon as the host's answer arrived, not after a wait: {:?}",
+        now.duration_since(asked)
     );
 }

@@ -194,14 +194,9 @@ pub(super) fn carried(msg: &NeighbourMsg) -> Option<Carried> {
 }
 
 /// Whether `msg` is a workspace's channel governance: a frame of a channel's
-/// group, or a device asking to join one.
+/// group, a device asking to join one, or the host's word that one has none.
 pub(super) fn is_channel_governance(msg: &NeighbourMsg) -> bool {
-    matches!(
-        msg,
-        NeighbourMsg::MlsGovernance { .. }
-            | NeighbourMsg::MlsAccessRequest { .. }
-            | NeighbourMsg::MlsRoutedAccessRequest { .. }
-    )
+    msg.channel_workspace().is_some()
 }
 
 /// Whether `msg` is about a record's content: a member asking the workspace

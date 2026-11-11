@@ -137,7 +137,7 @@ impl Channels {
         let writing = workspaces.clone();
         let publisher = tokio::spawn(async move {
             while let Some(message) = outgoing.recv().await {
-                let Some(workspace) = channel_workspace(&message) else {
+                let Some(workspace) = message.channel_workspace() else {
                     continue;
                 };
                 let workspace = workspace.to_owned();
@@ -313,16 +313,6 @@ impl ChannelDirectory for Directory {
         let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
         let state = lock(&self.states).get(&workspace.to_string())?.clone();
         state.governance().unit_scope(at, route).ok()
-    }
-}
-
-/// The workspace a channel governance message names.
-fn channel_workspace(message: &NeighbourMsg) -> Option<&str> {
-    match message {
-        NeighbourMsg::MlsGovernance { workspace, .. }
-        | NeighbourMsg::MlsAccessRequest { workspace, .. } => Some(workspace),
-        NeighbourMsg::MlsRoutedAccessRequest { room, .. } => Some(room),
-        _ => None,
     }
 }
 
