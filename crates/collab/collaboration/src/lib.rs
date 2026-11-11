@@ -1135,22 +1135,6 @@ impl CollaborationManager {
         self.sync_expected && matches!(self.state(), CollaborationState::Offline(_))
     }
 
-    /// The whole action the change `change` was part of, when this endpoint's
-    /// transport keeps the index of actions it carries in `workspace`: every
-    /// unit the action wrote, which is what one undo takes back. None for a
-    /// manager with no such index.
-    #[must_use]
-    pub fn action_of(
-        &self,
-        workspace: &str,
-        change: &[u8; 32],
-    ) -> Option<crate::commit_log::CommitHistory> {
-        let Backend::Transport(transport) = &self.backend else {
-            return None;
-        };
-        transport.action_of(workspace, change)
-    }
-
     /// The current state when it differs from the one this method last
     /// returned (initially, the state the manager was constructed in). Lets
     /// an owner run connect-time work once, when the manager becomes ready.

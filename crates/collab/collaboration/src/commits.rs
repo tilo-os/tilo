@@ -13,14 +13,10 @@
 //! were retried.
 //!
 //! The log is also the action log history reads: [`crate::commit_log::CommitLog`]
-//! indexes the complete actions and the changes that made them, so a
-//! resource's history is one index entry and the actions it names.
-//! [`Commits::history`] names one action with its author, its time, its
-//! invocation and run and every unit change it made; [`Commits::history_of`]
-//! answers for one resource; [`Commits::action_of`] gives the whole action a
-//! change belongs to, which is what an undo of one change takes back. The log
-//! is derived from the changes and commits, never persisted: a restarted
-//! endpoint rebuilds it as they arrive again.
+//! keeps the complete actions. [`Commits::history`] names one action with its
+//! author, its time, its invocation and run and every unit change it made. The
+//! log is derived from the commits, never persisted: a restarted endpoint
+//! rebuilds it as they arrive again.
 
 use std::collections::BTreeMap;
 
@@ -29,7 +25,7 @@ use collab_types::{CommitPart, WorkspaceCommit};
 use crate::CollabEvent;
 use crate::broker::BridgeState;
 
-pub use crate::commit_log::{ChangeFact, CommitHistory, CommitLog};
+pub use crate::commit_log::{CommitHistory, CommitLog};
 
 /// Commits whose every part has arrived, and commits this endpoint received
 /// only parts of.
@@ -177,20 +173,13 @@ impl Commits {
             .iter()
             .filter_map(|part| parts.remove(&key(part)).map(|event| (part, event)))
             .collect();
-        let facts: Vec<ChangeFact> = released
-            .iter()
-            .flat_map(|(part, event)| {
-                ChangeFact::of_payload(&part.app, &part.record, payload(event))
-            })
-            .collect();
-        self.log.record(&held.commit, &facts);
+        self.log.record(&held.commit);
         Delivery::Complete(released.into_iter().map(|(_, event)| event).collect())
     }
 
-    /// Note an action this endpoint itself made: every part of it is here,
-    /// and `facts` are the changes its parts carry.
-    pub(crate) fn record(&mut self, commit: WorkspaceCommit, facts: &[ChangeFact]) {
-        self.log.record(&commit, facts);
+    /// Note an action this endpoint itself made: every part of it is here.
+    pub(crate) fn record(&mut self, commit: WorkspaceCommit) {
+        self.log.record(&commit);
     }
 
     /// Every action this endpoint has seen in `workspace`, oldest first: one
@@ -198,33 +187,6 @@ impl Commits {
     #[cfg(test)]
     pub fn history(&self, workspace: &str) -> Vec<CommitHistory> {
         self.log.history(workspace)
-    }
-
-    /// Every action that wrote `resource` of `app`'s `record` in
-    /// `workspace`, newest first, at most `limit` of them.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "the log's readers answer a resource's history and an action's changes with it"
-        )
-    )]
-    pub fn history_of(
-        &mut self,
-        workspace: &str,
-        app: &str,
-        record: &str,
-        resource: &str,
-        limit: usize,
-    ) -> Vec<CommitHistory> {
-        self.log.history_of(workspace, app, record, resource, limit)
-    }
-
-    /// The whole action the change `hash` of `workspace` is part of: every
-    /// unit and every change of it, so an undo of one change takes its action
-    /// back whole.
-    pub fn action_of(&mut self, workspace: &str, hash: &[u8; 32]) -> Option<CommitHistory> {
-        self.log.action_of(workspace, hash)
     }
 
     /// How many parts of actions are held back waiting for the rest.
@@ -236,22 +198,6 @@ impl Commits {
 
 fn key(part: &CommitPart) -> (String, String) {
     (part.app.clone(), part.record.clone())
-}
-
-/// The signed payload a document event carries: the plaintext a sealed route
-/// opens, or what the envelope holds otherwise.
-fn payload(event: &CollabEvent) -> &[u8] {
-    let CollabEvent::Document {
-        envelope,
-        decrypted_payload,
-        ..
-    } = event
-    else {
-        return &[];
-    };
-    decrypted_payload
-        .as_deref()
-        .unwrap_or(envelope.payload.as_slice())
 }
 
 /// Actions this endpoint holds parts of, waiting for the rest. Bounded so a
@@ -583,26 +529,6 @@ mod tests {
         assert_eq!(action.parts, commit.parts);
         assert_eq!(action.parts.len(), 2);
         assert_eq!(action.parts[0].changes, vec![commit.parts[0].changes[0]]);
-        // Each resource the action wrote reads it in its own history, once.
-        let resources = [("tasks", "a", "title"), ("discussion", "thread", "body")];
-        for (app, record, resource) in resources {
-            let of_resource = state
-                .commits()
-                .history_of(WORKSPACE, app, record, resource, 10);
-            assert_eq!(
-                of_resource.len(),
-                1,
-                "{app}/{record}/{resource}: {of_resource:?}"
-            );
-            assert_eq!(of_resource[0].commit, commit.id());
-        }
-        // Undo of any change takes the whole action back, both units with it.
-        let undo = state
-            .commits()
-            .action_of(WORKSPACE, &commit.parts[1].changes[0])
-            .unwrap();
-        assert_eq!(undo.commit, commit.id());
-        assert_eq!(undo.parts.len(), 2);
         assert!(state.commits().history("elsewhere").is_empty());
     }
 

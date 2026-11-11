@@ -913,14 +913,6 @@ impl CollabTransport for BrokerTransport {
         self.state.document_reads.required(channel)
     }
 
-    fn action_of(
-        &self,
-        workspace: &str,
-        change: &[u8; 32],
-    ) -> Option<crate::commit_log::CommitHistory> {
-        self.state.commits().action_of(workspace, change)
-    }
-
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -5420,9 +5412,7 @@ async fn send_document_mutation(
         }
     }
     if let Some(commit) = commit {
-        let record = route.spec.record.as_deref().unwrap_or("");
-        let facts = crate::commits::ChangeFact::of_mutation(&route.spec.app_id, record, &mutation);
-        inbound.state.commits().record(commit, &facts);
+        inbound.state.commits().record(commit);
     }
     Ok(())
 }
