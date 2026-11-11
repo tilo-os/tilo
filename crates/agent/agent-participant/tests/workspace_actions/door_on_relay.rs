@@ -302,7 +302,8 @@ pub async fn accept_invitation(
     name: &str,
 ) -> (Device, Value) {
     use base64::Engine as _;
-    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep};
+    use tilo_relay_protocol::workspaces::JoinReply;
+    use tilo_session_host::device::{Entering, Held, entered, invitation_entry};
     let text = if let Some((site, sealed)) = link.rsplit_once("/i/")
         && let Some((handle, key)) = sealed.split_once('#')
     {
@@ -321,37 +322,51 @@ pub async fn accept_invitation(
         .expect("an invitation's text");
     let client = tilo_net::Client::builder().build().unwrap();
     let host = tilo_relay_client::https::Origin::new(&client, &on_relay.relay);
-    let inspect = JoinStep::Inspect {
-        invitation: invitation.clone(),
-    };
-    let offer = tilo_relay_client::https::join(&host, &inspect)
+    let offer = tilo_relay_client::https::invitation(&host, &invitation)
         .await
         .unwrap();
     assert!(matches!(offer, JoinReply::Invitation { .. }), "{offer:?}");
+    // The page's session carries the invitation in its first message.
+    let info = tilo_relay_client::https::host_info(&host).await.unwrap();
     let page = enrol(root, name, DeviceCapabilities::member());
-    let joined = tilo_relay_client::invite::ask_to_join(
-        &host,
+    let held = Held {
+        cert: page.cert.clone(),
+        host_cert: Some(info.host_cert.clone()),
+    };
+    let (_, entering) = invitation_entry(
+        &info.host_cert,
         &invitation,
-        &page.cert,
         &page.key,
-        page.cert.device_public_key,
-        name,
+        Entering {
+            held: Some(&held),
+            root: None,
+            label: name,
+            name,
+            token: None,
+        },
     )
     .await
     .unwrap();
-    let JoinReply::Admitted {
-        workspace,
-        name,
-        role,
-        ..
-    } = joined
-    else {
-        panic!("the invitation admits the page: {joined:?}");
-    };
-    let role = format!("{role:?}").to_lowercase();
+    let address = info.address.expect("the relay takes device sessions");
+    let session = tilo_session_host::PeerHandle::start(
+        tilo_session_host::PeerConfig {
+            host: tilo_session_host::Host::published(&address),
+            cert: page.cert.clone(),
+            host_cert: info.host_cert,
+            revocations: tilo_user_identity::RevocationList::new(),
+            entering: Some(entering),
+        },
+        Arc::new(page.key.clone()),
+        Arc::new(tilo_session_host::MemoryPeerStore::default()),
+    );
+    let admitted = entered(&session)
+        .await
+        .expect("the invitation admits the page");
+    session.close();
+    let role = format!("{:?}", admitted.role).to_lowercase();
     (
         page,
-        json!({"workspace": workspace, "name": name, "role": role}),
+        json!({"workspace": admitted.workspace, "name": admitted.name, "role": role}),
     )
 }
 

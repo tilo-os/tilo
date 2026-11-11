@@ -46,12 +46,11 @@ use tilo_relay::RelayConfig;
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::install::{InstallListener, SessionDevice};
 use tilo_relay::web::{TlsSource, WebConfig};
-use tilo_relay_client::https::join;
+use tilo_relay_client::https::invitation as invitation_offer;
 use tilo_relay_protocol::workspaces::{
-    JoinReply, JoinStep, PreAdmission, WorkspaceNotice, WorkspaceRole, WorkspacesReply,
-    WorkspacesRequest,
+    JoinReply, PreAdmission, WorkspaceNotice, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
 };
-use tilo_session_host::invite::{ask_to_join, ask_to_join_pre_admitted, guest_certificate};
+use tilo_session_host::invite::guest_certificate;
 use tilo_session_host::{
     DeviceSigner, Host, IssuedRole, PeerHandle, SignError, SignFuture, certify_with_root,
     issue_device_cert,
@@ -396,14 +395,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     else {
         panic!("no invitation");
     };
-    let offered = join(
-        &*https,
-        &JoinStep::Inspect {
-            invitation: signed_invitation.clone(),
-        },
-    )
-    .await
-    .unwrap();
+    let offered = invitation_offer(&*https, &signed_invitation).await.unwrap();
     let JoinReply::Invitation {
         name,
         inviter: Some(inviter),
@@ -426,40 +418,23 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     )
     .await
     .unwrap();
-    let asked = ask_to_join(
-        &*https,
+    // Bo's session carries the invitation in its first message, and joins after everything was
+    // written and reads all of it.
+    let (bo, asked) = enters(
+        host.clone(),
+        &host_cert,
+        (&bo_cert, &bo_key),
         &signed_invitation,
-        &bo_cert,
-        &bo_key,
-        [2; 32],
+        None,
         "Bo",
     )
-    .await
-    .unwrap();
-    assert!(
-        matches!(
-            &asked,
-            JoinReply::Admitted {
-                name,
-                role: WorkspaceRole::Editor,
-                ..
-            } if name == "Acme"
-        ),
-        "the invitation admits the person who holds it: {asked:?}"
+    .await;
+    let asked = asked.unwrap();
+    assert_eq!(
+        asked.name, "Acme",
+        "the invitation admits the person who holds it"
     );
-    let status = join(
-        &*https,
-        &JoinStep::Status {
-            request_id: [2; 32],
-            device_public_key: bo_cert.device_public_key,
-        },
-    )
-    .await
-    .unwrap();
-    assert!(matches!(status, JoinReply::Admitted { .. }), "{status:?}");
-
-    // Bo joins after everything was written and reads all of it.
-    let bo = start_peer(host.clone(), bo_cert, host_cert.clone(), bo_key);
+    assert_eq!(asked.role, WorkspaceRole::Editor);
     bo.join(acme.workspace_id).unwrap();
     let mut events = Vec::new();
     assert_eq!(
@@ -510,33 +485,30 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     )
     .await
     .unwrap();
-    let wrong = ask_to_join_pre_admitted(
-        &*https,
+    let (guessing, wrong) = enters(
+        host.clone(),
+        &host_cert,
+        (&cy_cert, &cy_key),
         &signed_invitation,
-        &cy_cert,
-        &cy_key,
-        [4; 32],
+        Some(b"a guessed token"),
         "Cy",
-        b"a guessed token",
     )
-    .await
-    .unwrap();
-    assert!(matches!(wrong, JoinReply::Refused(_)), "{wrong:?}");
-    let admitted = ask_to_join_pre_admitted(
-        &*https,
+    .await;
+    assert_eq!(wrong.unwrap_err().code, "not-admitted");
+    guessing.close();
+    let (cy_page, admitted) = enters(
+        host.clone(),
+        &host_cert,
+        (&cy_cert, &cy_key),
         &signed_invitation,
-        &cy_cert,
-        &cy_key,
-        [5; 32],
+        Some(token),
         "Cy",
-        token,
     )
-    .await
-    .unwrap();
-    assert!(
-        matches!(&admitted, JoinReply::Admitted { name, role: WorkspaceRole::Editor, .. } if name == "Acme"),
-        "{admitted:?}"
-    );
+    .await;
+    let admitted = admitted.unwrap();
+    assert_eq!(admitted.name, "Acme");
+    assert_eq!(admitted.role, WorkspaceRole::Editor);
+    cy_page.close();
     let WorkspacesReply::Notices(notices) = workspaces(
         &ada,
         WorkspacesRequest::Notices {
@@ -584,4 +556,50 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         .unwrap();
     assert!(status.success(), "the page's expectations failed");
     relay.shutdown().await;
+}
+
+/// A session of `cert`'s device whose first message carries `invitation` (with the pre-admission
+/// `token` where there is one), and what the workspace answered it.
+async fn enters(
+    host: tilo_session_host::Host,
+    host_cert: &tilo_user_identity::DeviceCert,
+    (cert, key): (&tilo_user_identity::DeviceCert, &SigningKey),
+    invitation: &[u8],
+    token: Option<&[u8]>,
+    name: &str,
+) -> (
+    tilo_session_host::PeerHandle,
+    Result<tilo_relay_client::login::Admission, tilo_session_host::device::HostRefusal>,
+) {
+    let held = tilo_session_host::device::Held {
+        cert: cert.clone(),
+        host_cert: Some(host_cert.clone()),
+    };
+    let (_, entering) = tilo_session_host::device::invitation_entry(
+        host_cert,
+        invitation,
+        key,
+        tilo_session_host::device::Entering {
+            held: Some(&held),
+            root: None,
+            label: name,
+            name,
+            token,
+        },
+    )
+    .await
+    .unwrap();
+    let peer = tilo_session_host::PeerHandle::start(
+        tilo_session_host::PeerConfig {
+            host,
+            cert: cert.clone(),
+            host_cert: host_cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+            entering: Some(entering),
+        },
+        std::sync::Arc::new(key.clone()),
+        std::sync::Arc::new(tilo_session_host::MemoryPeerStore::default()),
+    );
+    let answered = tilo_session_host::device::entered(&peer).await;
+    (peer, answered)
 }

@@ -1032,7 +1032,7 @@ async function connect({
      * `{workspace, workspace_id, name}`; rejects with the host's refusal as it
      * typed it (`HostRefusal`: `code`, and `refusal` where the host gave one). */
     enterOwnWorkspace: async ({name = null, room = null, entered = () => false} = {}) => JSON.parse(
-      await peer.enterOwnWorkspace(workspace, post, name, room, fitDisplayName(displayName || label), entered)),
+      await peer.enterOwnWorkspace(workspace, name, room, fitDisplayName(displayName || label), entered)),
     /** Who is in the workspace, for its owner (`rooms.rs`): `list()`,
      * `setRole`, `remove`, `cancelInvitation`. */
     get membership() { return membership; },
@@ -1400,7 +1400,7 @@ const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '
  * `CertifiedPeer` in the workspace; rejects when the host refuses. With
  * `admissionToken` (the one-time token of an owner's pre-admission for this
  * invitation) the host admits the page at once too. The entry itself is the
- * shared one every device takes (`acceptInvitation` in wasm).
+ * shared one every device takes, on the session itself (`invitationEntry` in wasm).
  */
 export async function joinWorkspace(options) {
   const identity = options.identity ?? currentIdentity();
@@ -1416,7 +1416,7 @@ export async function joinWorkspace(options) {
  * from an earlier entry, or `null`: read from `store`, else from the namespace
  * the profile keeps its peer in now. Whether it still serves to enter with
  * (this very key, this person, the same host, not ending soon) is the shared
- * entry's to decide (`acceptInvitation`).
+ * entry's to decide (`invitationEntry`, `doorEntry`).
  */
 async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop, namespaces = globalThis.localStorage}) {
   let opened;
@@ -1485,40 +1485,40 @@ function entryAnswered(peer, timeoutMs = ENTRY_TIMEOUT_MS) {
   });
 }
 
-/** Enter through a workspace's door (`door`, its base URL) on the session itself: the host says
- * who it is, the shared entry chooses the certificate (the one this very key holds from this host,
- * else one the root makes now), and the session asks to enter as it opens. The door, the
- * workspace's challenge and the admission ride the session's own handshake, so the page asks the
- * host nothing else first, and its first requests follow its proof. */
-async function enterDoor({
-  origin, door, identity, person, label, displayName, signal, onProgress, runtime, custody, custodyForWasm,
-  profile, fetcher, accepting, connectOptions,
+/** Enter `workspace` on the session itself, through its door or with an invitation (`entry`,
+ * given the host's certificate as text, makes the entry: `doorEntry` or `invitationEntry` in
+ * wasm). The host says who it is, the shared entry chooses the certificate (the one this very key
+ * holds from this host, else one the root makes now), and the session asks to enter as it opens:
+ * the door and the admission ride the session's own first message, so the page asks the host
+ * nothing else first, and its first requests follow right behind. */
+async function enterOnSession({
+  origin, workspace, entry, identity, person, label, displayName, signal, onProgress, runtime, custody,
+  profile, fetcher, connectOptions,
 }) {
-  const workspace = doorWorkspace(door);
-  if (!workspace) throw new TypeError('the door names no workspace');
   let hostText;
   let entered;
   try {
     hostText = await runtime.hostInfo(httpsPost(origin, fetcher));
-    entered = await runtime.doorEntry(memberText(hostText, 'hostCert'), workspace, custodyForWasm,
-      identity ?? undefined, accepting);
+    entered = await entry(memberText(hostText, 'hostCert'));
   } catch (error) {
     if (DOOR_CODES.has(error?.code)) throw error;
     console.warn('join refused:', error?.code ?? error?.name, error?.message ?? error);
     throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: error?.message ?? String(error), code: 'refused'});
   }
+  const entering = JSON.parse(memberText(entered, 'entering'));
   const peer = await connect({
-    ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, workspace, label, displayName, custody, runtime, signal,
+    ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, workspace: workspace ?? entering.workspace,
+    label, displayName, custody, runtime, signal,
     profile: connectOptions.store ? undefined : profile,
     // As text: the certificate's nanosecond timestamps exceed what a JavaScript number holds
     // exactly (json-text.mjs).
     fetch: fetcher, deviceCertificate: memberText(entered, 'certificate'),
     hostInfo: JSON.parse(hostText),
-    entering: JSON.parse(memberText(entered, 'entering')),
+    entering,
   });
   try {
-    const entry = await entryAnswered(peer);
-    onProgress?.({phase: 'admitted', room: entry.workspace, workspaceName: entry.name, role: entry.role});
+    const answered = await entryAnswered(peer);
+    onProgress?.({phase: 'admitted', room: answered.workspace, workspaceName: answered.name, role: answered.role});
     return peer;
   } catch (error) {
     await peer.dispose?.().catch(() => {});
@@ -1554,30 +1554,20 @@ async function join({
   // this device under it.
   const accepting = JSON.stringify({held, label: fitDisplayName(label), name: fitDisplayName(displayName || label),
     ...(admissionToken ? {admissionToken} : {})});
+  const common = {
+    origin, identity, person, label, displayName, signal, onProgress, runtime, custody, profile, fetcher, connectOptions,
+  };
   if (door) {
-    return enterDoor({
-      origin, door, identity, person, label, displayName, signal, onProgress, runtime, custody, custodyForWasm,
-      profile, fetcher, accepting, connectOptions,
+    const workspace = doorWorkspace(door);
+    if (!workspace) throw new TypeError('the door names no workspace');
+    return enterOnSession({
+      ...common, workspace,
+      entry: hostCert => runtime.doorEntry(hostCert, workspace, custodyForWasm, identity ?? undefined, accepting),
     });
   }
-  let accepted;
-  try {
-    accepted = await runtime.acceptInvitation(httpsPost(origin, fetcher), invitationBytes(invitation), custodyForWasm,
-      identity ?? undefined, accepting);
-  } catch (error) {
-    console.warn('join refused:', error?.code ?? error?.name, error?.message ?? error);
-    throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: error?.message ?? String(error), code: 'refused'});
-  }
-  const {admission, host: answered} = JSON.parse(accepted);
-  onProgress?.({phase: 'admitted', room: admission.workspace, workspaceName: admission.name, role: admission.role.toLowerCase()});
-  return connect({
-    ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, workspace: admission.workspace, label, displayName, custody, runtime, signal,
-    profile: connectOptions.store ? undefined : profile,
-    // The certificate goes on as the text the entry wrote it as: its
-    // nanosecond timestamps exceed what a JavaScript number holds exactly
-    // (json-text.mjs).
-    fetch: fetcher, deviceCertificate: memberText(accepted, 'certificate'),
-    // The host the entry just asked, which the session dials as it is.
-    hostInfo: answered,
+  return enterOnSession({
+    ...common, workspace: null,
+    entry: hostCert => runtime.invitationEntry(hostCert, invitationBytes(invitation), custodyForWasm,
+      identity ?? undefined, accepting),
   });
 }

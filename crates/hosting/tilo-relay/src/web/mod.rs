@@ -895,13 +895,13 @@ async fn route(
             });
             Ok(encoded(&deleted))
         }
-        "/join" => {
+        tilo_relay_protocol::web::INVITATION_PATH => {
             let workspaces = web
                 .workspaces
                 .as_ref()
                 .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
-            let step = decode(&bytes)?;
-            Ok(encoded(&workspaces.page_join(step).await))
+            let invitation: Vec<u8> = decode(&bytes)?;
+            Ok(encoded(&workspaces.inspect_invitation(&invitation).await))
         }
         tilo_relay_protocol::directory::DIRECTORY_PATH => {
             let workspaces = web

@@ -170,6 +170,7 @@ impl Relay {
                 workspace,
                 name: label.clone(),
                 request_id,
+                through: tilo_relay_protocol::entering::Through::Door,
             });
         let device = Device::over(
             PeerConfig {
@@ -185,7 +186,6 @@ impl Relay {
         Ok(Connection {
             device,
             key: key.clone(),
-            relay: self.host.clone(),
             host: self.name.clone(),
             lobby_workspace: lobby,
             lobby: tokio::sync::Mutex::new(None),
@@ -415,7 +415,6 @@ impl Relay {
 pub struct Connection {
     pub device: Device,
     pub key: GrantKey,
-    relay: Origin,
     host: String,
     /// The site's home workspace, which the session entered through its door
     /// as it opened: a key reaching all the person's workspaces asks the relay
@@ -496,7 +495,7 @@ impl Connection {
     async fn redeem(&self, invitation: &[u8]) -> Result<(), RelayError> {
         let label = self.key.cert().device_label.clone();
         self.device
-            .redeem(&self.relay, invitation, &label)
+            .redeem(invitation, &label)
             .await
             .map(drop)
             .map_err(RelayError::from)

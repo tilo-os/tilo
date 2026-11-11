@@ -380,8 +380,8 @@ pub fn signed_pre_admission_as(
 }
 
 /// One person's device joining `workspace` through its door, as a Tilo computer
-/// does: the challenge, the door's admission spent with the proof, then the
-/// Complete. Answers the Complete it sent and the host's answer.
+/// does: the door's invitation, the challenge it answers, then the Complete,
+/// which admits it. Answers the Complete it sent and the host's answer.
 ///
 /// # Panics
 ///
@@ -409,8 +409,9 @@ pub async fn door_join(
 }
 
 /// One person's device joining `workspace` through its door with `role`, as a Tilo
-/// computer does: the challenge, the door's admission spent with the proof,
-/// then the Complete. Answers the Complete it sent and the host's answer.
+/// computer does: the door's invitation, the challenge it answers, then the
+/// Complete, which admits it. Answers the Complete it sent and the host's
+/// answer.
 ///
 /// # Panics
 ///
@@ -431,7 +432,6 @@ pub async fn door_join_as(
         JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
         sign_join_proof,
     };
-    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep};
     let token = [seed; 8];
     let issued = workspaces
         .pre_admit(
@@ -461,18 +461,6 @@ pub async fn door_join_as(
         panic!("no challenge");
     };
     let proof = sign_join_proof(answer.challenge, device).unwrap();
-    let admitted = workspaces
-        .page_join(JoinStep::ProvePreAdmitted {
-            challenge: postcard::to_stdvec(&proof.challenge).unwrap(),
-            signature: proof.signature,
-            name: "Ada".into(),
-            token: token.to_vec(),
-        })
-        .await;
-    assert!(
-        matches!(admitted, JoinReply::Admitted { .. }),
-        "{admitted:?}"
-    );
     let complete = JoinTransportRequest::Complete(JoinCompleteRequest { proof });
     let response = service.handle(endpoint, complete.clone()).await;
     drop(service);

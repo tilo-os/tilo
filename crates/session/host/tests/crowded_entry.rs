@@ -520,8 +520,7 @@ async fn through_the_door(
     workspace: &str,
     name: &str,
 ) -> (SigningKey, tilo_user_identity::DeviceCert) {
-    use ed25519_dalek::Signer as _;
-    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, join_proof_digest};
+    use tilo_relay_protocol::workspaces::JoinReply;
     let root = new_key();
     let key = new_key();
     let cert = tilo_relay_client::invite::guest_certificate(
@@ -542,24 +541,14 @@ async fn through_the_door(
         )
         .await
         .unwrap();
-    let JoinReply::Challenge { challenge } = workspaces
-        .page_join(JoinStep::Ask {
-            invitation: issued.signed_invitation,
-            device_cert: cert.clone(),
-            request_id: rand::random(),
-        })
-        .await
-    else {
-        panic!("{name} is not challenged");
-    };
-    let signature = key.sign(&join_proof_digest(&challenge)).to_bytes();
     let admitted = workspaces
-        .page_join(JoinStep::ProvePreAdmitted {
-            challenge,
-            signature,
-            name: name.to_owned(),
-            token: token.into_bytes(),
-        })
+        .admit_proven(
+            issued.signed_invitation,
+            cert.clone(),
+            rand::random(),
+            name,
+            Some(token.as_bytes()),
+        )
         .await;
     assert!(
         matches!(admitted, JoinReply::Admitted { .. }),

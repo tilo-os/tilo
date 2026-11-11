@@ -613,8 +613,6 @@ fn join_reply_json(reply: tilo_relay_protocol::workspaces::JoinReply) -> serde_j
                 "name": inviter.name, "userPublicKey": hex::encode(inviter.user_public_key),
             })),
         }),
-        JoinReply::Challenge { .. } => serde_json::json!({"kind": "challenge"}),
-        JoinReply::RetiredWaiting => serde_json::json!({"kind": "waiting"}),
         JoinReply::Admitted {
             workspace,
             workspace_id,
@@ -624,7 +622,6 @@ fn join_reply_json(reply: tilo_relay_protocol::workspaces::JoinReply) -> serde_j
             "kind": "admitted", "room": workspace, "workspaceId": workspace_id.to_string(),
             "name": name, "role": role,
         }),
-        JoinReply::Declined => serde_json::json!({"kind": "declined"}),
         JoinReply::Refused(reason) => serde_json::json!({"kind": "refused", "reason": reason}),
     }
 }
@@ -683,7 +680,7 @@ pub async fn sealed_invitation_link(
 /// and opened with that key. An invitation's own text is answered as it came,
 /// so every build's links join the same way. Resolves to JSON:
 /// `{invitation, host?}`, the invitation's text as [`inspect_invitation`] and
-/// [`ask_to_join`] take it, and the origin of the host it admits into where
+/// [`invitation_entry`] take it, and the origin of the host it admits into where
 /// the device that left it named one.
 ///
 /// # Errors
@@ -703,12 +700,9 @@ pub async fn redeem_invitation(site: String, secret: String) -> Result<String, J
 /// expiresAtNs}`, or `{kind: 'refused', reason}`. Resolves to JSON.
 #[wasm_bindgen(js_name = inspectInvitation)]
 pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<String, JsError> {
-    let reply = tilo_relay_client::https::join(
-        &PageHttp(post),
-        &tilo_relay_protocol::workspaces::JoinStep::Inspect { invitation },
-    )
-    .await
-    .map_err(js_error)?;
+    let reply = tilo_relay_client::https::invitation(&PageHttp(post), &invitation)
+        .await
+        .map_err(js_error)?;
     Ok(join_reply_json(reply).to_string())
 }
 
@@ -749,10 +743,10 @@ pub fn reconnect_certificate(
         .ok_or_else(|| js_error("the answer has no name"))
 }
 
-/// What a page says as it accepts an invitation ([`accept_invitation`]): the certificate this
-/// device holds (`{cert, hostCert}` as the page keeps it, or as pairing certified it), the label a
-/// certificate made now carries, the name the workspace's people see, and the pre-admission's
-/// one-time token.
+/// What a page says as it enters a workspace ([`door_entry`], [`invitation_entry`]): the
+/// certificate this device holds (`{cert, hostCert}` as the page keeps it, or as pairing certified
+/// it), the label a certificate made now carries, the name the workspace's people see, and the
+/// pre-admission's one-time token an invitation was issued under.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Accepting {
@@ -764,20 +758,22 @@ struct Accepting {
     admission_token: Option<String>,
 }
 
-/// Accept `invitation` at the host `post` reaches, as this page's device (`custody`), through the
-/// one entry every device takes ([`tilo_session_host::device::accept_invitation`]): it enters with
-/// the certificate it holds from that host where that still serves, else with one the person's
-/// root (`root`, when the page holds it) certifies now. `options` is [`Accepting`] JSON. Resolves
-/// to `{admission: {workspace, workspace_id, name, role}, certificate: {cert, hostCert}, host}`
-/// JSON ([`entered_json`]), the certificate what the page's session starts with.
+/// What this page's device (`custody`) enters the workspace `invitation` (its signed bytes)
+/// admits into with, on the host whose certificate is `hostCert` (JSON), through the one entry
+/// every device takes ([`tilo_session_host::device::invitation_entry`]): the certificate it enters
+/// under (the one it holds from that host where it still serves, else one the person's root
+/// `root` certifies now) and the entry the session it starts asks for as it opens, carrying the
+/// invitation and `options.admissionToken`. `options` is [`Accepting`] JSON. Resolves to
+/// `{certificate: {cert, hostCert}, entering}` JSON; [`WasmPeer::start`] takes both, and the
+/// host's answer arrives in the session's snapshot (`entry`).
 ///
 /// # Errors
 ///
-/// Rejects with an `Error` named `HostRefusal`, its `code` saying why: `not_admitted` (the
-/// workspace refused, the reason in its words), `no_certificate`, or `unanswered`.
-#[wasm_bindgen(js_name = acceptInvitation)]
-pub async fn accept_invitation(
-    post: Function,
+/// Rejects with an `Error` named `HostRefusal` whose `code` is `no_certificate`, or
+/// `not_admitted` for an invitation that names no workspace.
+#[wasm_bindgen(js_name = invitationEntry)]
+pub async fn invitation_entry(
+    host_cert: String,
     invitation: Vec<u8>,
     custody: JsValue,
     root: JsValue,
@@ -791,14 +787,15 @@ pub async fn accept_invitation(
         .map(serde_json::from_str)
         .transpose()
         .map_err(js_error)?;
+    let host_cert: DeviceCert = serde_json::from_str(&host_cert).map_err(js_error)?;
     let device = PageSigner::from_js(&custody)?;
     let root = if root.is_undefined() || root.is_null() {
         None
     } else {
         Some(PageSigner::from_js(&root)?)
     };
-    let (admission, cert, host) = tilo_session_host::device::accept_invitation(
-        &PageHttp(post),
+    let (cert, entering) = tilo_session_host::device::invitation_entry(
+        &host_cert,
         &invitation,
         &device,
         Entering {
@@ -811,30 +808,11 @@ pub async fn accept_invitation(
     )
     .await
     .map_err(|refusal| refusal_error(&refusal))?;
-    entered_json(&admission, &cert, host)
-}
-
-/// An entry's answer as the page reads it: `{admission, certificate: {cert, hostCert}, host:
-/// {hostCert, address}}`, `host` as [`host_info`] answers it, so the session that follows dials
-/// the host the entry just asked rather than asking it again.
-fn entered_json(
-    admission: &tilo_relay_client::login::Admission,
-    cert: &DeviceCert,
-    host: tilo_relay_protocol::web::HostInfo,
-) -> Result<String, JsValue> {
-    let certificate = serde_json::json!({"cert": cert, "hostCert": host.host_cert});
-    let host = serde_json::to_value(JsHostInfo {
-        host_cert: host.host_cert,
-        address: host.address.map(|address| JsHostAddress {
-            endpoint_addr: address.endpoint_addr,
-            relay_url: address.relay_url,
-        }),
+    Ok(serde_json::json!({
+        "certificate": {"cert": cert, "hostCert": host_cert},
+        "entering": entering,
     })
-    .map_err(js_error)?;
-    Ok(
-        serde_json::json!({"admission": admission, "certificate": certificate, "host": host})
-            .to_string(),
-    )
+    .to_string())
 }
 
 /// What this page's device (`custody`) enters `workspace` through its door with, on the host whose
@@ -1753,14 +1731,13 @@ impl WasmPeer {
                 revocations,
                 entering: config.entering,
             },
-            signer.clone(),
+            signer,
             store,
         );
         let device = Device::of(
             handle.clone(),
             reporter_cert.clone(),
             owner_cert.clone(),
-            signer,
             &reporter_cert.device_label,
         );
         let id = NEXT_PEER.with(|next| {
@@ -2571,9 +2548,9 @@ impl WasmPeer {
     /// Have this page's device in the person's own workspace on the host, asked from inside
     /// `workspace` (a UUID) through the session it holds there: made the first time, answered again
     /// after, another for each `name`, the one called `room` (a UUID) when it is named
-    /// ([`Device::enter_own_workspace`]). This very device redeems the invitation (at the host
-    /// `post` reaches), shown to the workspace's people as `shownAs`, unless `entered(workspace)`
-    /// says it is in already. Resolves to the workspace's listing,
+    /// ([`Device::enter_own_workspace`]). This very device redeems the invitation (an entry on
+    /// its own stream of the session's connection), shown to the workspace's people as `shownAs`,
+    /// unless `entered(workspace)` says it is in already. Resolves to the workspace's listing,
     /// `{workspace, workspace_id, name, generation}` JSON.
     ///
     /// # Errors
@@ -2585,7 +2562,6 @@ impl WasmPeer {
     pub async fn enter_own_workspace(
         &self,
         workspace: String,
-        post: Function,
         name: Option<String>,
         room: Option<String>,
         shown_as: String,
@@ -2594,18 +2570,11 @@ impl WasmPeer {
         let number = workspace_number(&workspace)?;
         let listing = self
             .device
-            .enter_own_workspace(
-                &PageHttp(post),
-                number,
-                name.as_deref(),
-                room.as_deref(),
-                &shown_as,
-                |id| {
-                    entered
-                        .call1(&JsValue::NULL, &JsValue::from_str(id))
-                        .is_ok_and(|answer| answer.is_truthy())
-                },
-            )
+            .enter_own_workspace(number, name.as_deref(), room.as_deref(), &shown_as, |id| {
+                entered
+                    .call1(&JsValue::NULL, &JsValue::from_str(id))
+                    .is_ok_and(|answer| answer.is_truthy())
+            })
             .await
             .map_err(|refusal| refusal_error(&refusal))?;
         serde_json::to_string(&listing).map_err(|error| js_error(error).into())

@@ -16,12 +16,8 @@ pub(crate) async fn door_arrival(
     workspace: &str,
     n: u32,
 ) -> std::time::Duration {
-    use tilo_delivery_protocol::workspace_join::WorkspaceJoinService as _;
-    use tilo_peer_state::join::{
-        JoinChallengeRequest, JoinTransportRequest, JoinTransportResponse, sign_join_proof,
-    };
-    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep};
-    let (device, device_cert) = guest_device();
+    use tilo_relay_protocol::workspaces::JoinReply;
+    let (_, device_cert) = guest_device();
     let mut id = [0u8; 32];
     id[..4].copy_from_slice(&n.to_le_bytes());
     id[30] = 7;
@@ -38,31 +34,16 @@ pub(crate) async fn door_arrival(
         )
         .await
         .unwrap();
-    let service = workspaces.join_service();
     id[31] = 1;
-    let JoinTransportResponse::Challenge(answer) = service
-        .handle(
-            device_cert.device_public_key,
-            JoinTransportRequest::Challenge(JoinChallengeRequest {
-                signed_invitation: issued.signed_invitation,
-                device_cert: device_cert.clone(),
-                request_id: id,
-            }),
-        )
-        .await
-    else {
-        panic!("no challenge");
-    };
-    drop(service);
-    let proof = sign_join_proof(answer.challenge, &device).unwrap();
     let proving = std::time::Instant::now();
     let admitted = workspaces
-        .page_join(JoinStep::ProvePreAdmitted {
-            challenge: postcard::to_stdvec(&proof.challenge).unwrap(),
-            signature: proof.signature,
-            name: format!("Member {n}"),
-            token,
-        })
+        .admit_proven(
+            issued.signed_invitation,
+            device_cert,
+            id,
+            &format!("Member {n}"),
+            Some(&token),
+        )
         .await;
     let took = proving.elapsed();
     assert!(

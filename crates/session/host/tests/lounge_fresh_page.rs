@@ -7,7 +7,7 @@
 //! `os/containers/tilo-lounge/entrypoint.sh` given eu1's `TILO_ROOMS_*`
 //! (`apps/tilo-eu1/deployment.yaml`), the state volume is the operator's
 //! copy of production, and the pages go through the host's real door
-//! (`/host`, `/join`, and the session the door serves) with invitations the
+//! (`/host`, and the session the door serves) with invitations the
 //! host itself mints. What it asks about are the records people use — Chat's
 //! and the shared desktop's — and what it checks is what a person sees: the
 //! records' keys arrive, Chat's history opens, Chat's composer is there, the
@@ -53,10 +53,8 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
-use tilo_relay_protocol::workspaces::{
-    JoinReply, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
-};
-use tilo_session_host::invite::{ask_to_join, guest_certificate};
+use tilo_relay_protocol::workspaces::{WorkspaceRole, WorkspacesReply, WorkspacesRequest};
+use tilo_session_host::invite::guest_certificate;
 use tilo_session_host::{Host, PeerEvent, PeerHandle};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
@@ -109,10 +107,6 @@ struct Lounge {
     /// Where the host's iroh endpoint answers: what a page's session dials,
     /// which is what `/host` publishes.
     address: tilo_relay_protocol::web::HostAddress,
-    /// The host's door: the plain listener the deployment's ingress forwards
-    /// the workspace to, which serves `/host` and `/join` (and, before this
-    /// build, the workspace's session too).
-    door: Arc<Plain>,
     /// The snapshot's owner root: the workspace's owner, from the volume.
     owner_root: SigningKey,
     _state: tempfile::TempDir,
@@ -282,7 +276,7 @@ impl Lounge {
         };
         let _ = sha256;
         // The door answers on loopback as `localhost:PORT`; a page's session
-        // no longer rides it, but `/host` and `/join` do.
+        // no longer rides it, but `/host` does.
         let door = Arc::new(Plain(plain.trim_end_matches('/').to_owned()));
         let info = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(tilo_session_host::host_info(door.as_ref()))
@@ -296,7 +290,6 @@ impl Lounge {
             workspace,
             host_cert,
             address,
-            door,
             owner_root,
             _state: state,
         }
@@ -368,6 +361,15 @@ impl Lounge {
 
     /// A page of `who`'s device on this host's door.
     fn page(&self, who: &Person) -> PeerHandle {
+        self.page_entering(who, None)
+    }
+
+    /// [`Self::page`], its session's first message carrying `entering`.
+    fn page_entering(
+        &self,
+        who: &Person,
+        entering: Option<tilo_relay_protocol::entering::Entering>,
+    ) -> PeerHandle {
         // A page has no UDP socket: every packet it sends goes through the
         // relay its host names, which is the only way it reaches the host.
         // The IP addresses `/host` publishes are the host's own — a native
@@ -378,11 +380,16 @@ impl Lounge {
             endpoint_addr: iroh::EndpointAddr::new(self.address.endpoint_addr.id),
             relay_url: self.address.relay_url.clone(),
         });
-        support::start_peer(
-            host,
-            who.cert.clone(),
-            self.host_cert.clone(),
-            who.key.clone(),
+        tilo_session_host::PeerHandle::start(
+            tilo_session_host::PeerConfig {
+                host,
+                cert: who.cert.clone(),
+                host_cert: self.host_cert.clone(),
+                revocations: tilo_user_identity::RevocationList::new(),
+                entering,
+            },
+            Arc::new(who.key.clone()),
+            Arc::new(tilo_session_host::MemoryPeerStore::default()),
         )
     }
 }
@@ -418,23 +425,33 @@ async fn person(name: &str) -> Person {
     Person { root, key, cert }
 }
 
-/// A page that joins and takes part: `who`'s device, admitted by `invitation`.
+/// A page that joins and takes part: `who`'s device, admitted by `invitation`, which its
+/// session's first message carries.
 async fn fresh_page(lounge: &Lounge, who: &Person, invitation: &[u8]) -> PeerHandle {
-    let asked = ask_to_join(
-        lounge.door.as_ref(),
+    let held = tilo_session_host::device::Held {
+        cert: who.cert.clone(),
+        host_cert: Some(lounge.host_cert.clone()),
+    };
+    let (_, entering) = tilo_session_host::device::invitation_entry(
+        &lounge.host_cert,
         invitation,
-        &who.cert,
         &who.key,
-        [9; 32],
-        "Fresh visitor",
+        tilo_session_host::device::Entering {
+            held: Some(&held),
+            root: None,
+            label: "Fresh visitor",
+            name: "Fresh visitor",
+            token: None,
+        },
     )
     .await
     .unwrap();
+    let page = lounge.page_entering(who, Some(entering));
+    let admitted = tilo_session_host::device::entered(&page).await;
     assert!(
-        matches!(asked, JoinReply::Admitted { .. }),
-        "the invitation admits the page: {asked:?}"
+        admitted.is_ok(),
+        "the invitation admits the page: {admitted:?}"
     );
-    let page = lounge.page(who);
     page.join_placed(&lounge.workspace, "Lounge").unwrap();
     support::ready(&[&page]).await;
     page

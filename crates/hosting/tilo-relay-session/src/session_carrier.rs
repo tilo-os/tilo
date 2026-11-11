@@ -28,6 +28,11 @@ pub(crate) trait SessionCarrier {
     fn transport_stats(&self) -> Option<ConnectionStats> {
         None
     }
+    /// The connection the session rides, where it rides one: other sessions
+    /// open streams of their own on it.
+    fn connection(&self) -> Option<Connection> {
+        None
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -87,6 +92,10 @@ impl SessionCarrier for IrohCarrier {
 
     fn transport_stats(&self) -> Option<ConnectionStats> {
         Some(self.connection.stats())
+    }
+
+    fn connection(&self) -> Option<Connection> {
+        Some(self.connection.clone())
     }
 }
 

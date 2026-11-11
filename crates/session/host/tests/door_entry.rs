@@ -230,6 +230,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
         workspace: workspace.to_owned(),
         name: "Stranger".to_owned(),
         request_id: rand::random(),
+        through: tilo_relay_protocol::entering::Through::Door,
     };
     // An entry's hello, its proof signed over `connection`'s keying material.
     let hello_on = |connection: &iroh::endpoint::Connection,

@@ -323,7 +323,7 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
         host_cert,
     };
     let door = door_at(&Origin::new(&http(), &device.site), &device.host_origin).await;
-    Ok(Entered::enter(&host_web, door.as_ref(), &signed, Arc::new(key.clone())).await?)
+    Ok(Entered::enter(door.as_ref(), &signed, Arc::new(key.clone())).await?)
 }
 
 /// The site `--site` or [`SITE_ENV`] names, else [`DEFAULT_SITE`], as an

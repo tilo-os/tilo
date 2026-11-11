@@ -176,7 +176,7 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
     let door = Door {
         path: format!("{API_PREFIX}/directory/{}/join", lounge.workspace),
     };
-    let agent = Device::enter(&*https, Some(&door), &signed, Arc::new(cli_key.clone()))
+    let agent = Device::enter(Some(&door), &signed, Arc::new(cli_key.clone()))
         .await
         .unwrap();
     assert_eq!(agent.workspace_id(), lounge.workspace_id);

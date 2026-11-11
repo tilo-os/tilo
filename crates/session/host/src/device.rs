@@ -9,11 +9,10 @@ use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
 };
-use tilo_relay_client::login::{Admission, redeem};
+use tilo_relay_client::login::Admission;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_relay_client::login::{Door, SignIn};
-use tilo_relay_client::{CertifyError, DeviceSigner, HttpClient};
-use tilo_relay_protocol::web::HostInfo;
+use tilo_relay_client::{CertifyError, DeviceSigner};
 use tilo_relay_session::workspaces::{
     CREATE_OWN_ROOM, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, KEEP_PERSONAL,
     LIST_PERSONAL, PersonalList, WorkspaceListing,
@@ -43,7 +42,6 @@ pub struct Device {
     cert: DeviceCert,
     /// The host's own device: whose device answers a workspace's own actions.
     host_cert: DeviceCert,
-    signer: Arc<dyn DeviceSigner>,
     /// The workspace the device entered.
     workspace_id: u64,
     /// What this device calls itself, as its host's journals name it.
@@ -66,32 +64,24 @@ impl Device {
         Self {
             peer: PeerHandle::start(
                 config.clone(),
-                signer.clone(),
+                signer,
                 Arc::new(MemoryPeerStore::default()) as Arc<dyn PeerStore>,
             ),
             cert: config.cert,
             host_cert: config.host_cert,
-            signer,
             workspace_id: 0,
             label: label.to_owned(),
         }
     }
 
     /// The device whose session `peer` already is: a page's, which started its session itself.
-    /// `cert` and `signer` must be the ones `peer` was started with.
+    /// `cert` must be the one `peer` was started with.
     #[must_use]
-    pub fn of(
-        peer: PeerHandle,
-        cert: DeviceCert,
-        host_cert: DeviceCert,
-        signer: Arc<dyn DeviceSigner>,
-        label: &str,
-    ) -> Self {
+    pub fn of(peer: PeerHandle, cert: DeviceCert, host_cert: DeviceCert, label: &str) -> Self {
         Self {
             peer,
             cert,
             host_cert,
-            signer,
             workspace_id: 0,
             label: label.to_owned(),
         }
@@ -133,7 +123,6 @@ impl Device {
     /// The workspace's id is not one, the host could not be asked, or the workspace refused.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn enter(
-        client: &dyn HttpClient,
         door: Option<&Door>,
         sign_in: &SignIn,
         signer: Arc<dyn DeviceSigner>,
@@ -153,6 +142,7 @@ impl Device {
                     tilo_relay_protocol::web::MAX_DISPLAY_NAME_CHARS,
                 ),
                 request_id: rand::random(),
+                through: tilo_relay_protocol::entering::Through::Door,
             });
         let door_entered = entering.is_some();
         let device = Self::entering(sign_in, signer, entering);
@@ -184,7 +174,7 @@ impl Device {
                         .1
                 }
             };
-            device.redeem(client, &invitation, &sign_in.label).await?;
+            device.redeem(&invitation, &sign_in.label).await?;
         }
         let entered = device.join(&workspace).await.map_err(|error| {
             refused(
@@ -279,25 +269,33 @@ impl Device {
     }
 
     /// Redeem `invitation`, which admits this very device to a workspace, shown to its people as
-    /// `name`.
+    /// `name`: an entry on its own stream of this device's connection to the host
+    /// ([`PeerHandle::enter_then`]), so the session it holds stays as it is.
     ///
     /// # Errors
-    /// The invitation was not one of the person's, or the workspace refused the entry.
-    pub async fn redeem(
-        &self,
-        client: &dyn HttpClient,
-        invitation: &[u8],
-        name: &str,
-    ) -> Result<Admission, CertifyError> {
-        redeem(
-            client,
-            invitation,
-            &self.cert,
-            self.signer.as_ref(),
-            name,
-            None,
-        )
-        .await
+    /// The invitation names no workspace, the session is not connected, or the workspace refused
+    /// the entry.
+    pub async fn redeem(&self, invitation: &[u8], name: &str) -> Result<Admission, CertifyError> {
+        let entering =
+            invitation_entering(invitation, name, None).map_err(CertifyError::Request)?;
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.peer
+            .enter_then(
+                entering,
+                Box::new(move |answer| {
+                    let _ = send.send(answer);
+                }),
+            )
+            .map_err(CertifyError::Request)?;
+        let entered = receive.await.map_err(|_| {
+            CertifyError::Request("the session ended before the host answered".into())
+        })??;
+        admission(entered).map_err(|refusal| {
+            CertifyError::Denied(format!(
+                "The workspace did not let this device in: {}",
+                refusal.reason()
+            ))
+        })
     }
 
     /// The person's own workspace on the host, asked from inside `workspace_id`, and the invitation
@@ -341,7 +339,6 @@ impl Device {
     /// device.
     pub async fn enter_own_workspace(
         &self,
-        client: &dyn HttpClient,
         workspace_id: u64,
         name: Option<&str>,
         room: Option<&str>,
@@ -359,7 +356,7 @@ impl Device {
             .own_workspace(workspace_id, arguments, &self.label)
             .await?;
         if !entered(&listing.workspace) {
-            self.redeem(client, &invitation, shown_as)
+            self.redeem(&invitation, shown_as)
                 .await
                 .map_err(HostRefusal::from)?;
         }
@@ -612,44 +609,87 @@ pub struct Entering<'a> {
     pub token: Option<&'a [u8]>,
 }
 
-/// Accept `invitation` on the host `client` reaches, as `device`: the host says who it is, the
-/// device enters with the certificate [`entering_certificate`] chooses, and the workspace admits
-/// it. Resolves to the admission, the certificate the device was admitted under and what the host
-/// said of itself (its certificate and where its endpoint answers): what its session starts with,
-/// so the session dials it without asking the host again.
+/// What `device` enters the workspace `invitation` admits into with, on the host whose
+/// certificate is `host`: the certificate [`entering_certificate`] chooses and the entry its
+/// session asks for as it opens ([`PeerConfig::entering`]), carrying the invitation and
+/// `entering.token`. The workspace admits the device on that session's handshake, at once or not
+/// at all (an invitation is the approval of whoever made it); [`entered`] waits for the host's
+/// answer.
 ///
 /// # Errors
-/// The host was not reached, the device holds no certificate it could enter with, or the
-/// workspace did not admit it.
-pub async fn accept_invitation(
-    client: &dyn HttpClient,
+/// The invitation names no workspace, or the device holds no certificate it could enter with.
+pub async fn invitation_entry(
+    host: &DeviceCert,
     invitation: &[u8],
     device: &dyn DeviceSigner,
     entering: Entering<'_>,
-) -> Result<(Admission, DeviceCert, HostInfo), HostRefusal> {
-    let host = tilo_relay_client::https::host_info(client)
-        .await
-        .map_err(|error| HostRefusal::unanswered(&error.to_string()))?;
+) -> Result<(DeviceCert, tilo_relay_protocol::entering::Entering), HostRefusal> {
+    let entry =
+        invitation_entering(invitation, entering.name, entering.token).map_err(|message| {
+            HostRefusal {
+                code: HostRefusal::NOT_ADMITTED.to_owned(),
+                message,
+                refusal: None,
+                retry_after_ms: None,
+                door: None,
+            }
+        })?;
     let cert = entering_certificate(
         entering.held,
-        &host.host_cert,
+        host,
         device,
         entering.root,
         entering.label,
         tilo_clock::unix_now_ns(),
     )
     .await?;
-    let admission = redeem(
-        client,
-        invitation,
-        &cert,
-        device,
-        entering.name,
-        entering.token,
-    )
-    .await
-    .map_err(HostRefusal::from)?;
-    Ok((admission, cert, host))
+    Ok((cert, entry))
+}
+
+/// The entry an invitation makes, shown to the workspace's people as `name`, with the
+/// pre-admission's `token` where it was issued under one; or why the invitation names no
+/// workspace.
+fn invitation_entering(
+    invitation: &[u8],
+    name: &str,
+    token: Option<&[u8]>,
+) -> Result<tilo_relay_protocol::entering::Entering, String> {
+    let workspace =
+        tilo_peer_state::join_ledger::invitation_workspace(invitation, tilo_clock::unix_now_ns())
+            .map_err(|error| format!("This invitation cannot be used: {error}"))?;
+    Ok(tilo_relay_protocol::entering::Entering {
+        workspace,
+        name: tilo_relay_protocol::web::kept(
+            name,
+            tilo_relay_protocol::web::MAX_DISPLAY_NAME_CHARS,
+        ),
+        request_id: rand::random(),
+        through: tilo_relay_protocol::entering::Through::Invitation {
+            invitation: invitation.to_vec(),
+            token: token.map(<[u8]>::to_vec),
+        },
+    })
+}
+
+/// What a workspace said as it admitted a device, or why it did not.
+fn admission(
+    entered: tilo_relay_protocol::entering::Entered,
+) -> Result<Admission, tilo_relay_protocol::entering::EnterRefusal> {
+    match entered {
+        tilo_relay_protocol::entering::Entered::Admitted {
+            workspace,
+            workspace_id,
+            name,
+            role,
+            ..
+        } => Ok(Admission {
+            workspace,
+            workspace_id,
+            name,
+            role,
+        }),
+        tilo_relay_protocol::entering::Entered::Refused(refusal) => Err(refusal),
+    }
 }
 
 /// What `device` enters `workspace` through its door with, on the host whose certificate is
@@ -682,6 +722,7 @@ pub async fn door_entry(
             tilo_relay_protocol::web::MAX_DISPLAY_NAME_CHARS,
         ),
         request_id: rand::random(),
+        through: tilo_relay_protocol::entering::Through::Door,
     };
     Ok((cert, entry))
 }

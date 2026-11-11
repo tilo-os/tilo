@@ -9,7 +9,26 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use super::{Command, Exit, MAX_BACKOFF, NOT_ADMITTED, Task, TransportPhase};
+use super::{Command, Exit, MAX_BACKOFF, NOT_ADMITTED, PeerHandle, Task, TransportPhase};
+
+/// Called once with the host's answer to another entry, see
+/// [`PeerHandle::enter_then`].
+pub type EntryCompletion =
+    Box<dyn FnOnce(Result<tilo_relay_protocol::entering::Entered, LinkError>) + Send>;
+impl PeerHandle {
+    /// Enter another workspace as `entering` says, on a stream of its own on
+    /// this session's connection ([`tilo_relay_protocol::entering`]): a
+    /// device in a session with its host redeems an invitation this way.
+    /// `done` gets the host's answer, or why there was none: the session is
+    /// not connected, or the host did not answer the entry.
+    pub fn enter_then(
+        &self,
+        entering: tilo_relay_protocol::entering::Entering,
+        done: EntryCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::Enter(entering, done))
+    }
+}
 
 /// What a failed connection says about this device.
 #[derive(Debug, PartialEq, Eq)]
@@ -193,6 +212,36 @@ impl Task {
                 tilo_clock::unix_now(),
             )
             .await
+    }
+
+    /// Make another entry on `client`'s connection, off the session's loop:
+    /// `done` gets the host's answer.
+    pub(super) fn enter(
+        &self,
+        entering: tilo_relay_protocol::entering::Entering,
+        done: EntryCompletion,
+        client: Option<&tilo_relay_session::RelayClient>,
+    ) {
+        let Some(entrance) = client.and_then(tilo_relay_session::RelayClient::entrance) else {
+            done(Err(LinkError::Unavailable(
+                "not connected to the host".to_owned(),
+            )));
+            return;
+        };
+        let (cert, signer) = (self.config.cert.clone(), self.signer.clone());
+        let revocations = self.config.revocations.clone();
+        n0_future::task::spawn(async move {
+            let answer = n0_future::time::timeout(
+                tilo_relay_protocol::entering::ENTERING_DEADLINE,
+                entrance.enter(&cert, signer.as_ref(), revocations, entering),
+            )
+            .await
+            .map_err(|_| {
+                LinkError::Unavailable("the host did not answer the entry in time".to_owned())
+            })
+            .and_then(|answer| answer.map_err(super::connect::iroh_link_error));
+            done(answer);
+        });
     }
 
     /// The session is offline after its `attempt`th failed one in a row:

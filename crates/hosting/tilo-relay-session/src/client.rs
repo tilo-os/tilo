@@ -57,6 +57,67 @@ pub struct RelayClient {
     /// read after the session started ([`Entry`]), so a session that ended
     /// before saying anything says here why ([`Self::handshake_failure`]).
     handshake: Arc<Mutex<Option<ClientError>>>,
+    /// Who the host had to prove to be, for the entries this device makes on
+    /// the session's connection ([`Self::entrance`]).
+    server: Option<ExpectedServer>,
+}
+
+/// Where a device in a session with its host makes another entry
+/// ([`tilo_relay_protocol::entering`]): a stream of its own on the session's
+/// connection, whose first message is the entry, ended with the host's
+/// answer. A device redeems an invitation this way while it is in other
+/// workspaces of the same host.
+pub struct Entrance {
+    connection: iroh::endpoint::Connection,
+    server: ExpectedServer,
+}
+
+impl Entrance {
+    /// Enter as `entering` says, as the device `cert` certifies, `signer`
+    /// holding its key, checking the host against `revocations`: the host's
+    /// answer to the entry.
+    ///
+    /// # Errors
+    ///
+    /// The stream did not open, the host did not prove itself or answered no
+    /// entry, or the signer failed.
+    pub async fn enter(
+        &self,
+        cert: &DeviceCert,
+        signer: &dyn DeviceSigner,
+        revocations: RevocationList,
+        entering: tilo_relay_protocol::entering::Entering,
+    ) -> Result<tilo_relay_protocol::entering::Entered, ClientError> {
+        let (mut send, mut recv) = self
+            .connection
+            .open_bi()
+            .await
+            .map_err(|e| ClientError::Iroh(e.to_string()))?;
+        let binding = entry_binding(&self.connection)?;
+        let awaiting = enter_server(
+            &mut send,
+            cert,
+            signer,
+            revocations,
+            self.server.clone(),
+            (entering, None),
+            &binding,
+        )
+        .await?;
+        awaiting.verify(&mut recv).await?;
+        let answer = SessionReader::new(recv).read_next().await;
+        let _ = send.finish();
+        match answer {
+            Ok(Some(EnvelopeV2::State(Envelope::Entered(entered)))) => Ok(entered),
+            Ok(None) => Err(ClientError::NoHandshakeAnswer(
+                "the stream ended before the host answered the entry".into(),
+            )),
+            Ok(Some(_)) => Err(ClientError::Codec(
+                "the host answered the entry with something else".into(),
+            )),
+            Err(error) => Err(ClientError::Codec(error.to_string())),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -68,6 +129,7 @@ struct InteractiveWorkspaceScope {
 /// Who the dialled server must prove to be: a pinned user root and, when
 /// known, the exact enrolled device; or an interactive owner scope; or
 /// neither (a pinned-host ACK).
+#[derive(Clone)]
 struct ExpectedServer {
     user: Option<[u8; 32]>,
     device: Option<[u8; 32]>,
@@ -927,6 +989,7 @@ impl RelayClient {
             .open_bi()
             .await
             .map_err(|e| ClientError::Iroh(e.to_string()))?;
+        let entrance_server = server.clone();
         let (relay_peer, awaiting) = match entering {
             None => (
                 authenticate_server(
@@ -953,7 +1016,7 @@ impl RelayClient {
                     signer,
                     revocations,
                     server,
-                    entry,
+                    (entry.entering, entry.access),
                     &binding,
                 )
                 .await?;
@@ -1001,6 +1064,7 @@ impl RelayClient {
         // Keep the carrier assembly boundary independent of trust DTOs.
         client.workspace_scope = interactive_scope;
         client.handshake = handshake;
+        client.server = Some(entrance_server);
         Ok(client)
     }
 
@@ -1023,7 +1087,19 @@ impl RelayClient {
             workspace_scope: None,
             carrier,
             handshake: Arc::default(),
+            server: None,
         }
+    }
+
+    /// Where this device makes another entry on the session's connection
+    /// ([`Entrance`]): `None` for a session that rides no connection of its
+    /// own (one to a host in the same process).
+    #[must_use]
+    pub fn entrance(&self) -> Option<Entrance> {
+        Some(Entrance {
+            connection: self.carrier.connection()?,
+            server: self.server.clone()?,
+        })
     }
 
     /// Why this entering session's host did not prove itself, once the

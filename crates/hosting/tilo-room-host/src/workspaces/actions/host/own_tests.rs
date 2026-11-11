@@ -9,14 +9,14 @@
     reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 
-use ed25519_dalek::{Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::host_account::{self, HostAccount, Reason};
 use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
 };
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
-use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, join_proof_digest};
+use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_relay_session::workspaces::{
     CREATE_OWN_ROOM, CreatedWorkspace, DELETE_ROOM, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
     NOT_YOUR_OWN,
@@ -78,41 +78,22 @@ async fn offered(host: &HostWorkspaceActions, device: &DeviceCert, caller: &Call
 }
 
 /// `device` redeems `created`'s invitation, as a page joining does.
-async fn join(
-    workspaces: &Workspaces,
-    created: &CreatedWorkspace,
-    key: &SigningKey,
-    device: &DeviceCert,
-) {
+async fn join(workspaces: &Workspaces, created: &CreatedWorkspace, device: &DeviceCert) {
     let issued = created.invitation.as_ref().unwrap().decode().unwrap();
-    join_with(workspaces, issued.signed_invitation, key, device).await;
+    join_with(workspaces, issued.signed_invitation, device).await;
 }
 
 /// `device` redeems `invitation`, the signed bytes of one.
-async fn join_with(
-    workspaces: &Workspaces,
-    invitation: Vec<u8>,
-    key: &SigningKey,
-    device: &DeviceCert,
-) {
-    let JoinReply::Challenge { challenge } = workspaces
-        .page_join(JoinStep::Ask {
-            invitation,
-            device_cert: device.clone(),
-            request_id: rand::random(),
-        })
-        .await
-    else {
-        panic!("no challenge");
-    };
-    let signature = key.sign(&join_proof_digest(&challenge)).to_bytes();
+async fn join_with(workspaces: &Workspaces, invitation: Vec<u8>, device: &DeviceCert) {
     let admitted = workspaces
-        .page_join(JoinStep::Prove {
-            challenge,
-            signature,
+        .admit_proven(
+            invitation,
+            device.clone(),
+            rand::random(),
             // As the page or desk joining says what its person is called.
-            name: device.device_label.clone(),
-        })
+            device.device_label.as_str(),
+            None,
+        )
         .await;
     assert!(
         matches!(admitted, JoinReply::Admitted { .. }),
@@ -150,7 +131,7 @@ async fn anyone_gets_one_workspace_of_their_own_and_administers_it() {
     let workspaces = relay.workspaces();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
-    let (guest_key, guest) = guest_device();
+    let (_, guest) = guest_device();
 
     // A host that keeps none offers a stranger nothing.
     assert!(offered(&host, &guest, &caller(&guest)).await.is_empty());
@@ -207,7 +188,7 @@ async fn anyone_gets_one_workspace_of_their_own_and_administers_it() {
     );
 
     // Joining makes them its administrator.
-    join(workspaces, &created, &guest_key, &guest).await;
+    join(workspaces, &created, &guest).await;
     assert_eq!(
         standing(
             workspaces,
@@ -606,7 +587,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
         )
         .is_ok()
     );
-    join(workspaces, &created, &grant_key, &all).await;
+    join(workspaces, &created, &all).await;
     assert_eq!(
         standing(
             workspaces,
@@ -639,7 +620,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
         now + 60_000_000_000,
     );
     sign_device_cert(&mut minted, &grant_key).unwrap();
-    join(workspaces, &again, &minted_key, &minted).await;
+    join(workspaces, &again, &minted).await;
     // Listing answers the grant's person only their own workspace, not the
     // host's others.
     workspaces.create("Someone else's").await.unwrap();
@@ -875,7 +856,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     let backend_key = SigningKey::from_bytes(&rand::random());
     let backend = certified(&ada, &backend_key, DeviceCapabilities::server_key_grant());
     let created = own_as_key(&host, &backend, json!({"name": "Applicant"})).await;
-    join(workspaces, &created, &backend_key, &backend).await;
+    join(workspaces, &created, &backend).await;
     let workspace = &created.workspace;
 
     // It invites as an Editor at most, and does nothing else of governance.
@@ -914,7 +895,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     let all = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);
     let consented = certified(&ada, &consented_key, all);
     let entering = own_as_key(&host, &consented, json!({"room": workspace.workspace})).await;
-    join(workspaces, &entering, &consented_key, &consented).await;
+    join(workspaces, &entering, &consented).await;
     let by_agent = govern(
         &host,
         workspace,
@@ -932,7 +913,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     let rosa = SigningKey::from_bytes(&rand::random());
     let page_key = SigningKey::from_bytes(&rand::random());
     let page = certified(&rosa, &page_key, DeviceCapabilities::member());
-    join_with(workspaces, invitation, &page_key, &page).await;
+    join_with(workspaces, invitation, &page).await;
     let rosa_person = rosa.verifying_key().to_bytes();
     assert_eq!(
         standing(workspaces, &workspace.workspace, rosa_person).await,
@@ -944,7 +925,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     let reviewer = certified(&rosa, &reviewer_key, DeviceCapabilities::server_key_grant());
     let entering = own_as_key(&host, &reviewer, json!({"room": workspace.workspace})).await;
     assert_eq!(entering.workspace.workspace, workspace.workspace);
-    join(workspaces, &entering, &reviewer_key, &reviewer).await;
+    join(workspaces, &entering, &reviewer).await;
     assert_eq!(
         standing(workspaces, &workspace.workspace, rosa_person).await,
         Some((MemberRole::Editor, false))
@@ -1014,7 +995,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
         "Ada's backend",
     );
     let created = own_as_key(&host, &backend, json!({"name": "Applicant: Jane Doe"})).await;
-    join(workspaces, &created, &backend_key, &backend).await;
+    join(workspaces, &created, &backend).await;
     let workspace = &created.workspace;
     let invited = govern(
         &host,
@@ -1032,7 +1013,6 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
     join_with(
         workspaces,
         hex::decode(invited["invitation"].as_str().unwrap()).unwrap(),
-        &page_key,
         &page,
     )
     .await;
@@ -1053,7 +1033,6 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
     join_with(
         workspaces,
         hex::decode(theirs["invitation"].as_str().unwrap()).unwrap(),
-        &ada_key,
         &ada_page,
     )
     .await;
@@ -1074,7 +1053,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
     // A key minted for one workspace enters it with the invitation the key
     // that minted it asks for, as the door hands it over.
     let entering = own_as_key(&host, &backend, json!({"room": workspace.workspace})).await;
-    join(workspaces, &entering, &agent_key, &agent).await;
+    join(workspaces, &entering, &agent).await;
 
     // The people in it: Ada under her own name, its owner and administrator,
     // Rosa under hers, and no row for the host's device that runs it or for
@@ -1174,7 +1153,7 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     let created = own_as_key(&host, &server, json!({"name": "Applicant: Jane Doe"})).await;
     let workspace = created.workspace.workspace.clone();
     let workspace_id = created.workspace.workspace_id;
-    join(workspaces, &created, &key, &server).await;
+    join(workspaces, &created, &server).await;
     let rooms = dir.path().join("rooms");
     let record = rooms.join(format!("{workspace}.room"));
     assert!(record.exists());
@@ -1371,11 +1350,11 @@ async fn the_wait_list_gates_the_door_and_lets_nobody_in_on_an_address() {
 #[tokio::test]
 async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
     let (host, workspaces, _, stranger, _state) = gated_host().await;
-    let (guest_key, guest) = guest_device();
+    let (_, guest) = guest_device();
     let first = create_own(&host, &guest, json!({"name": "Work"}))
         .await
         .unwrap();
-    join(&workspaces, &first, &guest_key, &guest).await;
+    join(&workspaces, &first, &guest).await;
     for name in ["Side project", "Third"] {
         create_own(&host, &guest, json!({"name": name}))
             .await

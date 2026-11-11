@@ -1,10 +1,11 @@
-//! A device entering a workspace through its door on its session
-//! ([`tilo_relay_protocol::entering`]): the door lets the person in as its
-//! HTTP form did, and the workspace admits the device, which proved it holds
-//! its key on the session's connection, with the invitation the door issued.
+//! A device entering a workspace on its session
+//! ([`tilo_relay_protocol::entering`]): through the door, which lets the
+//! person in as its HTTP form did and issues the invitation, or with an
+//! invitation of its own; the workspace admits the device, which proved it
+//! holds its key on the session's connection, with that invitation.
 
 use tilo_relay_protocol::directory::DoorJoin;
-use tilo_relay_protocol::entering::{EnterRefusal, Entered, Entry};
+use tilo_relay_protocol::entering::{EnterRefusal, Entered, Entry, Through};
 use tilo_relay_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
 use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
@@ -41,36 +42,35 @@ impl Doorway for Workspaces {
                     return self.with_desktop_scope(&entering.workspace, again).await;
                 }
             }
-            let join = DoorJoin {
-                user_public_key: hex::encode(cert.user_public_key),
-                display_name: kept(&entering.name, MAX_DISPLAY_NAME_CHARS),
-            };
-            let asking = crate::timing::start();
-            let admitted = self.admit_listed(&entering.workspace, &join).await;
-            crate::timing::event("entry.door", asking, 0);
-            let (issued, token) = match admitted {
-                Ok(admitted) => admitted,
-                Err(refusal) => {
-                    return Entered::Refused(EnterRefusal::Door {
-                        retry_after_secs: match refusal {
-                            crate::workspaces::DoorRefusal::Full { retry_after_secs } => {
-                                Some(retry_after_secs)
-                            }
-                            _ => None,
-                        },
-                        refused: refusal.answer_with(self.wait_list_door()),
-                    });
+            let (invitation, token) = match entering.through {
+                Through::Door => match self.door(cert, &entering.workspace, &entering.name).await {
+                    Ok((invitation, token)) => (invitation, Some(token.into_bytes())),
+                    Err(refused) => return Entered::Refused(refused),
+                },
+                Through::Invitation { invitation, token } => {
+                    // The keys the entry asks for are the named workspace's group's: an
+                    // invitation into another is not this entry's.
+                    let names = tilo_peer_state::join_ledger::invitation_workspace(
+                        &invitation,
+                        tilo_clock::unix_now_ns(),
+                    );
+                    if names.as_deref().ok() != Some(entering.workspace.as_str()) {
+                        return Entered::Refused(refused(
+                            "the invitation is not for the workspace this device enters".to_owned(),
+                        ));
+                    }
+                    (invitation, token)
                 }
             };
             let entered = entered(
                 self.redeem_on_connection(
-                    Presented::OnConnection {
-                        invitation: issued.signed_invitation,
+                    Presented {
+                        invitation,
                         cert: cert.clone(),
                         request_id: entering.request_id,
                     },
                     &entering.name,
-                    Some(token.as_bytes()),
+                    token.as_deref(),
                 )
                 .await,
             );
@@ -82,6 +82,36 @@ impl Doorway for Workspaces {
             }
             self.with_desktop_scope(&entering.workspace, entered).await
         })
+    }
+}
+
+impl Workspaces {
+    /// Let `cert`'s person, named `name`, in through `workspace`'s door: the
+    /// invitation it issued them and its one-time token, or why not.
+    async fn door(
+        &self,
+        cert: &DeviceCert,
+        workspace: &str,
+        name: &str,
+    ) -> Result<(Vec<u8>, String), EnterRefusal> {
+        let join = DoorJoin {
+            user_public_key: hex::encode(cert.user_public_key),
+            display_name: kept(name, MAX_DISPLAY_NAME_CHARS),
+        };
+        let asking = crate::timing::start();
+        let admitted = self.admit_listed(workspace, &join).await;
+        crate::timing::event("entry.door", asking, 0);
+        admitted
+            .map(|(issued, token)| (issued.signed_invitation, token))
+            .map_err(|refusal| EnterRefusal::Door {
+                retry_after_secs: match refusal {
+                    crate::workspaces::DoorRefusal::Full { retry_after_secs } => {
+                        Some(retry_after_secs)
+                    }
+                    _ => None,
+                },
+                refused: refusal.answer_with(self.wait_list_door()),
+            })
     }
 }
 
@@ -189,7 +219,7 @@ fn entered(reply: JoinReply) -> Entered {
             desktop_scope: None,
         },
         JoinReply::Refused(reason) => Entered::Refused(refused(reason)),
-        _ => Entered::Refused(refused(
+        JoinReply::Invitation { .. } => Entered::Refused(refused(
             "the workspace answered something other than an admission".to_owned(),
         )),
     }

@@ -60,9 +60,9 @@ pub use custody::{MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore};
 pub use document::{document_admission, document_history_admission};
 pub use health::{EntryHealth, PeerSnapshot, SessionHealth};
 pub use session::{
-    CallFrame, CallPicture, CallShown, Completion, Entry, Failure, FailureSubject, LocalState,
-    PAGE_FAILURE_CODES, PageShown, PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerStatus,
-    RoomsCompletion, TransportPhase,
+    CallFrame, CallPicture, CallShown, Completion, Entry, EntryCompletion, Failure, FailureSubject,
+    LocalState, PAGE_FAILURE_CODES, PageShown, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
+    PeerStatus, RoomsCompletion, TransportPhase,
 };
 /// The record a session's [`PeerHandle::open_route`] takes part in.
 pub use tilo_peer_state::document_frame::DocumentRoute;

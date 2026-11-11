@@ -62,14 +62,13 @@ pub(crate) fn guest_device() -> (SigningKey, DeviceCert) {
 
 #[tokio::test]
 async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_refused_alone() {
-    use ed25519_dalek::Signer as _;
-    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, join_proof_digest};
+    use tilo_relay_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces();
     let created = workspaces.create("Public").await.unwrap();
-    let mut proofs = Vec::new();
+    let mut redemptions = Vec::new();
     let mut people = Vec::new();
     for index in 0..6_u8 {
         let token = [index + 1; 8];
@@ -85,35 +84,39 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
             )
             .await
             .unwrap();
-        let (device, device_cert) = guest_device();
+        let (_, device_cert) = guest_device();
         people.push(device_cert.user_public_key);
-        let JoinReply::Challenge { challenge } = workspaces
-            .page_join(JoinStep::Ask {
-                invitation: issued.signed_invitation,
-                device_cert,
-                request_id: rand::random(),
-            })
-            .await
-        else {
-            panic!("no challenge");
-        };
-        let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
         // The last guest presents someone else's token.
         let token = if index == 5 { [1; 8] } else { token };
-        proofs.push(JoinStep::ProvePreAdmitted {
-            challenge,
-            signature,
-            name: format!("Guest {index}"),
-            token: token.to_vec(),
-        });
+        redemptions.push((
+            issued.signed_invitation,
+            device_cert,
+            format!("Guest {index}"),
+            token,
+        ));
     }
     let before = workspaces
         .summary(&created.workspace)
         .await
         .unwrap()
         .generation;
-    let answers =
-        n0_future::join_all(proofs.into_iter().map(|proof| workspaces.page_join(proof))).await;
+    let answers = n0_future::join_all(redemptions.into_iter().map(
+        |(invitation, device_cert, name, token)| {
+            let workspaces = workspaces.clone();
+            async move {
+                workspaces
+                    .admit_proven(
+                        invitation,
+                        device_cert,
+                        rand::random(),
+                        &name,
+                        Some(token.as_slice()),
+                    )
+                    .await
+            }
+        },
+    ))
+    .await;
     for answer in answers.iter().take(5) {
         assert!(matches!(answer, JoinReply::Admitted { .. }), "{answer:?}");
     }
@@ -136,13 +139,12 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
     relay.shutdown().await;
 }
 
-/// Concurrent pre-admissions and challenges share their workspace's writes, and
-/// every one of them is written before it is answered: after a restart each
-/// guest still proves its challenge and is admitted.
+/// Concurrent pre-admissions share their workspace's writes, and every one of
+/// them is written before it is answered: after a restart each invitation
+/// still admits its guest.
 #[tokio::test]
-async fn a_crowds_shared_writes_hold_each_invitation_grant_and_challenge_across_a_restart() {
-    use ed25519_dalek::Signer as _;
-    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, join_proof_digest};
+async fn a_crowds_shared_writes_hold_each_invitation_grant_across_a_restart() {
+    use tilo_relay_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -169,32 +171,19 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_and_challenge_across_
     }))
     .await;
     let guests: Vec<_> = issued.iter().map(|_| guest_device()).collect();
-    let asked = n0_future::join_all(issued.iter().zip(&guests).map(
-        |(issued, (_, device_cert))| {
-            workspaces.page_join(JoinStep::Ask {
-                invitation: issued.signed_invitation.clone(),
-                device_cert: device_cert.clone(),
-                request_id: rand::random(),
-            })
-        },
-    ))
-    .await;
     relay.shutdown().await;
     let relay = test_host(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces();
-    for (index, (asked, (device, _))) in asked.into_iter().zip(&guests).enumerate() {
-        let JoinReply::Challenge { challenge } = asked else {
-            panic!("no challenge: {asked:?}");
-        };
-        let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
+    for (index, (issued, (_, device_cert))) in issued.iter().zip(&guests).enumerate() {
         let token = u8::try_from(index + 1).unwrap();
         let answer = workspaces
-            .page_join(JoinStep::ProvePreAdmitted {
-                challenge,
-                signature,
-                name: format!("Guest {index}"),
-                token: vec![token; 8],
-            })
+            .admit_proven(
+                issued.signed_invitation.clone(),
+                device_cert.clone(),
+                rand::random(),
+                &format!("Guest {index}"),
+                Some(&[token; 8][..]),
+            )
             .await;
         assert!(matches!(answer, JoinReply::Admitted { .. }), "{answer:?}");
     }

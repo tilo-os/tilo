@@ -1,26 +1,24 @@
-//! The workspaces as pages reach them over HTTPS (`/rooms`, `/join`; see
-//! [`tilo_relay_protocol::workspaces`]).
+//! The workspaces as pages reach them (`/rooms`, `/invitation`; see
+//! [`tilo_relay_protocol::workspaces`]), and the redemptions of the devices
+//! that enter them on their sessions ([`tilo_relay_protocol::entering`]).
 //!
 //! `/rooms` is workspace administration with the authorization every door has
 //! ([`Workspaces::authorize`]): the
 //! session's device is one of the relay's own user, or a member's the
-//! workspace's governance lets do what it asks. `/join` redeems an invitation for
-//! a device with no session yet: the invitation is the approval of whoever
-//! made it, so the page's verified redemption is admitted at once, as at every
-//! other door, or through the queue under the owner's pre-admission token. The
+//! workspace's governance lets do what it asks. `/invitation` says what an
+//! invitation offers. A redemption is the invitation's own approval of whoever
+//! made it, so the device's verified redemption is admitted at once, as at
+//! every other door, or through the queue under the owner's pre-admission
+//! token. The
 //! addresses left at the door of a workspace that takes people by invitation
 //! are kept with the workspace ([`super::wait_list`]) and listed on their own
 //! ([`WorkspacesRequest::WaitList`]).
 
 use tilo_action_policy::roles::governance;
-use tilo_peer_state::join::{
-    JoinChallenge, JoinChallengeRequest, JoinChallengeResponse, JoinProof, JoinTransportRequest,
-    JoinTransportResponse, MemberRole, VerifiedRedemption,
-};
-use tilo_peer_state::join_answer::JoinAnswer;
+use tilo_peer_state::join::{MemberRole, VerifiedRedemption};
 use tilo_relay_protocol::workspaces::{
-    Inviter, JoinReply, JoinStep, PendingInvite, PreAdmission, WaitListEntry, Workspace,
-    WorkspaceMember, WorkspaceNotice, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
+    Inviter, JoinReply, PendingInvite, PreAdmission, WaitListEntry, Workspace, WorkspaceMember,
+    WorkspaceNotice, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -57,64 +55,37 @@ pub(super) struct QueuedAdmission {
     answer: tokio::sync::oneshot::Sender<Result<JoinReply, CollaborationError>>,
 }
 
-/// How a device shows it holds the key of the certificate it redeems an
-/// invitation with.
-pub(crate) enum Presented {
-    /// Its signature over the challenge this workspace issued it.
-    Proof(JoinProof),
-    /// Its host checked it on the connection carrying the redemption: the
-    /// device signed keying material exported from that connection
-    /// ([`tilo_relay_protocol::entering`]).
-    OnConnection {
-        invitation: Vec<u8>,
-        cert: DeviceCert,
-        request_id: [u8; 32],
-    },
+/// An invitation a device redeems on the connection that carries its entry,
+/// on which its host checked the device holds its certificate's key: the
+/// device signed keying material exported from that connection
+/// ([`tilo_relay_protocol::entering`]).
+pub(crate) struct Presented {
+    pub invitation: Vec<u8>,
+    pub cert: DeviceCert,
+    pub request_id: [u8; 32],
 }
 
 impl Presented {
     /// The device redeeming.
     const fn device(&self) -> [u8; 32] {
-        match self {
-            Self::Proof(proof) => proof.challenge.device_public_key,
-            Self::OnConnection { cert, .. } => cert.device_public_key,
-        }
-    }
-
-    const fn request_id(&self) -> [u8; 32] {
-        match self {
-            Self::Proof(proof) => proof.challenge.request_id,
-            Self::OnConnection { request_id, .. } => *request_id,
-        }
+        self.cert.device_public_key
     }
 
     /// The workspace the invitation names, read without trusting it: the
     /// redemption is then verified against what that workspace issued.
     fn workspace(&self, now: u64) -> Result<String, CollaborationError> {
-        match self {
-            Self::Proof(proof) => Ok(proof.challenge.room.clone()),
-            Self::OnConnection { invitation, .. } => Ok(
-                tilo_peer_state::join_ledger::invitation_workspace(invitation, now)?,
-            ),
-        }
+        tilo_peer_state::join_ledger::invitation_workspace(&self.invitation, now)
     }
 
     /// What the workspace's join receipt keeps of the request, so the same
     /// request again is answered rather than redeemed twice.
     fn digest(&self) -> Result<[u8; 32], CollaborationError> {
-        Ok(match self {
-            Self::Proof(proof) => super::collaboration::request_digest(proof)?,
-            Self::OnConnection {
-                invitation,
-                cert,
-                request_id,
-            } => super::collaboration::request_digest(&(
-                "tilo/redeemed-on-connection/v1",
-                invitation,
-                cert.device_public_key,
-                request_id,
-            ))?,
-        })
+        super::collaboration::request_digest(&(
+            "tilo/redeemed-on-connection/v1",
+            &self.invitation,
+            self.cert.device_public_key,
+            self.request_id,
+        ))
     }
 
     /// The verified redemption, for an invitation `workspace` issued and
@@ -124,20 +95,13 @@ impl Presented {
         workspace: &GovernedWorkspace,
         now: u64,
     ) -> Result<VerifiedRedemption, CollaborationError> {
-        match self {
-            Self::Proof(proof) => Workspaces::redeem(workspace, self.device(), proof, now),
-            Self::OnConnection {
-                invitation,
-                cert,
-                request_id,
-            } => Ok(workspace.collaboration().redeem_on_connection(
-                &workspace.governed(),
-                invitation,
-                cert,
-                *request_id,
-                now,
-            )?),
-        }
+        workspace.collaboration().redeem_on_connection(
+            &workspace.governed(),
+            &self.invitation,
+            &self.cert,
+            self.request_id,
+            now,
+        )
     }
 }
 
@@ -1065,109 +1029,71 @@ impl Workspaces {
         Ok((told, contact))
     }
 
-    /// Answer one `/join` step of a device with no session.
-    pub async fn page_join(&self, step: JoinStep) -> JoinReply {
-        self.page_join_inner(step)
+    /// What `invitation` offers: its workspace, the part it grants, who sent
+    /// it and how many people are there; or why this host would not honour
+    /// it.
+    pub async fn inspect_invitation(&self, invitation: &[u8]) -> JoinReply {
+        self.inspected(invitation)
             .await
             .unwrap_or_else(|error| JoinReply::Refused(error.to_string()))
     }
 
-    async fn page_join_inner(&self, step: JoinStep) -> Result<JoinReply, CollaborationError> {
+    async fn inspected(&self, invitation: &[u8]) -> Result<JoinReply, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        match step {
-            JoinStep::Inspect { invitation } => {
-                let workspace = self
-                    .workspace(&tilo_peer_state::join_ledger::invitation_workspace(
-                        &invitation,
-                        now,
-                    )?)
-                    .await?;
-                let workspace = workspace.lock().await;
-                let join =
-                    workspace
-                        .collaboration()
-                        .inspect(&workspace.governed(), &invitation, now)?;
-                Ok(JoinReply::Invitation {
-                    workspace: workspace.workspace().to_owned(),
-                    workspace_id: workspace.workspace_id(),
-                    name: workspace.record.name.clone(),
-                    role: room_role(join.grant().role),
-                    expires_at_ns: join.grant().expires_at_ns,
-                    inviter: join.inviter().map(|inviter| Inviter {
-                        user_public_key: inviter.user_public_key,
-                        name: inviter.name.clone(),
-                    }),
-                    members: self.people(workspace.workspace(), &workspace).people(),
-                })
-            }
-            JoinStep::Ask {
-                invitation,
-                device_cert,
-                request_id,
-            } => {
-                let remote = device_cert.device_public_key;
-                let request = JoinTransportRequest::Challenge(JoinChallengeRequest {
-                    signed_invitation: invitation,
-                    device_cert,
-                    request_id,
-                });
-                let JoinTransportResponse::Challenge(JoinChallengeResponse { challenge }) =
-                    JoinAnswer(self.clone())
-                        .decide(remote, request, now)
-                        .await?
-                else {
-                    return Err(CollaborationError::new(
-                        "the governor answered no challenge",
-                    ));
-                };
-                Ok(JoinReply::Challenge {
-                    challenge: postcard::to_stdvec(&challenge)
-                        .map_err(|error| CollaborationError::new(error.to_string()))?,
-                })
-            }
-            JoinStep::Prove {
-                challenge,
-                signature,
-                name,
-            } => self.proved(&challenge, signature, &name, None, now).await,
-            JoinStep::ProvePreAdmitted {
-                challenge,
-                signature,
-                name,
-                token,
-            } => {
-                self.proved(&challenge, signature, &name, Some(&token), now)
-                    .await
-            }
-            JoinStep::Status {
-                request_id,
-                device_public_key,
-            } => self.status(request_id, device_public_key, now).await,
-        }
+        let workspace = self
+            .workspace(&tilo_peer_state::join_ledger::invitation_workspace(
+                invitation, now,
+            )?)
+            .await?;
+        let workspace = workspace.lock().await;
+        let join = workspace
+            .collaboration()
+            .inspect(&workspace.governed(), invitation, now)?;
+        Ok(JoinReply::Invitation {
+            workspace: workspace.workspace().to_owned(),
+            workspace_id: workspace.workspace_id(),
+            name: workspace.record.name.clone(),
+            role: room_role(join.grant().role),
+            expires_at_ns: join.grant().expires_at_ns,
+            inviter: join.inviter().map(|inviter| Inviter {
+                user_public_key: inviter.user_public_key,
+                name: inviter.name.clone(),
+            }),
+            members: self.people(workspace.workspace(), &workspace).people(),
+        })
     }
 
-    /// Admit the page that signed `challenge`, then answer once the governance
-    /// that admitted it is retained ([`Self::retained_for`]).
-    async fn proved(
+    /// Admit the device `cert` certifies with `invitation`, under the request
+    /// `request_id`, shown to the workspace's people as `name`, with the
+    /// owner's pre-admission `token` where it was issued under one. The
+    /// caller vouches that the device proved it holds its key on the
+    /// connection that carries the redemption: the host's session entry
+    /// ([`tilo_relay_protocol::entering`]) checks that proof before it gets
+    /// here.
+    pub async fn admit_proven(
         &self,
-        challenge: &[u8],
-        signature: [u8; 64],
+        invitation: Vec<u8>,
+        cert: DeviceCert,
+        request_id: [u8; 32],
         name: &str,
         token: Option<&[u8]>,
-        now: u64,
-    ) -> Result<JoinReply, CollaborationError> {
-        let challenge: JoinChallenge = postcard::from_bytes(challenge)
-            .map_err(|_| CollaborationError::new("join challenge is malformed"))?;
-        let presented = Presented::Proof(JoinProof {
-            challenge,
-            signature,
-        });
-        self.presented(presented, name, token, now).await
+    ) -> JoinReply {
+        self.redeem_on_connection(
+            Presented {
+                invitation,
+                cert,
+                request_id,
+            },
+            name,
+            token,
+        )
+        .await
     }
 
-    /// Admit the device `presented` names with its invitation, as
-    /// [`Self::proved`] admits a page: what a session entering with an
-    /// invitation, or through a door, is answered.
+    /// Admit the device `presented` names with its invitation, then answer
+    /// once the governance that admitted it is retained
+    /// ([`Self::retained_for`]): what a session entering with an invitation,
+    /// or through a door, is answered.
     pub(crate) async fn redeem_on_connection(
         &self,
         presented: Presented,
@@ -1225,7 +1151,7 @@ impl Workspaces {
             return self.prove_pre_admitted(presented, name, token, now).await;
         }
         let identity = presented.workspace(now)?;
-        let request_id = presented.request_id();
+        let request_id = presented.request_id;
         let device = presented.device();
         let proof_digest = presented.digest()?;
         let governed = self.workspace(&identity).await?;
@@ -1519,46 +1445,5 @@ impl Workspaces {
             ))));
         }
         Ok((redemption, grant.label.clone(), role))
-    }
-
-    async fn status(
-        &self,
-        request_id: [u8; 32],
-        device: [u8; 32],
-        now: u64,
-    ) -> Result<JoinReply, CollaborationError> {
-        let workspaces = self
-            .inner
-            .workspaces
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for workspace in workspaces {
-            let workspace = workspace.lock().await;
-            if workspace.admitted_device(request_id) != Some(device) {
-                continue;
-            }
-            let admitted = workspace.peer().permissions(device, system_time(now));
-            let role = match admitted {
-                Ok(member) => match member.role {
-                    collab_types::role::Role::Owner | collab_types::role::Role::Editor => {
-                        WorkspaceRole::Editor
-                    }
-                    collab_types::role::Role::Moderator => WorkspaceRole::Moderator,
-                    collab_types::role::Role::Commenter => WorkspaceRole::Commenter,
-                    collab_types::role::Role::Viewer => WorkspaceRole::Viewer,
-                },
-                Err(_) => return Ok(JoinReply::Declined),
-            };
-            return Ok(JoinReply::Admitted {
-                workspace: workspace.workspace().to_owned(),
-                workspace_id: workspace.workspace_id(),
-                name: workspace.record.name.clone(),
-                role,
-            });
-        }
-        Err(CollaborationError::new("no such join request"))
     }
 }

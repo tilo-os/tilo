@@ -766,6 +766,7 @@ mod tests {
                     workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".to_owned(),
                     name: "Stranger".to_owned(),
                     request_id: [2; 32],
+                    through: tilo_relay_protocol::entering::Through::Door,
                 },
                 access: None,
                 proof: [0; 64],

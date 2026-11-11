@@ -2072,10 +2072,7 @@ async fn serve_operator(
 )]
 mod tests {
     use super::*;
-    use ed25519_dalek::Signer as _;
-    use tilo_relay_protocol::workspaces::{
-        JoinReply, JoinStep, WorkspacesReply, WorkspacesRequest, join_proof_digest,
-    };
+    use tilo_relay_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
     use tilo_user_identity::DeviceCapabilities;
     const DAY_MS: u64 = 24 * 3600 * 1000;
     const NS_PER_SEC: u64 = 1_000_000_000;
@@ -2424,29 +2421,19 @@ mod tests {
     /// as their page does.
     async fn walk_in(
         workspaces: &Workspaces,
-        (key, cert): &(SigningKey, DeviceCert),
+        (_, cert): &(SigningKey, DeviceCert),
         invitation: Vec<u8>,
         token: &str,
     ) -> bool {
-        let JoinReply::Challenge { challenge } = workspaces
-            .page_join(JoinStep::Ask {
-                invitation,
-                device_cert: cert.clone(),
-                request_id: rand::random(),
-            })
-            .await
-        else {
-            return false;
-        };
-        let signature = key.sign(&join_proof_digest(&challenge)).to_bytes();
         matches!(
             workspaces
-                .page_join(JoinStep::ProvePreAdmitted {
-                    challenge,
-                    signature,
-                    name: "Guest".into(),
-                    token: token.as_bytes().to_vec(),
-                })
+                .admit_proven(
+                    invitation,
+                    cert.clone(),
+                    rand::random(),
+                    "Guest",
+                    Some(token.as_bytes()),
+                )
                 .await,
             JoinReply::Admitted { .. }
         )
@@ -2516,23 +2503,14 @@ mod tests {
         else {
             panic!("a member invites: {issued:?}");
         };
-        let JoinReply::Challenge { challenge } = workspaces
-            .page_join(JoinStep::Ask {
-                invitation: signed_invitation,
-                device_cert: stranger.1.clone(),
-                request_id: rand::random(),
-            })
-            .await
-        else {
-            panic!("no challenge");
-        };
-        let signature = stranger.0.sign(&join_proof_digest(&challenge)).to_bytes();
         let admitted = workspaces
-            .page_join(JoinStep::Prove {
-                challenge,
-                signature,
-                name: "Stranger".into(),
-            })
+            .admit_proven(
+                signed_invitation,
+                stranger.1.clone(),
+                rand::random(),
+                "Stranger",
+                None,
+            )
             .await;
         assert!(
             matches!(admitted, JoinReply::Admitted { .. }),

@@ -71,15 +71,18 @@ pub(super) async fn enter_server<W>(
     signer: &dyn DeviceSigner,
     revocations: RevocationList,
     server: ExpectedServer,
-    entry: super::Entry,
+    (entering, access): (
+        tilo_relay_protocol::entering::Entering,
+        Option<collab_types::MlsAccessRequestV1>,
+    ),
     binding: &[u8; 32],
 ) -> Result<AwaitingAck, ClientError>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    use tilo_relay_protocol::entering;
+    use tilo_relay_protocol::entering::{Entry, entry_digest};
     let client_nonce = fresh_nonce();
-    let digest = entering::entry_digest(binding, &own_cert.device_public_key, &entry.entering);
+    let digest = entry_digest(binding, &own_cert.device_public_key, &entering);
     let proof = signer
         .sign(digest.to_vec())
         .await
@@ -87,9 +90,9 @@ where
     let hello = Hello::entering(
         own_cert.clone(),
         client_nonce,
-        entering::Entry {
-            entering: entry.entering,
-            access: entry.access,
+        Entry {
+            entering,
+            access,
             proof,
         },
     );

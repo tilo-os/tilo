@@ -276,9 +276,6 @@ fn start_lounge(
 /// seats across that first start.
 #[test]
 fn a_volume_a_room_service_left_keeps_its_workspace_and_people() {
-    use base64::Engine as _;
-    use tilo_relay_protocol::workspaces::JoinReply;
-
     let scratch = tempfile::tempdir().unwrap();
     let state = scratch.path().join("plaza");
     // What the volume holds before the new image starts.
@@ -302,23 +299,7 @@ fn a_volume_a_room_service_left_keeps_its_workspace_and_people() {
     };
     assert_eq!(members, 1, "the owner is the workspace's only member");
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let (device, cert) = own_device(0x41, "Ana");
-    let answer = runtime.block_on(ask_door(plain, &workspace, &cert, "Ana"));
-    let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&answer.invitation)
-        .unwrap();
-    match runtime.block_on(tilo_relay_client::invite::ask_to_join_pre_admitted(
-        &Plain(plain),
-        &invitation,
-        &cert,
-        &device,
-        [1; 32],
-        "Ana",
-        answer.admission_token.as_bytes(),
-    )) {
-        Ok(JoinReply::Admitted { .. }) => {}
-        other => panic!("Ana was not admitted: {other:?}"),
-    }
+    join_through_door(&runtime, plain, &workspace, own_device(0x41, "Ana"), "Ana");
     let listed = runtime.block_on(directory_page(plain));
     assert_eq!(
         listed.workspaces[0].members, 2,
@@ -540,8 +521,8 @@ fn page(
     )
 }
 
-/// A person asks the room's door and redeems what it answers, as their
-/// computer does: their device and certificate, a member now.
+/// A person comes in through the room's door on their session, as their computer does: their
+/// device and certificate, a member now.
 fn join_through_door(
     runtime: &tokio::runtime::Runtime,
     plain: std::net::SocketAddr,
@@ -549,27 +530,43 @@ fn join_through_door(
     (device, cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
     name: &str,
 ) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
-    use base64::Engine as _;
-    use tilo_relay_protocol::workspaces::JoinReply;
-
-    let answer = runtime.block_on(ask_door(plain, workspace, &cert, name));
-    let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&answer.invitation)
-        .unwrap();
-    let request_id = cert.device_public_key;
-    let admitted = runtime.block_on(tilo_relay_client::invite::ask_to_join_pre_admitted(
-        &Plain(plain),
-        &invitation,
-        &cert,
-        &device,
-        request_id,
-        name,
-        answer.admission_token.as_bytes(),
-    ));
-    match admitted {
-        Ok(JoinReply::Admitted { .. }) => (device, cert),
-        other => panic!("{name} was not admitted: {other:?}"),
+    match runtime.block_on(enter_through_door(plain, workspace, (&device, &cert), name)) {
+        Ok(_) => (device, cert),
+        Err(refused) => panic!("{name} was not admitted: {refused:?}"),
     }
+}
+
+/// A session of `cert`'s device whose first message enters `workspace` through its door, as a
+/// person's page or computer opens one: what the workspace answered it.
+async fn enter_through_door(
+    plain: std::net::SocketAddr,
+    workspace: &str,
+    (device, cert): (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
+    name: &str,
+) -> Result<tilo_relay_client::login::Admission, tilo_session_host::device::HostRefusal> {
+    let info = tilo_relay_client::https::host_info(&Plain(plain))
+        .await
+        .unwrap();
+    let host_cert = info.host_cert.clone();
+    let session = tilo_session_host::PeerHandle::start(
+        tilo_session_host::PeerConfig {
+            host: host_of(info),
+            cert: cert.clone(),
+            host_cert,
+            revocations: tilo_user_identity::RevocationList::new(),
+            entering: Some(tilo_relay_protocol::entering::Entering {
+                workspace: workspace.to_owned(),
+                name: name.to_owned(),
+                request_id: cert.device_public_key,
+                through: tilo_relay_protocol::entering::Through::Door,
+            }),
+        },
+        std::sync::Arc::new(device.clone()),
+        std::sync::Arc::new(tilo_session_host::MemoryPeerStore::default()),
+    );
+    let answered = tilo_session_host::device::entered(&session).await;
+    session.close();
+    answered
 }
 
 fn chat_channels(doc: &automerge::AutoCommit) -> Option<Vec<String>> {
@@ -730,44 +727,6 @@ fn own_device(
     (device, cert)
 }
 
-/// A person asks the room's door, as their computer does.
-async fn ask_door_raw(
-    plain: std::net::SocketAddr,
-    workspace: &str,
-    cert: &tilo_user_identity::DeviceCert,
-    name: &str,
-) -> (u16, Vec<u8>) {
-    use tilo_relay_client::HttpClient as _;
-    let join = tilo_relay_protocol::directory::DoorJoin {
-        user_public_key: hex::encode(cert.user_public_key),
-        display_name: name.into(),
-    };
-    Plain(plain)
-        .post(
-            &format!("/peer/v1/directory/{workspace}/join"),
-            serde_json::to_vec(&join).unwrap(),
-        )
-        .await
-        .unwrap()
-}
-
-/// The door's answer to a person it lets in.
-async fn ask_door(
-    plain: std::net::SocketAddr,
-    workspace: &str,
-    cert: &tilo_user_identity::DeviceCert,
-    name: &str,
-) -> tilo_relay_protocol::directory::DoorAnswer {
-    let (status, body) = ask_door_raw(plain, workspace, cert, name).await;
-    assert_eq!(
-        status,
-        200,
-        "the door refused {name}: {}",
-        String::from_utf8_lossy(&body)
-    );
-    serde_json::from_slice(&body).unwrap()
-}
-
 /// What the room lists in its directory now.
 async fn directory_page(
     plain: std::net::SocketAddr,
@@ -786,8 +745,7 @@ async fn directory_page(
 /// and the directory counts both.
 #[test]
 fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
-    use base64::Engine as _;
-    use tilo_relay_protocol::workspaces::{JoinReply, WorkspaceRole};
+    use tilo_relay_protocol::workspaces::WorkspaceRole;
 
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
@@ -827,23 +785,15 @@ fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
     let mut people = Vec::new();
     for (index, (seed, name)) in [(0x41, "Ana"), (0x51, "Ben")].into_iter().enumerate() {
         let (device, cert) = own_device(seed, name);
-        let answer = runtime.block_on(ask_door(plain, &workspace, &cert, name));
-        let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(&answer.invitation)
-            .unwrap();
-        let admitted = runtime.block_on(tilo_relay_client::invite::ask_to_join_pre_admitted(
-            &Plain(plain),
-            &invitation,
-            &cert,
-            &device,
-            [u8::try_from(index).unwrap(); 32],
-            name,
-            answer.admission_token.as_bytes(),
-        ));
-        match admitted {
-            Ok(JoinReply::Admitted { role, .. }) => assert_eq!(role, WorkspaceRole::Editor),
-            other => panic!("{name} was not admitted: {other:?}"),
-        }
+        let admitted = runtime
+            .block_on(enter_through_door(
+                plain,
+                &workspace,
+                (&device, &cert),
+                name,
+            ))
+            .unwrap_or_else(|refused| panic!("{name} {index} was not admitted: {refused:?}"));
+        assert_eq!(admitted.role, WorkspaceRole::Editor);
         people.push(cert.user_public_key);
     }
     assert_ne!(people[0], people[1], "two people, not one");
@@ -867,7 +817,7 @@ fn the_room_keeps_out_a_person_it_removed_before_the_door() {
     std::fs::create_dir_all(&state).unwrap();
     let root_file = scratch.path().join("root");
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
-    let (_, cert) = own_device(0x61, "Ana");
+    let (device, cert) = own_device(0x61, "Ana");
     let legacy = state.join("relay").join("removals.json");
     std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
     std::fs::write(
@@ -897,13 +847,16 @@ fn the_room_keeps_out_a_person_it_removed_before_the_door() {
     .unwrap();
     let (workspace, _) = announced(&room);
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let (status, body) = runtime.block_on(ask_door_raw(plain, &workspace, &cert, "Ana"));
-    assert_eq!(status, 403, "{}", String::from_utf8_lossy(&body));
-    assert!(
-        String::from_utf8_lossy(&body).contains("within the day"),
-        "{}",
-        String::from_utf8_lossy(&body)
-    );
+    let refused = runtime
+        .block_on(enter_through_door(
+            plain,
+            &workspace,
+            (&device, &cert),
+            "Ana",
+        ))
+        .unwrap_err();
+    assert_eq!(refused.code, "removed", "{refused:?}");
+    assert!(refused.message.contains("within the day"), "{refused:?}");
     assert!(!legacy.exists(), "the room took the old removals over");
     room.stop();
 }

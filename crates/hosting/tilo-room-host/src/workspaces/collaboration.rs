@@ -8,7 +8,7 @@
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::join::{JoinBootstrap, JoinProof, VerifiedRedemption};
+use tilo_peer_state::join::JoinBootstrap;
 use tilo_peer_state::join_answer::{JoinWorkspaces, WorkspaceTxn};
 use tilo_peer_state::join_ledger::{Administered, Governed, Signer};
 pub use tilo_peer_state::join_ledger::{JoinError as CollaborationError, Redeeming};
@@ -1144,19 +1144,6 @@ impl Workspaces {
         for written in waiting {
             let _ = written.answer.send(result.clone());
         }
-    }
-
-    /// Verify `proof` against the challenge `workspace` issued to the device at
-    /// `remote_endpoint`, for an invitation still redeemable.
-    pub(super) fn redeem(
-        workspace: &GovernedWorkspace,
-        remote_endpoint: [u8; 32],
-        proof: &JoinProof,
-        now: u64,
-    ) -> Result<VerifiedRedemption, CollaborationError> {
-        workspace
-            .collaboration()
-            .redeem(&workspace.governed(), remote_endpoint, proof, now)
     }
 
     /// Admit the verified `joins` to `workspace` in one governance change: the

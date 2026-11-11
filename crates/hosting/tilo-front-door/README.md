@@ -65,12 +65,13 @@ What it reaches:
 
 - **The site** over HTTPS: `GET <TILO_DOOR_WEB_ENTRY>/entry.json`.
 - **The relay** over HTTPS at `TILO_DOOR_RELAY`: `/peer/v1/host` (the relay's
-  certificate and iroh address), `/peer/v1/join` (redeeming invitations) and
-  the site's door (`/peer/v1/directory/<workspace>/join`, where `entry.json`
-  says).
+  certificate and iroh address).
 - **The relay's iroh endpoint** over UDP (QUIC), directly or through the
   packet relay `/peer/v1/host` names: one session per MCP session, as the
-  grant's key.
+  grant's key. The session enters the site's home workspace through its door
+  (the workspace `entry.json`'s `home.admission` names) in its first message,
+  and each invitation it redeems is an entry on another stream of the same
+  connection.
 
 The relay must be a persistent host, which keeps workspaces of people's own
 for anyone who asks, and run its workspaces' records (its agents, or

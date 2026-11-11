@@ -8,7 +8,7 @@
 //! | Route | Body | Answer |
 //! |---|---|---|
 //! | `/host` | — | [`HostInfo`] |
-//! | `/join` | [`JoinStep`](crate::workspaces::JoinStep) | [`JoinReply`](crate::workspaces::JoinReply) |
+//! | `/invitation` ([`INVITATION_PATH`]) | a signed invitation (`Vec<u8>`) | [`JoinReply`](crate::workspaces::JoinReply) |
 //! | `/workspace-deleted` ([`WORKSPACE_DELETED_PATH`]) | a workspace's id (`String`) | `bool` |
 //! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
 //!
@@ -118,6 +118,11 @@ pub struct HostAddress {
 /// of only that workspace) learns about it. Any device that names it is told:
 /// the id is random, so naming it says the device already knew it.
 pub const WORKSPACE_DELETED_PATH: &str = "/workspace-deleted";
+
+/// What an invitation offers, below [`API_PREFIX`]: answered to anyone who
+/// holds it, before they have a device to enter with
+/// ([`crate::workspaces`]).
+pub const INVITATION_PATH: &str = "/invitation";
 
 /// The host's fetch proxy, below [`API_PREFIX`].
 pub const FETCH_PATH: &str = "/fetch";

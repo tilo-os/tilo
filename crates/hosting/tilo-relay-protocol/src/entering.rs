@@ -1,5 +1,6 @@
-//! A device entering a workspace through its door on the session it opens
-//! with the workspace's host, rather than in requests of its own before it.
+//! A device entering a workspace on the session it opens with the
+//! workspace's host, through the workspace's door or with an invitation,
+//! rather than in requests of its own before it.
 //!
 //! The device is a stranger to the host until the workspace admits it, so its
 //! session carries the entry and nothing else until then. The device proves
@@ -13,7 +14,16 @@
 //! The door lets the person in as its HTTP form did: an invitation bound to
 //! their user root and the one-time token that admits them, both kept on the
 //! host, and the workspace admits the device with that invitation as it
-//! admits every redemption.
+//! admits every redemption. An invitation the device holds itself (a pasted
+//! or sealed link, or one a host handed a member device for a workspace of
+//! the person's own) comes in the entry instead, with the token of the
+//! owner's pre-admission it was issued under when there is one
+//! ([`Through::Invitation`]): an invitation is the approval of whoever made
+//! it, so it admits at once or not at all.
+//!
+//! A device that is already in a session with the host redeems an invitation
+//! the same way, on another stream of the same connection: that stream's
+//! first message is the entry, and the stream ends with its answer.
 //!
 //! **The proof.** A host's challenge used to make the device's proofs fresh:
 //! the device signed the host's nonce (`HelloAck2`) and the workspace's join
@@ -66,10 +76,11 @@ pub const ENTRY_BINDING_LABEL: &[u8] = b"tilo/session-entry/v1";
 const ENTRY_PROOF_DOMAIN: &[u8] = b"tilo/session-entry-proof/v1\0";
 
 /// What a device that is not in the workspace yet asks for in its hello: to
-/// come in through `workspace`'s door.
+/// come into `workspace`, through its door or with an invitation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entering {
-    /// The workspace whose door the device enters by: its canonical UUID.
+    /// The workspace the device enters: its canonical UUID. An invitation's
+    /// must name the same.
     pub workspace: String,
     /// How the workspace's people see the person.
     pub name: String,
@@ -77,6 +88,24 @@ pub struct Entering {
     /// answer lost with its connection is answered again, not refused as an
     /// invitation already redeemed.
     pub request_id: [u8; 32],
+    /// How the device comes in.
+    pub through: Through,
+}
+
+/// How a device comes into a workspace.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Through {
+    /// The workspace's door, which lets the person in by the workspace's own
+    /// rules.
+    Door,
+    /// An invitation the device holds: its signed bytes, and the one-time
+    /// token of the owner's pre-admission it was issued under, if any.
+    Invitation {
+        #[serde(with = "serde_bytes")]
+        invitation: Vec<u8>,
+        #[serde(with = "serde_bytes")]
+        token: Option<Vec<u8>>,
+    },
 }
 
 /// An entry as the hello carries it: what the device asks, its request for
@@ -106,11 +135,21 @@ pub fn entry_digest(binding: &[u8; 32], device: &[u8; 32], entering: &Entering) 
     hasher.update(ENTRY_PROOF_DOMAIN);
     hasher.update(binding);
     hasher.update(device);
-    for field in [entering.workspace.as_bytes(), entering.name.as_bytes()] {
+    let (invitation, token): (&[u8], Option<&[u8]>) = match &entering.through {
+        Through::Door => (&[], None),
+        Through::Invitation { invitation, token } => (invitation, token.as_deref()),
+    };
+    let field = |hasher: &mut blake3::Hasher, field: &[u8]| {
         hasher.update(&u64::try_from(field.len()).unwrap_or(u64::MAX).to_le_bytes());
         hasher.update(field);
-    }
+    };
+    field(&mut hasher, entering.workspace.as_bytes());
+    field(&mut hasher, entering.name.as_bytes());
     hasher.update(&entering.request_id);
+    hasher.update(&[u8::from(matches!(entering.through, Through::Door))]);
+    field(&mut hasher, invitation);
+    hasher.update(&[u8::from(token.is_some())]);
+    field(&mut hasher, token.unwrap_or_default());
     *hasher.finalize().as_bytes()
 }
 

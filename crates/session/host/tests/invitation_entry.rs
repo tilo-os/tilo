@@ -1,7 +1,9 @@
-//! Accepting an invitation, as every device does it (`device::accept_invitation`, which the page
-//! calls as `acceptInvitation`): the device enters with the certificate it holds from that very
-//! host for its own key, or with one the person's root certifies now, and never with another
-//! device's or another host's.
+//! Accepting an invitation, as every device does it: on its session's first message
+//! (`device::invitation_entry`, which the page calls as `invitationEntry`, then the session's own
+//! handshake), or, for a device already in a session with the host, on another stream of that
+//! session's connection (`Device::redeem`). The device enters with the certificate it holds from
+//! that very host for its own key, or with one the person's root certifies now, and never with
+//! another device's or another host's.
 
 #![allow(
     clippy::unwrap_used,
@@ -16,14 +18,17 @@ mod support;
 
 tilo_automerge_isolate::test_worker!();
 
+use std::sync::Arc;
+
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_session_host::device::{
-    Entering, Held, HostRefusal, accept_invitation, entering_certificate,
+    Device, Entering, Held, HostRefusal, entered, entering_certificate, invitation_entry,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
+use tilo_session_host::{MemoryPeerStore, PeerConfig};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, UserIdentity};
 
-use support::{door, enrol, in_workspace, start_peer, start_workspace_host};
+use support::{door, enrol, enter_page, in_workspace, start_workspace_host};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -44,47 +49,45 @@ fn entering<'a>(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_device_accepts_an_invitation_under_its_own_certificate_from_that_host() {
+async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate_from_that_host() {
     let (alice, _) = UserIdentity::generate("Alice", 1);
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
-    let acme = host
-        .relay
-        .workspaces()
-        .unwrap()
-        .create("Acme")
-        .await
-        .unwrap();
-    let https = host.https();
+    let workspaces = host.relay.workspaces().unwrap();
+    let acme = workspaces.create("Acme").await.unwrap();
+    let host_cert = host_device.cert.clone();
     let bob = new_key();
     let user = bob.verifying_key().to_bytes();
     let page = new_key();
 
-    // The first time, the root certifies this very key, and the workspace admits it.
+    // The first time, the root certifies this very key, the session's first message carries the
+    // invitation, and the workspace admits the device on it: the session is in.
     let (invitation, token) = door(&host, &alice, &host_device, &acme.workspace, user).await;
-    let (admission, cert, answered) = accept_invitation(
-        &*https,
+    let (cert, entry) = invitation_entry(
+        &host_cert,
         &invitation,
         &page,
         entering(None, Some(&bob), &token),
     )
     .await
     .unwrap();
+    assert_eq!(entry.workspace, acme.workspace, "the invitation names it");
+    assert_eq!(cert.device_public_key, page.verifying_key().to_bytes());
+    assert_eq!(cert.user_public_key, user);
+    let peer = enter_page(
+        host.iroh(),
+        cert.clone(),
+        host_cert.clone(),
+        page.clone(),
+        Arc::new(MemoryPeerStore::default()),
+        entry,
+    );
+    peer.join(acme.workspace_id).unwrap();
+    let admission = entered(&peer).await.unwrap();
     assert_eq!(admission.workspace, acme.workspace);
     assert_eq!(admission.workspace_id, acme.workspace_id);
     assert_eq!(admission.name, "Acme");
-    assert_eq!(cert.device_public_key, page.verifying_key().to_bytes());
-    assert_eq!(cert.user_public_key, user);
-    let host_cert = answered.host_cert;
-    assert_eq!(host_cert, host_device.cert);
-    assert!(
-        answered.address.is_some(),
-        "the entry hands on where the host answers"
-    );
-    // Its session starts under it and is in the workspace.
-    let peer = start_peer(host.iroh(), cert.clone(), host_cert.clone(), page.clone());
-    peer.join(acme.workspace_id).unwrap();
     in_workspace(&peer, acme.workspace_id).await;
     peer.close();
 
@@ -94,8 +97,8 @@ async fn a_device_accepts_an_invitation_under_its_own_certificate_from_that_host
         host_cert: Some(host_cert.clone()),
     };
     let (invitation, token) = door(&host, &alice, &host_device, &acme.workspace, user).await;
-    let (_, again, _) = accept_invitation(
-        &*https,
+    let (again, _) = invitation_entry(
+        &host_cert,
         &invitation,
         &page,
         entering(Some(&held), Some(&bob), &token),
@@ -116,9 +119,8 @@ async fn a_device_accepts_an_invitation_under_its_own_certificate_from_that_host
         },
         host_cert: Some(host_cert.clone()),
     };
-    let (invitation, token) = door(&host, &alice, &host_device, &acme.workspace, user).await;
-    let (_, anew, _) = accept_invitation(
-        &*https,
+    let (anew, _) = invitation_entry(
+        &host_cert,
         &invitation,
         &page,
         entering(Some(&theirs), Some(&bob), &token),
@@ -130,9 +132,8 @@ async fn a_device_accepts_an_invitation_under_its_own_certificate_from_that_host
 
     // Without a root, nothing it could enter with is no certificate: said so, typed, before the
     // host is asked to admit anything.
-    let (invitation, token) = door(&host, &alice, &host_device, &acme.workspace, user).await;
-    let none = accept_invitation(
-        &*https,
+    let none = invitation_entry(
+        &host_cert,
         &invitation,
         &page,
         entering(Some(&theirs), None, &token),
@@ -141,18 +142,112 @@ async fn a_device_accepts_an_invitation_under_its_own_certificate_from_that_host
     .unwrap_err();
     assert_eq!(none.code, HostRefusal::NO_CERTIFICATE, "{none:?}");
 
-    // An invitation bound to someone else does not admit Bob's device: the workspace's refusal.
+    // An invitation bound to someone else does not admit Bob's device: the workspace refuses on
+    // the session, and the session stops.
     let carol = new_key().verifying_key().to_bytes();
     let (invitation, token) = door(&host, &alice, &host_device, &acme.workspace, carol).await;
-    let refused = accept_invitation(
-        &*https,
+    let tab = new_key();
+    let (cert, entry) = invitation_entry(
+        &host_cert,
         &invitation,
-        &page,
+        &tab,
         entering(None, Some(&bob), &token),
     )
     .await
-    .unwrap_err();
-    assert_eq!(refused.code, HostRefusal::NOT_ADMITTED, "{refused:?}");
+    .unwrap();
+    let refused_peer = enter_page(
+        host.iroh(),
+        cert,
+        host_cert.clone(),
+        tab,
+        Arc::new(MemoryPeerStore::default()),
+        entry,
+    );
+    let refused = entered(&refused_peer).await.unwrap_err();
+    assert_eq!(refused.code, "not-admitted", "{refused:?}");
+    refused_peer.close();
+
+    drop(host.web);
+    host.relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_connection() {
+    let (alice, _) = UserIdentity::generate("Alice", 1);
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
+    let workspaces = host.relay.workspaces().unwrap();
+    let acme = workspaces.create("Acme").await.unwrap();
+    let beta = workspaces.create("Beta").await.unwrap();
+    let host_cert = host_device.cert.clone();
+    let bob = new_key();
+    let user = bob.verifying_key().to_bytes();
+    let key = new_key();
+
+    // Bob's device is in Acme, through its session's own entry.
+    let (invitation, token) = door(&host, &alice, &host_device, &acme.workspace, user).await;
+    let (cert, entry) = invitation_entry(
+        &host_cert,
+        &invitation,
+        &key,
+        entering(None, Some(&bob), &token),
+    )
+    .await
+    .unwrap();
+    let device = Device::over(
+        PeerConfig {
+            host: host.iroh(),
+            cert: cert.clone(),
+            host_cert: host_cert.clone(),
+            revocations: RevocationList::new(),
+            entering: Some(entry),
+        },
+        Arc::new(key.clone()),
+        "Firefox on Linux",
+    );
+    entered(device.session()).await.unwrap();
+    assert_eq!(
+        device.join(&acme.workspace).await.unwrap(),
+        acme.workspace_id
+    );
+
+    // An invitation into Beta, without a token: its issuer's grant admits the device on another
+    // stream of the same connection, and the session it holds goes on as it was.
+    let issued = workspaces
+        .issue(
+            &beta.workspace,
+            &host_device.cert,
+            tilo_relay::workspaces::IssueInvitationRequest {
+                request_id: [9; 32],
+                role: tilo_peer_state::join::MemberRole::Editor,
+                recipient_user_public_key: Some(user),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+                inviter_name: Some("Alice".into()),
+            },
+        )
+        .await
+        .unwrap()
+        .signed_invitation;
+    let admission = device.redeem(&issued, "Bob").await.unwrap();
+    assert_eq!(admission.workspace, beta.workspace);
+    assert_eq!(
+        device.join(&beta.workspace).await.unwrap(),
+        beta.workspace_id
+    );
+    assert!(
+        device.session().status().workspaces.get(&acme.workspace_id) == Some(&true),
+        "the session is still in the workspace it was in"
+    );
+
+    // Spent, it admits nobody again.
+    let again = device.redeem(&issued, "Bob").await.unwrap_err();
+    assert!(
+        matches!(again, tilo_session_host::CertifyError::Denied(_)),
+        "{again:?}"
+    );
+    device.close();
 
     drop(host.web);
     host.relay.shutdown().await;

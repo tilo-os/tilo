@@ -73,23 +73,22 @@ function fakeRuntime({phase = 'ready'} = {}) {
       const ending = withRoot && typeof ends === 'number' && ends / 1e6 < Date.now() + 86_400_000;
       return keptCert && !ending ? 'kept' : 'certify';
     },
-    /** The shared entry: admits at once, under the certificate the page
-     * held when it held one (as text, so its nanoseconds stay exact), else
-     * under a guest certificate of the root's. */
-    async acceptInvitation(post, invitation, custody, root, options) {
+    /** The shared entry with an invitation: the certificate the page held
+     * when it held one (as text, so its nanoseconds stay exact), else a guest
+     * certificate of the root's, and the entry the session asks for as it
+     * opens, carrying the invitation. */
+    async invitationEntry(hostCert, invitation, custody, root, options) {
       const asked = JSON.parse(options);
-      calls.accepted = {invitation: [...invitation], root, ...asked};
-      if (calls.refuse) throw Object.assign(new Error(calls.refuse), {name: 'HostRefusal', code: 'not_admitted'});
+      calls.accepted = {hostCert, invitation: [...invitation], root, ...asked};
       const cert = asked.held ? memberText(asked.held, 'cert') : JSON.stringify({guest: true, device_public_key: Array(32).fill(0xdd)});
-      const info = await runtime.hostInfo(post);
-      const host = memberText(info, 'hostCert');
-      return `{"admission":{"workspace":"${WORKSPACE}","workspace_id":7,"name":"Acme","role":"Editor"},"certificate":{"cert":${cert},"hostCert":${host}},"host":${info}}`;
+      const through = {Invitation: {invitation: [...invitation], token: asked.admissionToken ? [...new TextEncoder().encode(asked.admissionToken)] : null}};
+      return `{"certificate":{"cert":${cert},"hostCert":${hostCert}},"entering":{"workspace":"${WORKSPACE}","name":${JSON.stringify(asked.name)},"request_id":[${Array(32).fill(7)}],"through":${JSON.stringify(through)}}}`;
     },
     /** The shared entry through a door: the certificate the root makes now, as text, and the
      * entry the session asks for as it opens. */
     async doorEntry(hostCert, workspace, custody, root, options) {
       calls.doorEntry = {hostCert, workspace, root, ...JSON.parse(options)};
-      return `{"certificate":{"cert":${LINUX_CERT},"hostCert":${hostCert}},"entering":{"workspace":"${workspace}","name":"Ana","request_id":[${Array(32).fill(7)}]}}`;
+      return `{"certificate":{"cert":${LINUX_CERT},"hostCert":${hostCert}},"entering":{"workspace":"${workspace}","name":"Ana","request_id":[${Array(32).fill(7)}],"through":"Door"}}`;
     },
     /** The platform secret store's channel vault key of a namespace. */
     async channelVault(namespace) {
@@ -149,7 +148,8 @@ function fakeRuntime({phase = 'ready'} = {}) {
           emit(phase = peer.phase, events = [], said = []) { peer.phase = phase; durable.push(...events); liveEvents.push(...said); for (const listener of listeners) listener(); },
         };
         calls.started.push(peer);
-        // A session that enters through a door hears the host's answer soon after it starts.
+        // A session that enters (through a door, or with an invitation) hears the host's answer
+        // soon after it starts.
         if (peer.config.entering) {
           const started = peer;
           setTimeout(() => { started.entry = calls.entry ?? {outcome: 'admitted', workspace: WORKSPACE, name: 'Lounge', role: 'editor'}; started.emit(); }, 1);
@@ -221,7 +221,7 @@ test('a certificate reaches the session byte for byte, its nanosecond timestamps
 
 test('a guest certificate from an invitation reaches the session byte for byte', async () => {
   const runtime = fakeRuntime();
-  runtime.acceptInvitation = async () => `{"admission":{"workspace":"${WORKSPACE}","workspace_id":7,"name":"Acme","role":"Editor"},"certificate":{"cert":${LINUX_CERT},"hostCert":{"issued_at_ns":${NANOS}}}}`;
+  runtime.invitationEntry = async hostCert => `{"certificate":{"cert":${LINUX_CERT},"hostCert":${hostCert}},"entering":{"workspace":"${WORKSPACE}","name":"Ana","request_id":[${Array(32).fill(7)}],"through":{"Invitation":{"invitation":[1,2,3],"token":null}}}}`;
   runtime.hostInfo = async () => `{"address":${JSON.stringify(HOST_ADDRESS)},"hostCert":{"issued_at_ns":${NANOS}}}`;
   const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
   const peer = await joinWorkspace({
@@ -980,6 +980,8 @@ test('an invitation is accepted as the root-certified device, through the shared
   });
   assert.deepEqual(progress, ['asking', 'admitted']);
   assert.deepEqual(runtime.calls.accepted.invitation, [1, 2, 3]);
+  assert.deepEqual(runtime.peer.config.entering.through.Invitation.invitation, [1, 2, 3],
+    'the session carries the invitation in its first message');
   assert.equal(runtime.calls.accepted.root, identity);
   assert.equal(runtime.calls.accepted.name, 'Bob');
   assert.equal(runtime.calls.accepted.held, null, 'a store with no certificate holds none to enter with');
@@ -1034,7 +1036,7 @@ test('an invitation the host will not honour is refused in plain words, and so i
     {name: 'AdmissionError', code: 'invitation-unusable', message: UNUSABLE_INVITATION});
   const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
   const refusing = fakeRuntime();
-  refusing.calls.refuse = 'The workspace did not let this device in: this invitation is bound to another person';
+  refusing.calls.entry = {outcome: 'refused', code: 'not-admitted', message: 'this invitation is bound to another person'};
   await assert.rejects(joinWorkspace({origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity,
     admissionToken: 'another-persons-token', runtime: refusing, custody, store: memoryStore(), storage: null,
     fetch: async () => { throw new Error('no network in tests'); }}),

@@ -24,7 +24,6 @@ use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_relay::workspaces::PreAdmitRequest;
 use tilo_relay_client::{Approver, Carrier};
 use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, WorkspaceRole};
-use tilo_session_host::invite::ask_to_join_pre_admitted;
 use tilo_session_host::{
     Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle, PeerSnapshot, TransportPhase,
 };
@@ -727,25 +726,27 @@ pub async fn door(
     (issued.signed_invitation, token.to_vec())
 }
 
-/// Redeem `door` for `cert`'s device over the host's join exchange, as a
-/// page asks to join with its invitation: the workspace admits it as an editor.
+/// Redeem `door` for `cert`'s device in the host's process, as its session's entry has the
+/// workspace admit it once the device proved its key on the connection
+/// (`invitation_entry.rs` walks that entry itself): the workspace admits it as an editor.
 pub async fn redeem(
     host: &TestHost,
     (invitation, token): (Vec<u8>, Vec<u8>),
     cert: &DeviceCert,
-    key: &SigningKey,
+    _key: &SigningKey,
 ) {
-    let admitted = ask_to_join_pre_admitted(
-        &*host.https(),
-        &invitation,
-        cert,
-        key,
-        random_bytes(),
-        "Guest",
-        &token,
-    )
-    .await
-    .unwrap();
+    let admitted = host
+        .relay
+        .workspaces()
+        .unwrap()
+        .admit_proven(
+            invitation,
+            cert.clone(),
+            random_bytes(),
+            "Guest",
+            Some(&token),
+        )
+        .await;
     assert!(
         matches!(
             &admitted,

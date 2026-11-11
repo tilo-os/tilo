@@ -5,56 +5,18 @@
 //! | Route | Session | Body | Answer |
 //! |---|---|---|---|
 //! | `/rooms` | yes | [`WorkspacesRequest`] | [`WorkspacesReply`] |
-//! | `/join` | no | [`JoinStep`] | [`JoinReply`] |
+//! | `/invitation` ([`crate::web::INVITATION_PATH`]) | no | the signed invitation (`Vec<u8>`) | [`JoinReply`] |
 //!
 //! `/rooms` administers the host's workspaces for a device of the host's own
 //! user: create a governed workspace, enter it as its owner, invite and
-//! cancel invitations, change members' roles and remove them. `/join` is for
-//! anyone holding an invitation, before the host admits them to a session:
-//! the device names itself with its certificate and signs the host's join
-//! challenge ([`join_proof_digest`]); the invitation's own grant admits it,
-//! and the owner's pre-admission token admits it at once too.
+//! cancel invitations, change members' roles and remove them. `/invitation`
+//! says what an invitation offers ([`JoinReply::Invitation`]) to anyone
+//! holding it, before they have a device of their own to enter with: the
+//! page shows it to someone following a link before it makes them a person.
+//! Redeeming an invitation is an entry on the device's session
+//! ([`crate::entering::Through::Invitation`]).
 
 use serde::{Deserialize, Serialize};
-use tilo_user_identity::DeviceCert;
-
-/// Domain of the device signature that answers a join challenge.
-pub const JOIN_PROOF_DOMAIN: &[u8] = b"tilo/workspace-join-proof/v1\0";
-
-/// What the device signs to answer the join challenge whose canonical
-/// encoding the host sent as [`JoinReply::Challenge`]:
-/// `blake3(JOIN_PROOF_DOMAIN ‖ challenge)`.
-#[must_use]
-pub fn join_proof_digest(challenge: &[u8]) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(JOIN_PROOF_DOMAIN);
-    hasher.update(challenge);
-    *hasher.finalize().as_bytes()
-}
-
-/// The fields of a join challenge a device checks before it signs: the
-/// host's challenge decodes as this view, field for field.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JoinChallengeView {
-    /// Challenge format version.
-    pub version: u32,
-    /// The invitation being redeemed.
-    pub signed_invitation: Vec<u8>,
-    /// The workspace's UUID.
-    #[serde(rename = "room")]
-    pub workspace: String,
-    /// The workspace's relay workspace.
-    pub workspace_id: u64,
-    /// The joining person.
-    pub user_public_key: [u8; 32],
-    pub device_public_key: [u8; 32],
-    /// The device's request.
-    pub request_id: [u8; 32],
-    /// Host nonce.
-    pub nonce: [u8; 32],
-    /// The challenge expires here.
-    pub expires_at_ns: u64,
-}
 
 /// What a member may do in a workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -500,57 +462,7 @@ pub enum WorkspacesReply {
     RetiredPaired,
 }
 
-/// One `/join` step.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum JoinStep {
-    /// What `invitation` offers.
-    Inspect {
-        /// The signed invitation.
-        invitation: Vec<u8>,
-    },
-    /// Redeem `invitation` with the device `device_cert`: answered with the
-    /// challenge to sign.
-    Ask {
-        /// The signed invitation.
-        invitation: Vec<u8>,
-        device_cert: DeviceCert,
-        /// The device's request, random and kept until it is answered.
-        request_id: [u8; 32],
-    },
-    /// The device's signature over [`join_proof_digest`] of `challenge`.
-    /// The invitation's own grant admits the device.
-    Prove {
-        /// The challenge exactly as the host sent it.
-        challenge: Vec<u8>,
-        /// Ed25519 signature by the joining device.
-        #[serde(with = "serde_bytes")]
-        signature: [u8; 64],
-        /// How the person names themself to the owner: a display name
-        /// ([`tilo_user_identity::display_name`]).
-        name: String,
-    },
-    /// Where the request stands.
-    Status {
-        /// The device's request.
-        request_id: [u8; 32],
-        device_public_key: [u8; 32],
-    },
-    /// [`JoinStep::Prove`] with the one-time token of the owner's
-    /// [`PreAdmission`] for the invitation: the device is admitted at once.
-    ProvePreAdmitted {
-        /// The challenge exactly as the host sent it.
-        challenge: Vec<u8>,
-        /// Ed25519 signature by the joining device.
-        #[serde(with = "serde_bytes")]
-        signature: [u8; 64],
-        /// How the person names themself: a display name
-        /// ([`tilo_user_identity::display_name`]).
-        name: String,
-        token: Vec<u8>,
-    },
-}
-
-/// The answer to a [`JoinStep`].
+/// What a host says of an invitation, or of a device it admitted with one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JoinReply {
     /// What the invitation offers.
@@ -571,16 +483,7 @@ pub enum JoinReply {
         /// someone joins, not only where.
         members: usize,
     },
-    /// The canonical encoding of the challenge to sign; it decodes as a
-    /// [`JoinChallengeView`].
-    Challenge {
-        /// The challenge.
-        challenge: Vec<u8>,
-    },
-    /// Retired: nobody waits for the owner's answer. It keeps the replies
-    /// after it at their encoded positions.
-    RetiredWaiting,
-    /// The owner admitted the device: it may open a session and subscribe.
+    /// The workspace admitted the device.
     Admitted {
         /// The workspace's UUID.
         #[serde(rename = "room")]
@@ -590,9 +493,6 @@ pub enum JoinReply {
         name: String,
         role: WorkspaceRole,
     },
-    /// The person was admitted and lost the workspace, or asked for a join
-    /// that is no longer admitted.
-    Declined,
     /// Refused, and why.
     Refused(String),
 }
@@ -723,14 +623,6 @@ pub struct WaitListEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_join_proof_digest_is_domain_separated() {
-        let digest = join_proof_digest(b"challenge");
-        assert_eq!(digest, join_proof_digest(b"challenge"));
-        assert_ne!(digest, join_proof_digest(b"challengf"));
-        assert_ne!(digest, *blake3::hash(b"challenge").as_bytes());
-    }
 
     #[test]
     fn a_mailed_invitation_is_on_the_door() {

@@ -18,7 +18,6 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::cell::Cell;
-use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -43,7 +42,6 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let workspaces = host.relay.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
-    let https = host.https();
 
     let bob = new_key();
     let tab_key = new_key();
@@ -76,14 +74,13 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         tab.clone(),
         tab_cert.clone(),
         host_device.cert.clone(),
-        Arc::new(tab_key.clone()),
         "Firefox on Linux",
     );
 
     // A host that keeps no workspaces of people's own says so in a code the page reads, not in
     // words it would have to match.
     let none = device
-        .enter_own_workspace(&*https, lounge.workspace_id, None, None, "Bob", |_| false)
+        .enter_own_workspace(lounge.workspace_id, None, None, "Bob", |_| false)
         .await
         .unwrap_err();
     assert_eq!(none.code, "unknown_action", "{none:?}");
@@ -102,17 +99,10 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     let named = "5c1f2e7a-8b3d-4e6f-9a0b-1c2d3e4f5a6b";
     let asked = Cell::new(0);
     let own = device
-        .enter_own_workspace(
-            &*https,
-            lounge.workspace_id,
-            None,
-            Some(named),
-            "Bob",
-            |_| {
-                asked.set(asked.get() + 1);
-                false
-            },
-        )
+        .enter_own_workspace(lounge.workspace_id, None, Some(named), "Bob", |_| {
+            asked.set(asked.get() + 1);
+            false
+        })
         .await
         .unwrap();
     assert_eq!(asked.get(), 1);
@@ -130,7 +120,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // Asked again, it answers the same workspace; one this device is in already is not redeemed
     // again.
     let again = device
-        .enter_own_workspace(&*https, lounge.workspace_id, None, None, "Bob", |id| {
+        .enter_own_workspace(lounge.workspace_id, None, None, "Bob", |id| {
             id == own.workspace
         })
         .await
@@ -169,18 +159,10 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         laptop_peer.clone(),
         laptop_cert,
         host_device.cert.clone(),
-        Arc::new(laptop_key),
         "Laptop",
     );
     let theirs = laptop
-        .enter_own_workspace(
-            &*https,
-            lounge.workspace_id,
-            None,
-            Some(named),
-            "Bob",
-            |_| false,
-        )
+        .enter_own_workspace(lounge.workspace_id, None, Some(named), "Bob", |_| false)
         .await
         .unwrap();
     assert_eq!(theirs.workspace, own.workspace);

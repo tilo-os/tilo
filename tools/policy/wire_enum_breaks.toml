@@ -202,3 +202,8 @@ reason = "the answers to those requests, live on the same session and kept nowhe
 file = "crates/lang/tilolang-cli/src/layout_check/audit/kind.rs"
 enum = "Kind"
 reason = "a layout check's finding kinds are written only into the report of the run that found them and read back by nobody: `sidebar-header-on-reveal` becomes `header-on-reveal`, now held for every column, beside the new `offered-twice`"
+
+[[break]]
+file = "crates/hosting/tilo-relay-protocol/src/workspaces.rs"
+enum = "JoinReply"
+reason = "drops the challenge, waiting and declined answers of the HTTP join steps that redeeming an invitation no longer takes (it is an entry on the device's session now): what is left is the host's answer to `/invitation`, which a page reads from the host that served it, from the same build, and the host's own answer to a redemption in its process; no byte of it is kept"
