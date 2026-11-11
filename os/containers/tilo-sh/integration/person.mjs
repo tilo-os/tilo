@@ -6,9 +6,13 @@
 //   --key NAME      they make an API key: `tilo keys create NAME` runs as a
 //                   backend's terminal runs it, and the person approves the
 //                   link it prints on the site's own /sign-in page, in this
-//                   same browser, by pressing Allow.
+//                   same browser, by pressing Allow;
+//   --root FILE     they are a person another program can hold: the page
+//                   makes a recovery key for them (its own "save a recovery
+//                   key") and FILE gets what opens them elsewhere, the
+//                   envelope and that key, as `tilo-approve person` reads it.
 //
-// usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --door DOOR]
+// usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --door DOOR] [--root FILE]
 //
 // Prints one JSON line: {arrivedMs, joinedMs, room, followed, key, entered}.
 // `arrivedMs` is a fresh visitor's entry: from navigating to the site to the
@@ -28,11 +32,12 @@ const option = name => {
   return at < 0 ? null : rest[at + 1];
 };
 if (!site || !relay || !out) {
-  console.error('usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --door DOOR]');
+  console.error('usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --door DOOR] [--root FILE]');
   process.exit(2);
 }
 const follow = option('--follow');
 const keyName = option('--key');
+const rootFile = option('--root');
 const tiloBin = option('--tilo');
 const door = option('--door');
 mkdirSync(out, {recursive: true});
@@ -108,6 +113,27 @@ const membership = JSON.parse(await until(`(() => {
 report.joinedMs = Date.now() - began;
 report.room = membership.room;
 console.error(`ok: a fresh visitor arrived in ${report.arrivedMs} ms and was in the Lounge (${report.room}) at ${report.joinedMs} ms`);
+
+if (rootFile) {
+  // The person this page is, opened elsewhere: the page's own identity module
+  // makes a recovery key for them and keeps the envelope that goes with it.
+  const held = await tab.evaluate(`(async () => {
+    const {browserIdentity} = await import(new URL('./identity.mjs', location.href));
+    const person = await browserIdentity();
+    const recoveryKey = await person.createRecoveryKey();
+    return JSON.stringify({person: person.userPublicKey, recovery_key: recoveryKey, envelope: person.envelope});
+  })()`);
+  const kept = JSON.parse(held);
+  if (!kept.recovery_key || !kept.envelope) await finish(1, `the page made no way to hold this person: ${held}`);
+  // The person held must be the person the page joined the Lounge as.
+  if (membership.userPublicKey && membership.userPublicKey !== kept.person) {
+    await finish(1, `the page holds ${kept.person}, but joined as ${membership.userPublicKey}`);
+  }
+  writeFileSync(rootFile, JSON.stringify(kept, null, 2), {mode: 0o600});
+  report.person = kept.person;
+  report.root = rootFile;
+  console.error(`ok: the person ${kept.person} can be held from ${rootFile}`);
+}
 
 if (follow) {
   const before = JSON.stringify(await tab.evaluate(`JSON.stringify(${entered})`));

@@ -27,6 +27,10 @@
 #   TILO_SH_TILO_ENROLL                 the tilo-enroll this host's member
 #                                       device is made with, as a release
 #                                       ships it (default: on PATH)
+#   TILO_SH_HOSTED_VM_SIZE=default      the size a workspace's VM runs at, as
+#                                       the plans file names it (`small`,
+#                                       `default`, `large`, `xlarge`): a
+#                                       machine with less room places smaller
 #   TILO_SH_RELAY_SECRETS=<state>/secrets
 #                                       where the relay's secrets are on this
 #                                       machine: the hosts' member devices and
@@ -357,7 +361,7 @@ relay_env() {
 TILO_HOSTED_PLACER=127.0.0.1:$place_port
 TILO_HOSTED_MEMBERS=$relay_secrets/vm-host-members.json
 TILO_HOSTED_ACCOUNT=acct-tilo-sh
-TILO_HOSTED_VM_SIZE=default
+TILO_HOSTED_VM_SIZE=${TILO_SH_HOSTED_VM_SIZE:-default}
 TILO_HOSTED_PLANS=$relay_secrets/vm-host-plans.json
 TILO_HOSTED_BROWSER_ACTIONS=$relay_rooms/lounge/relay/browser-actions.jsonl
 TILO_HOSTED_BROWSER_RELAY=$relay_endpoint@$relay_iroh

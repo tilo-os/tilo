@@ -39,6 +39,10 @@ path = "src/enroll.rs"
 name = "tilo-home-peer-control"
 path = "src/home_peer_control/main.rs"
 
+[[bin]]
+name = "tilo-approve"
+path = "src/approve.rs"
+
 # The host / relay daemon.
 #
 # `tilo-relay` is the WAN transport + host tier of the sync/host model:

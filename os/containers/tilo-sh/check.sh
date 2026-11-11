@@ -5,7 +5,9 @@
 #      site, approves a server key `tilo keys create` asks for, on the site's
 #      own /sign-in page; the pictures of what it reads there (the sign-in
 #      card, the door's grants page, and the key that page makes) are kept in
-#      WORK/startup, light and dark;
+#      WORK/startup, light and dark. The page also makes a recovery key for
+#      them, so the machine can hold that person and answer what their hosts
+#      ask them (`tilo-approve`);
 #   2-6. with that key, the visa run (sdk/python/examples/visa_proof.py): it
 #      makes applicant workspaces, mints a one-workspace key and MCP, the
 #      agent fills the form and writes the letter, a reviewer (another real
@@ -29,10 +31,14 @@
 #  11. the VM it runs in: every renderer sandboxed, the session running as the
 #      image's browser user, its device key, and what the page costs in memory
 #      (integration/vm-proofs.py);
-#  12. the agent fills the visa test page through page actions, captures it,
-#      stops before submitting; a reviewer who joined by invitation reads its
-#      run in History, and page actions past the plans file's free ones are
-#      refused until the provider adds the account there.
+#  12. the agent fills the visa test page through page actions with the
+#      person asked nothing (their key operates web pages), captures it,
+#      submits it once the person allows that one submission, is refused when
+#      they deny another, and has a click on the submit button held and asked
+#      once; a key minted with the scope unticked is asked about its first
+#      page actions; a reviewer who joined by invitation reads the run in
+#      History, and page actions past the plans file's free ones are refused
+#      until the provider adds the account there.
 #
 # usage: check.sh [WORK]
 # The stack runs this checkout's programs natively, or the images with
@@ -41,7 +47,10 @@
 # is stopped first when TILO_SH_FRESH=1 (a new Lounge and door). The tilo
 # command is TILO_SH_TILO_BIN, else this checkout's release build the stack
 # serves at /releases, else target/{debug,release}/tilo. VISA_APPLICANTS
-# sets how many workspaces the run makes (25 here).
+# sets how many workspaces the run makes (25 here). The questions put to the
+# startup person are answered by TILO_SH_TILO_APPROVE (tilo-approve, built by
+# the t check beside tilo-enroll), from the root of theirs kept in
+# WORK/startup/root, through the relay address the VM host names.
 # Needs what stack.sh needs, node, a headless Chromium (CHROME or
 # Playwright's), and uv (or python3 with httpx) for the Python SDK. With
 # TILO_SH_VM_HOST=1 it also needs /dev/kvm and root through sudo, and the
@@ -80,7 +89,8 @@ echo "the tilo command: $tilo"
 
 step '1. a fresh startup identity approves a server key on the local site'
 node "$here/integration/person.mjs" "$site" "$relay" "$work/startup" \
-  --key 'Visa backend' --tilo "$tilo" --door "$door" > "$work/startup.json" \
+  --key 'Visa backend' --tilo "$tilo" --door "$door" \
+  --root "$work/startup/person.json" > "$work/startup.json" \
   || fail "the startup's key was not approved (see $work/startup)"
 key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$work/startup.json")
 echo "ok: the startup holds its server key"
@@ -101,7 +111,11 @@ hosted_report=$work/hosted/report.json
 if [[ $hosted == 1 ]]; then
   [[ ${TILO_SH_IMAGES:-} == 1 ]] || fail 'TILO_SH_VM_HOST=1 runs the stack as its images: the VM host is one'
   [[ -e /dev/kvm ]] || fail '/dev/kvm: the hosted Browser runs in a VM, and this machine has none'
-  vm_account=$(vm_host env 2>/dev/null | sed -n 's/^TILO_HOSTED_ACCOUNT=//p')
+  # What the relay reads to place here: the account a card is on file for,
+  # and the address a VM's browser session reaches the relay at.
+  vm_env=$(vm_host env 2>/dev/null) || true
+  vm_account=$(sed -n 's/^TILO_HOSTED_ACCOUNT=//p' <<<"$vm_env")
+  relay_address=$(sed -n 's/^TILO_HOSTED_BROWSER_RELAY=//p' <<<"$vm_env")
   [[ -n $vm_account ]] || fail 'the VM host is not up, so the relay places no Browser: stack.sh status says why'
   plans=$state/secrets/vm-host-plans.json
   # The plans file the provider would edit is the VM host's, made as root: the
@@ -112,6 +126,15 @@ if [[ $hosted == 1 ]]; then
   # which is what the proofs and the guest check below run as.
   vm_run_account=$(python3 -c 'import json,sys; print(next(iter(json.load(open(sys.argv[1])).get("accounts") or {})))' "$plans") \
     || fail "the plans file $plans names no account with a card"
+  # The person's approving device: the root the page made for them, opened
+  # here, so what the relay asks them is answered and printed.
+  approve=${TILO_SH_TILO_APPROVE:-tilo-approve}
+  command -v "$approve" >/dev/null 2>&1 || [[ -x $approve ]] \
+    || fail "no tilo-approve: TILO_SH_TILO_APPROVE names the program the t check builds"
+  "$approve" person --person "$work/startup/person.json" --root "$work/startup/root" \
+    > "$work/startup/person-root.json" \
+    || fail "the startup person could not be held from the recovery key their page made (see $work/startup)"
+  [[ -n $relay_address ]] || fail 'the VM host names no relay address for Browser sessions'
 
   step '8. the visa test page, where a VM may reach it'
   form_dir=$work/form
@@ -151,6 +174,8 @@ if [[ $hosted == 1 ]]; then
   hosted_run() { # PHASE
     TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
       HOSTED_VISA_PLANS=$plans HOSTED_VISA_ACCOUNT=$vm_account \
+      HOSTED_VISA_APPROVER=$approve HOSTED_VISA_ROOT=$work/startup/root \
+      HOSTED_VISA_RELAY=$relay_address \
       sdk_python "$here/integration/hosted-visa.py" "$door" "$key" "$work/hosted" "$form_url" "$1"
   }
   launch=$SECONDS
@@ -172,7 +197,7 @@ if [[ $hosted == 1 ]]; then
     python3 "$here/integration/vm-proofs.py" "$hosted_workspace" "$vm_run_account" "$work/vm" \
     || fail 'the VM is not what a hosted Browser needs (see above, and vm-proofs.json)'
 
-  step '12. the agent fills the visa form in the hosted Browser'
+  step '12. the agent fills, submits and is held in the hosted Browser'
   set +e
   hosted_run --fill 2>&1 | tee "$work/hosted-fill.log"
   fill_status=${PIPESTATUS[0]}

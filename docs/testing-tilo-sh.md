@@ -166,7 +166,10 @@ The check brings the stack up and uses it as people and backends do:
    server key that `tilo keys create` asks for on the local `/sign-in` page.
    What it reads there is kept as pictures in `startup/`: the sign-in card
    (the "In Browser" row included), the door's grants page, and the key that
-   page makes, each light and dark.
+   page makes, each light and dark. The page also makes a recovery key for
+   that person, which is how the machine comes to hold them: `tilo-approve
+   person` opens it into `startup/root`, and `tilo-approve next` answers what
+   their hosts ask them, as one of their approving devices.
 2. With that key, the visa run (`sdk/python/examples/visa_proof.py`) creates
    applicant workspaces (25 by default, set with `VISA_APPLICANTS`).
 3. It mints a one-workspace key and its MCP URL.
@@ -204,16 +207,31 @@ runs in that workspace's VM, on the guest image this checkout built.
     browser user, whose device key no one else may read; the image's launcher
     entitlement lists name Browser; and what the session and its Chromium hold
     in memory, beside the VM's own, are printed and saved.
-12. the agent fills the visa test page through page actions, captures it as a
-    PNG and stops before submitting; a reviewer who joined by invitation reads
-    its run in History; and page actions past the plans file's free ones
-    (`TILO_SH_BROWSER_FREE_ACTIONS`, 40 here: what an agent filling a form
-    takes) are refused until the account is added to it, which the check does
-    as the provider would.
+12. the agent fills the visa test page through page actions, with the person
+    asked nothing (their key operates web pages in Browser) and the questions
+    put to them held to none; captures it as a PNG; is refused one submission
+    by the person, whose form stays filled and unsent; submits a second form
+    instance with the person's one answer, naming the submission, and reads
+    the page's receipt and reference; has a click on the submit button held
+    and asked once; a key minted with the scope unticked is asked about its
+    first page actions; a reviewer who joined by invitation reads the run in
+    History; and page actions past the plans file's free ones
+    (`TILO_SH_BROWSER_FREE_ACTIONS`, 200 here: what the fills, the
+    submissions and the refusals take) are refused until the account is added
+    to it, which the check does as the provider would.
+
+Who answers the person: `tilo-approve` (a program this tree builds for the
+check, like `tilo-enroll`) connects to the relay as one of the startup
+person's approving devices, from the root their page's recovery key opened,
+and answers the next question it is handed — allow, deny, or nothing at all,
+which is how the check holds the filling to asking nothing. The question it
+saw is printed and saved in `questions.json`: the action, what it acts on,
+the agent that asked, the workspace and the risk.
 
 The page shows only what it must: the capture, the page as the agent read it
-back, the reviewer's History and `vm-proofs.json` are in the work directory,
-and all of it is in the report.
+back, the receipt, the questions the person was asked, the reviewer's History
+and `vm-proofs.json` are in the work directory, and all of it is in the
+report.
 
 What it needs before it can hold:
 
@@ -221,13 +239,13 @@ What it needs before it can hold:
   guest with the headless session and the `tilo-browser` user in it, which is
   what the guest image is becoming; until then the check fails at step 9 and
   says exactly that.
-- **A person's answer to a page action.** A hosted window's page actions ask
-  the person whose page it holds, and there is nobody at a window in a VM to
-  ask: the relay puts the question to their approving devices itself
-  ([`hosted-browser.md`](hosted-browser.md)). Step 12 fills the test form
-  with the key it minted, which operates web pages in Browser and is not
-  asked about them, and its submit waits for the person, so the check needs
-  no approving device of its own for the filling.
+- **Room for the stack.** Step 8 onwards run a workspace's VM beside the
+  door, relay, web entry and VM host in the guest the check itself runs in.
+  A workspace's VM at `default` is 8 GiB, all the room t gives a micro-VM
+  step, so the check places it at `small` (`TILO_SH_HOSTED_VM_SIZE`): 4 GiB
+  for the workspace's VM and the stack's own services beside it. A bigger
+  workspace VM needs the step's guest booked bigger, which `t` does from what
+  the step's runs measured.
 
 ## Entry-speed work
 

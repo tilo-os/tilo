@@ -4959,19 +4959,28 @@ default = false
 # The same stack with the VM hosts' own machines in it: tilo.sh's VM host (privileged, with its
 # loop-backed state disk and Firecracker) runs here, so a hosted workspace's Browser runs in the
 # workspace's VM, on the guest image this checkout built. A one-workspace key opens Browser and the
-# open is timed; the agent fills the visa test page with page actions and captures it; a reviewer
-# joins by invitation and reads its run in History; the page actions past the plans file's free
-# ones are refused until the account is added to it; and the VM is held to its proofs - every
-# renderer sandboxed, the session as the image's unprivileged browser user, its device key, and
-# what the page costs in memory. What it found stays in /target/tilo-sh-local-vm.
+# open is timed; the agent fills the visa test page with page actions and is asked nothing, the
+# person allows a submission and refuses another, a click on the submit button is held; a key
+# without the scope is asked about its first page actions; a reviewer joins by invitation and reads
+# the run in History; the page actions past the plans file's free ones are refused until the
+# account is added to it; and the VM is held to its proofs - every renderer sandboxed, the session
+# as the image's unprivileged browser user, its device key, and what the page costs in memory.
+# What it found stays in /target/tilo-sh-local-vm.
+#
+# Room: a workspace's VM at `default` is 8 GiB, which is all the guest t gives a step, so the stack
+# places it at `small` (4 GiB) here and the door, relay, web entry and VM host fit beside it. t
+# books a step's guest from what its runs measured (8 GiB for a micro-VM step), and a guest short
+# of it says so and is given more next time; a run that needs a bigger workspace VM raises
+# TILO_SH_HOSTED_VM_SIZE and says why.
 [[check]]
 name = "tilo-sh-local-vm"
-# tilo-enroll makes the VM host's member device, which the relay's root certifies: the stack has no
-# other copy of it outside a release.
-run = "cargo build --locked -p tilo-relay --bin tilo-enroll\ninstall -m 0755 \"$CARGO_TARGET_DIR/debug/tilo-enroll\" /target/tilo-enroll\nbash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local-vm"
+# tilo-enroll makes the VM host's member device, which the relay's root certifies, and tilo-approve
+# answers for the person the startup page made: the stack has no other copy of either outside a
+# release.
+run = "cargo build --locked -p tilo-relay --bin tilo-enroll --bin tilo-approve\ninstall -m 0755 \"$CARGO_TARGET_DIR/debug/tilo-enroll\" \"$CARGO_TARGET_DIR/debug/tilo-approve\" /target/\nbash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local-vm"
 setup = { run = "dnf install -y --setopt=install_weak_deps=False podman passt shadow-utils util-linux e2fsprogs xfsprogs python3-httpx && dnf clean all\nmkdir -p /etc/containers/containers.conf.d\nprintf '[engine]\\ncgroup_manager = \"cgroupfs\"\\nevents_logger = \"file\"\\n' > /etc/containers/containers.conf.d/tilo-sh-local.conf" }
 needs = ["image-lounge", "image-front-door", "image-web-entry", "cli-x86_64", "image-vm-host", "image-hosted-guest"]
-env = { TILO_SH_IMAGE_LOUNGE = "/target/publish/lounge/image.oci.tar", TILO_SH_IMAGE_DOOR = "/target/publish/front-door/image.oci.tar", TILO_SH_IMAGE_WEB = "/target/publish/web-entry/image.oci.tar", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_IMAGES = "1", TILO_SH_VM_HOST = "1", TILO_SH_BROWSER_FREE_ACTIONS = "40", TILO_SH_TILO_ENROLL = "/target/tilo-enroll" }
+env = { TILO_SH_IMAGE_LOUNGE = "/target/publish/lounge/image.oci.tar", TILO_SH_IMAGE_DOOR = "/target/publish/front-door/image.oci.tar", TILO_SH_IMAGE_WEB = "/target/publish/web-entry/image.oci.tar", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_IMAGES = "1", TILO_SH_VM_HOST = "1", TILO_SH_BROWSER_FREE_ACTIONS = "200", TILO_SH_HOSTED_VM_SIZE = "small", TILO_SH_TILO_ENROLL = "/target/tilo-enroll", TILO_SH_TILO_APPROVE = "/target/tilo-approve" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/tilo-sh-local-vm/**"]
