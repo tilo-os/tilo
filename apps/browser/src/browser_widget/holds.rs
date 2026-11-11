@@ -27,6 +27,11 @@
 //! caller the truth while it can still act on it. The engine ends a hold no
 //! app answers at a deadline of its own, a little after this window's.
 //!
+//! What the page publishes is what waits. A hold somebody answered, to let it
+//! leave or to keep the page as it is, is offered for an answer no longer from
+//! that moment, though the window keeps it until the engine says the request
+//! is over.
+//!
 //! The engine counts the requests it holds and the downloads its pages offer
 //! apart, so a request and a download may carry one number. A hold is named
 //! here by which of the two it is with that number ([`HeldKey`]), and what the
@@ -71,6 +76,18 @@ const MAX_SHOWN_FILE: usize = 120;
 /// [`DoorError::ConfirmationRequired`]: ui::tilo_actions::DoorError::ConfirmationRequired
 pub(crate) const NEEDS_PERSON: &str = ui::tilo_actions::remote::CONFIRMATION_REQUIRED_CODE;
 
+/// Where a hold stands with whoever may answer it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stand {
+    /// Nobody answered yet: it is asked about.
+    Waiting,
+    /// It was let leave, and the engine has not said yet that it left.
+    Allowed,
+    /// The page was kept as it is, and the engine has not said yet that the
+    /// request is over.
+    Kept,
+}
+
 /// What the engine names one hold by. It counts the requests it holds and the
 /// downloads its pages offer apart, so the number alone names nothing: which
 /// of the two a hold is is part of its name.
@@ -113,8 +130,8 @@ pub(crate) struct Held {
     releasing: Option<InvocationId>,
     /// When the window drops it if nobody answers.
     until: std::time::Instant,
-    /// Whether the person allowed it, rather than the hold being dropped.
-    pub(crate) allowed: bool,
+    /// Where it stands: waiting for an answer, or how it was answered.
+    stand: Stand,
 }
 
 impl Held {
@@ -131,9 +148,15 @@ impl Held {
         self.number
     }
 
-    /// Whether the person answered, rather than it waiting.
+    /// Whether somebody answered it, to let it leave or to keep the page as
+    /// it is, rather than it waiting.
     pub(crate) const fn answered(&self) -> bool {
-        self.allowed || self.releasing.is_some()
+        !matches!(self.stand, Stand::Waiting)
+    }
+
+    /// Whether it was let leave.
+    const fn allowed(&self) -> bool {
+        matches!(self.stand, Stand::Allowed)
     }
 }
 
@@ -186,7 +209,7 @@ impl Holds {
             asked: None,
             releasing: None,
             until: std::time::Instant::now() + HELD_WAIT,
-            allowed: false,
+            stand: Stand::Waiting,
         });
         Taken::Held(number)
     }
@@ -207,11 +230,11 @@ impl Holds {
             .held
             .iter_mut()
             .find(|held| held.asked == Some(invocation) && held.releasing.is_none())?;
-        if held.allowed {
+        if held.answered() {
             return None;
         }
         held.releasing = Some(invocation);
-        held.allowed = true;
+        held.stand = Stand::Allowed;
         Some(held.key)
     }
 
@@ -226,7 +249,7 @@ impl Holds {
             .iter()
             .position(|held| held.number == number && !held.answered())?;
         let held = self.held.get_mut(found)?;
-        held.allowed = allow;
+        held.stand = if allow { Stand::Allowed } else { Stand::Kept };
         let answer = held.clone();
         if matches!(answer.key, HeldKey::Download(_)) {
             self.held.remove(found);
@@ -413,7 +436,7 @@ impl BrowserWidget {
         let Some(invocation) = held.releasing else {
             return;
         };
-        let answer = if held.allowed {
+        let answer = if held.allowed() {
             ui::tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: ui::tilo_actions::ActionOutput {

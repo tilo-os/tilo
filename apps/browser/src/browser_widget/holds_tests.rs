@@ -978,3 +978,53 @@ fn a_request_and_a_download_of_one_number_are_two_holds() {
         "and the request is not answered a second time"
     );
 }
+
+/// What the page publishes is what waits. A hold somebody chose to keep is
+/// answered the moment they said so, before the engine says the request is
+/// over: its answers leave the page at once, and the same answer sent again
+/// is refused without the engine hearing of it a second time.
+#[test]
+fn a_hold_somebody_kept_is_no_longer_published_at_once() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://shop.example/order");
+    let mut request = HeldRequest::new(4, HeldKind::Request);
+    request.method = "POST".into();
+    request.origin = "https://orders.example".into();
+    engine.hold(request);
+    widget.sync(&doc, &root);
+    let waiting = published_answers(&widget);
+    assert_eq!(waiting.len(), 1, "{waiting:?}");
+    let named: u32 = waiting[0].0.parse().expect("a hold is named by a number");
+    let keep = answer_payload(&widget, "keep-held-request", named);
+    widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            effect_operation(&keep),
+        )
+        .expect("the answer is accepted");
+    // The engine has not said the request is over yet.
+    widget.sync(&doc, &root);
+    assert!(
+        published_answers(&widget).is_empty()
+            && !page_resource(&widget)
+                .actions
+                .iter()
+                .any(|action| action.id == "keep-held-request"),
+        "what was kept is not offered for an answer any more"
+    );
+    assert!(widget.holds.waiting().next().is_none());
+    // A caller that read the page before sends the same answer again.
+    let again = widget.admit(
+        ui::tilo_actions::InvocationId::new(),
+        effect_operation(&keep),
+    );
+    assert!(
+        again.is_err_and(|refused| refused.contains("not waiting")),
+        "an answered hold is not answered twice"
+    );
+    assert_eq!(
+        held_answers(&engine),
+        vec![(4, false)],
+        "the engine heard one answer"
+    );
+}
