@@ -10,7 +10,7 @@ type Account (origin: imap.account) {
     trouble: Text
     online: Bool
     /// When the account's mail was last taken in from its server, as the clock the person read
-    /// it at: the epoch when it never was.
+    /// it at: 1970 when it never was.
     fetched: Time = Time("1970-01-01T00:00:00Z")
     /// What the account's messages end with: the person's own, per account, as every mail
     /// client signs a message. Empty for none.
@@ -111,7 +111,7 @@ type Draft (title: subject, untitled: "New message") {
     in_reply_to: Text
     references: Text
     sent: Bool = false
-    /// When it goes, and `Time` is never empty, so a draft not sent yet says the epoch.
+    /// When it goes: 1970 for a draft not sent yet.
     send_at: Time = Time("1970-01-01T00:00:00Z")
     /// It was taken back before it went: it never leaves, and it is a draft again.
     recalled: Bool = false
@@ -184,8 +184,7 @@ primary action new_message(a: Account) -> Draft (icon: .pencil, label: "New mess
     m.drafts.insert(Draft(from: a.key, body: signature_of(m, a.key)))
 }
 
-/// Starts a message from the first account, where there is one: a window with no account offers
-/// nothing to press and says where an account comes from, rather than a control that cannot run.
+/// Starts a message from the first account.
 primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message") {
     require not m.accounts.is_empty() "Add a mail account in Settings first"
     applies not m.accounts.is_empty() "Add a mail account in Settings first"
@@ -973,7 +972,7 @@ view editor(d: Draft) {
         if can_undo(d) {
             ui.Banner(
                 "Sending",
-                message: "It goes in a moment. Take it back if you need to.",
+                message: "It goes in a moment.",
                 kind: .info,
                 action: "Undo send",
             ) {
