@@ -61,7 +61,6 @@ a11y-highlight = Hervorhebung #{ $hex }
 a11y-highlight-clear = Hervorhebung entfernen
 
 ## Status bar
-status-untitled = Unbenannt
 
 ## Header / footer edit-mode tabs
 band-header = Kopfzeile
@@ -136,7 +135,7 @@ style-menu-delete = Stil löschen
 style-menu-duplicate = Stil duplizieren
 
 ## Transient toasts (confirmation cues)
-toast-toc-empty = Erst Überschriften hinzufügen — ein Inhaltsverzeichnis listet sie auf
+toast-toc-empty = Erst Überschriften hinzufügen
 toast-save-failed = Dokument konnte nicht gespeichert werden
 toast-view-only = Dieses Dokument ist nur zum Ansehen geöffnet.
 toast-file-dialog-failed = Dateiauswahl konnte nicht geöffnet werden
@@ -221,10 +220,6 @@ a11y-image-wrap-left = Bild links mit Textumfluss
 a11y-image-wrap-left-description = Das Bild links platzieren und den Text rechts daneben fließen lassen
 a11y-image-wrap-right = Bild rechts mit Textumfluss
 a11y-image-wrap-right-description = Das Bild rechts platzieren und den Text links daneben fließen lassen
-file-choice-title = Zu öffnendes Dokument wählen
-file-choice-body = Diese Datei unterscheidet sich vom Dokument im Arbeitsbereich. Behalte die Version im Arbeitsbereich oder importiere die gewählte Datei in ihren Verlauf.
-file-choice-keep = Version im Arbeitsbereich behalten
-file-choice-use = Gewählte Datei verwenden
 
 ## History: what each change did, by field and by verb
 word-processor-document-body = { $op ->
