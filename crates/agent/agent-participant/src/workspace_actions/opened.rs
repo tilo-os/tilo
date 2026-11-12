@@ -86,7 +86,9 @@ impl Workspace {
         };
         let mut owing = false;
         for route in asked_routes(&cluster_id, app_id, record) {
-            if !self.holds(&route) && !self.absent.contains(&route) && !self.asked.contains(&route)
+            if !self.holds(&route)
+                && !self.answered.contains(&route)
+                && !self.asked.contains(&route)
             {
                 match self.peer.send(Cmd::OpenRoute(route.clone())) {
                     Ok(()) => {
@@ -176,7 +178,10 @@ impl Worker {
                 reason: "the workspace was not joined".into(),
             })
         })?;
-        if workspace.holds(route) {
+        // Held, or sent by the host under the route of what it names.
+        if workspace.holds(route)
+            || (workspace.answered.contains(route) && !workspace.absent.contains(route))
+        {
             return Ok(true);
         }
         let needs = Needs::Read {

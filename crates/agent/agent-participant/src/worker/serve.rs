@@ -85,6 +85,10 @@ struct Worker {
     read: Option<ReadSession>,
     /// What the held record's view is lent as its content store.
     content: WorkerContent,
+    /// What the held record published when a page of it was last asked
+    /// for, kept for the pages asked next: every change to the record
+    /// arrives as a request, and any other request lets it go.
+    surveyed: Option<Vec<tilo_actions::remote::CatalogueRow>>,
 }
 
 /// The content store a held record's view reads and writes in the worker:
@@ -149,10 +153,14 @@ impl Worker {
             text: (mode == Mode::Read).then(resident_text_renderer),
             read: None,
             content: WorkerContent::new(),
+            surveyed: None,
         }
     }
 
     fn handle(&mut self, request: Request) -> Reply {
+        if !matches!(request, Request::SurveyPage { .. }) {
+            self.surveyed = None;
+        }
         match request {
             Request::Probe { path } => Reply::Probe(probe(&path)),
             Request::PutContent(bytes) => self.content.put(&bytes),
@@ -221,6 +229,29 @@ impl Worker {
         };
         match request {
             Request::Survey => descriptors(&replica.survey()),
+            Request::SurveyPage {
+                query,
+                can_render,
+                offset,
+                take,
+            } => match decode::<tilo_actions::remote::CatalogueQuery>(&query) {
+                Ok(query) => {
+                    let window = (
+                        usize::try_from(offset).unwrap_or(usize::MAX),
+                        usize::try_from(take).unwrap_or(usize::MAX),
+                    );
+                    let surveyed = self.surveyed.get_or_insert_with(|| replica.survey_rows());
+                    let (total, page) = Replica::page_of(surveyed, &query, (can_render, window));
+                    match serde_json::to_string(&page) {
+                        Ok(descriptors) => Reply::Page {
+                            total: u64::try_from(total).unwrap_or(u64::MAX),
+                            descriptors,
+                        },
+                        Err(error) => Reply::Failed(error.to_string()),
+                    }
+                }
+                Err(reason) => Reply::Failed(reason),
+            },
             Request::ChangedKeys {
                 record,
                 snapshot,

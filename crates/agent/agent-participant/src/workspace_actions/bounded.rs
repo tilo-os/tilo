@@ -588,6 +588,41 @@ impl Worker {
             .unwrap_or_default())
     }
 
+    /// One page of what `who` is offered on the record at `route`, as
+    /// `query` lists it: [`Self::bounded_actions`] paged in their replica.
+    pub(super) fn bounded_page(
+        &mut self,
+        workspace_id: u64,
+        who: &Bounded,
+        (route, state): (&DocumentRoute, &WorkspaceState),
+        query: &tilo_actions::remote::CatalogueQuery,
+        window: (usize, usize),
+    ) -> Result<(usize, Vec<tilo_actions::ActionDescriptor>), ActionHostError> {
+        let key = self.bounded_replica(workspace_id, who, route, state)?;
+        Ok(self
+            .bounded
+            .get(&key)
+            .map(|held| held.held.app.survey_page(query, window))
+            .unwrap_or_default())
+    }
+
+    /// The action at `address` as `who` is offered it on the record at
+    /// `route`, resolved by its address in their replica: what one action
+    /// costs, not a survey of everything the record publishes.
+    pub(super) fn bounded_descriptor(
+        &mut self,
+        workspace_id: u64,
+        who: &Bounded,
+        (route, state): (&DocumentRoute, &WorkspaceState),
+        address: &ActionAddress,
+    ) -> Result<Option<tilo_actions::ActionDescriptor>, ActionHostError> {
+        let key = self.bounded_replica(workspace_id, who, route, state)?;
+        Ok(self
+            .bounded
+            .get(&key)
+            .and_then(|held| held.held.app.descriptor(address)))
+    }
+
     /// Put `request`, which `caller` (served within bounds) asked for and
     /// which needs the person's confirmation, to that person on their own
     /// devices, as `about` describes it: answered accepted, it runs on their

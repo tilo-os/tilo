@@ -565,6 +565,45 @@ impl Replica {
             .collect()
     }
 
+    /// [`Self::survey`] as the rows a catalogue lists it in, kept to answer
+    /// its pages ([`Self::page_of`]).
+    #[must_use]
+    pub fn survey_rows(&self) -> Vec<tilo_actions::remote::CatalogueRow> {
+        self.survey()
+            .into_iter()
+            .map(|descriptor| {
+                tilo_actions::remote::CatalogueRow::for_action("", self.app_id(), descriptor)
+            })
+            .collect()
+    }
+
+    /// What `surveyed` ([`Self::survey_rows`]) lists as `query` asks, on a
+    /// host that `can_render` or not: how many operations it admits, and
+    /// those from the `offset`th on, at most `take`. Only the page is
+    /// handed back.
+    #[must_use]
+    pub fn page_of(
+        surveyed: &[tilo_actions::remote::CatalogueRow],
+        query: &tilo_actions::remote::CatalogueQuery,
+        (can_render, (offset, take)): (bool, (usize, usize)),
+    ) -> (usize, Vec<ActionDescriptor>) {
+        let mut total = 0usize;
+        let mut page = Vec::new();
+        for row in surveyed {
+            let Some(descriptor) = &row.action else {
+                continue;
+            };
+            if (!can_render && crate::render::host_rendered(descriptor)) || !query.admits(row) {
+                continue;
+            }
+            if total >= offset && page.len() < take {
+                page.push(descriptor.clone());
+            }
+            total = total.saturating_add(1);
+        }
+        (total, page)
+    }
+
     /// The keys `mutation` writes in `record`, as this replica holds that
     /// record now, or `None` when it holds none of it: what a host checks a
     /// caller's change against, without reading the record whole.

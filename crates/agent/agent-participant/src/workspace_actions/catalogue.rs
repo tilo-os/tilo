@@ -6,8 +6,8 @@ use tilo_actions::remote::{CatalogueProvider, workspace_provider};
 
 use super::{
     ActionHostError, ActionKind, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
-    DEFAULT_ROWS_RECORDS, DocumentRoute, Worker, catalogue_keys, provider_workspace, reads,
-    record_of, record_provider, room_workspace_id,
+    DEFAULT_ROWS_RECORDS, DocumentRoute, Worker, catalogue_keys, provider_workspace, record_of,
+    record_provider, room_workspace_id,
 };
 
 impl Worker {
@@ -68,44 +68,48 @@ impl Worker {
             }
             None => routes.iter().take(DEFAULT_ROWS_RECORDS).cloned().collect(),
         };
-        let mut rows = Vec::new();
         let bounded = self.bounded(caller);
-        for route in &wanted {
-            let provider = record_provider(route);
-            let mut descriptors = match self.listed(workspace_id, bounded.as_ref(), route, &state) {
-                Ok(descriptors) => descriptors,
-                Err(error) => {
-                    tracing::warn!(%error, record = %route.record, "workspace actions: a record did not mount");
-                    continue;
-                }
-            };
-            if let Some(link) = self.shared.link.get().cloned()
-                && let Ok(mut read) = reads::CanonicalRead::prepare(
-                    &self.catalogue,
-                    link.as_ref(),
-                    workspace_id,
-                    caller,
-                    route,
-                )
-                && read
-                    .recheck(link.as_ref(), workspace_id, caller, route)
-                    .is_ok()
-            {
-                descriptors.extend(read.operations());
-            }
-            rows.extend(descriptors.into_iter().map(|descriptor| {
-                CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
-            }));
-        }
-        if query
+        // The workspace's own rows: its apps, to open.
+        let own_rows = if query
             .provider
             .as_deref()
             .is_none_or(|provider| provider == own_provider)
             && self.may_across(workspace_id, caller, ActionKind::Undoable)
         {
-            rows.extend(self.open_rows(&cluster_id));
-        }
-        let mut page = CataloguePage::from_rows(revision, rows, query);
+            self.open_rows(&cluster_id)
+        } else {
+            Vec::new()
+        };
+        let mut page = if query.view_resource.is_some() {
+            let mut rows = Vec::new();
+            for route in &wanted {
+                let provider = record_provider(route);
+                match self.listed(workspace_id, bounded.as_ref(), route, &state) {
+                    Ok(descriptors) => rows.extend(descriptors.into_iter().map(|descriptor| {
+                        CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
+                    })),
+                    Err(error) => {
+                        tracing::warn!(%error, record = %route.record, "workspace actions: a record did not mount");
+                    }
+                }
+            }
+            rows.extend(own_rows);
+            CataloguePage::from_rows(revision, rows, query)
+        } else if !query.cursor.is_empty() && query.revision.as_deref() != Some(revision.as_str()) {
+            CataloguePage::stale(revision)
+        } else {
+            // Paged where each record is held: a page costs its rows, however
+            // many items the records hold.
+            let at = (caller, bounded.as_ref());
+            self.records_page(
+                workspace_id,
+                at,
+                (&wanted, own_rows),
+                &state,
+                query,
+                revision,
+            )
+        };
         if query.provider.is_none() {
             page.providers = routes
                 .iter()

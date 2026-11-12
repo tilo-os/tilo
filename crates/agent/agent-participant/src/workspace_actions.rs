@@ -56,6 +56,7 @@ mod feedback;
 mod keys;
 mod ledger;
 mod link;
+mod listing;
 mod opened;
 mod placed;
 mod publish;
@@ -827,7 +828,11 @@ struct Workspace {
     /// The records this member asked the workspace's host for and that it
     /// has not answered yet ([`Event::RecordOpened`]).
     asked: HashSet<DocumentRoute>,
-    /// The records the host answered it holds none of.
+    /// The records the host answered for, asked once: a chain's head arrives
+    /// on the route of the part it names, never its own, so asking until it
+    /// is held would ask without end.
+    answered: HashSet<DocumentRoute>,
+    /// Of those, the records the host answered it holds none of.
     absent: HashSet<DocumentRoute>,
     /// What earlier waits for keys gave up on.
     gave_up: GaveUp,
@@ -879,6 +884,7 @@ impl Workspace {
             ready: false,
             when_opened: false,
             asked: HashSet::new(),
+            answered: HashSet::new(),
             absent: HashSet::new(),
             gave_up: GaveUp::default(),
             undecided: BTreeSet::new(),
@@ -911,9 +917,13 @@ impl Workspace {
                         "workspace actions: the workspace answered for a record"
                     );
                     // The host sent all it holds of a record this member
-                    // asked for: none means it holds none of it.
-                    if self.asked.remove(&route) && frames == 0 {
-                        self.absent.insert(route);
+                    // asked for, and sends its changes from now on: none
+                    // means it holds none of it.
+                    if self.asked.remove(&route) {
+                        if frames == 0 {
+                            self.absent.insert(route.clone());
+                        }
+                        self.answered.insert(route);
                     }
                 }
                 Event::Landed { route, .. } => {
@@ -2179,8 +2189,15 @@ impl Worker {
         if target.address.action == ui::tilo_resource::share::SHARE_LINK {
             // Sharing asks the record for everything it lists, which is what
             // the link is chosen from.
-            let live = live_actions(&mounted.app);
-            let at = (&route, &state, live.as_slice());
+            // The kind of the resource the link names, from the action
+            // asked for, resolved by its address: never a survey of all the
+            // record publishes, which grows with everything it holds.
+            let kind = mounted
+                .app
+                .descriptor(&target.address)
+                .map(|descriptor| descriptor.resource_kind)
+                .ok_or_else(unknown_action)?;
+            let at = (&route, &state, kind);
             return self
                 .share_link(workspace_id, caller, at, target, arguments)
                 .map(|output| (output, None));
@@ -2615,11 +2632,7 @@ impl Worker {
         &mut self,
         workspace_id: u64,
         caller: &Caller,
-        (route, state, live): (
-            &DocumentRoute,
-            &WorkspaceState,
-            &[tilo_actions::ActionDescriptor],
-        ),
+        (route, state, kind): (&DocumentRoute, &WorkspaceState, String),
         target: &tilo_actions::remote::RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<ActionOutput, Outcome> {
@@ -2634,14 +2647,9 @@ impl Worker {
             })
         };
         let resource = &target.address.resource;
-        // The record's own actions name the resource's kind; its views are
-        // attached where the app renders, which the lookup below runs. A
-        // resource with none is a record's root: its link names the record.
-        let kind = live
-            .iter()
-            .find(|descriptor| descriptor.address.resource == *resource)
-            .map(|descriptor| descriptor.resource_kind.clone())
-            .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
+        // The resource's views are attached where the app renders, which the
+        // lookup below runs. A resource with none is a record's root: its
+        // link names the record.
         // The record itself, opened at its primary view.
         let opened = self.holder_of(route);
         let root = self
@@ -2651,7 +2659,9 @@ impl Worker {
         let plain = ["view", "start", "end"]
             .iter()
             .all(|name| arguments.get(*name).is_none_or(serde_json::Value::is_null));
-        if root && plain && opened == *route {
+        // The root of a part of a chain is the record it is held beside,
+        // whose link names that record: no view of it is looked up.
+        if root && plain {
             let request = ui::tilo_resource::share::ShareRequest {
                 resource: resource.clone(),
                 kind,
@@ -2659,7 +2669,7 @@ impl Worker {
                 invite: false,
                 args: arguments,
             };
-            return self.record_link(workspace_id, caller, route, &request);
+            return self.record_link(workspace_id, caller, &opened, &request);
         }
         let query = CatalogueQuery {
             provider: Some(record_provider(route)),
@@ -2732,12 +2742,9 @@ impl Worker {
             return Ok(caller.clone());
         };
         let offered = self
-            .bounded_actions(workspace_id, &who, route, state)
+            .bounded_descriptor(workspace_id, &who, (route, state), &target.address)
             .map_err(Outcome::Rejected)?;
-        if offered
-            .iter()
-            .any(|descriptor| descriptor.address == target.address)
-        {
+        if offered.is_some_and(|descriptor| descriptor.address == target.address) {
             Ok(who.person_caller)
         } else {
             Err(Outcome::Rejected(ActionHostError::UnknownAction))

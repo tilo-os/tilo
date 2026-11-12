@@ -96,6 +96,11 @@ pub fn offered(descriptors: Vec<ActionDescriptor>) -> Vec<ActionDescriptor> {
     offered_where(descriptors, available())
 }
 
+/// Whether this host makes the renders an agent asks of a record.
+pub(crate) fn can_render() -> bool {
+    available()
+}
+
 /// [`offered`] on a host that `can_render` or not.
 fn offered_where(
     mut descriptors: Vec<ActionDescriptor>,
