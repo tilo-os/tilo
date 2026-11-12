@@ -14,8 +14,8 @@
  * says where it is.
  */
 
-import { resourceProxy } from "@tilo/sdk";
-import type * as tilo from "@tilo/sdk";
+import { resourceProxy } from "tilo-sdk";
+import type * as tilo from "tilo-sdk";
 
 export interface Album {
   id: string;
@@ -72,7 +72,7 @@ export interface OpenImage {
   name: string;
   width: number;
   height: number;
-  content: string;
+  content: unknown;
 }
 
 export interface PhotoLocation {
@@ -89,7 +89,7 @@ export interface Rect01 {
   h: number;
 }
 
-/** Photos — `photos.library`. */
+/** Library — `photos.library`. */
 export interface Library extends tilo.Resource {
   photos: LibraryPhoto[];
   albums: Album[];

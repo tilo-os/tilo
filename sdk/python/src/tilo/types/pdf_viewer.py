@@ -298,12 +298,11 @@ class Document(Resource):
 
     def pin_source(self,
         *,
-        hash: str,
-        len: int,
+        source: Any,
         name: str,
     ) -> Run | None:
         """Runs the app's action."""
-        return self.action("pin-source", hash=hash, len=len, name=name)
+        return self.action("pin-source", source=source, name=name)
 
     def adopt_existing(self,
         *,

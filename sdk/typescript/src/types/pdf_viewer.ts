@@ -14,8 +14,8 @@
  * says where it is.
  */
 
-import { resourceProxy } from "@tilo/sdk";
-import type * as tilo from "@tilo/sdk";
+import { resourceProxy } from "tilo-sdk";
+import type * as tilo from "tilo-sdk";
 
 export interface AdoptedAnnotation {
   id: string;
@@ -266,8 +266,7 @@ export interface Document extends tilo.Resource {
     pages: number;
   }): Promise<tilo.Run | void>;
   pinSource(args: {
-    hash: string;
-    len: number;
+    source: unknown;
     name: string;
   }): Promise<tilo.Run | void>;
   adoptExisting(args: {

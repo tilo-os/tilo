@@ -79,7 +79,7 @@ class OpenImage(TypedDict):
     name: str
     width: int
     height: int
-    content: str
+    content: Any
 
 class PhotoLocation(TypedDict):
     latitude: float
@@ -94,7 +94,7 @@ class Rect01(TypedDict):
     h: float
 
 class Library(Resource):
-    """Photos — `photos.library`."""
+    """Library — `photos.library`."""
     photos: list[LibraryPhoto]
     albums: list[Album]
 
