@@ -166,7 +166,7 @@ pub use content::{
 };
 pub use context::{
     AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionInvoker,
-    ActionResource, CHANGE_MESSAGE_PREFIX, CONTINUATION_PREFIX, Cause, ChangeKind,
+    ActionResource, CHANGE_MESSAGE_PREFIX, CONTINUATION_PREFIX, Cause, ChangeKind, InvokerDevice,
     MAX_PARTICIPANT_ID_BYTES, PLACE_FACET, ParticipantId, RISK_FACET, WorkGroup,
 };
 pub use contract::{
