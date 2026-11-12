@@ -33,7 +33,6 @@ use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ActionPlane, Offering, ReadFuture, Workspaces};
 use tokio::sync::Mutex as AsyncMutex;
-use web_time::SystemTime;
 
 use super::GovernedWorkspace;
 

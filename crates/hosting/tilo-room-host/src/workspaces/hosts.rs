@@ -11,7 +11,6 @@
 //! governance tells every member it may hold the workspace.
 
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use iroh_base::EndpointAddr;
 use serde_json::{Map, Value, json};

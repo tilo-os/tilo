@@ -10,8 +10,6 @@ use tilo_relay_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
 use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
-use std::time::SystemTime;
-
 use crate::handshake::{Doorway, EntryFuture};
 use crate::workspaces::pages::Presented;
 use crate::workspaces::{Carried, Workspaces};

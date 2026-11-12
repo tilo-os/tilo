@@ -6,8 +6,6 @@
 
 use std::sync::Arc;
 
-use web_time::SystemTime;
-
 use super::{Carried, Workspaces};
 
 /// Notices one workspace hands its channel service at once; a device asks

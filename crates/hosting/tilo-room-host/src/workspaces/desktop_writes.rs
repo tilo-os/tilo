@@ -12,7 +12,7 @@ use collab_types::DocumentMutation;
 use tilo_action_policy::ActionKind;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, act_node};
 
-use super::{GovernedWorkspace, SystemTime, Workspaces};
+use super::{GovernedWorkspace, Workspaces};
 use tilo_desktop_model::shared_record::guard::{self, DesktopGuard};
 
 pub(crate) use tilo_desktop_model::shared_record::guard::is_shared_desktop as is_desktop;

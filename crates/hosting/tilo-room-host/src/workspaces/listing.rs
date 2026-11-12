@@ -35,7 +35,6 @@ use tilo_relay_protocol::directory::{
 use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceNotice, WorkspaceRole};
 use tilo_relay_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
 use tilo_user_identity::DeviceCert;
-use web_time::SystemTime;
 
 use super::authority::WorkspaceOp;
 use super::{CollaborationError, Workspaces};

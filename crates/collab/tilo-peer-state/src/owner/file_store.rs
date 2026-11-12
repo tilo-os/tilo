@@ -31,7 +31,6 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::SystemTime,
 };
 use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 

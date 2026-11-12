@@ -6,7 +6,6 @@ use super::{GovernedWorkspace, Workspaces, publisher};
 use ed25519_dalek::SigningKey;
 use tilo_peer_state::TransportOrigin;
 use tilo_user_identity::DeviceCert;
-use web_time::SystemTime;
 
 /// A member's write to a record of a governed workspace, after the governor's
 /// copy took it in: what wakes the workspace's installed bots.

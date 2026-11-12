@@ -10,7 +10,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::ChannelRoute;
