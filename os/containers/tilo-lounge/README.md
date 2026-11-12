@@ -116,38 +116,35 @@ deployment that still names one (eu1 does) starts unchanged.
 entry from one commit, tests both and publishes `dev-<commit>`. Those steps
 are also t's checks — `lounge-binaries`, `lounge-fonts`,
 `image-lounge-context`, `image-lounge` — so a change is built by naming them.
-The checks that run the programs without an image around them (`page-boot`,
-`page-two-people`, `agent-setup`) ask `lounge-binaries.sh` for the profile
-Cargo.toml's `lounge-gate` names: the same code and optimisation level without
-the whole-program link the image's own build spends.
+The checks that run the programs without an image around them (`e2e`,
+`page-tour`) ask `lounge-binaries.sh` for the profile Cargo.toml's
+`lounge-gate` names: the same code and optimisation level without the
+whole-program link the image's own build spends.
 `test-entrypoint.sh` asserts the environment-to-flags mapping and
 `test-image.sh` what the built image must carry.
 
 ## Using it before it is published
 
-`test-integration.sh` runs the image the way the deployment does and uses it:
-the entrypoint reads production-shaped `TILO_ROOMS_*` on this machine's own
-ports, the web entry is served beside it, and two headless Chromium browsers
-open it, join the Lounge through its door as two people, chat, share a desk
-and place a call they hear each other on, seeing each other present through
-the host's own packet relay. It is the gate `publish-site` runs before
-publishing, so a dispatched build publishes nothing a person cannot use.
+`test-e2e.sh` is the web page end to end, on every change that reaches it
+(`t test e2e`): the Lounge's programs run directly through this image's
+entrypoint with production-shaped `TILO_ROOMS_*` on this machine's own ports
+(`direct-lounge.sh`), the web entry is served beside them, and every flow runs
+at the same time against that one Lounge, each as people of its own in
+headless Chromium: the page booting, two people chatting and calling, the
+desk's menus and gestures, an invitation, a shared link, a setup through an
+agent and its resumes, the wait list of a door that takes people by
+invitation, and the chat read back after a restart. Each flow runs alone too:
 
 ```
-bash os/containers/tilo-lounge/test-integration.sh \
-  out/lounge/image.oci.tar out/web-desktop/bundle
+bash os/containers/tilo-lounge/test-e2e.sh out/web-desktop/bundle /tmp/e2e people-call
 ```
 
-The same gate is t's, and runs on any commit and branch: `t test lounge-gate`
-builds the image and the web bundle it needs (each step its own cached check)
-and runs it. What the gate found stays in `/target/lounge-gate` — every page's
-snapshot and console, the site's and the Lounge's logs — which the check keeps
-as its outputs, and what the pages said reaches the run's log as they fail.
-
-It needs buildah (it starts the image chrooted, as `test-image.sh` does),
-node, a headless Chrome (`CHROME`, else Playwright's cache), curl and a Rust
-toolchain (the image's own `tilo-crypto` mints the site's certificate;
-`TILO_CRYPTO_BIN` names a built one instead), and the artifacts
-`publish-site` builds: `lounge-binaries.sh` + `lounge-fonts.sh` +
-`lounge-context.sh` + `publish/oci-build.sh` for the image, and
-`web-desktop-bundle.sh wasm` + `web-desktop-bundle.sh bundle` for the bundle.
+It needs node, a headless Chrome (`CHROME`, else Playwright's cache), curl,
+and `TILO_RELAY_BIN`, `TILO_CRYPTO_BIN`, `TILO_FONTS_DIR` and `TILO_CLI_BIN`
+naming built programs (the `lounge-gate-binaries`, `lounge-gate-tools`,
+`lounge-fonts` and `cli-x86_64` outputs). Every wait in the page drivers is a
+number of steps of `TILO_STEP_SECONDS` (5 s by default), so a hang fails in
+seconds and names its step. That every app the page offers opens from the
+search on the next frame is an in-process test of the desk's search
+(`crates/session/desktop-surface/tests/every_web_app_opens_from_search.rs`),
+not a browser's walk.

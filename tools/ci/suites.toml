@@ -1648,6 +1648,10 @@ check = "page-boot"
 suite = "os/containers/tilo-lounge/test-setup-resume.sh"
 check = "setup-resume"
 
+[[covered]]
+suite = "os/containers/tilo-lounge/test-e2e.sh"
+check = "e2e"
+
 [[unrequired]]
 suite = "os/containers/tilo-sh/test-vm-host.sh"
 reason = "needs root, KVM, loop devices and the built VM host and hosted guest images; the tilo-sh-vm-host check runs it in a VM of its own on dispatch"

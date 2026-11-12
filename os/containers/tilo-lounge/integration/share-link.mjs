@@ -20,6 +20,7 @@
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
+import {stepLimit} from './waits.mjs';
 
 const [site, origin, workspace, out] = process.argv.slice(2);
 if (!site || !origin || !workspace || !out) {
@@ -99,7 +100,7 @@ const person = async (name, {width, height, scale = 1, mobile = false}) => {
 };
 
 /** Wait until `expression` holds in `tab`, or fail saying what. */
-const until = async (tab, expression, what, timeout = 180_000) => {
+const until = async (tab, expression, what, timeout = stepLimit(4)) => {
   const deadline = Date.now() + timeout;
   for (;;) {
     const value = await tab.evaluate(expression).catch(() => false);
@@ -127,7 +128,7 @@ const shownText = tab => tab.evaluate(`(() => {
 })()`).catch(() => '');
 
 /** Wait until `tab` shows `text`; resolves to how long that took. */
-const shows = async (tab, text, what, timeout = 120_000, required = true) => {
+const shows = async (tab, text, what, timeout = stepLimit(3), required = true) => {
   const from = Date.now();
   for (;;) {
     if ((await shownText(tab)).includes(text)) return Date.now() - from;
@@ -163,7 +164,7 @@ const shoot = async (tab, name) => {
 /** Open `url` and wait for the page to have drawn what it opened. */
 const arrive = async (tab, url, what) => {
   await tab.navigate(url);
-  await until(tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, `${what} arriving`, 300_000);
+  await until(tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, `${what} arriving`, stepLimit(6));
   const arrival = await tab.evaluate('document.documentElement.dataset.arrival');
   if (arrival !== 'done') await failed(`${what} stopped: ${await tab.evaluate("document.getElementById('status')?.textContent")}`);
   await until(tab, `document.documentElement.dataset.bar === 'shown'`, `${what}'s bar`);
@@ -191,7 +192,7 @@ try {
   // The document's text field: the editor publishes it without a place on
   // screen, so a person's click goes where it draws its first line, under
   // the window's header, as its placeholder shows.
-  await until(ada, `(() => { globalThis.tiloMount?.requestSemantics?.(); return JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? null).includes('MultilineTextInput'); })()`, 'the document’s text field', 60_000);
+  await until(ada, `(() => { globalThis.tiloMount?.requestSemantics?.(); return JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? null).includes('MultilineTextInput'); })()`, 'the document’s text field', stepLimit(2));
   // What the app offers here and whether each is available now: an editor
   // that takes no keys says why in its own words.
   writeFileSync(`${out}/ada-actions.json`, await ada.evaluate(`JSON.stringify(globalThis.tiloMount?.actions?.() ?? null, null, 1)`).catch(error => String(error)));
@@ -211,7 +212,7 @@ try {
   // A person writes once the page lets them: the workspace's answer to what
   // they may do here arrives just after the page opens.
   await until(ada, `(globalThis.tiloMount?.actions?.() ?? []).some(action => action.address?.action === 'field-edit' && action.contract?.availability?.state === 'available')`,
-    'the document taking edits', 60_000);
+    'the document taking edits', stepLimit(2));
   // Writes `text` as Ada's next words: from the keyboard, as she types; if
   // the keys never reach the editor, through the app's own field edit (what
   // its controls and an agent use), so the rest still runs, and the run
@@ -226,7 +227,7 @@ try {
     }
     await type(ada, text);
     written += text;
-    const typed = await shows(ada, text.trim(), 'Ada’s typed words', 15_000, false);
+    const typed = await shows(ada, text.trim(), 'Ada’s typed words', stepLimit(1), false);
     if (typed !== null) return;
     report.keyboard = {
       reached: false,
@@ -255,7 +256,7 @@ try {
   await until(ada, `Boolean(document.querySelector('.bar-sheet'))`, 'the Share sheet');
   await shoot(ada, 'share-sheet-1280');
   await ada.evaluate(`document.querySelector('.bar-sheet button.bar-primary').click()`);
-  const link = await until(ada, 'globalThis.__copied', 'the copied link', 10_000);
+  const link = await until(ada, 'globalThis.__copied', 'the copied link', stepLimit(1));
   report.copied = link;
   if (!link.startsWith(`${base}app/#/`) || !link.includes(`/w/`) || !link.includes(`/${APP}/`) || /[?&]invite=/.test(link)) {
     await failed(`Share copied ${link}, not this document's link for the workspace's people`);
@@ -283,8 +284,8 @@ try {
   report.liveEditMs = Date.now() - typed;
 
   // 5. Each sees the other here, in this document.
-  await until(bo, `document.querySelectorAll('#bar-people .bar-face:not(.bar-elsewhere)').length > 0`, 'Ada in Bo’s bar', 60_000);
-  await until(ada, `document.querySelectorAll('#bar-people .bar-face:not(.bar-elsewhere)').length > 0`, 'Bo in Ada’s bar', 60_000);
+  await until(bo, `document.querySelectorAll('#bar-people .bar-face:not(.bar-elsewhere)').length > 0`, 'Ada in Bo’s bar', stepLimit(2));
+  await until(ada, `document.querySelectorAll('#bar-people .bar-face:not(.bar-elsewhere)').length > 0`, 'Bo in Ada’s bar', stepLimit(2));
   report.boBar = JSON.parse(await bo.evaluate(`JSON.stringify([...document.querySelectorAll('#bar-people .bar-face')].map(face => face.getAttribute('aria-label')))`));
   await shoot(bo, 'document-390');
   await shoot(ada, 'document-1280');
@@ -301,11 +302,11 @@ try {
   // address of a page already open on another app.
   const cy = await person('cy', {width: 390, height: 844, scale: 2, mobile: true});
   await cy.navigate(runLink);
-  await until(cy, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, 'Cy at a run arriving', 300_000);
+  await until(cy, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, 'Cy at a run arriving', stepLimit(6));
   if (await cy.evaluate('document.documentElement.dataset.arrival') !== 'done') {
     await failed(`Cy at a run stopped: ${await cy.evaluate("document.getElementById('status')?.textContent")}`);
   }
-  await until(cy, `globalThis.tiloMount?.state()?.livePlace?.focus?.app === 'so.tilo.console'`, 'Console focused on the desktop', 60_000);
+  await until(cy, `globalThis.tiloMount?.state()?.livePlace?.focus?.app === 'so.tilo.console'`, 'Console focused on the desktop', stepLimit(2));
   report.runPlace = JSON.parse(await cy.evaluate('JSON.stringify(globalThis.tiloMount?.state()?.livePlace?.focus ?? null)'));
   report.runTarget = JSON.parse(await cy.evaluate('JSON.stringify(globalThis.tiloRouter?.route?.target ?? null)'));
   if (report.runTarget?.app !== 'so.tilo.console' || report.runTarget?.resource?.id !== run) {

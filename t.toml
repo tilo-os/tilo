@@ -4844,6 +4844,29 @@ requires = ["arch=x86_64"]
 outputs = ["/target/setup-resume/setup-resume/*.png", "/target/setup-resume/setup-resume/*.json", "/target/setup-resume/setup-resume/*.log", "/target/setup-resume/*.log"]
 timeout_secs = 1800
 
+# The web page end to end on every change that reaches it, in minutes: the Lounge's own programs
+# run directly with its image's entrypoint and environment, the web entry served beside them and
+# one headless Chromium, started once; then every flow at the same time against them, each as
+# people of its own (os/containers/tilo-lounge/test-e2e.sh says which flows there are). Every app
+# opening from the search on the next frame is the desktop surface's in-process test, not a
+# browser's walk. It builds nothing itself: a change to a page driver reruns only this, and the
+# relay, the command and the bundle are the cached outputs the other page checks share. One flow
+# alone: `bash os/containers/tilo-lounge/test-e2e.sh BUNDLE WORK people-call`.
+[[check]]
+name = "e2e"
+run = "mkdir -p /target/e2e-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/e2e-cli tilo\nbash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e"
+needs = ["lounge-gate-binaries", "lounge-fonts", "cli-x86_64", "lounge-gate-tools", "web-desktop-bundle"]
+# A step of the page drivers is 15 s here, not the 5 s a machine that draws WebGPU on a GPU needs:
+# every page on this node draws in software beside a full node's other jobs, where answers measured
+# 10-50 s and a window reaching another person's strip 122 s. A step that hangs still fails within
+# its few steps and names itself.
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/e2e-cli/tilo", TILO_STEP_SECONDS = "15", E2E_FLOW_SECONDS = "420" }
+requires = ["arch=x86_64"]
+# What it found, not what it ran: each flow's pages, reports and consoles and each part's log; the
+# site it served is the bundle again.
+outputs = ["/target/e2e/*.log", "/target/e2e/lounge/*.log", "/target/e2e/boot/**", "/target/e2e/people-call/**", "/target/e2e/people-desk/**", "/target/e2e/people-invite/**", "/target/e2e/share-link/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/wait-list/**", "/target/e2e/restart/**"]
+timeout_secs = 1200
+
 # The web page boots for real, on every change that reaches it: the built bundle in headless
 # Chromium against the Lounge's relay run directly, arriving, joining the workspace and opening
 # Notes, failing on any exception the page throws or panic it reports. A page's unit tests run

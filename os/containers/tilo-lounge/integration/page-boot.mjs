@@ -20,6 +20,7 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
+import {stepLimit} from './waits.mjs';
 
 const [site, relay, out] = process.argv.slice(2);
 if (!site || !relay || !out) {
@@ -93,7 +94,7 @@ const checkPage = async step => {
 
 // Wait until `expression` holds in the page, or fail naming where the page
 // stopped instead.
-const until = async (expression, what, timeout = 180_000) => {
+const until = async (expression, what, timeout = stepLimit(4)) => {
   const deadline = Date.now() + timeout;
   for (;;) {
     await checkPage(what);
@@ -189,7 +190,7 @@ const open = async (name, app) => {
   // The rows shown right after typing can be the previous query's: Enter
   // waits until two reads agree that the app is the first result.
   const first = rows => (rows ? rows[rows.indexOf('Results') + 1] ?? null : null);
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + stepLimit(3);
   for (;;) {
     await checkPage(`searching for ${name}`);
     const rows = await paletteRows();
@@ -233,7 +234,7 @@ const open = async (name, app) => {
   await until(`(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(app)})`,
     `${name}'s window showing`);
   await until(`(() => { const w = globalThis.__bootOpen; w?.read?.(); return w?.shown !== null; })()`,
-    `the frame showing ${name}'s window`, 60_000);
+    `the frame showing ${name}'s window`, stepLimit(2));
   const counted = JSON.parse(await tab.evaluate('JSON.stringify(globalThis.__bootOpen)'));
   report.opens = [...(report.opens ?? []), counted];
   console.log(`frames: ${name} shown on frame ${counted.shown}; the page read ${counted.atKeydown} at Enter, the desk had presented ${counted.atKey} when it took the key; frames between: ${JSON.stringify(counted.trace)}`);
@@ -336,7 +337,7 @@ await until(`(() => {
   const state = globalThis.tiloMount?.state();
   return !!state && state.phase !== 'failed' && (state.gpuGeneration ?? 0) > ${beforeLoss.gpu ?? 0}
     && (state.frames ?? 0) > ${beforeLoss.frames};
-})()`, 'the desk drawing again on a new GPU device after its device was lost', 60_000);
+})()`, 'the desk drawing again on a new GPU device after its device was lost', stepLimit(2));
 await open('Calculator', 'so.tilo.calculator');
 await settled(2);
 const afterLoss = JSON.parse(await tab.evaluate(`JSON.stringify({

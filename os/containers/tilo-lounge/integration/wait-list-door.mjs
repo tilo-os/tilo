@@ -11,6 +11,7 @@
 import {mkdirSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {stepLimit} from './waits.mjs';
 
 const [site, mailDir, out, before] = process.argv.slice(2);
 if (!site || !mailDir || !out) {
@@ -55,7 +56,7 @@ const checkPage = async step => {
   const found = failures();
   if (found.length) await finish(1, `the page failed while ${step}: ${found.slice(0, 5).join(' | ')}`);
 };
-const until = async (expression, what, timeout = 180_000) => {
+const until = async (expression, what, timeout = stepLimit(4)) => {
   const deadline = Date.now() + timeout;
   for (;;) {
     await checkPage(what);
@@ -129,7 +130,7 @@ console.log(`ok: the address was left (${report.inbox})`);
 // 3. The confirmation mail went to the sink, and its link lists the address.
 const mailSent = async () => {
   // The outbox sends in its own task; the first attempt is prompt.
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + stepLimit(2);
   for (;;) {
     const files = readdirSync(mailDir).filter(name => name.endsWith('.json')).sort();
     if (files.length) return JSON.parse(readFileSync(join(mailDir, files[0]), 'utf8'));
