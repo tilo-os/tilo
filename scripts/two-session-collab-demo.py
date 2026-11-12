@@ -143,13 +143,31 @@ def redrawn(session: Session, app: str, drawn: int, what: str) -> int:
                  CROSSING_BOUND, 0.25)
 
 
+def front_tabs(session: Session) -> set:
+    """The tabs of the workspace this session's desk stands in: its front."""
+    tree = (session.state_dump() or {}).get("workspace_tree") or {}
+    front = next((workspace for workspace in tree.get("workspaces") or []
+                  if workspace.get("id") == tree.get("active")), None)
+    if front is None:
+        return set()
+    return {tab.get("id") for strip in front.get("strips") or []
+            for group in strip.get("window_groups") or []
+            for tab in group.get("tabs") or [] if tab.get("id") is not None}
+
+
 def focus(session: Session, app: str) -> dict:
     """Bring `app`'s window to the front, as the desk's own verb does, and let it take the
-    keyboard: a window brought forward hands its field the keys on the pass after it is up."""
-    window = until(f"the window of {app} on {session.tag}",
-                   lambda: next((w for w in session.windows()
-                                 if w.get("app_id") == app and w.get("window") is not None), None),
-                   180, 0.5)
+    keyboard: a window brought forward hands its field the keys on the pass after it is up.
+
+    The window is the one in the workspace the desk stands in: another workspace's window
+    would take the desk there, and what the person was working in would be out of reach of
+    their own actions."""
+    def shown():
+        here = front_tabs(session)
+        rows = [row for row in session.windows()
+                if row.get("app_id") == app and row.get("window") is not None]
+        return next((row for row in rows if row.get("tab") in here), None) or next(iter(rows), None)
+    window = until(f"the window of {app} on {session.tag}", shown, 180, 0.5)
     session.invoke(DESK, f"{WINDOWS}\u001ffocus", {"tab": str(window["tab"])})
     # The desk's own row says which tab is in front: keys typed before the switch has
     # landed go to the window that had them, so the wait is on that row and the pause
@@ -411,6 +429,9 @@ def main() -> int:
                       f"{peer_tasks_drawn} frames, then {frames(peer, TASKS)} after "
                       f"{CROSSING_BOUND:.0f} s; the peer's session says {stumbles(peer)}")
             peer.snapshot(out / "06-peer-task.png")
+            standing = (front_workspace(peer) or {}).get("room")
+            check("the peer's desk still stands where the task crosses", standing == room,
+                  f"{standing} of {room}")
             listed = tasks_content(peer, bound=30.0)
             check("the peer's own Tasks lists the task the host typed", task_title in listed,
                   f"{listed[:400]}; the peer's desk stands in "
