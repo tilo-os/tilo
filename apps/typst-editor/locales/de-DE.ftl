@@ -44,3 +44,26 @@ typst-editor-page-of = Seite { $page } von { $pages }
 
 ## Die Problemliste, wenn es nichts zu melden gibt
 typst-no-problems = Das Dokument wurde ohne Probleme übersetzt.
+
+## Actions
+
+typst-effect-compile = Neu übersetzen
+typst-effect-save = Typst-Datei sichern
+typst-effect-save-as = Typst-Datei sichern unter…
+typst-effect-open-file = Typst-Datei öffnen
+typst-effect-export-pdf = PDF exportieren
+typst-effect-zoom-out = Verkleinern
+typst-effect-zoom-in = Vergrößern
+typst-effect-fit-width = Breite einpassen
+typst-effect-problems = Probleme
+typst-effect-editor = Editor anzeigen
+typst-effect-preview = Vorschau anzeigen
+typst-effect-go-to-diagnostic = Zur Fundstelle springen
+typst-effect-outline = Gliederung
+typst-effect-go-to-heading = Zu Überschrift springen
+typst-effect-go-to-page = Zu Seite springen
+typst-editor-workspace = Typst-Arbeitsbereich
+typst-editor-workspace-new-file = Neue Typst-Datei
+typst-editor-workspace-saved-at = Speicherort erfassen
+typst-editor-workspace-load = Datei laden
+typst-editor-workspace-close-file = Datei schließen

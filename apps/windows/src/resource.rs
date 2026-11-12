@@ -59,7 +59,6 @@ impl Windows {
 
 #[resource(
     kind = "windows.manager",
-    label = "Windows manager",
     read_content = Windows::read_document
 )]
 impl Windows {}

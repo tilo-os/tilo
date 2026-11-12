@@ -138,7 +138,6 @@ impl Ebook {
 
 #[resource(
     kind = "ebook.library",
-    label = "Books",
     params = books,
     children = Ebook::places,
     search = Ebook::search,
@@ -1207,14 +1206,14 @@ pub enum BooksEffect {
     /// every font and colour scheme the pickers offer. It is the reading
     /// settings' read: what discloses them, so removing a font or a colour
     /// scheme is offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read reading settings", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadSettings,
     /// Read font
     ///
     /// Answers one reading font the pickers offer: its name and what it is.
     /// It is the font's read: what discloses it, so removing it is offered
     /// to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read font", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadFont {
         #[param("The font's id")]
         font: String,
@@ -1224,7 +1223,7 @@ pub enum BooksEffect {
     /// Answers one colour scheme the pickers offer: its name and colours.
     /// It is the scheme's read: what discloses it, so deleting it is
     /// offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read colour scheme", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadScheme {
         #[param("The colour scheme's id")]
         scheme: String,
@@ -1296,7 +1295,7 @@ pub enum BooksEffect {
     /// what Read chapter answers. It is the book's read: what discloses its
     /// place, so sharing it, taking it off the shelf and its annotations
     /// are offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read book", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadBook {
         #[param("The book's id")]
         book: String,
@@ -1307,7 +1306,7 @@ pub enum BooksEffect {
     /// is, its colour and the comments on it. It is the highlight's read:
     /// what discloses it, so recolouring, deleting and commenting on it are
     /// offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read highlight", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadHighlight {
         #[param("The highlight: the id of one of its pieces or its group")]
         highlight: Uuid,
@@ -1317,7 +1316,7 @@ pub enum BooksEffect {
     /// Answers a bookmark, a note or a comment: what it says, the passage
     /// it is at and where. It is the annotation's read: what discloses it,
     /// so deleting it is offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read annotation", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadAnnotation {
         #[param("The annotation's id")]
         annotation: Uuid,

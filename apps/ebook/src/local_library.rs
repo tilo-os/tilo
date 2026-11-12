@@ -53,7 +53,6 @@ impl BookFiles {
 
 #[resource(
     kind = "ebook.files",
-    label = "Book files",
     read_content = BookFiles::read_document
 )]
 impl BookFiles {

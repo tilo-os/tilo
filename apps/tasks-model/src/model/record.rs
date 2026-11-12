@@ -175,7 +175,6 @@ impl Tracker {
 
 #[resource(
     kind = "tasks.tracker",
-    label = "Tasks",
     params = tracker,
     search = crate::model::search::entries,
     effects = crate::model::TasksEffect,

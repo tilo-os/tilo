@@ -176,3 +176,24 @@ diffmerge-a11y-changes = { $changes ->
 diffmerge-a11y-between = Unterschied zwischen { $left } und { $right }
 diffmerge-a11y-for-change = { $choice } für Änderung { $change }
 diffmerge-a11y-show-source = Quelle { $source } anzeigen
+
+## Actions
+
+diffmerge-effects-open-files = Dateien öffnen
+diffmerge-effects-open-one = Eine Datei öffnen
+diffmerge-effects-save-merged = Zusammengeführtes Ergebnis sichern
+diffmerge-effects-save-merged-as = Zusammengeführtes Ergebnis sichern unter…
+diffmerge-effects-compare-folders = Ordner vergleichen
+diffmerge-effects-load-sample = Beispiel laden
+diffmerge-effects-show-diff = Zwei-Wege-Vergleich
+diffmerge-effects-show-merge = Drei-Wege-Zusammenführung
+diffmerge-effects-previous-change = Vorherige Änderung
+diffmerge-effects-next-change = Nächste Änderung
+diffmerge-effects-show = Änderung anzeigen
+diffmerge-session = Diff & Merge
+diffmerge-session-open-comparison = Zwei Texte vergleichen
+diffmerge-session-open-merge = Drei Texte zusammenführen
+diffmerge-session-take-ours = Unsere Seite übernehmen
+diffmerge-session-take-theirs = Ihre Seite übernehmen
+diffmerge-session-take-both = Beide Seiten übernehmen
+diffmerge-session-resolve = Mit eigenem Text auflösen

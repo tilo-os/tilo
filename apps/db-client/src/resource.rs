@@ -40,7 +40,6 @@ impl Workspace {
 
 #[resource(
     kind = "db-client.workspace",
-    label = "Database",
     search = Workspace::search,
     effects = DbEffect,
     read_content = Workspace::read_document
