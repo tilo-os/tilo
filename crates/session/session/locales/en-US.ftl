@@ -403,6 +403,12 @@ mention-notice = { $name } mentioned you
 mention-notice-someone = Someone
 mention-notice-open = Open
 
+## What a call says it wants a device for, when the call asks the person
+## to allow its camera, microphone or screen.
+call-microphone-reason = to be heard in the call
+call-camera-reason = to be seen in the call
+call-screen-reason = to share this screen in the call
+
 ## What the window names
 session-resource-keyboard = On-screen keyboard
 session-resource-diagnostics = Session diagnostics
