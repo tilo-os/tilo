@@ -13,7 +13,7 @@ use super::personal::change_hashes;
 use super::{NeighbourMsg, SystemTime, now_ns};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use neighbour_wire::{RefusalReason, WriteRefusal};
 use std::collections::BTreeSet;
 use tilo_desktop_model::projection::WORKSPACE_WRITE_REFUSALS_KEY;
@@ -111,7 +111,7 @@ impl PeerWorkspaceMut<'_> {
         self,
         caller: &tilo_user_identity::DeviceCert,
         refusal: &WriteRefusal,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let mut candidate = self
@@ -181,7 +181,7 @@ impl PeerWorkspaceMut<'_> {
         record: &str,
         author: [u8; 32],
         up_to_seq: u64,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         use automerge::transaction::Transactable as _;
@@ -235,7 +235,7 @@ impl PeerWorkspaceMut<'_> {
         caller: &tilo_user_identity::DeviceCert,
         message: &NeighbourMsg,
         reason: &str,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let NeighbourMsg::AppDocument {
@@ -279,7 +279,7 @@ impl PeerWorkspaceMut<'_> {
         self,
         caller: &tilo_user_identity::DeviceCert,
         message: &NeighbourMsg,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let NeighbourMsg::AppDocument {
@@ -331,10 +331,10 @@ impl PeerWorkspaceMut<'_> {
     fn own_refusal_candidate(
         &self,
         caller: &tilo_user_identity::DeviceCert,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<Option<AutoCommit>, String> {
-        if key.verifying_key().to_bytes() != caller.device_public_key {
+        if key.device_public_key() != caller.device_public_key {
             return Err("a refusal is signed by its recorder's own device".into());
         }
         if self

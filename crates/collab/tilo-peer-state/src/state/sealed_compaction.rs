@@ -5,6 +5,7 @@ use super::{
     AutoCommit, DocumentMutation, Ed25519PublicKey, NeighbourMsg, OpKind, PeerPublication,
     PeerPublicationMut, Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle,
 };
+use collab_types::signer::DeviceSigner;
 use collab_types::{ContentRetention, EncryptionMetadata, SealedCompaction};
 
 type Floors = std::collections::HashMap<Ed25519PublicKey, u64>;
@@ -559,7 +560,7 @@ impl PeerPublicationMut<'_> {
         record: &str,
         changes: Vec<u8>,
         seal: &mut SealCheckpoint<'_>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         self.publish_sealed(
@@ -592,7 +593,7 @@ impl PeerPublicationMut<'_> {
         record: &str,
         document: Vec<u8>,
         seal: &mut SealCheckpoint<'_>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         self.publish_sealed(
@@ -611,7 +612,7 @@ impl PeerPublicationMut<'_> {
         record: &str,
         mutation: &DocumentMutation,
         seal: &mut SealCheckpoint<'_>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         let plaintext = mutation.encode().map_err(err)?;
@@ -619,7 +620,7 @@ impl PeerPublicationMut<'_> {
             (app, record),
             &plaintext,
             Some(seal),
-            key.verifying_key().to_bytes(),
+            key.device_public_key(),
             0,
             now,
         )?;
@@ -655,7 +656,7 @@ impl PeerPublicationMut<'_> {
         (app, record): (&str, &str),
         changes: Vec<u8>,
         seal: &mut SealCheckpoint<'_>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         let author = delegate.verifying_key().to_bytes();

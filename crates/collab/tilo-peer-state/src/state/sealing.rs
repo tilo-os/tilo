@@ -2,8 +2,9 @@
 
 use super::{
     AutoCommit, BTreeMap, DocumentAdmission, DocumentMutation, Ed25519PublicKey, NeighbourMsg,
-    Route, SeedState, SigningKey, StatePeer, SystemTime, empty_genesis, err, peer_handle,
+    Route, SeedState, StatePeer, SystemTime, empty_genesis, err, peer_handle,
 };
+use collab_types::signer::DeviceSigner;
 
 use automerge::transaction::Transactable as _;
 
@@ -29,11 +30,11 @@ impl StatePeer {
     pub fn install_seed(
         &mut self,
         seed: SeedState,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<(), String> {
         self.receive(
-            key.verifying_key().to_bytes(),
+            key.device_public_key(),
             NeighbourMsg::SyncResp {
                 changes: seed.workspace_changes,
                 room: self.core.workspace.clone(),
@@ -56,7 +57,7 @@ impl StatePeer {
         app: &str,
         record: &str,
         mutation: DocumentMutation,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         self.validate_present_media_policy()?;
@@ -79,7 +80,7 @@ impl StatePeer {
                 coverage,
             )?;
         }
-        self.receive(key.verifying_key().to_bytes(), message.clone(), now)?;
+        self.receive(key.device_public_key(), message.clone(), now)?;
         Ok(message)
     }
     #[expect(
@@ -91,10 +92,10 @@ impl StatePeer {
         app: &str,
         record: &str,
         mutation: DocumentMutation,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<(NeighbourMsg, Option<crate::coverage::Coverage>), String> {
-        let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+        let author = Ed25519PublicKey::from_bytes(key.device_public_key());
         let route = Route {
             app: app.into(),
             record: record.into(),
@@ -227,7 +228,7 @@ impl StatePeer {
     }
     pub(super) fn signed_snapshots_in_place(
         &mut self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
         self.signed_snapshots_with_receipts(key, now, None)
@@ -237,7 +238,7 @@ impl StatePeer {
     /// every covered route (one change per durable bootstrap).
     pub(super) fn signed_snapshots_with_receipts(
         &mut self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
         receipts_at: Option<u64>,
     ) -> Result<Vec<NeighbourMsg>, String> {
@@ -307,7 +308,7 @@ impl StatePeer {
             None => {}
         }
         for message in &messages {
-            self.receive(key.verifying_key().to_bytes(), message.clone(), now)?;
+            self.receive(key.device_public_key(), message.clone(), now)?;
         }
         Ok(messages)
     }

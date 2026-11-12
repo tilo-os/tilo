@@ -70,7 +70,6 @@ pub use write::{Committed, Write};
 
 use crate::replica::Replica;
 use crate::{AdmissionReport, StatePeer, TransportOrigin};
-use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use std::{
@@ -815,10 +814,9 @@ impl NativeWorkspaceOwner {
         workspace: WorkspaceId,
         origin: TransportOrigin,
         message: NeighbourMsg,
-        key: Option<&SigningKey>,
         now: SystemTime,
     ) -> Result<AdmissionReport, String> {
-        self.receive_batch(workspace, vec![(origin, message)], key, now)?
+        self.receive_batch(workspace, vec![(origin, message)], now)?
             .pop()
             .ok_or_else(|| "native owner admitted no input".to_owned())?
     }
@@ -838,57 +836,30 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         inputs: Vec<(TransportOrigin, NeighbourMsg)>,
-        key: Option<&SigningKey>,
         now: SystemTime,
     ) -> Result<Vec<Result<AdmissionReport, String>>, String> {
         let _turn = self.0.mutation.lock();
         let candidate = self.view(workspace)?;
         let replica = candidate.replica.clone();
         let previous_publication = candidate.record.publication.clone();
-        let device = candidate.device().clone();
         let mut reports = Vec::with_capacity(inputs.len());
         // The workspace changes admitted from its other devices, as they came:
         // their hashes are read only to retire changes of this device's own
         // ([`publication::retire_member_changes`]), which a device that
         // published none (a page entering a workspace) never has.
         let mut governed: Vec<Vec<Vec<u8>>> = Vec::new();
-        let mut verdicts = false;
         for (origin, message) in inputs {
             let received = Self::received_changes(origin, &message).cloned();
-            let report = Self::admit_input(&candidate, origin, message.clone(), now);
+            let report = Self::admit_input(&candidate, origin, message, now);
             if report.is_ok()
                 && let Some(changes) = received
             {
                 governed.push(changes);
             }
-            // A refused write reaches its author: this device's verdict on it
-            // is kept in its own slice of the workspace, which the next sync
-            // carries back, and an admitted write clears the verdict it lands
-            // on. One carrier, the workspace document itself.
-            if let Some(key) = key
-                && matches!(message, NeighbourMsg::AppDocument { .. })
-            {
-                let mut live = replica.lock();
-                let verdict = match &report {
-                    Ok(_) => live
-                        .workspace_mut()
-                        .clear_landed_write(&device, &message, key, now),
-                    Err(reason) => live
-                        .workspace_mut()
-                        .refuse_write(&device, &message, reason, key, now),
-                };
-                match verdict {
-                    Ok(filed) => verdicts |= filed,
-                    Err(error) => {
-                        tracing::warn!(%error, "a document write's verdict was not kept");
-                    }
-                }
-            }
             reports.push(report);
         }
-        if reports.iter().all(Result::is_err) && !verdicts {
-            // Every input was refused and every verdict was already kept:
-            // nothing changed to commit.
+        if reports.iter().all(Result::is_err) {
+            // Every input was refused: nothing changed to commit.
             return Ok(reports);
         }
         let mut record = candidate.record.clone();

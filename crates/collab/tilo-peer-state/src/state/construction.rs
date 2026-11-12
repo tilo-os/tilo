@@ -2,10 +2,11 @@
 
 use super::{
     BTreeMap, CachedDocument, DeviceCert, ExactAdmissions, GovernedIdentity, PeerCore, ROOT,
-    RevocationList, Role, Shared, SigningKey, StatePeer, Subject, SystemTime, VecDeque,
-    VerifiedCertificate, administrator_grant_id, err, governed_map, held, now_ns, process_default,
-    put_member, put_member_joined_once, supersedes, workspace,
+    RevocationList, Role, Shared, StatePeer, Subject, SystemTime, VecDeque, VerifiedCertificate,
+    administrator_grant_id, err, governed_map, held, now_ns, process_default, put_member,
+    put_member_joined_once, supersedes, workspace,
 };
+use collab_types::signer::DeviceSigner;
 
 use automerge::{ReadDoc as _, transaction::Transactable as _};
 
@@ -103,7 +104,7 @@ impl StatePeer {
     pub fn admit_certificate(
         &mut self,
         cert: DeviceCert,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.require_member_writer(key, now)?;
@@ -152,7 +153,7 @@ impl StatePeer {
         &mut self,
         mut doc: CachedDocument,
         identity: &GovernedIdentity,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let id = hex::encode(identity.device_cert.device_public_key);
@@ -182,7 +183,7 @@ impl StatePeer {
         user_public_key: [u8; 32],
         role: Role,
         administrator: bool,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.require_member_writer(key, now)?;

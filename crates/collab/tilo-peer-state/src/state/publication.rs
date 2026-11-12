@@ -1,11 +1,11 @@
 //! Publishing exact checkpoints of a record with their coverage and receipts.
 
 use super::{
-    BTreeMap, DocumentAdmission, DocumentMutation, NeighbourMsg, Route, SigningKey, StatePeer,
-    SystemTime, err,
+    BTreeMap, DocumentAdmission, DocumentMutation, NeighbourMsg, Route, StatePeer, SystemTime, err,
 };
 use super::{PeerPublicationMut, backend};
 use automerge::{ReadDoc as _, transaction::Transactable as _};
+use collab_types::signer::DeviceSigner;
 
 impl StatePeer {
     /// Publish exact checkpoints of the `dirty` routes and, in the same workspace
@@ -18,7 +18,7 @@ impl StatePeer {
         dirty: &[(Route, Vec<u8>)],
         mut receipts: BTreeMap<String, crate::durability::DurableReceipt>,
         generation: u64,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
         self.validate_present_media_policy()?;
@@ -95,7 +95,7 @@ impl StatePeer {
             },
         )?;
         for message in &messages {
-            self.receive(key.verifying_key().to_bytes(), message.clone(), now)?;
+            self.receive(key.device_public_key(), message.clone(), now)?;
         }
         Ok(messages)
     }
@@ -108,7 +108,7 @@ impl PeerPublicationMut<'_> {
         app: &str,
         record: &str,
         bytes: Vec<u8>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         self.signed_mutation(app, record, DocumentMutation::Snapshot(bytes), key, now)
@@ -120,7 +120,7 @@ impl PeerPublicationMut<'_> {
         app: &str,
         record: &str,
         bytes: Vec<u8>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         self.signed_mutation(app, record, DocumentMutation::Incremental(bytes), key, now)
@@ -132,7 +132,7 @@ impl PeerPublicationMut<'_> {
         app: &str,
         record: &str,
         mutation: DocumentMutation,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         let mut candidate = self.peer.clone();
@@ -144,7 +144,7 @@ impl PeerPublicationMut<'_> {
     /// Signed snapshots of every admitted document.
     pub fn signed_snapshots(
         self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
         let mut candidate = self.peer.clone();
@@ -160,14 +160,14 @@ impl PeerPublicationMut<'_> {
     /// Returns an error if `key` is not the governor or a checkpoint cannot be produced.
     pub fn bootstrap_messages(
         self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
         let mut candidate = self.peer.clone();
         let snapshots = candidate.signed_snapshots_in_place(key, now)?;
         let mut messages = vec![candidate.workspace_message()];
         messages.extend(snapshots);
-        messages.extend(candidate.own_sealed_publications(key.verifying_key().to_bytes(), None));
+        messages.extend(candidate.own_sealed_publications(key.device_public_key(), None));
         *self.peer = candidate;
         Ok(messages)
     }
@@ -180,7 +180,7 @@ impl PeerPublicationMut<'_> {
     /// Returns an error if `key` is not the governor or a checkpoint cannot be produced.
     pub fn durable_bootstrap_messages(
         self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
         generation: u64,
     ) -> Result<Vec<NeighbourMsg>, String> {
@@ -194,7 +194,7 @@ impl PeerPublicationMut<'_> {
         crate::durability::monotonic(self.peer.core.workspace_doc.as_deref(), workspace)?;
         let mut messages = vec![candidate.workspace_message()];
         messages.extend(snapshots);
-        messages.extend(candidate.own_sealed_publications(key.verifying_key().to_bytes(), None));
+        messages.extend(candidate.own_sealed_publications(key.device_public_key(), None));
         *self.peer = candidate;
         Ok(messages)
     }
@@ -210,7 +210,7 @@ impl PeerPublicationMut<'_> {
     pub fn durable_mutation_messages(
         self,
         before: &StatePeer,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
         generation: u64,
     ) -> Result<Vec<NeighbourMsg>, String> {
@@ -221,7 +221,7 @@ impl PeerPublicationMut<'_> {
             return Err("publication cannot replace the session namespace".into());
         }
         self.peer
-            .permissions(key.verifying_key().to_bytes(), now)
+            .permissions(key.device_public_key(), now)
             .map_err(|error| error.to_string())?;
         if self.peer.incomplete_reason().is_some() {
             return Err("cannot publish incomplete encryption state".into());
@@ -327,9 +327,7 @@ impl PeerPublicationMut<'_> {
             });
         }
         messages.extend(snapshots);
-        messages.extend(
-            candidate.own_sealed_publications(key.verifying_key().to_bytes(), Some(before)),
-        );
+        messages.extend(candidate.own_sealed_publications(key.device_public_key(), Some(before)));
         *self.peer = candidate;
         Ok(messages)
     }

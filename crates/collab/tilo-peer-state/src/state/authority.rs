@@ -4,10 +4,11 @@
 
 use super::{
     ActionKind, Answer, Authority, AutoCommit, DeviceCert, Ed25519PublicKey, GovernedIdentity,
-    Grant, MembershipError, Principal, Role, Route, SignedOp, SigningKey, StatePeer, SystemTime,
-    TreePath, WorkspacePolicy, backend, err, held_units, now_ns, record_kind, record_surface,
-    workspace, workspace_host_actor,
+    Grant, MembershipError, Principal, Role, Route, SignedOp, StatePeer, SystemTime, TreePath,
+    WorkspacePolicy, backend, err, held_units, now_ns, record_kind, record_surface, workspace,
+    workspace_host_actor,
 };
+use collab_types::signer::DeviceSigner;
 
 /// A current member's authority in the workspace: who they are, their role, the
 /// workspace's policy as admitted, and whether their device is held to the
@@ -104,11 +105,11 @@ impl StatePeer {
     /// governance action by default.
     pub(super) fn require_governance_action(
         &self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         action: &str,
         now: SystemTime,
     ) -> Result<(), String> {
-        let member = self.membership(key.verifying_key().to_bytes(), now)?;
+        let member = self.membership(key.device_public_key(), now)?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
         member
             .policy
@@ -126,10 +127,10 @@ impl StatePeer {
     /// it (`workspace::membership`).
     pub(crate) fn require_member_writer(
         &self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<(), String> {
-        self.require_member_device(&key.verifying_key().to_bytes(), now)
+        self.require_member_device(&key.device_public_key(), now)
     }
 
     /// [`Self::require_member_writer`] of a device whose signature was made
@@ -450,8 +451,8 @@ impl StatePeer {
     /// The Automerge actor this peer makes the workspace changes `key` signs
     /// under: the device key for a replica, [`workspace_host_actor`] for a workspace
     /// host's copy.
-    pub(crate) fn workspace_actor_of(&self, key: &SigningKey) -> automerge::ActorId {
-        self.workspace_actor_for(&key.verifying_key().to_bytes())
+    pub(crate) fn workspace_actor_of(&self, key: &dyn DeviceSigner) -> automerge::ActorId {
+        self.workspace_actor_for(&key.device_public_key())
     }
 
     /// [`Self::workspace_actor_of`] by the signing device's public key.

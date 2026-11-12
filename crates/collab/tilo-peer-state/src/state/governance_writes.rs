@@ -1,9 +1,10 @@
 //! Writing a governance change as this device: the operation recording what
 //! it moved, then taking it in as every member will.
 use super::{
-    AutoCommit, CachedDocument, NeighbourMsg, SigningKey, StatePeer, SystemTime, TransportOrigin,
-    backend, err, now_ns, workspace,
+    AutoCommit, CachedDocument, NeighbourMsg, StatePeer, SystemTime, TransportOrigin, backend, err,
+    now_ns, workspace,
 };
+use collab_types::signer::DeviceSigner;
 
 impl StatePeer {
     /// Write the governance change `doc` holds as `key`'s device, and take it in
@@ -24,7 +25,7 @@ impl StatePeer {
         &mut self,
         mut doc: CachedDocument,
         before: &[automerge::ChangeHash],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let rows = {
@@ -73,7 +74,7 @@ impl StatePeer {
             .collect();
         let workspace = self.core.workspace.clone();
         let outcome = self.receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            TransportOrigin::RelayDelta(key.device_public_key()),
             NeighbourMsg::SyncResp {
                 changes,
                 room: workspace,
@@ -95,7 +96,7 @@ impl StatePeer {
         &self,
         doc: &mut CachedDocument,
         before: &[automerge::ChangeHash],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<(), String> {
         use crate::members::{self, MembershipOpCommand, SignedMembershipOp};
@@ -104,7 +105,7 @@ impl StatePeer {
         let old = self.core.workspace_doc.as_deref();
         let live = old.is_some_and(|old| members::holds_genesis(old, &workspace));
         let cert = self
-            .certificate(&key.verifying_key().to_bytes(), now)
+            .certificate(&key.device_public_key(), now)
             .map_err(|error| error.to_string())?;
         let owner = cert.user_public_key == self.core.owner;
         if !live {
@@ -153,7 +154,7 @@ impl StatePeer {
         &self,
         doc: &mut CachedDocument,
         mut rows: Vec<crate::workspace::GovernanceRow>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<(), String> {
         use crate::members::{self, MembershipOpCommand, SignedMembershipOp};
@@ -163,7 +164,7 @@ impl StatePeer {
         }
         rows.sort_unstable();
         let cert = self
-            .certificate(&key.verifying_key().to_bytes(), now)
+            .certificate(&key.device_public_key(), now)
             .map_err(|error| error.to_string())?;
         let op = SignedMembershipOp::signed(
             cert,

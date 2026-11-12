@@ -126,7 +126,6 @@ fn the_owners_own_grants_never_restrict_their_app_delegation() {
                 workspace,
                 crate::TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key),
                 message,
-                Some(&fixture.key),
                 fixture.now,
             )
             .unwrap();

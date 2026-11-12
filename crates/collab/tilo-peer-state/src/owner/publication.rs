@@ -2,8 +2,8 @@
 use crate::StatePeer;
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, enrollment, record};
 use crate::owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
+use collab_types::signer::DeviceSigner;
 use collab_types::{EncryptionMetadata, OpKind, SignedOp};
-use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
@@ -1090,45 +1090,55 @@ impl NativeWorkspaceOwner {
     /// device's own count, and two of them stamping the same receipts would
     /// leave every member with a receipt no other member can merge.
     ///
+    /// The snapshots are signed by `signer`, this device's custody of its key,
+    /// outside the owner's turn ([`Self::signed_turn`]).
+    ///
     /// # Errors
-    /// The workspace is not held here, `key` is not this device's, or the
-    /// commit failed.
+    /// The workspace is not held here, `signer` is not this device's, signing
+    /// failed, or the commit failed.
     pub fn commit_bootstrap(
         &self,
         workspace: WorkspaceId,
-        key: &SigningKey,
+        signer: &dyn collab_types::signer::DeviceSigner,
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
-        let _turn = self.0.mutation.lock();
-        let candidate = self.view(workspace)?;
-        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
-            return Err("native bootstrap signer differs from selected device".into());
-        }
-        // A device that does not host the workspace and holds no record in the
-        // clear signs nothing for a catch-up and takes no number: there is
-        // nothing to make durable, and a link costs no write of its record.
-        if !candidate.record.hosted_here() {
-            let mut live = candidate.live();
-            if !live.holds_clear_records() {
-                return live.publication_mut().bootstrap_messages(key, now);
+        self.signed_turn(signer, |signed| {
+            let _turn = self.0.mutation.lock();
+            let candidate = self.view(workspace)?;
+            if signed.device_public_key() != candidate.device().device_public_key {
+                return Err("native bootstrap signer differs from selected device".into());
             }
-        }
-        let (messages, stored) = candidate.change(|live, stored| {
-            let generation = stored
-                .generation
-                .checked_add(1)
-                .ok_or("native owner generation exhausted")?;
-            let messages = if stored.hosted_here() {
-                live.publication_mut()
-                    .durable_bootstrap_messages(key, now, generation)?
-            } else {
-                live.publication_mut().bootstrap_messages(key, now)?
-            };
-            stored.generation = generation;
+            // A device that does not host the workspace and holds no record in the
+            // clear signs nothing for a catch-up and takes no number: there is
+            // nothing to make durable, and a link costs no write of its record.
+            if !candidate.record.hosted_here() {
+                let mut live = candidate.live();
+                if !live.holds_clear_records() {
+                    let mut next = live.clone();
+                    let messages = next.publication_mut().bootstrap_messages(signed, now)?;
+                    signed.settled()?;
+                    *live = next;
+                    return Ok(messages);
+                }
+            }
+            let (messages, stored) = candidate.change(|live, stored| {
+                let generation = stored
+                    .generation
+                    .checked_add(1)
+                    .ok_or("native owner generation exhausted")?;
+                let messages = if stored.hosted_here() {
+                    live.publication_mut()
+                        .durable_bootstrap_messages(signed, now, generation)?
+                } else {
+                    live.publication_mut().bootstrap_messages(signed, now)?
+                };
+                signed.settled()?;
+                stored.generation = generation;
+                Ok(messages)
+            })?;
+            self.publish_record(workspace, &candidate, stored, None)?;
             Ok(messages)
-        })?;
-        self.publish_record(workspace, &candidate, stored, None)?;
-        Ok(messages)
+        })
     }
     /// Retire every retained frame the workspace has refused or a durable
     /// receipt names, and commit the retirement.

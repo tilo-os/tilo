@@ -11,7 +11,7 @@
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{StatePeer, SystemTime, err};
 use crate::workspace_membership::SettingsChange;
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, roles};
 use tilo_desktop_model::projection;
 use tilo_user_identity::DeviceCert;
@@ -23,7 +23,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         change: &SettingsChange,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
@@ -206,7 +206,7 @@ impl PeerGovernanceMut<'_> {
     pub fn put_governed_presets(
         self,
         presets: &[tilo_action_policy::Preset],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.author(key, now, |doc| {
@@ -223,7 +223,7 @@ impl PeerGovernanceMut<'_> {
     pub fn put_governed_sandbox(
         self,
         sandbox: &[collab_types::caps::CapOverride],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.author(key, now, |doc| {
@@ -235,7 +235,7 @@ impl PeerGovernanceMut<'_> {
     /// admit it the way every member admits it.
     pub(super) fn author(
         self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
         edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), automerge::AutomergeError>,
     ) -> Result<bool, String> {

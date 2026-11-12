@@ -60,7 +60,6 @@ fn enrolled() -> Enrolled {
                 workspace,
                 TransportOrigin::RetainedRelayDelta(governor),
                 message,
-                Some(&crate::owner::testing::member_key()),
                 now,
             )
             .unwrap();
@@ -627,7 +626,6 @@ fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
                 joined.workspace,
                 TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
                 frame,
-                Some(&crate::owner::testing::member_key()),
                 joined.now,
             )
             .unwrap();
@@ -1328,7 +1326,6 @@ fn retained_replay_reuses_exact_committed_publication() {
             joined.workspace,
             TransportOrigin::RetainedRelayDelta(governor),
             message,
-            Some(&crate::owner::testing::member_key()),
             joined.now,
         )
         .unwrap();

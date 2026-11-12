@@ -2,7 +2,7 @@
 //! the workspace's grants and its agents.
 use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
 use crate::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use serde::{Deserialize, Serialize};
 use web_time::SystemTime;
 
@@ -14,8 +14,9 @@ pub(crate) struct StoredMembershipReceipt {
 }
 
 impl NativeWorkspaceOwner {
-    /// Commit a typed membership command as this device, signed with its
-    /// own `key`: the workspace's admission decides it against the caller's
+    /// Commit a typed membership command as this device, signed by `signer`,
+    /// its custody of its key, outside the owner's turn
+    /// ([`Self::signed_turn`]): the workspace's admission decides it against the caller's
     /// grants, here and on every device that receives it. A device of the
     /// workspace's owner publishes the governance as a checkpoint; any other
     /// member publishes the changes it made, which every participant admits
@@ -24,7 +25,7 @@ impl NativeWorkspaceOwner {
     pub fn commit_workspace_membership_command(
         &self,
         request: OwnerCommitRequest,
-        key: &SigningKey,
+        signer: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<OwnerCommitReceipt, String> {
         let binding = request.binding()?;
@@ -38,88 +39,91 @@ impl NativeWorkspaceOwner {
         else {
             return Err("unsupported native membership owner commit family".into());
         };
-        let _turn = self.0.mutation.lock();
-        let candidate = self.view(workspace)?;
-        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
-            return Err("membership mutation is not signed by this device".into());
-        }
-        let id = serde_json::to_string(&(caller.device_public_key, invocation))
-            .map_err(|error| error.to_string())?;
-        if let Some(existing) = candidate.record.workspace_memberships.get(&id) {
-            if existing.receipt.binding != binding {
-                return Err("membership invocation was already bound to another command".into());
+        self.signed_turn(signer, |key| {
+            let _turn = self.0.mutation.lock();
+            let candidate = self.view(workspace)?;
+            if key.device_public_key() != candidate.device().device_public_key {
+                return Err("membership mutation is not signed by this device".into());
             }
-            return Ok(existing.receipt.clone());
-        }
-        if candidate.record.workspace_memberships.len() >= MAX_COMMANDS {
-            return Err("native membership custody capacity exhausted".into());
-        }
-        // What this device signs, it publishes: a device of the workspace's owner
-        // its governance as a checkpoint, carrying its durable state; any
-        // other member the changes it made, which every participant admits.
-        let writes_checkpoint = candidate
-            .peer
-            .signed_by_owner(&candidate.device().device_public_key);
-        let previous = candidate.peer.clone();
-        let (receipt, record) = candidate.change(|live, record| {
-            let before = live.workspace_heads().unwrap_or_default();
-            live.workspace_mut()
-                .apply_workspace_membership_command(&caller, &command, key, now)?;
-            let next_generation = record
-                .generation
-                .checked_add(1)
-                .ok_or("native membership generation exhausted")?;
-            let written = if writes_checkpoint {
-                let messages = live.publication_mut().durable_mutation_messages(
-                    &previous,
-                    key,
-                    now,
-                    next_generation,
-                )?;
-                for message in &messages {
-                    if matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
-                        let outgoing = crate::owner::publication::prepare(
-                            &crate::owner::publication::request(message)?,
-                        )?;
-                        crate::owner::publication::append_local(record, outgoing)?;
-                    }
+            let id = serde_json::to_string(&(caller.device_public_key, invocation))
+                .map_err(|error| error.to_string())?;
+            if let Some(existing) = candidate.record.workspace_memberships.get(&id) {
+                if existing.receipt.binding != binding {
+                    return Err("membership invocation was already bound to another command".into());
                 }
-                Vec::new()
-            } else {
-                live.workspace_changes_since(&before)
-            };
-            record.generation = next_generation;
-            let receipt = OwnerCommitReceipt {
-                binding: binding.clone(),
-                generation: next_generation,
-                aggregate_hash: *blake3::hash(&live.durable()?).as_bytes(),
-            };
-            record.workspace_memberships.insert(
-                id.clone(),
-                StoredMembershipReceipt {
-                    receipt: receipt.clone(),
-                },
-            );
-            if writes_checkpoint {
-                crate::owner::publication::replace_governance_checkpoint(
-                    live,
-                    record,
-                    receipt.binding.clone(),
-                    now,
-                )?;
-            } else if !written.is_empty() {
-                crate::owner::publication::add_member_changes(
-                    live,
-                    record,
-                    written,
-                    receipt.binding.clone(),
-                    now,
-                )?;
+                return Ok(existing.receipt.clone());
             }
+            if candidate.record.workspace_memberships.len() >= MAX_COMMANDS {
+                return Err("native membership custody capacity exhausted".into());
+            }
+            // What this device signs, it publishes: a device of the workspace's owner
+            // its governance as a checkpoint, carrying its durable state; any
+            // other member the changes it made, which every participant admits.
+            let writes_checkpoint = candidate
+                .peer
+                .signed_by_owner(&candidate.device().device_public_key);
+            let previous = candidate.peer.clone();
+            let (receipt, record) = candidate.change(|live, record| {
+                let before = live.workspace_heads().unwrap_or_default();
+                live.workspace_mut()
+                    .apply_workspace_membership_command(&caller, &command, key, now)?;
+                let next_generation = record
+                    .generation
+                    .checked_add(1)
+                    .ok_or("native membership generation exhausted")?;
+                let written = if writes_checkpoint {
+                    let messages = live.publication_mut().durable_mutation_messages(
+                        &previous,
+                        key,
+                        now,
+                        next_generation,
+                    )?;
+                    for message in &messages {
+                        if matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
+                            let outgoing = crate::owner::publication::prepare(
+                                &crate::owner::publication::request(message)?,
+                            )?;
+                            crate::owner::publication::append_local(record, outgoing)?;
+                        }
+                    }
+                    Vec::new()
+                } else {
+                    live.workspace_changes_since(&before)
+                };
+                key.settled()?;
+                record.generation = next_generation;
+                let receipt = OwnerCommitReceipt {
+                    binding: binding.clone(),
+                    generation: next_generation,
+                    aggregate_hash: *blake3::hash(&live.durable()?).as_bytes(),
+                };
+                record.workspace_memberships.insert(
+                    id.clone(),
+                    StoredMembershipReceipt {
+                        receipt: receipt.clone(),
+                    },
+                );
+                if writes_checkpoint {
+                    crate::owner::publication::replace_governance_checkpoint(
+                        live,
+                        record,
+                        receipt.binding.clone(),
+                        now,
+                    )?;
+                } else if !written.is_empty() {
+                    crate::owner::publication::add_member_changes(
+                        live,
+                        record,
+                        written,
+                        receipt.binding.clone(),
+                        now,
+                    )?;
+                }
+                Ok(receipt)
+            })?;
+            self.publish_record(workspace, &candidate, record, None)?;
             Ok(receipt)
-        })?;
-        self.publish_record(workspace, &candidate, record, None)?;
-        Ok(receipt)
+        })
     }
 }
 
@@ -250,7 +254,7 @@ mod tests {
                 .owner
                 .commit_workspace_membership_command(
                     removal.clone(),
-                    &SigningKey::from_bytes(&[240; 32]),
+                    &ed25519_dalek::SigningKey::from_bytes(&[240; 32]),
                     fixture.now,
                 )
                 .is_err()
@@ -375,7 +379,6 @@ mod tests {
                     workspace,
                     TransportOrigin::RetainedRelayDelta(governor),
                     postcard::from_bytes(bytes).unwrap(),
-                    Some(&fixture.key),
                     fixture.now,
                 )
                 .unwrap();

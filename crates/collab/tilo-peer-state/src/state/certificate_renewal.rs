@@ -3,8 +3,9 @@
 //! device as the same member, with the same role and grants, once its
 //! governor replaces the certificate it holds with the renewed one.
 use super::facades::{PeerGovernance, PeerGovernanceMut};
-use super::{DeviceCert, GovernedIdentity, ROOT, ReadDoc, SigningKey, SystemTime, err, now_ns};
+use super::{DeviceCert, GovernedIdentity, ROOT, ReadDoc, SystemTime, err, now_ns};
 use automerge::transaction::Transactable as _;
+use collab_types::signer::DeviceSigner;
 
 impl PeerGovernance<'_> {
     /// The certificate `renewed` replaces: the one the workspace holds for the
@@ -63,7 +64,7 @@ impl PeerGovernanceMut<'_> {
     pub fn renew_member_certificate(
         self,
         renewed: &DeviceCert,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let Some(held) = self.peer.governance().renewal_of(renewed, now)? else {

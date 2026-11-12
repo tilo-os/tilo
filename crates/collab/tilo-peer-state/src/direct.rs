@@ -1379,13 +1379,20 @@ impl DirectSync {
         } else {
             TransportOrigin::RelayDelta(author)
         };
-        let report = admission.owner.receive(
+        let now = SystemTime::now();
+        let report = admission
+            .owner
+            .receive(admission.workspace, origin, message.clone(), now);
+        // A refused write reaches its author: this device keeps its verdict on it in its own
+        // slice of the workspace, which the next sync carries back.
+        if let Err(error) = admission.owner.keep_verdicts(
             admission.workspace,
-            origin,
-            message.clone(),
-            Some(&self.0.key),
-            SystemTime::now(),
-        );
+            &[(&message, &report)],
+            &self.0.key,
+            now,
+        ) {
+            tracing::warn!(%error, "a document write's verdict was not kept");
+        }
         let (landed, report) = match report {
             Ok(report) => (report.changed || report.metadata_changed, Ok(report)),
             Err(reason) => {

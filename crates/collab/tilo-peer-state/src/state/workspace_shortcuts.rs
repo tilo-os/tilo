@@ -1,6 +1,6 @@
 use super::SystemTime;
 use super::facades::PeerWorkspaceMut;
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use tilo_automation::ShortcutChange;
 
 /// The most shortcuts one workspace holds.
@@ -19,12 +19,12 @@ impl PeerWorkspaceMut<'_> {
         self,
         caller: &tilo_user_identity::DeviceCert,
         change: &ShortcutChange,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         use automerge::{ObjType, ROOT, ReadDoc, Value, transaction::Transactable};
         use tilo_desktop_model::projection::WORKSPACE_AUTOMATIONS_KEY;
-        if key.verifying_key().to_bytes() != caller.device_public_key {
+        if key.device_public_key() != caller.device_public_key {
             return Err("a shortcut change is signed by its caller's own device".into());
         }
         if self

@@ -9,7 +9,7 @@
 //! workspace's first operation at once write two keys, where two maps to
 //! merge would be two objects only one device's history could keep.
 
-use ed25519_dalek::{Signer, SigningKey};
+use collab_types::signer::DeviceSigner;
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::{Change, Grant, Role, WorkspacePolicy};
 use tilo_user_identity::DeviceCert;
@@ -155,7 +155,7 @@ impl SignedMembershipOp {
     /// Write `command` as `device`, on top of the operations `parents`.
     pub fn signed(
         device: &DeviceCert,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         parents: Vec<OpId>,
         at_ns: u64,
         command: MembershipOpCommand,
@@ -167,11 +167,9 @@ impl SignedMembershipOp {
             command,
             sig: [0; 64],
         };
-        let signature = key.sign(&unsigned.signing_bytes()?);
-        Ok(Self {
-            sig: signature.to_bytes(),
-            ..unsigned
-        })
+        let sig = collab_types::signer::sign_now(key, unsigned.signing_bytes()?)
+            .map_err(|error| error.to_string())?;
+        Ok(Self { sig, ..unsigned })
     }
 
     /// The bytes the author device signs: the domain, then the operation
@@ -290,6 +288,7 @@ pub(crate) fn forget_verified_ops() {
 #[cfg(test)]
 pub(crate) mod tests_support {
     use super::*;
+    use ed25519_dalek::SigningKey;
     use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
     pub(crate) fn device(seed: u8) -> (SigningKey, DeviceCert) {
@@ -297,7 +296,7 @@ pub(crate) mod tests_support {
         let key = SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
+            device_public_key: key.device_public_key(),
             device_label: format!("device {seed}"),
             capabilities: DeviceCapabilities::member(),
             issued_at_ns: 1,
@@ -358,12 +357,12 @@ mod tests {
         assert!(op.verify().is_ok());
         let (other, other_cert) = device(11);
         // Signed by another device, but naming its original author.
-        op.sig = other.sign(&op.signing_bytes().unwrap()).to_bytes();
+        op.sig = ed25519_dalek::Signer::sign(&other, &op.signing_bytes().unwrap()).to_bytes();
         assert!(op.verify().is_err(), "another device signed it");
         // Signed by the device it names: the author was rewritten, and so was
         // the signature.
         op.author = other_cert;
-        op.sig = other.sign(&op.signing_bytes().unwrap()).to_bytes();
+        op.sig = ed25519_dalek::Signer::sign(&other, &op.signing_bytes().unwrap()).to_bytes();
         op.verify().expect("signed by the device it names");
         let (_, mut tampered) = an_op();
         if let MembershipOpCommand::Project { changes } = &mut tampered.command {

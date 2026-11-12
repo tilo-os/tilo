@@ -1,7 +1,7 @@
 use super::SystemTime;
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use crate::workspace::AGENT_ACTOR_PREFIX;
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use tilo_desktop_model::WorkspaceEffectReceipt;
 
 impl PeerWorkspace<'_> {
@@ -74,7 +74,11 @@ impl PeerWorkspace<'_> {
     /// Check current native checkpoint signing custody, including retries: the
     /// checkpoint rows are the workspace's settings, so the settings action
     /// permits them.
-    pub fn check_checkpoint_writer(self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
+    pub fn check_checkpoint_writer(
+        self,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<(), String> {
         self.peer.require_governance_action(
             key,
             tilo_action_policy::roles::governance::SETTINGS,
@@ -238,7 +242,7 @@ impl PeerWorkspaceMut<'_> {
     pub fn set_workspace_checkpoint_root(
         self,
         root: [u8; 32],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<(), String> {
         use automerge::{ROOT, ScalarValue, transaction::Transactable};
