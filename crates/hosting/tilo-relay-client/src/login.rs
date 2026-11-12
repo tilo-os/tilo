@@ -214,11 +214,8 @@ pub fn site_door(entry: &serde_json::Value, host_origin: &str) -> Option<(String
     let admission = home.get("admission")?.as_str()?;
     let (scheme, rest) = admission.split_once("://")?;
     let (authority, path) = rest.split_at(rest.find('/')?);
-    let host = authority
-        .rsplit_once(':')
-        .map_or(authority, |(host, _)| host);
-    let loopback = matches!(host, "localhost" | "127.0.0.1" | "[::1]");
-    if authority.is_empty() || !(scheme == "https" || (scheme == "http" && loopback)) {
+    let secure = tilo_net::Url::parse(admission).is_ok_and(|url| tilo_net::secure_origin(&url));
+    if authority.is_empty() || !secure {
         return None;
     }
     Some((format!("{scheme}://{authority}"), path.to_owned()))

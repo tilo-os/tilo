@@ -222,8 +222,8 @@ fi
 work=${1:-$state/check}
 mkdir -p "$work"
 find "$work" -mindepth 1 -delete
-site=https://tilo.localhost:$((base + 20))
-relay=https://127.0.0.1:$base
+site=http://tilo.localhost:$((base + 20))
+relay=http://127.0.0.1:$base
 api=http://localhost:$((base + 10))
 report=$work/report.json
 

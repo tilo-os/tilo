@@ -61,10 +61,9 @@ const typed = option('--type');
 mkdirSync(out, {recursive: true});
 
 const report = {site, relay};
-// The relay's certificate is the local Caddy's: accepted, as a person who
-// trusts it would. A software GPU, and no sandbox where this runs as root.
+// The stack is plain HTTP on this machine: no certificate to accept, as for
+// any person's browser. A software GPU, and no sandbox where this runs as root.
 const browser = await launch({args: [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),

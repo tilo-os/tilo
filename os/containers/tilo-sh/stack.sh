@@ -60,15 +60,19 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
 What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
   relay     tilo-relay room through the Lounge image's entrypoint, as tilo.sh's
             relay
-  tls       production's Caddy and Caddyfile in front of it:
-            https://127.0.0.1:BASE (eu1.tilo.sh) and https://127.0.0.1:BASE+6
+  tls       production's Caddy and Caddyfile in front of it, plain HTTP:
+            http://127.0.0.1:BASE (eu1.tilo.sh) and http://127.0.0.1:BASE+6
             (live-eu1.tilo.sh)
   api      the API server: MCP, /v1, keys and OAuth,
             http://localhost:BASE+10 (mcp.tilo.sh)
   web       the web entry (its entrypoint and Caddyfile serving the desktop
             bundle): the site, /sign-in, /install.sh, /releases, on
             127.0.0.1:BASE+21 behind tls, which serves it as Cloudflare
-            serves tilo.sh (HTTPS, HTTP/2): https://tilo.localhost:BASE+20
+            serves tilo.sh: http://tilo.localhost:BASE+20. Every address
+            is plain HTTP on this machine, which browsers treat as secure,
+            so any browser opens it with no certificate step; WebTransport
+            reaches the relay with the short-lived certificate it pins by
+            hash
   vm-host   the VM host image (Firecracker): a workspace's Linux programs and
             its Browser run in its VM here, and the relay places it on this
             host. It is privileged, so it runs as root over its own state
@@ -138,19 +142,18 @@ discord_rest_port=$((base + 40))
 discord_gateway_port=$((base + 41))
 discord_control_port=$((base + 42))
 
-relay_origin=https://127.0.0.1:$relay_port
-live_origin=https://127.0.0.1:$live_port
+# Plain HTTP on this machine, which a browser treats as a secure context as it
+# does https://, so any browser profile opens the site with no certificate to
+# trust or click through (a browser asks about a certificate only for the page
+# it opens, never for the calls that page makes to the relay).
+relay_origin=http://127.0.0.1:$relay_port
+live_origin=http://127.0.0.1:$live_port
 api_origin=http://localhost:$api_port
-# HTTPS, as tilo.sh is: a browser speaks HTTP/2 only over TLS, and over
-# HTTP/1.1's six connections the page's modules arrive far later than they do
-# from production. A name of its own under localhost, not localhost: the
-# site's HSTS header, which a browser trusting the local CA keeps per host
-# name, would on localhost turn the API server's plain http://localhost into an
-# https:// one it does not answer. Not an address either: a passkey's relying
+# A name of its own under localhost, not an address: a passkey's relying
 # party is the page's host name, and a browser refuses one on an address.
 # Browsers, curl and glibc resolve any *.localhost name to loopback.
 site_host=tilo.localhost
-site_origin=https://$site_host:$site_port
+site_origin=http://$site_host:$site_port
 
 state=${TILO_SH_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tilo-sh-local}
 # The containers of the stack on these ports: a second stack on other ports
@@ -305,6 +308,9 @@ relay_env() {
     "TILO_ROOMS_LIVE_ORIGIN=$live_origin"
     "TILO_ROOMS_WEB_ENTRY=$site_origin/"
     "TILO_ROOMS_SITE_ORIGINS=$site_origin"
+    # The site is plain http on this machine: the relay's local mode, in which
+    # its door mails links to such a page (production's is https).
+    TILO_ROOMS_LOCAL=1
     "TILO_ROOMS_ROOT_FILE=$secrets_path/room-root-lounge"
     # The roles the operator declares, which the workspace re-reads when the
     # file changes: production mounts its own; here it is the operator's to
@@ -403,22 +409,16 @@ as_user() {
 
 env_args() { local line; while IFS= read -r line; do printf -- '--env\0%s\0' "$line"; done; }
 
-# The bundle the API server verifies the relay with: this machine's roots and the
-# local Caddy's, at the fixed path Tilo's binaries read (production: the
-# image's own bundle, and Cloudflare's certificate in front of the relay).
+# The bundle at the fixed path Tilo's binaries read: this machine's roots.
+# The stack's own addresses are plain HTTP, so it adds no authority of its
+# own; the services reach the internet (font catalog, releases) as this
+# machine does.
 trust_bundle() {
-  local root=$state/tls/caddy/pki/authorities/local/root.crt
-  local deadline=$((SECONDS + 10))
-  until [[ -s $root ]]; do
-    ((SECONDS < deadline)) || die "Caddy made no local CA at $root; stack.sh logs tls"
-    sleep 0.2
-  done
-  cp "$root" "$state/local-ca.pem"
   local system
   for system in /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem /etc/ssl/certs/ca-certificates.crt; do
-    [[ -f $system ]] && { cat "$system" "$root" > "$state/trust-bundle.pem"; return; }
+    [[ -f $system ]] && { cat "$system" > "$state/trust-bundle.pem"; return; }
   done
-  cp "$root" "$state/trust-bundle.pem"
+  die 'this machine has no CA bundle at /etc/pki/ca-trust or /etc/ssl/certs'
 }
 
 # The mail service the relay's door posts to, here a sink that keeps each mail as a
@@ -560,7 +560,6 @@ vm_host() {
     "TILO_SH_RELAY_ROOT=$state/secrets/room-root-lounge" \
     "TILO_SH_RELAY_STATE=$state/relay/lounge/relay" \
     "TILO_SH_RELAY_IROH=127.0.0.1:$iroh_port" \
-    "TILO_SH_TRUST_BUNDLE=$state/trust-bundle.pem" \
     "TILO_SH_BROWSER_FREE_ACTIONS=${TILO_SH_BROWSER_FREE_ACTIONS:-}" \
     "TILO_SH_HOSTED_VM_SIZE=${TILO_SH_HOSTED_VM_SIZE:-}" \
     bash "$here/vm-host.sh" "$@" 9>&-
@@ -623,12 +622,12 @@ seed() {
       || die 'could not build the seeder; or set TILO_SH_SEEDER'
   fi
   local members
-  members=$(curl -fsS --cacert "$state/local-ca.pem" -X POST "$relay_origin/peer/v1/directory" \
+  members=$(curl -fsS -X POST "$relay_origin/peer/v1/directory" \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["workspaces"][0]["members"])')
   local want=$((${TILO_SH_SEED_MEMBERS:-300} - members))
   if ((want > 0)); then
     say "seeding $want members through the Lounge's door"
-    "$seeder" "$relay_origin" "$room" "$want" "$state/local-ca.pem" > "$out/members.json" \
+    "$seeder" "$relay_origin" "$room" "$want" > "$out/members.json" \
       || die 'seeding the members failed'
   fi
   say 'seeding the history: a member posts chat through the API server'
@@ -909,7 +908,7 @@ private_env() {
 
 # run_native NAME DIR COMMAND…: COMMAND as the service NAME, in a session of
 # its own, with only the environment $runs/NAME.env sets. bwrap puts the
-# stack's trust bundle (this machine's roots and the local Caddy's) at the one
+# stack's trust bundle (this machine's roots) at the one
 # path Tilo's programs read, for this process alone, as the containers mount
 # it; everything else it sees is this machine as it is.
 run_native() {
@@ -942,15 +941,14 @@ start_native_tls() {
   caddy=$(find_caddy)
   cp "$here/Caddyfile" "$state/tls/Caddyfile"
   # The tls container's environment: the Caddyfile's ports, and Caddy's data
-  # (its local CA) and config where the container mounts them.
+  # and config where the container mounts them.
   { private_env tls "$(dirname "$caddy")"
     printf '%s\n' "XDG_DATA_HOME=$state/tls" "XDG_CONFIG_HOME=$state/tls/config" \
       "TILO_SH_RELAY_PORT=$relay_port" "TILO_SH_LIVE_PORT=$live_port" "TILO_SH_PACKET_PORT=$packet_port" \
       "TILO_SH_ROUTES_PORT=$routes_port" "TILO_SH_PLAIN_PORT=$plain_port" "TILO_SH_CADDY_HTTP_PORT=$caddy_http_port" \
       "TILO_SH_SITE_PORT=$site_port" "TILO_SH_WEB_PORT=$web_port"
   } > "$runs/tls.env"
-  # Caddy makes the CA the bundle takes in, so it starts before there is one.
-  [[ -f $state/trust-bundle.pem ]] || cat "$ca_path" > "$state/trust-bundle.pem"
+  [[ -f $state/trust-bundle.pem ]] || trust_bundle
   run_native tls "$state/tls" "$caddy" run --config "$state/tls/Caddyfile" --adapter caddyfile
 }
 
@@ -1036,12 +1034,12 @@ start_native_discord() {
 # timeout.
 wait_relay() {
   wait_for 'relay (its readiness probe, /mode)' "http://127.0.0.1:$routes_port/mode" 30
-  wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 30 --cacert "$state/local-ca.pem"
+  wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 30
 }
 
 wait_api() { wait_for 'API server (its health check)' "http://127.0.0.1:$api_port/health" 20; }
 
-wait_web() { wait_for 'web (its health check)' "$site_origin/healthz" 30 --cacert "$state/local-ca.pem"; }
+wait_web() { wait_for 'web (its health check)' "$site_origin/healthz" 30; }
 
 native_preflight() {
   # Root is the job sandbox's identity in a check, which is where TILO_SH_STATE
@@ -1155,7 +1153,7 @@ restart() {
       wait_web ;;
     tls)
       start_native_tls
-      wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 30 --cacert "$state/local-ca.pem" ;;
+      wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 30 ;;
     discord)
       build_programs
       start_native_discord
@@ -1306,7 +1304,7 @@ up_images() {
     --env "TILO_SOURCE_REVISION=local-$commit" \
     "${relay_args[@]}" "$lounge"
   wait_for 'relay (its readiness probe, /mode)' "http://127.0.0.1:$routes_port/mode" 300
-  wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 60 --cacert "$state/local-ca.pem"
+  wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 60
   local room
   room=$(cat "$state/relay/lounge/room-id") || die 'the relay kept no workspace id'
   say "relay ready: the Lounge is $room ($((SECONDS - began))s)"
@@ -1332,7 +1330,7 @@ up_images() {
   start web --network "pasta:-T,$plain_port,-T,$releases_port" -p "127.0.0.1:$web_port:8080" \
     --read-only --tmpfs /tmp --user 10001 \
     "${web_args[@]}" "$web"
-  wait_for 'web (its health check)' "$site_origin/healthz" 60 --cacert "$state/local-ca.pem"
+  wait_for 'web (its health check)' "$site_origin/healthz" 60
 
 }
 
@@ -1383,7 +1381,7 @@ down() {
     # account's user namespace: only that namespace removes them.
     podman_ unshare rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" 2>/dev/null \
       || rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail"
-    rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/local-ca.pem" "$state/mode"
+    rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode"
     say "stopped, and its state is gone (builds kept in $native, images in $state/images)"
   else
     say "stopped; its state stays in $state (stack.sh down --wipe deletes it)"
@@ -1402,7 +1400,7 @@ status() {
       api) shown="$api_origin (MCP: $api_origin/mcp)" ;;
       web) shown="$site_origin" ;;
     esac
-    if running "$name" && curl -fsS --max-time 2 --cacert "$state/local-ca.pem" "$probe" >/dev/null 2>&1; then
+    if running "$name" && curl -fsS --max-time 2 "$probe" >/dev/null 2>&1; then
       answer=up
     elif running "$name"; then answer=starting; else answer=down; fi
     printf '%-9s %-8s %s\n' "$name" "$answer" "$shown"
@@ -1426,17 +1424,12 @@ status() {
 }
 
 print_env() {
-  [[ -f $state/local-ca.pem ]] || die 'the stack has not run here yet: stack.sh up'
+  [[ -f $state/mode ]] || die 'the stack has not run here yet: stack.sh up'
   cat <<EOF
 # tilo.sh on this machine (stack.sh). The tilo command, the SDKs and agents
 # reach the local API server; nothing here touches tilo.sh.
 export TILO_API_URL=$api_origin
 export TILO_SITE=$site_origin
-# The relay's TLS is the local Caddy's CA: the tilo command (tilo login),
-# Node (the TS SDK, MCP clients) and Python's httpx (the Python SDK) trust it.
-export TILO_TEST_CA_FILE=$state/local-ca.pem
-export NODE_EXTRA_CA_CERTS=$state/local-ca.pem
-export SSL_CERT_FILE=$state/trust-bundle.pem
 # The installer (curl -fsSL $site_origin | sh) checks this stack's releases
 # against its own key, not Tilo's release key.
 export TILO_RELEASE_KEY=$state/release.pub
@@ -1455,8 +1448,8 @@ browser() {
   [[ -x $chrome ]] || die 'no Chromium: set CHROME, or install Playwright'"'"'s (bunx playwright install chromium)'
   local profile
   profile=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/tilo-sh-browser.XXXXXX")
-  say "a fresh visitor on $site_origin (profile $profile; the stack's local certificate is accepted)"
-  "$chrome" --user-data-dir="$profile" --no-first-run --ignore-certificate-errors "$site_origin" "${@}"
+  say "a fresh visitor on $site_origin (profile $profile)"
+  "$chrome" --user-data-dir="$profile" --no-first-run "$site_origin" "${@}"
 }
 
 # Sourced (check.sh does), it only defines the addresses and functions above.

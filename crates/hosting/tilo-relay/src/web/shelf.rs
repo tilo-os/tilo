@@ -254,7 +254,7 @@ impl Shelf {
         }
         if stored.host.as_deref().is_some_and(|host| !origin(host)) {
             return Err(Refused::Malformed(
-                "the host a link names is an https:// origin",
+                "the host a link names is an https:// origin, or an http:// one on this machine",
             ));
         }
         if !spelled(&stored.delete) {
@@ -427,10 +427,14 @@ pub(super) fn cors(response: &mut Response<Body>) {
     );
 }
 
-/// Whether `text` is an `https://` origin: a scheme, a host and maybe a port,
+/// Whether `text` is an `https://` origin, or an `http://` one on this
+/// machine ([`tilo_net::secure_origin`]): a scheme, a host and maybe a port,
 /// and nothing else.
 fn origin(text: &str) -> bool {
-    let Some(rest) = text.strip_prefix("https://") else {
+    let Some(rest) = text.strip_prefix("https://").or_else(|| {
+        text.strip_prefix("http://")
+            .filter(|_| tilo_net::Url::parse(text).is_ok_and(|url| tilo_net::secure_origin(&url)))
+    }) else {
         return false;
     };
     !rest.is_empty()

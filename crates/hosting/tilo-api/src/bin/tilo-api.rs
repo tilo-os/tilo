@@ -22,8 +22,8 @@ fn var(name: &str) -> Result<String, String> {
 fn origin(name: &str) -> Result<String, String> {
     let value = var(name)?;
     let parsed = url::Url::parse(&value).map_err(|error| format!("{name}: {error}"))?;
-    if parsed.scheme() != "https" && parsed.host_str() != Some("localhost") {
-        return Err(format!("{name} must be https"));
+    if !tilo_net::secure_origin(&parsed) {
+        return Err(format!("{name} must be https, or http on this machine"));
     }
     Ok(value.trim_end_matches('/').to_owned())
 }

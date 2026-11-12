@@ -15,24 +15,23 @@
 // The agent is Claude Code as the `tilo` command finds it: `CLAUDECODE=1` in
 // its environment and a `claude` on PATH that records what it was asked, so
 // the run proves the command registered its tools without touching anyone's
-// real agent. The command trusts the site's and the relay's test certificates
-// only through `TILO_TEST_CA_FILE`, which production never sets.
+// real agent. The stack is plain HTTP on this machine, so the command needs
+// no test certificate to reach it.
 //
-// usage: node agent-setup.mjs SITE_URL RELAY_ORIGIN TILO_BIN SITE_CA OUT_DIR
+// usage: node agent-setup.mjs SITE_URL RELAY_ORIGIN TILO_BIN OUT_DIR
 //
 // Prints a JSON report and saves what each page showed; exits non-zero when a
 // step of either path did not happen.
 import {execFile, spawn} from 'node:child_process';
 import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
-import {connect} from 'node:tls';
 import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, deskMetrics, machine} from './waits.mjs';
 
-const [site, relay, tiloBin, siteCa, out] = process.argv.slice(2);
-if (!site || !relay || !tiloBin || !siteCa || !out) {
-  console.error('usage: node agent-setup.mjs SITE_URL RELAY_ORIGIN TILO_BIN SITE_CA OUT_DIR');
+const [site, relay, tiloBin, out] = process.argv.slice(2);
+if (!site || !relay || !tiloBin || !out) {
+  console.error('usage: node agent-setup.mjs SITE_URL RELAY_ORIGIN TILO_BIN OUT_DIR');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
@@ -138,20 +137,6 @@ const until = async (tab, expression, what, timeout = stepLimit(3)) => {
   }
 };
 
-// The relay's own certificate, as its listener presents it: the run hands it
-// to the command as one it trusts exactly, beside the site's test CA.
-const relayCertificate = () => new Promise((resolve, reject) => {
-  const {hostname, port} = new URL(relay);
-  const socket = connect({host: hostname, port: Number(port || 443), servername: hostname === '127.0.0.1' ? undefined : hostname,
-    rejectUnauthorized: false}, () => {
-    const der = socket.getPeerCertificate(false).raw;
-    socket.end();
-    const body = der.toString('base64').match(/.{1,64}/g).join('\n');
-    resolve(`-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----\n`);
-  });
-  socket.on('error', reject);
-});
-
 // The computer the agent runs on: its own home, a `claude` that records how
 // it was asked to add Tilo's tools, and Claude Code's environment marker.
 const computer = join(out, 'computer');
@@ -183,15 +168,12 @@ printf '{"mcpServers":{"%s":{"type":"stdio","command":"%s","args":[%s],"env":{}}
 printf 'wrote %s: %s\n' "$HOME/.claude.json" "$(cat "$HOME/.claude.json")" >> '${claudeCalls}'
 `);
 chmodSync(join(computer, 'bin', 'claude'), 0o755);
-const relayPem = join(computer, 'relay.pem');
-writeFileSync(relayPem, await relayCertificate().catch(error => fail(`the relay's certificate: ${error.message}`)));
 const env = {
   PATH: `${join(computer, 'bin')}:${process.env.PATH}`,
   HOME: computer,
   XDG_STATE_HOME: join(computer, 'state'),
   XDG_CONFIG_HOME: join(computer, 'config'),
   CLAUDECODE: '1',
-  TILO_TEST_CA_FILE: `${siteCa}:${relayPem}`,
 };
 // Run one `tilo …` as the agent does: its words, as the agent reads them.
 const tilo = (args, {input} = {}) => new Promise(resolve => {

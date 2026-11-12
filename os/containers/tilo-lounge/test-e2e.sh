@@ -127,7 +127,7 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
     share-link) exec node "$integration/share-link.mjs" "$site_origin" "$relay_origin" "$room" "$out" ;;
     reloads) exec node "$integration/reloads.mjs" "$site_origin" "$out" ;;
     agent-setup|setup-resume)
-      exec node "$integration/$flow.mjs" "$site_origin" "$relay_origin" "$TILO_CLI_BIN" "$E2E_SITE_CA" "$out" ;;
+      exec node "$integration/$flow.mjs" "$site_origin" "$relay_origin" "$TILO_CLI_BIN" "$out" ;;
     signin|visa|entry|passkey) exec bash "$tilo_sh/check.sh" --flow "$flow" ;;
     wait-list)
       # A second Lounge, whose door takes people by invitation: the one
@@ -226,7 +226,7 @@ bash "$tilo_sh/stack.sh" status || true
 timing 'phase=the stack up'
 
 export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_origin E2E_ROOM=$room \
-  E2E_ROLES=$roles E2E_SITE_CA=$state/local-ca.pem E2E_API_URL=$door_origin TILO_CLI_BIN=$tilo_bin
+  E2E_ROLES=$roles E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin
 
 # What each of the stack's services complained about while it ran: each error
 # and warning it logged, without its time, with how often. A failing check

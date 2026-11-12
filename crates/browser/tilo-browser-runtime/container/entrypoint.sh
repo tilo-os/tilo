@@ -2,12 +2,15 @@
 # Writes the entry configuration a bare visit reads (entry.json), then serves.
 # Without a home workspace a bare visit opens the person's own desktop; with
 # one, it opens that workspace, joined through the door its host lists it at:
-#   TILO_WEB_HOME_HOST  host name of the home workspace's host (unset: no home)
+#   TILO_WEB_HOME_HOST  host name of the home workspace's host (unset: no home),
+#                       reached over https, or over plain http when it is
+#                       this machine (localhost, a name under it, 127.0.0.1)
 #   TILO_WEB_HOME_NAME  its name, required with a host
 #   TILO_WEB_HOME_APP   the app in front, optional (unset: its desktop)
 #   TILO_WEB_HOME_FEEDBACK  the id of its Chat channel members report
 #                       problems to, optional (unset: reports are not offered)
 #   TILO_WEB_HOME_DOOR  the door everyone joins it through: an https:// address
+#                       (http:// on this machine)
 #                       ending in /, which the door's own paths hang off
 #                       (`join` and `errors`; a host's `presence` and wait list
 #                       too, where it serves one). Unset: its people reconnect
@@ -27,7 +30,8 @@
 #                       stops and says this needs setting again.
 # Tilo computers list the site's public workspaces from its directory: the
 # home host's own (https://<host>/directory) unless one is named:
-#   TILO_WEB_DIRECTORY  the directory's https:// address (unset: the home's)
+#   TILO_WEB_DIRECTORY  the directory's https:// address, http:// on this
+#                       machine (unset: the home's)
 # The desktop's About sheet offers these links; an unset one is not offered:
 #   TILO_WEB_ABOUT_NOTIFY     where to sign up to hear when Tilo comes out
 #   TILO_WEB_ABOUT_SOURCE     the source code
@@ -61,6 +65,20 @@
 #   TILO_WEB_PORT       the port (8080), on every address unless
 #   TILO_WEB_BIND       names one
 set -eu
+# here URL: whether URL is plain http on this machine (localhost, a name under
+# it, a 127.x address or [::1]), which a browser treats as secure as https
+# and which never leaves the machine.
+here() {
+  case "$1" in http://*) ;; *) return 1 ;; esac
+  authority=${1#http://}
+  authority=${authority%%/*}
+  case "$authority" in \[*) at=${authority%%]*}] ;; *) at=${authority%:*} ;; esac
+  case "$at" in
+    localhost | *.localhost | '[::1]') return 0 ;;
+    127.*) case "$at" in *[!0-9.]*) return 1 ;; esac; return 0 ;;
+  esac
+  return 1
+}
 host=${TILO_WEB_HOME_HOST:-}
 name=${TILO_WEB_HOME_NAME:-}
 app=${TILO_WEB_HOME_APP:-}
@@ -82,10 +100,13 @@ else
   case "$app" in *[!a-z0-9._-]*) echo "TILO_WEB_HOME_APP must be an app id" >&2; exit 2 ;; esac
   case "$feedback" in *[!a-z0-9_]*) echo "TILO_WEB_HOME_FEEDBACK must be a channel id like c_feedback" >&2; exit 2 ;; esac
   case "$door" in
+    '' | https://*) ;;
+    *) here "$door" || { echo "TILO_WEB_HOME_DOOR must be an https:// address (http:// on this machine): $door" >&2; exit 2; } ;;
+  esac
+  case "$door" in
     '') ;;
-    https://*[!/]) echo "TILO_WEB_HOME_DOOR must end in /: $door" >&2; exit 2 ;;
-    https://*) case "$door" in *[!A-Za-z0-9._~:/?#@!\$\&\'\(\)*+,\;=%-]*) echo "TILO_WEB_HOME_DOOR must be a plain https:// address: $door" >&2; exit 2 ;; esac ;;
-    *) echo "TILO_WEB_HOME_DOOR must be an https:// address: $door" >&2; exit 2 ;;
+    *[!/]) echo "TILO_WEB_HOME_DOOR must end in /: $door" >&2; exit 2 ;;
+    *[!A-Za-z0-9._~:/?#@!\$\&\'\(\)*+,\;=%-]*) echo "TILO_WEB_HOME_DOOR must be a plain address: $door" >&2; exit 2 ;;
   esac
   # One JSON object, written into entry.json as a string: only characters
   # that need no escaping there but its quotes, which are escaped below. A
@@ -102,17 +123,19 @@ else
   [ -z "$app" ] || front=",\"app\":\"$app\""
   [ -z "$feedback" ] || front="$front,\"feedback\":{\"channel\":\"$feedback\"}"
   [ -z "$door" ] || front="$front,\"admission\":\"$door\""
-  fields=$(printf '"home":{"name":"%s","host":{"origin":"https://%s","info":"%s"}%s}' "$name" "$host" "$quoted" "$front")
+  scheme=https
+  ! here "http://$host" || scheme=http
+  fields=$(printf '"home":{"name":"%s","host":{"origin":"%s://%s","info":"%s"}%s}' "$name" "$scheme" "$host" "$quoted" "$front")
 fi
 directory=${TILO_WEB_DIRECTORY:-}
 if [ -n "$directory" ]; then
   case "$directory" in
     https://*) ;;
-    *) echo "TILO_WEB_DIRECTORY must be an https:// address: $directory" >&2; exit 2 ;;
+    *) here "$directory" || { echo "TILO_WEB_DIRECTORY must be an https:// address (http:// on this machine): $directory" >&2; exit 2; } ;;
   esac
   case "$directory" in *[!A-Za-z0-9._~:/?#@!\$\&\'\(\)*+,\;=%-]*) echo "TILO_WEB_DIRECTORY must be a plain URL: $directory" >&2; exit 2 ;; esac
 elif [ -n "$host" ]; then
-  directory="https://$host/directory"
+  directory="$scheme://$host/directory"
 fi
 [ -z "$directory" ] || fields="$fields${fields:+,}\"directory\":\"$directory\""
 about=
@@ -143,7 +166,8 @@ if [ -n "$embedder" ]; then
 fi
 releases=${TILO_RELEASES_ORIGIN:-https://code.tilo.so/api/packages/tilo/generic/tilo-cli}
 case "$releases" in
-  https://*/* | http://127.0.0.1:*/* | http://localhost:*/*) ;;
+  https://*/*) ;;
+  http://*/*) here "$releases" || { echo "TILO_RELEASES_ORIGIN must be an https:// URL with a path (http:// on this machine): $releases" >&2; exit 2; } ;;
   *) echo "TILO_RELEASES_ORIGIN must be an https:// URL with a path: $releases" >&2; exit 2 ;;
 esac
 case "$releases" in
@@ -156,17 +180,12 @@ esac
 # reaches it by another name or port and says so.
 shelf=${TILO_WEB_SHELF:-}
 if [ -z "$shelf" ] && [ -n "$host" ]; then
-  case "$host" in
-    localhost | localhost:* | 127.0.0.1 | 127.0.0.1:*) shelf="http://$host" ;;
-    *) shelf="https://$host" ;;
-  esac
+  shelf="$scheme://$host"
   export TILO_WEB_SHELF="$shelf"
 fi
 case "$shelf" in
-  '') ;;
-  https://*) ;;
-  http://localhost | http://localhost:* | http://127.0.0.1 | http://127.0.0.1:* | http://\[::1\]:*) ;;
-  *) echo "TILO_WEB_SHELF must be an https:// address, or http:// on this machine's loopback: $shelf" >&2; exit 2 ;;
+  '' | https://*) ;;
+  *) here "$shelf" || { echo "TILO_WEB_SHELF must be an https:// address, or http:// on this machine: $shelf" >&2; exit 2; } ;;
 esac
 # An address Caddy proxies to, not a path on it: the request's own path is put
 # in front of what the relay serves.

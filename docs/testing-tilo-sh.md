@@ -62,10 +62,10 @@ Everything listens on `127.0.0.1`. Ports start at `TILO_SH_PORT_BASE`
 
 | Service | Production | Locally |
 | --- | --- | --- |
-| Lounge relay (room host and relay) | `eu1.tilo.sh` and `live-eu1.tilo.sh`, image `lounge` | `tilo-relay` through the image's entrypoint (`os/containers/tilo-lounge/entrypoint.sh`), laid out by the image's own context script, behind production's Caddy and Caddyfile at `https://127.0.0.1:24100` and `https://127.0.0.1:24106`; its door takes people by invitation and keeps a wait list, as production's does (`TILO_SH_ADMISSION=open` lets anyone in as a guest, which `check.sh` and the e2e flows ask for), and `stack.sh owner KEY` declares the first person who invites the others |
+| Lounge relay (room host and relay) | `eu1.tilo.sh` and `live-eu1.tilo.sh`, image `lounge` | `tilo-relay` through the image's entrypoint (`os/containers/tilo-lounge/entrypoint.sh`), laid out by the image's own context script, behind production's Caddy and Caddyfile at `http://127.0.0.1:24100` and `http://127.0.0.1:24106`; its door takes people by invitation and keeps a wait list, as production's does (`TILO_SH_ADMISSION=open` lets anyone in as a guest, which `check.sh` and the e2e flows ask for), and `stack.sh owner KEY` declares the first person who invites the others |
 | Mail (wait-list confirmations, invitations) | Resend | a sink that keeps each mail as a file, at `http://127.0.0.1:24123`; `stack.sh mail` lists them with their links |
 | API server (MCP, `/v1`, keys, OAuth) | `mcp.tilo.sh`, image `api` | `tilo-api` at `http://localhost:24110` |
-| Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's desktop bundle, laid out and precompressed as the image does it, on `127.0.0.1:24121` behind the same Caddy, which serves it as Cloudflare serves tilo.sh (HTTPS and HTTP/2) at `https://tilo.localhost:24120`; `/releases/latest` serves this checkout's `tilo` command, signed with the stack's own key, which the site's installer downloads (`stack.sh env` exports `TILO_RELEASE_KEY` for it) |
+| Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's desktop bundle, laid out and precompressed as the image does it, on `127.0.0.1:24121` behind the same Caddy, which serves it as Cloudflare serves tilo.sh, here over plain HTTP, at `http://tilo.localhost:24120`; `/releases/latest` serves this checkout's `tilo` command, signed with the stack's own key, which the site's installer downloads (`stack.sh env` exports `TILO_RELEASE_KEY` for it) |
 | Linux VM host (Firecracker) | `tilo-sh-vm-host`, image `vm-host` | the image as root (through `sudo`) where the machine has `/dev/kvm`: with `--images`, as part of the stack, and natively when `TILO_SH_VM_HOST=1` names the images it runs; otherwise skipped with the reason |
 | Hosted browser | in the workspace's own VM, on the VM host | with the VM host: the relay places it there (docs/hosted-browser.md), and `t test tilo-sh-local-vm` holds it to what it must be |
 | Discord | discord.com | `stack.sh up --discord` starts `crates/dev/fake-discord` and points the Lounge's Discord sign-in and bridge at it |
@@ -84,41 +84,39 @@ does not know how to move stops the start.
 
 ### What differs from production, and why
 
-- **TLS.** In production, Cloudflare terminates TLS. Locally, Caddy's own
-  local CA signs the relay's and the site's certificates. The API server and
-  the relay get that CA in the trust bundle at the fixed path Tilo's binaries
-  read. The API server is plain HTTP on `http://localhost`, a development origin
-  the API server, the sign-in page and the `tilo` command already accept.
-- **The site is HTTPS on its own name under localhost.** Caddy plays
-  Cloudflare's edge in front of the web entry, so the page arrives over
-  HTTP/2, as it does from tilo.sh; over plain HTTP a browser falls back to
-  HTTP/1.1's six connections and the page's modules take a second longer at
-  a 70 ms round trip, which skews any entry-speed measurement. The name is
+- **No TLS, so no certificate step.** In production, Cloudflare terminates
+  TLS. Locally the site, the relay, its live plane and the API server are plain
+  HTTP on this machine's own names: `http://tilo.localhost:24120`,
+  `http://127.0.0.1:24100`, `http://127.0.0.1:24106` (production:
+  `live-eu1.tilo.sh`) and `http://localhost:24110`. A browser treats
+  `localhost`, names under it and loopback addresses as secure contexts, so
+  the page runs as it does on tilo.sh (passkeys, WebCrypto, service workers)
+  in any browser profile, with no certificate to trust or click through. A
+  certificate would not work here anyway: a browser asks about one only for
+  the page it opens, never for the page's own calls to the relay, so an
+  untrusted one fails every such call. Tilo's programs and the `tilo`
+  command take `https://` origins, or `http://` ones on this machine.
+- **WebTransport** is the one transport that needs TLS. The relay serves it
+  itself, on its own UDP port, with a short-lived ECDSA certificate it makes
+  for itself and whose SHA-256 the page is handed with the host's address
+  (`serverCertificateHashes`), as any development host does. Production's
+  certificate is verified as usual and is handed no hash.
+- **The site is on its own name under localhost.** The name is
   `tilo.localhost`, which browsers, curl and glibc resolve to loopback
-  without any hosts entry, and which a browser treats as a secure context.
-  It is not `localhost` itself, because a browser keeps the site's HSTS
-  header per host name: on `localhost` it would then refuse the API server's plain
-  HTTP. It is not an address either, because a passkey's relying party is
-  the page's host name and a browser refuses one on an address. So passkeys
-  register and sign in here as on tilo.sh, for `tilo.localhost`.
-- **Trusting the local CA.** `stack.sh browser` and the headless checks run
-  Chromium with `--ignore-certificate-errors`, which also keeps the browser
-  from recording HSTS. To use another browser profile, import
-  `local-ca.pem` from the stack's state (`stack.sh env` prints its path as
-  `TILO_TEST_CA_FILE`) as a trusted authority. `stack.sh down --wipe`
-  deletes the CA, so a new one needs importing after it.
-- **The live plane** is behind the same Caddy, at `https://127.0.0.1:24106`
-  (production: `live-eu1.tilo.sh`). The relay's own endpoint uses it as its
-  home relay. That endpoint trusts the local CA through the bundle, as every
-  Tilo client does, iroh's packet-relay client included.
+  without any hosts entry. It is not an address, because a passkey's relying
+  party is the page's host name and a browser refuses one on an address. So
+  passkeys register and sign in here as on tilo.sh, for `tilo.localhost`.
+  Over plain HTTP a browser speaks HTTP/1.1, not HTTP/2, so the page's
+  modules arrive over six connections rather than one: an entry-speed
+  measurement here reads slower than tilo.sh.
 - **Natively, the build profile.** The programs are `lounge-gate` builds:
   the release's code and opt-level without the whole-program link, which
   is what the Lounge's own browser checks run. The image carries the
   release build. `--images` runs that.
 - **Natively, the trust bundle.** Tilo's programs read one fixed bundle
-  path, and no variable can redirect it. `bwrap` mounts the stack's bundle
+  path, and no variable can redirect it. `bwrap` mounts this machine's roots
   over that path for the relay and the API server alone, as the containers mount
-  it. Nothing else of the machine changes, and nothing runs as root.
+  them. Nothing else of the machine changes, and nothing runs as root.
 - **Natively, Caddy's version.** The relay's TLS and the web entry use the
   `caddy` the caller built (`TILO_SH_CADDY`, which `t test e2e`
   hands the stack), else the `caddy` on your `PATH`, else the pinned release
@@ -157,7 +155,7 @@ does not know how to move stops the start.
 eval "$(os/containers/tilo-sh/stack.sh env)"
 ```
 
-This sets `TILO_API_URL`, `TILO_SITE`, and the local CA for Node and Python.
+This sets `TILO_API_URL` and `TILO_SITE`.
 After that, everything points at the local stack:
 
 - **A fresh visitor:** `stack.sh browser` opens Chromium on a throwaway
