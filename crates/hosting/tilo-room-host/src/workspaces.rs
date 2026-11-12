@@ -1164,8 +1164,7 @@ impl Workspaces {
         WeakWorkspaces(Arc::downgrade(&self.inner))
     }
 
-    /// Open every workspace recorded under `dir` and bind each to the relay,
-    /// pinned, once this host is reached through one ([`await_relay`]).
+    /// Open every workspace recorded under `dir` and bind each to the relay, pinned.
     pub(crate) async fn open(
         host: WorkspaceServices,
         dir: PathBuf,
@@ -1244,12 +1243,10 @@ impl Workspaces {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        // What every workspace here names of this host is its own address, and
-        // an address that names no relay reaches nobody from outside this
-        // network. A host that kept nothing names its first workspace's
-        // address as soon as its embedder makes one, so wait for the relay
-        // before serving any: no workspace learns an address this host must
-        // rename once it is reached.
+        // An address that names no relay reaches nobody from outside this
+        // network, and a host that kept nothing names its first workspace's
+        // address as soon as its embedder makes one: wait for the relay, so no
+        // workspace learns an address this host must rename.
         await_relay(&this.inner.host.endpoint).await;
         this.serve_kept(workspaces).await?;
         this.start_following().await;
