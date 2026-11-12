@@ -286,11 +286,10 @@ fn names_table(meta: &PackageMeta, catalogues: &[(String, String)]) -> String {
         if table.is_empty() {
             table.push_str("[package.names]\n");
         }
-        table.push_str(&format!(
-            "{} = {}\n",
-            toml_string(locale),
-            toml_string(&name)
-        ));
+        table.push_str(&toml_string(locale));
+        table.push_str(" = ");
+        table.push_str(&toml_string(&name));
+        table.push('\n');
     }
     table
 }

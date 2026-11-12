@@ -1364,9 +1364,9 @@ impl Hosted {
     /// Run what the broker delivered on the instance's connection. Every event that waits on an
     /// answer from the instance is answered: an invocation with its outcome, a handoff step with
     /// what the host does of it. The rest says something the instance does not keep (presence,
-    /// cursors, results of requests it never makes), but the names it shows: the people of the
-    /// workspace and what each app installed here is called ride with the context, and are what
-    /// this window's history reads its changes as.
+    /// cursors, results of requests it never makes), but for what it names: what each app
+    /// installed here is called rides with the context, and is what this window's history reads
+    /// another app's change as.
     fn delivered(&mut self, event: CollabEvent) -> bool {
         for used in &mut self.used {
             if let Some(moved) = used.record.take(&event, self.record.manager_mut()) {

@@ -80,14 +80,7 @@ impl AppLists {
             .iter()
             .filter_map(|app| Some((app.package_id.clone(), app.icon_path()?)))
             .collect();
-        let named = installed
-            .iter()
-            .map(|app| collab_types::history::NamedApp {
-                id: app.package_id.clone(),
-                name: app.display_name.clone(),
-                names: app.localized_names.clone(),
-            })
-            .collect();
+        let named = named(&installed);
         let declared = declared(&installed);
         // The machine's entries through the memoised scan, which this read starts on the lists'
         // worker: a later ask for an entry's icon or name (`crate::app_icons::entry_icon`) finds it
@@ -385,6 +378,19 @@ fn machine_apps<'a>(
         .iter()
         .copied()
         .filter(|entry| !entries.iter().any(|app| variant_of(entry, app)))
+        .collect()
+}
+
+/// What each installed app is called, in every language its package names it in: the names a
+/// window names another app's changes by.
+fn named(installed: &[app_catalogue::apps::InstalledApp]) -> Vec<collab_types::history::NamedApp> {
+    installed
+        .iter()
+        .map(|app| collab_types::history::NamedApp {
+            id: app.package_id.clone(),
+            name: app.display_name.clone(),
+            names: app.localized_names.clone(),
+        })
         .collect()
 }
 

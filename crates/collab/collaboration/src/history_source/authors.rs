@@ -113,7 +113,7 @@ pub fn set_names_language(language: &str) -> bool {
         if held.0 == language {
             return false;
         }
-        held.0 = language.to_owned();
+        language.clone_into(&mut held.0);
         true
     })
 }
