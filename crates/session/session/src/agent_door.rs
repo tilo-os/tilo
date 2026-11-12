@@ -1002,14 +1002,16 @@ enum Memory {
     Always,
 }
 
-/// Whether the agent `remembered` is the program the agent `seated` is an instance of: an answer
-/// is remembered for the program, and each connection the answer admits is an instance of its own
-/// (`claude-code@host`, seated as `claude-code@host#2`).
+/// Whether the agent `remembered` is the program the agent `seated` is an instance of. An answer
+/// is remembered for the program by the id its client proposed (`claude-code`), and what the answer
+/// admits is that program at this device, as an instance of its own (`claude-code@host#2`): its own
+/// id begins with the one remembered, at a place or an instance of it.
 fn same_program(remembered: &str, seated: &str) -> bool {
-    fn program(id: &str) -> &str {
-        id.split_once('#').map_or(id, |(program, _)| program)
+    let rest = seated.strip_prefix(remembered);
+    match rest {
+        Some(rest) => rest.is_empty() || rest.starts_with(['@', '#']),
+        None => false,
     }
-    program(remembered) == program(seated)
 }
 
 /// The agent id a client is proposed as: its own name, folded into the canonical form agent ids are
@@ -2652,10 +2654,15 @@ mod tests {
     /// its own: revoking the one takes back the answer of the other, and no other program's.
     #[test]
     fn an_answer_remembered_for_a_program_covers_each_instance_of_it() {
+        assert!(same_program("claude-code", "claude-code@host#1"));
         assert!(same_program("claude-code@host", "claude-code@host#2"));
+        assert!(same_program("claude-code", "claude-code@laptop-3f2a#1"));
         assert!(same_program("claude-code@host#1", "claude-code@host#1"));
-        assert!(!same_program("claude-code@host", "codex@host#2"));
-        assert!(!same_program("codex@host", "claude-code@host#1"));
+        assert!(!same_program("claude-code", "codex@host#2"));
+        assert!(
+            !same_program("claude-code", "claude-codex@host#1"),
+            "an id that only begins with the same letters is another program"
+        );
     }
 
     #[test]
