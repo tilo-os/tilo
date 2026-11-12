@@ -2054,7 +2054,7 @@ fn wait_until_the_roster_holds(
     what: &str,
 ) -> Vec<String> {
     let mut roster = Vec::new();
-    common::until(session, what, |session| {
+    crate::common::until(session, what, |session| {
         roster = session
             .roster(workspace)
             .expect("the workspace's roster is known here");
@@ -2097,7 +2097,7 @@ fn the_lounge_writes_past_the_removal(session: &mut Session, lounge: &Lounge) {
         &DocumentMutation::Incremental(after.save_after(&before)),
     )
     .expect("the site's page goes on talking without this computer");
-    let arrived = common::steps_within(session, AFTER_THE_REMOVAL, |session| {
+    let arrived = crate::common::steps_within(session, AFTER_THE_REMOVAL, |session| {
         (chat_here(session, &lounge.workspace).as_deref() != Some("Pulled up a chair"))
             .then_some(())
     });
@@ -2158,7 +2158,7 @@ fn a_workspace_joined_brings_the_chat_written_before_it() {
     // service's ask for its keys is answered: the wait spans the service's own longest wait between
     // asks, so an ask a busy machine answered late is waited for rather than called a record that
     // never came.
-    let read = common::wait_maybe_past(
+    let read = crate::common::wait_maybe_past(
         &mut session,
         tilo_channels::asking_again_wait(),
         |session| {
@@ -2219,7 +2219,7 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
     join_the_lounge(&mut session, &lounge);
     // As above: the chat is sealed in the workspace's channel, and its keys arrive when the channel
     // service's next ask is answered.
-    let read = common::wait_maybe_past(
+    let read = crate::common::wait_maybe_past(
         &mut session,
         tilo_channels::asking_again_wait(),
         |session| {
