@@ -1387,6 +1387,14 @@ fn page_row(content: Element, gap: Rhythm, measure: Option<Length>) -> Element {
     Box::new(page.push_slot(Slot::new(content)))
 }
 
+/// Whether the row of `key` offers a menu: what its item offers on one, or the view put on it.
+fn offers_menu(rows: &DescribedRows, key: &str) -> bool {
+    rows.with_item(key, |item| {
+        !item.menu.is_empty() || !item.attached.menu.is_empty()
+    })
+    .unwrap_or(false)
+}
+
 /// The menu of the row under `at` (its focused row when the keyboard opened it): what its
 /// item offers. Opening it selects the row, unless the row opens where it stands: that row
 /// shows its item under itself, and a menu over it is not the window opening it elsewhere.
@@ -1486,7 +1494,9 @@ impl Described for DescribedList {
             if follow_end {
                 list = list.following_end();
             }
-            let list = list.unread_from(marked);
+            let list = list
+                .unread_from(marked)
+                .with_menu_around(|rows, key| offers_menu(rows, key));
             // A message offers its menu as every row does.
             let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
                 row_menu(list, at, &Event::None)
@@ -1605,6 +1615,7 @@ impl Described for DescribedList {
         if let Some(offset) = scroll {
             list.set_scroll_offset(offset);
         }
+        let list = list.with_menu_around(|rows, key| offers_menu(rows, key));
         let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
             row_menu(list, at, &select)
         });

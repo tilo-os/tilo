@@ -1231,14 +1231,12 @@ impl App {
         self.refresh_control_action_availability();
         // A retained AT id is operable only while the exact target is exported
         // in the current presentation; hidden resources cannot bypass chrome.
-        if !self
+        let drawn = self
             .build_a11y_tree_update(1.0)
             .nodes
-            .iter()
-            .any(|(id, _)| *id == target)
-        {
-            return None;
-        }
+            .into_iter()
+            .find(|(id, _)| *id == target)
+            .map(|(_, node)| node.bounds())?;
         if self.dispatch_resource_a11y_action(target, action) {
             return None;
         }
@@ -1381,6 +1379,28 @@ impl App {
                     self.exported_press_point(taffy_id, semantic_target.as_deref(), &ordinal_path);
                 Some((c.x, c.y))
             }
+            // A menu the node offers but no widget opens itself (one a menu
+            // area around a list opens) opens on a secondary click where the
+            // node stands, as a person's opens it.
+            Action::ShowContextMenu => {
+                let c = drawn.map_or_else(
+                    || {
+                        self.exported_press_point(
+                            taffy_id,
+                            semantic_target.as_deref(),
+                            &ordinal_path,
+                        )
+                    },
+                    |drawn| {
+                        vello::kurbo::Point::new(
+                            f64::midpoint(drawn.x0, drawn.x1),
+                            f64::midpoint(drawn.y0, drawn.y1),
+                        )
+                    },
+                );
+                self.dispatch_semantic_press(c.x, c.y, winit::event::MouseButton::Right);
+                None
+            }
             _ => None,
         }
     }
@@ -1416,6 +1436,17 @@ impl App {
     /// move/press/release sequence through the widget tree preserves the same
     /// behavior as hardware input instead of reporting a false success.
     pub(super) fn dispatch_semantic_click(&mut self, x: f64, y: f64) -> bool {
+        self.dispatch_semantic_press(x, y, winit::event::MouseButton::Left)
+    }
+
+    /// [`Self::dispatch_semantic_click`] with `button`: a secondary click opens a menu.
+    fn dispatch_semantic_press(
+        &mut self,
+        x: f64,
+        y: f64,
+        button: winit::event::MouseButton,
+    ) -> bool {
+        use winit::event::ElementState;
         self.mark_semantic_tree_stale();
         self.refresh_control_action_availability();
         if self.layout.root_node.is_none() {
@@ -1423,8 +1454,8 @@ impl App {
         }
         let events = [
             crate::synthetic_input::cursor_moved(x, y),
-            crate::synthetic_input::mouse_press(),
-            crate::synthetic_input::mouse_release(),
+            crate::synthetic_input::mouse_input(ElementState::Pressed, button),
+            crate::synthetic_input::mouse_input(ElementState::Released, button),
         ];
         let mut handled_any = false;
         for event in events {

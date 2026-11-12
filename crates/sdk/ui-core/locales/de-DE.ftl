@@ -320,6 +320,7 @@ close-broker-disconnected = Die Verbindung zum Speicherdienst wurde getrennt. Da
 block-image-untitled = Bild
 # The title a row shows for an item nobody has named yet.
 list-row-untitled = Ohne Titel
+list-row-check = { $title } als erledigt markieren
 block-image-missing = Noch nicht auf diesem Gerät
 notes-image-edit = Beschreibung bearbeiten
 notes-image-done = Fertig

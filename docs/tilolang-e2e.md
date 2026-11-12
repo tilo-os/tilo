@@ -64,7 +64,9 @@ Today. The session installs them (`--install-tapp`) beside native Notes
   window's frame count (`windows` reports `frames`, what its client committed)
   stands still, so one that woke woke for work nobody asked for.
 - **today**: Today's card lists the tasks typed into Tasks' own window, which it
-  reads from Tasks' record. Its "Morning cleanup" is a control the desk names for
+  reads from Tasks' record. One of them is marked done by its box, a checkbox of
+  Tasks' window named "Mark <task> done" and pressed by name, and the change stands
+  in Tasks' history (the workspace took it). Its "Morning cleanup" is a control the desk names for
   the window — a tool or a screen reader presses it by name — and pressed with one
   task done in Tasks it runs: either it files "Morning: 1 done" in Notes and clears
   the done task from Tasks, or it asks the person's leave first, which a headless

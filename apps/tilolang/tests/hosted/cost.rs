@@ -488,43 +488,6 @@ const TARGETS: &[(&str, Target)] = &[
     ),
 ];
 
-/// Whether the workspace's record holds a task titled `title`, as the window's instance runs it:
-/// the list shows only the rows on screen, so what the entry added is read off the record's
-/// chunks.
-fn record_has_task(session: &Session, title: &str) -> bool {
-    let chunks = session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance")
-        .record()
-        .chunks()
-        .clone();
-    let Some(record) = chunks.first() else {
-        return false;
-    };
-    let titled = |item: &tilolang_tilo::DynRecord| {
-        item.schema().fields.iter().any(|field| {
-            matches!(item.get(&field.id), Some(tilolang_tilo::DynValue::Text(text)) if text == title)
-        })
-    };
-    tilolang_tilo::action::resource_ids(record, TASKS)
-        .into_iter()
-        .filter_map(|id| tilolang_tilo::action::read_resource(&chunks, TASKS, &id).ok())
-        .any(|record| {
-            record
-                .schema()
-                .fields
-                .iter()
-                .any(|field| match record.get(&field.id) {
-                    Some(tilolang_tilo::DynValue::Collection(items)) => {
-                        items.iter().any(|(_, item)| titled(item))
-                    }
-                    _ => false,
-                })
-        })
-}
-
 /// The workspace a person who has used Tasks for years keeps: `n` tasks over the chunks the
 /// store keeps them in (a run of 2048 tasks a chunk), as the actions that add them one at a
 /// time write them, in the record the installed Tasks package runs over.
@@ -1348,7 +1311,7 @@ fn type_a_task(session: &mut Session, costs: &mut Costs) {
     }));
     session.settle();
     assert!(
-        record_has_task(session, "Buy"),
+        task_in_record(session, "Buy", false),
         "the entry's task is in the workspace"
     );
 }
@@ -1641,7 +1604,7 @@ fn a_change_reindexes_the_resources_it_touched() {
     session.window.press_key(NamedKey::Enter);
     session.settle();
     assert!(
-        record_has_task(&session, "Buy milk"),
+        task_in_record(&session, "Buy milk", false),
         "the task the entry added is in the workspace"
     );
 
@@ -2115,7 +2078,7 @@ fn adding_a_task_runs_the_row_it_adds_not_every_row() {
         session.window.press_key(NamedKey::Enter);
     });
     assert!(
-        record_has_task(&session, "Buy"),
+        task_in_record(&session, "Buy", false),
         "the entry's task is in the workspace"
     );
     assert!(

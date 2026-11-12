@@ -2808,3 +2808,21 @@ fn every_declared_action_is_offered() {
         "every action is offered, in declaration order"
     );
 }
+
+/// An action run on a task names the kind it is published on, a task's, not the record's that
+/// holds the task: the workspace decides the change against the actions of that kind, and a
+/// change naming the record's kind with a task's action is refused.
+#[test]
+fn a_tasks_action_names_the_kind_of_a_task() {
+    let (ada, root) = workspace();
+    let made = call(&ada, "new_task", create(&root, "Water the plants"));
+    let _ = ada.host.take_committed();
+    call(&ada, "check", vec![made]);
+    let kinds: Vec<String> = ada
+        .host
+        .take_committed()
+        .into_iter()
+        .map(|committed| committed.action.kind)
+        .collect();
+    assert_eq!(kinds, ["tl.so.tilo.lang.tasks.Task"], "{kinds:?}");
+}

@@ -317,6 +317,7 @@ close-broker-disconnected = The save service disconnected. Your document is stil
 block-image-untitled = Picture
 # The title a row shows for an item nobody has named yet.
 list-row-untitled = Untitled
+list-row-check = Mark { $title } done
 block-image-missing = Not on this device yet
 notes-image-edit = Edit description
 notes-image-done = Done

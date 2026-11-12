@@ -27,9 +27,10 @@ app gets on a real system:
              in the same host; a task typed into either window shows in the other at once, and
              each window names the controls of its own content where it stands
   today      Today's Tasks card reads Tasks' own record: the tasks typed into Tasks' Today
-             show in Today's window, which holds none of them itself (today-*.png), and its
-             "Morning cleanup" is a control the desk names, pressed by name here: it runs on one
-             task done in Tasks, and asks the person before changing Tasks and Notes
+             show in Today's window, which holds none of them itself (today-*.png); one is
+             marked done by its box, a checkbox Tasks' window names ("Mark ... done"), and
+             Today's "Morning cleanup", pressed by name, runs on it and asks the person before
+             changing Tasks and Notes
   native     native Notes (so.tilo.notes), installed beside them, launches and
              presents a frame (native-notes.png)
   activation "Show this window" answers for tilolang Notes as for native Notes
@@ -474,6 +475,7 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     until("Tasks' tasks in Today's card", lambda: (lambda shown: shown if all(
         title in shown for title in held) else None)(named(session)), 30)
     session.wait_target("Morning cleanup")
+    done = mark_done(session, held[0])
     named_before = named(session)
     # The cleanup, pressed on Today's window: the app runs it, which either files its note in
     # Notes and clears a done task, or asks the person's leave for the two apps it changes.
@@ -489,7 +491,7 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
         return "consent" if asked else None
     how = until("Today's cleanup to run", ran, 30)
     if how == "consent":
-        for title in held:
+        for title in (title for title in held if title in named_before):
             if title not in named(session):
                 raise Failed(f"{title!r} left Tasks without the note Morning cleanup files")
         if "Morning: 1 done" in named(session):
@@ -502,7 +504,27 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     return {"before": str(out / "today-before.png"), "after": str(out / "today-after.png"),
             "note": "Morning: 1 done" if how == "answered" else None,
             "asked_consent": how == "consent", "controls": len(named_before),
-            "moved": round(moved, 3)}
+            "moved": round(moved, 3), "done": done}
+
+
+def mark_done(session: Session, title: str) -> dict:
+    """Mark the task `title` done by its box in Tasks' window, pressed by name as a screen reader
+    or an agent presses it: the box is a checkbox of its own, named for what it does. The workspace
+    takes the change, so it stands in Tasks' history; a change it refused would leave none."""
+    tasks = app_id("tasks")
+    focus(session, next(w for w in session.windows() if w.get("app_id") == tasks))
+    box = f"Mark {title} done"
+    session.wait_target(box)
+    before = history_total(session, "tasks")
+    refused = len([line for line in session.log().splitlines()
+                   if "a change the workspace refuses" in line and tasks in line])
+    session.click_named(box)
+    after = until(f"{title!r} done in Tasks' history",
+                  lambda: (lambda t: t if t > before else None)(history_total(session, "tasks")), 15)
+    if len([line for line in session.log().splitlines()
+            if "a change the workspace refuses" in line and tasks in line]) > refused:
+        raise Failed(f"the workspace refused {title!r} marked done")
+    return {"box": box, "history": [before, after]}
 
 
 def invoke_found(session: Session, found: dict, args: dict | None = None) -> dict:

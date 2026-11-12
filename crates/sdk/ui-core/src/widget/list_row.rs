@@ -3274,8 +3274,13 @@ impl Widget for ListRow {
         if let Some(Leading::Checkbox { checked, .. }) = &self.leading
             && let Some(rect) = self.leading_hit()
         {
+            // Named for what it does to this item, apart from the row's own name, so a tool
+            // that presses controls by name reaches the box and not the row's activation.
+            let mut args = fluent::FluentArgs::new();
+            args.set("title", node.name.clone().unwrap_or_default());
             node.children.push(
                 AccessNode::new(Role::Checkbox)
+                    .with_name(crate::i18n::widget_text_with("list-row-check", Some(&args)))
                     .with_action_target(format!("{id}/check"))
                     .with_bounds(rect.into())
                     .with_state(

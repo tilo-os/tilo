@@ -653,10 +653,16 @@ pub(crate) fn widget_format(key: &str, args: &[(&str, ArgValue)]) -> String {
 /// without one resolves the source copy, as [`widget_format`] does.
 #[must_use]
 pub fn widget_text(key: &str) -> String {
+    widget_text_with(key, None)
+}
+
+/// [`widget_text`] with the message's arguments.
+#[must_use]
+pub fn widget_text_with(key: &str, args: Option<&fluent::FluentArgs<'_>>) -> String {
     if manager_id().is_some() {
         WIDGET_CATALOG.ensure();
     }
-    I18nManager::lookup(key, None)
+    I18nManager::lookup(key, args)
 }
 
 /// The name a control is announced by: `name` taken as text when the caller

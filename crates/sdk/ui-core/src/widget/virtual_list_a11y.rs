@@ -156,7 +156,7 @@ impl<M: ListModel> VirtualList<M> {
                 .selected(self.selection.is_selected(&row.key))
                 // A row whose menu the host offers can be asked for it, as a
                 // secondary click does.
-                .context_menu(self.menus.offers_row_menu())
+                .context_menu(self.menus.row_offers(&self.model, &row.key))
                 .disabled(!enabled),
         );
         // A row that is a control of its own — a task's box, say — keeps its state and what it
@@ -448,7 +448,7 @@ impl<M: ListModel> VirtualList<M> {
             bounds: self.row_box(row.index),
             focused: self.is_focused && self.focused_key.as_ref() == Some(&row.key),
             selected: self.selection.is_selected(&row.key),
-            menu: self.menus.offers_row_menu(),
+            menu: self.menus.row_offers(&self.model, &row.key),
             disabled: !enabled,
             level,
             expanded,
