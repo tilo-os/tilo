@@ -1,8 +1,8 @@
 # The Lounge's own programs run directly, for a test of a page against them:
-# the image's entrypoint with the gate's environment, the tilo-relay the image
-# carries on its PATH, and the web entry served beside it. No image or micro-VM
-# is built around them, so a change to the page or the relay is tried in
-# minutes; the Lounge gate (test-integration.sh) still runs the built image.
+# the image's entrypoint with a deployment's environment, the tilo-relay the
+# image carries on its PATH, and the web entry served beside it. No image or
+# micro-VM is built around them, so a change to the page or the relay is tried
+# in minutes; the image's own test (test-image.sh) boots the built image.
 #
 # Sourced, not run: `start_lounge BUNDLE WORK` leaves the Lounge Ready and the
 # site served, and sets `relay_origin`, `site_origin`, `room`, `log` and

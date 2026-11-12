@@ -36,6 +36,7 @@ import {connect} from 'node:tls';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {stepLimit} from './waits.mjs';
+import {clock} from './timing.mjs';
 
 const [site, relay, tiloBin, siteCa, out] = process.argv.slice(2);
 if (!site || !relay || !tiloBin || !siteCa || !out) {
@@ -46,7 +47,16 @@ mkdirSync(out, {recursive: true});
 const report = {site, relay, at: new Date().toISOString(), cases: []};
 const failures = [];
 const open = [];
+// Each numbered case says how long it took as the next begins, so a slow run
+// names the case that was slow.
+const mark = clock();
+let caseNo = null;
 const check = (ok, what, detail = '') => {
+  const number = what.match(/^(\d+)\./)?.[1] ?? caseNo;
+  if (number !== caseNo) {
+    mark(`case ${number}`);
+    caseNo = number;
+  }
   report.cases.push({ok: Boolean(ok), what, ...(detail ? {detail} : {})});
   console.log(`${ok ? 'ok' : 'FAIL'} ${what}${!ok && detail ? `: ${detail}` : ''}`);
   if (!ok) failures.push(what);
@@ -60,6 +70,7 @@ const browser = await launch({args: [
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ]});
 const finish = async () => {
+  mark();
   for (const {name, tab} of open) {
     writeFileSync(join(out, `${name}.log`), (tab.log ?? []).join('\n'));
   }
@@ -103,7 +114,9 @@ const tabIn = async (context, name) => {
 };
 const shot = async (tab, name) => {
   await sleep(400);
-  const png = await tab.screenshot().catch(() => null);
+  // A capture waits on the page's next frame: one the GPU never draws is a
+  // picture missing from the report, not the run's end.
+  const png = await Promise.race([tab.screenshot().catch(() => null), sleep(stepLimit(2)).then(() => null)]);
   if (png) writeFileSync(join(out, `${name}.png`), png);
   report.captures = [...(report.captures ?? []), `${name}.png`];
   // Where a check's outputs cannot be fetched, the log carries the capture

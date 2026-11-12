@@ -157,20 +157,26 @@ verify_records_read() {
 verify_records_read
 
 # run_flow FLOW: FLOW in a session of its own, bounded by its limit.
-declare -A flow_started=() flow_pid=()
+declare -A flow_started=() flow_of=()
+running=()
 run_flow() {
   flow_started[$1]=$SECONDS
   setsid timeout -k 5 "$limit" bash "$0" --flow "$1" > "$work/$1.log" 2>&1 &
-  flow_pid[$1]=$!
+  flow_of[$!]=$1
   flow_pids+=("$!")
+  running+=("$!")
 }
-# await_flow FLOW: its result, its seconds, and on failure what it said.
+# await_flow: the next flow to end, in the order they end, so each one's
+# seconds are its own; its result, and on failure what it said.
 failed=()
 await_flow() {
-  local status=0
-  wait "${flow_pid[$1]}" || status=$?
+  local status=0 pid= left=() one
+  wait -n -p pid "${running[@]}" || status=$?
+  for one in "${running[@]}"; do [[ $one == "$pid" ]] || left+=("$one"); done
+  running=("${left[@]}")
+  set -- "${flow_of[$pid]}"
   # Whatever the flow left running goes with it.
-  kill -KILL -- "-${flow_pid[$1]}" 2>/dev/null || true
+  kill -KILL -- "-$pid" 2>/dev/null || true
   local took=$((SECONDS - ${flow_started[$1]}))
   ((status != 124)) || echo "FAIL: $1 did not finish in ${limit}s" >> "$work/$1.log"
   if ((status == 0)); then
@@ -191,7 +197,7 @@ await_flow() {
 parallel=()
 for flow in "${asked[@]}"; do [[ $flow == restart ]] || parallel+=("$flow"); done
 for flow in "${parallel[@]}"; do run_flow "$flow"; done
-for flow in "${parallel[@]}"; do await_flow "$flow"; done
+for _ in "${parallel[@]}"; do await_flow; done
 timing "phase=every flow side by side (${parallel[*]})"
 if wants restart; then
   if [[ " ${failed[*]} " == *' people-call '* ]]; then
@@ -204,7 +210,7 @@ if wants restart; then
     verify_records_read
     timing 'phase=the Lounge started again on its volume'
     run_flow restart
-    await_flow restart
+    await_flow
   fi
 fi
 

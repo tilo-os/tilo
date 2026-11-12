@@ -858,19 +858,27 @@ try {
   // page, one row per person however many devices they are here from.
   const herePeople = async tab =>
     JSON.parse(await tab.evaluate('JSON.stringify(globalThis.tiloMount?.people?.() ?? null)'));
-  const oneOther = async (person, who) => {
+  // Others may be in the Lounge beside these two (a busy Lounge, or the other
+  // cases of a run): the other person is among the rows by their own key, and
+  // the person themself never is.
+  const theOther = async (person, other, who) => {
     const deadline = Date.now() + stepLimit(3);
     for (;;) {
       const rows = await herePeople(person.tab);
-      if (Array.isArray(rows) && rows.length === 1) return rows[0];
+      const listed = Array.isArray(rows) ? rows : [];
+      if (listed.some(row => row.user === person.membership.userPublicKey)) {
+        failed(`${who} shows themself here: ${JSON.stringify(rows)}`, person.tab);
+      }
+      const row = listed.find(entry => entry.user === other.membership.userPublicKey);
+      if (row) return row;
       if (Date.now() > deadline) {
         await dump(person.tab, `timeout-people-${who}`);
-        failed(`${who} does not show exactly one other person here: ${JSON.stringify(rows)}`, person.tab);
+        failed(`${who} does not show the other person here: ${JSON.stringify(rows)}`, person.tab);
       }
       await sleep(500);
     }
   };
-  report.presence = {b: await oneOther(b, 'B'), a: await oneOther(a, 'A')};
+  report.presence = {b: await theOther(b, a, 'B'), a: await theOther(a, b, 'A')};
   if (report.presence.a.id === report.presence.b.id) {
     failed(`each desk shows the same person: ${JSON.stringify(report.presence)}`);
   }
@@ -1623,7 +1631,10 @@ try {
       const deadline = Date.now() + stepLimit(3);
       for (;;) {
         const rows = await herePeople(a.tab);
-        if (Array.isArray(rows) && rows.length === 2) return rows;
+        const listed = Array.isArray(rows) ? rows : [];
+        if (listed.some(row => row.user === keptC.userPublicKey) && listed.some(row => row.id === report.presence.a.id)) {
+          return listed;
+        }
         if (Date.now() > deadline) {
           await dump(a.tab, 'timeout-people-invited');
           await failed(`A's desk does not show the invitation's person beside B: ${JSON.stringify(rows)}`, a.tab);
@@ -1632,11 +1643,8 @@ try {
       }
     })();
     report.hereAfter = rowsAfter.map(row => ({id: row.id, user: row.user ?? null, label: row.label}));
-    const invitedRow = rowsAfter.find(row => row.id !== report.presence.a.id);
-    if (!invitedRow) await failed('the two rows A sees are one person', a.tab);
-    if (invitedRow.user && invitedRow.user !== keptC.userPublicKey) {
-      await failed(`A's desk shows the invitation's arrival as ${invitedRow.user}`, a.tab);
-    }
+    const invitedRow = rowsAfter.find(row => row.user === keptC.userPublicKey);
+    if (invitedRow.id === report.presence.a.id) await failed('A sees B and the invitation\'s person as one row', a.tab);
     console.log(`ok: A's desk shows ${invitedRow.label} beside B`);
     mark('A\'s desk shows the invitee');
     await dump(a.tab, '11-a-people-invited');

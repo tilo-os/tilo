@@ -253,8 +253,8 @@ mark('Notes looked at');
 // 5. A sideways swipe over an app whose content scrolls sideways is the
 // app's: Sheets' grid scrolls and the strip of windows stays where it is. The
 // strip overflows first (a few more windows), so it could pan; Sheets is
-// opened last, from the search, and swiped right after, as the Lounge gate
-// does it.
+// opened last, from the search, and swiped right after, as the people's desk
+// case (people.mjs) does it.
 const frames = () => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0').catch(() => 0);
 const settled = async (by = 2) => {
   const from = await frames();
