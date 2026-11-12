@@ -242,9 +242,17 @@ impl Shown {
     /// Whether the roster stands kept at an edge of the desk, drawn and pressed where it waits: a
     /// pin waiting away with nobody else here does not.
     fn standing(&self) -> bool {
-        self.pinned
-            .as_ref()
-            .is_some_and(|pin| pin.rest != Rest::Waiting)
+        !self.sheet()
+            && self
+                .pinned
+                .as_ref()
+                .is_some_and(|pin| pin.rest != Rest::Waiting)
+    }
+
+    /// Whether the desk is a phone's: the roster opens as a sheet at its foot and is never kept on
+    /// screen, where it would stand over the one window there is ([`tilo_desktop::collaborators::is_sheet`]).
+    fn sheet(&self) -> bool {
+        tilo_desktop::collaborators::is_sheet(self.area)
     }
 }
 
@@ -1371,7 +1379,7 @@ impl Panel {
         let motion = theme.motion();
         // The roster is the panel's only while it is up or kept at an edge: closed, it draws
         // nothing, so the surface stands transparent and a press under the bar reaches the bar.
-        if shown.pinned.is_none() && !self.open.get() {
+        if (shown.pinned.is_none() || shown.sheet()) && !self.open.get() {
             return;
         }
         // The bar's faces open the roster where they stand, kept on screen or not.
@@ -1474,7 +1482,8 @@ impl Panel {
             return;
         }
         shown.card_open = None;
-        let pinned = shown.pinned.is_some();
+        let pinned = shown.pinned.is_some() && !shown.sheet();
+        let sheet = shown.sheet();
         let own_id = self
             .sync
             .as_ref()
@@ -1509,7 +1518,7 @@ impl Panel {
             workspace: &workspace,
             rows: &rows,
             may_invite: self.invitable.get(),
-            may_pin: !pinned,
+            may_pin: !pinned && !sheet,
             pinned,
             panel,
             screens: &screens,
@@ -1613,6 +1622,10 @@ impl Panel {
         let mut shown = roster.borrow_mut();
         let cursor = shown.cursor;
         let mut handled = false;
+        if shown.sheet() {
+            // A phone's roster is never kept on screen: there is no panel of it to drag.
+            return false;
+        }
         {
             let Some(pin) = shown.pinned.as_mut() else {
                 return false;

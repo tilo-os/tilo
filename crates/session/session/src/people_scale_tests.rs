@@ -222,6 +222,11 @@ fn the_pinned_roster_is_centred_on_a_phone() {
 
 /// A desk whose page writes an agent in as here, as it does for the bar, and its roster's layer.
 fn agent_here() -> Option<(Rc<RefCell<People>>, ui::headless::FrameHarness)> {
+    agent_here_at((1280, 800))
+}
+
+/// [`agent_here`] on a desk `size` large.
+fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless::FrameHarness)> {
     let here = WorkspaceId::new();
     let desk = Workspace::in_workspace(WorkspaceSlot::of_workspace(here), here, "Desk");
     let (_desk, handle) = DesktopSurface::new(
@@ -262,7 +267,7 @@ fn agent_here() -> Option<(Rc<RefCell<People>>, ui::headless::FrameHarness)> {
         },
     );
     let panel = placed.0.take()?;
-    let frame = ui::headless::FrameHarness::new(ui::State::new(), panel, (1280, 800));
+    let frame = ui::headless::FrameHarness::new(ui::State::new(), panel, size);
     Some((people, frame))
 }
 
@@ -325,5 +330,45 @@ fn the_kept_roster_leaves_the_desk_its_presses() {
     assert!(
         frame.dispatch_to_root(&ui::synthetic_input::cursor_moved(put.x, put.y)),
         "the pointer over the roster is the roster's"
+    );
+}
+
+/// On a phone the roster is a sheet at the desk's foot, between equal gutters, that a press above
+/// it puts away: it is never kept on screen, where it would cover the note or a card's runs.
+#[test]
+fn a_phones_roster_is_a_sheet_that_a_press_above_puts_away() {
+    let _settled = ui::motion::testing::settled();
+    let home = tempfile::tempdir().expect("a directory for the settings");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", home.path().join("config"))
+        .set("XDG_STATE_HOME", home.path().join("state"));
+    let (people, mut frame) = agent_here_at((390, 844)).expect("the roster places its layer");
+    people.borrow().toggle();
+    settle(&mut frame);
+    let shown = labels(&frame);
+    assert!(
+        shown.iter().any(|label| label == "Follow Claude Code"),
+        "the sheet lists the agent: {shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|label| label == "Keep on screen"),
+        "a phone's roster offers no keeping on screen: {shown:?}"
+    );
+    let panel = people.borrow().shown.borrow().overlay.panel_rect();
+    let (left, right) = (panel.x0, 390.0 - panel.x1);
+    assert!(
+        (left - right).abs() < 1.0 && left > 0.0,
+        "the sheet stands between equal gutters: {panel:?}"
+    );
+    assert!(
+        panel.y1 > 844.0 - 40.0 && panel.y0 > 400.0,
+        "the sheet stands at the desk's foot: {panel:?}"
+    );
+
+    frame.click_at(195.0, panel.y0 - 80.0);
+    settle(&mut frame);
+    assert!(
+        !people.borrow().is_open(),
+        "a press above the sheet puts it away"
     );
 }
