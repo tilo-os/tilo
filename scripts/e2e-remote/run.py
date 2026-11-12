@@ -36,8 +36,9 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
 9. The person's third device lists the second among their devices (`tilo_devices`), as the
    first does, so that `--device <name>` can name it there.
 10. A person at another machine watches that tab: B's person shares the Browser's window with
-    the workspace from the desk, A asks to watch it, and A's desk holds the window's picture in
-    the tab that stood for it. A picture of each screen is kept.
+    the workspace, naming its tab, and A's desk, which listed the window as open on another
+    device, holds the window's picture in the tab that stood for it. A picture of each screen is
+    kept.
 11. C, another person's device, is refused at B's door.
 
 Every step is a result in report.json / report.md under --out; any failure fails the run.
@@ -1085,22 +1086,28 @@ ip -o addr show dev "$dev"
         self.reachable(d, b, res)
 
     def window_watched(self, a: Box, b: Box, res: Result) -> None:
-        """B's person shares the Browser's window with the workspace, as its window menu does, and
-        A, their other device, asks to watch it: A's desk then holds the window's picture in the
-        tab that stood for it. What a person reviewing the tab from another machine sees."""
+        """B's person shares the Browser's window with the workspace, naming it by its tab
+        ("Share a window with the workspace"), and A, their other device, whose desk listed that
+        window as one open on another device, holds its picture in the tab that stood for it: a
+        share is the workspace's, so nobody asks for it on A. What a person reviewing the tab
+        from another machine sees."""
         def desk(box: Box) -> dict:
             dump = box.vm.state()
             return dump.get("state") or dump
 
-        def browser_window(state: dict) -> tuple:
+        def tabs(state: dict):
             for workspace in (state.get("workspace_tree") or {}).get("workspaces") or []:
                 for strip in workspace.get("strips") or []:
                     for group in strip.get("window_groups") or []:
                         for tab in group.get("tabs") or []:
-                            tile = tab.get("tile") or {}
-                            if any((tile.get(kind) or {}).get("app_id") == BROWSER
-                                   for kind in ("Foreign", "LocalApp")):
-                                return group.get("id"), tab.get("id")
+                            yield group, tab
+
+        def browser_window(state: dict) -> tuple:
+            for group, tab in tabs(state):
+                tile = tab.get("tile") or {}
+                if any((tile.get(kind) or {}).get("app_id") == BROWSER
+                       for kind in ("Foreign", "LocalApp")):
+                    return group.get("id"), tab.get("id")
             return None, None
 
         def row_of(box: Box, action: str, within: str) -> dict | None:
@@ -1112,6 +1119,18 @@ ip -o addr show dev "$dev"
                         return row
             return None
 
+        def governed(state: dict) -> list:
+            """The window shares the workspace's governance names on this desk."""
+            held = (state.get("workspace_tree") or {}).get("workspaces") or []
+            return [grant.get("id") for workspace in held
+                    for grant in (workspace.get("policy") or {}).get("grants") or []
+                    if "kind:window" in str(grant.get("node"))]
+
+        def shares(state: dict, part: str) -> list:
+            """What the session says of its window shares: `sharing` with each window's viewers,
+            `starting`, `watching` and `received`."""
+            return (state.get("sharing") or {}).get(part) or []
+
         self.person_opens_browser(b, res)
         on_b = desk(b)
         group, tab = browser_window(on_b)
@@ -1121,31 +1140,44 @@ ip -o addr show dev "$dev"
         if not group or not tab or not room:
             raise Failed(f"B's desk does not hold the Browser's window in a workspace it shares: "
                          f"group {group}, tab {tab}, workspace {room}")
-        share = self.find_row(b, "share-window", "share") or row_of(b, "share-window", "")
-        if share is None:
+        res.facts["tab_on_a_before"] = next((held.get("tile") for _, held in tabs(desk(a))
+                                             if held.get("id") == tab), None)
+        # The desk's own "Share a window" (`share-window`) is another thing: it asks Chat to put a
+        # window's record in a channel. The window's picture goes to the workspace's devices
+        # through the session's share, which takes the tab and finds the window itself.
+        share = row_of(b, "share", "session:window-share")
+        stop = row_of(b, "stop", "session:window-share")
+        if share is None or stop is None:
             res.facts["share_rows"] = [str(row.get("id")) for row in b.vm.actions("", programmatic=True)
                                        if "share" in str(row.get("id"))][:40]
-            raise Failed("B's desk lists no share-window action")
-        res.facts["shared"] = b.vm.invoke(share["provider"], share["id"],
-                                          {"group": str(group), "on": True})
+            raise Failed("B's session lists no action to share a window with the workspace, or none "
+                         "to stop sharing it")
+        res.facts["shared"] = b.vm.invoke(share["provider"], share["id"], {"tab": str(tab)})
         try:
-            watch = row_of(a, "watch", "window-share")
-            if watch is None:
-                res.facts["watch_rows"] = [str(row.get("id"))
-                                           for row in a.vm.actions("", programmatic=True)
-                                           if "share" in str(row.get("id"))][:40]
-                raise Failed("A's session lists no action to watch a shared window")
-            res.facts["watched"] = a.vm.invoke(watch["provider"], watch["id"],
-                                               {"tab": str(tab), "room": room})
-
             def held_on_a() -> list:
                 return [row for row in a.vm.actions("", programmatic=True)
                         if "desktop.peer-surface" in str(row.get("id")) + str(row.get("provider"))]
 
-            rows = wait_until(held_on_a, 120, 2.0)
+            def pictured_on_a() -> list:
+                rows = held_on_a()
+                return rows if "Live" in json.dumps(rows, ensure_ascii=False) else []
+
+            # The tab's row is there once the stream's start reached A, and says Live once its
+            # first picture did.
+            rows = wait_until(pictured_on_a, 120, 2.0) or held_on_a()
             res.facts["peer_surface_rows"] = json.dumps(rows or [], ensure_ascii=False)[:1500]
-            viewers = desk(b).get("sharing")
-            res.facts["sharing_on_b"] = json.dumps(viewers, ensure_ascii=False)[:600]
+            # How far the share came, on each end: the governance that names it, and what each
+            # session says it shares, asks for and received.
+            on_a, on_b = desk(a), desk(b)
+            seen = {
+                "governed_on_b": governed(on_b), "governed_on_a": governed(on_a),
+                "sharing_on_b": shares(on_b, "sharing"), "starting_on_b": shares(on_b, "starting"),
+                "watching_on_a": shares(on_a, "watching"), "received_on_a": shares(on_a, "received"),
+                "tab_on_a": next((held.get("tile") for _, held in tabs(on_a)
+                                  if held.get("id") == tab), None),
+            }
+            for name, value in seen.items():
+                res.facts[name] = json.dumps(value, ensure_ascii=False)[:800]
             for box in (a, b):
                 try:
                     box.vm.shot(self.out / f"shot-watch-{box.letter}.png")
@@ -1153,16 +1185,34 @@ ip -o addr show dev "$dev"
                     res.facts[f"shot_{box.letter}"] = str(exc)[:200]
             if not rows:
                 res.facts["windows_on_a"] = a.vm.raw({"op": "windows"})
-                raise Failed("A's desk never held the window B shares: no shared window's "
-                             "resource is listed there")
-            if "Live" not in res.facts["peer_surface_rows"] and not viewers:
+                viewers = [viewer for shared in seen["sharing_on_b"]
+                           for viewer in shared.get("viewers") or []]
+                # The first thing that did not happen, in the order a share travels.
+                if seen["starting_on_b"] and not seen["sharing_on_b"]:
+                    why = f"B's share waits to start: {res.facts['starting_on_b'][:300]}"
+                elif not seen["governed_on_b"]:
+                    why = "B's workspace does not say the window is shared"
+                elif not seen["governed_on_a"]:
+                    why = "the share B's workspace names never reached A's desk"
+                elif not seen["watching_on_a"]:
+                    why = ("A's desk reads the share and asks no device for the window: it does not "
+                           "know which device hosts the tab")
+                elif not viewers:
+                    why = f"A asks for the window and B heard no viewer: {res.facts['watching_on_a'][:300]}"
+                elif not seen["received_on_a"]:
+                    why = "B streams the window to A and nothing of it reached A"
+                else:
+                    why = f"the stream reached A and no tab pictures it: {res.facts['received_on_a'][:300]}"
+                raise Failed(f"A's desk never held the window B shares: {why}")
+            if "Live" not in res.facts["peer_surface_rows"]:
                 raise Failed("A's desk holds the shared window's tab and no picture of it came: "
-                             f"{res.facts['peer_surface_rows'][:400]}; B says of its viewers: "
+                             f"{res.facts['peer_surface_rows'][:400]}; A received: "
+                             f"{res.facts['received_on_a'][:200]}; B shares: "
                              f"{res.facts['sharing_on_b'][:200]}")
         finally:
             # The share ends with the step: what follows finds B as it was.
             try:
-                b.vm.invoke(share["provider"], share["id"], {"group": str(group), "on": False})
+                b.vm.invoke(stop["provider"], stop["id"], {"tab": str(tab)})
             except VmError as exc:
                 res.facts["unshared"] = str(exc)[:200]
 

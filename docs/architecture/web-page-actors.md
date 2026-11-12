@@ -379,7 +379,10 @@ from, by its whole key and its name, and none beside the tab's own agent.
 The device's way to the tab is checked in parts on one machine: the door's
 run keeps the device its connection's certificate names, the broker tells an
 application that device and never one the caller names, and the Browser's
-record, its field review and its review screen keep and show it.
+record, its field review and its review screen keep and show it. A further
+step has one device of the person share the Browser's window by its tab and
+another, whose desk listed that window as open elsewhere, hold its picture
+in that tab; it has not passed on real machines yet.
 
 ## The cases
 
