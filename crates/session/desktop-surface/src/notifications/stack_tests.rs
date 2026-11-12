@@ -1345,5 +1345,9 @@ fn a_phones_banner_stands_between_equal_gutters() {
         );
     }
     let (x0, w) = banner_span(Rect::new(0.0, 0.0, 1280.0, 800.0));
-    assert_eq!((x0 + w, w), (1280.0 - CORNER_INSET, TOAST_WIDTH), "the corner on a laptop");
+    assert_eq!(
+        (x0 + w, w),
+        (1280.0 - CORNER_INSET, TOAST_WIDTH),
+        "the corner on a laptop"
+    );
 }
