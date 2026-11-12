@@ -109,11 +109,17 @@ fn a_deck_exported_as_pptx_content_imports_into_a_new_deck() {
         .unwrap()
         .unwrap();
     let address = output.resources.first().cloned().unwrap();
-    let hash = address.strip_prefix("tilo.content:").unwrap();
-    let bytes = source.content().read(hash).unwrap();
+    let reference = address.strip_prefix("tilo.content:").unwrap();
+    assert!(tilo_content::is_sealed(reference), "{address}");
+    // What another device receives of the deck is the ciphertext, under its
+    // address; the address the export answered opens it there.
+    let carried = source
+        .content()
+        .read(&tilo_content::content_address(reference).unwrap())
+        .expect("the exported deck, as it is carried");
 
     let mut target = app();
-    target.content().put(&bytes).unwrap();
+    target.content().put_public(&carried).unwrap();
     let outline = call(
         &mut target,
         "import-pptx-content",
