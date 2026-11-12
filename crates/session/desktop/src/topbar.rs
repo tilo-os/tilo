@@ -938,6 +938,34 @@ impl TopBarChrome {
         self.rect
     }
 
+    /// The room in the bar beside its clock where a control hint for a gesture no control on
+    /// screen does stands ([`ui::control_hints`]): from just past the clock to just before the
+    /// bar's own controls on its right, the bar's height across, as the bar last laid them out.
+    /// `None` while the bar is hidden, shows no clock, or keeps no room beside it — the hint does
+    /// not show rather than stand over the clock or a control beside it.
+    #[must_use]
+    pub fn hint_room(&self) -> Option<Rect> {
+        if self.presence() == TopBarPresence::Hidden
+            || self.is_compact()
+            || self.rect.height() <= 0.0
+            || self.rect.width() <= 0.0
+            || self.center_rect.is_zero_area()
+        {
+            return None;
+        }
+        // The bar's one control gap, each side of the hint.
+        let gap = f64::from(ui::tokens::Spacing::BASE.s2);
+        let left = self.center_rect.x1 + gap;
+        let mut right = self.right_side_x();
+        if !self.ask.pill.is_zero_area() {
+            // The ask about the person stands where the hint would, from the clock's side: the
+            // hint keeps off it rather than cover a question they are answering.
+            right = right.min(self.ask.pill.x0);
+        }
+        let right = right - gap;
+        (right > left).then(|| Rect::new(left, self.rect.y0, right, self.rect.y1))
+    }
+
     #[must_use]
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         let rev = chrome.snapshot().revision;

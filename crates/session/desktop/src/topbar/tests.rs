@@ -2674,3 +2674,90 @@ fn one_display_needs_no_places() {
     assert!(covered.bars.is_empty(), "one bar needs no placing");
     assert_eq!(covered.fullscreen, [None], "and it steps aside");
 }
+
+/// A hint for a gesture no control on screen does stands in the bar, right beside its clock: in
+/// the room the bar keeps between the clock and its own controls on its right. A bar that keeps
+/// none — hidden under a window that filled the display, or crowded by its own controls — shows
+/// no hint at all, rather than one over the clock, the names or the status beside it.
+#[test]
+fn a_control_hint_stands_in_the_room_beside_the_clock() {
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(
+            WorkspaceSlot(1),
+            "Customer support and escalations",
+        )],
+        active: WorkspaceSlot::from(0),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].slot;
+    for person in 0..6 {
+        tree.workspaces[0]
+            .collaborators
+            .push(tilo_desktop_model::Collaborator::new(
+                format!("person-{person}"),
+                format!("Person {person}"),
+            ));
+    }
+    let chrome = super::fixture::FixtureChrome::new(tree.clone());
+    chrome.borrow_mut().status = crate::chrome::SystemStatus {
+        battery_percent: Some(72),
+        link: Some(crate::chrome::LinkStatus {
+            kind: crate::chrome::LinkKind::Wifi,
+            name: Some("home".into()),
+            signal: 3,
+        }),
+        volume: Some(crate::chrome::VolumeState {
+            level: 0.6,
+            muted: false,
+        }),
+        ..crate::chrome::SystemStatus::default()
+    };
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+    lay_out_and_draw(&mut bar, 1280.0);
+    let clock = bar.center_rect;
+    assert!(!clock.is_zero_area(), "fixture: the bar shows its clock");
+    let room = bar
+        .hint_room()
+        .expect("the bar keeps room beside its clock");
+    assert_eq!(room.x0, clock.x1 + 8.0, "right beside the clock: {room:?}");
+    assert_eq!(
+        (room.y0, room.y1),
+        (bar.rect.y0, bar.rect.y1),
+        "the bar's height across"
+    );
+    assert!(
+        room.x1 < bar.rect.x1,
+        "short of the bar's own end: {room:?}"
+    );
+    // The bar's own controls keep out of the room: the names on its left, the clock, and the
+    // people and the status on its right.
+    for (name, rect) in bar.test_rects() {
+        // The hit rects are deliberately larger than what the bar paints.
+        if rect.is_zero_area() || name.ends_with("_hit") {
+            continue;
+        }
+        assert!(
+            !room.overlaps(rect),
+            "the hint's room {room:?} stands over {name} {rect:?}"
+        );
+    }
+    // A bar narrower than the pill keeps room too small for it: the hint shows nowhere rather
+    // than over the controls beside it.
+    lay_out_and_draw(&mut bar, 640.0);
+    let narrow = bar
+        .hint_room()
+        .expect("the bar still keeps its clock's room");
+    assert!(
+        narrow.width() < 240.0,
+        "too narrow for the pill: {narrow:?}"
+    );
+    // A bar with no room beside its clock at all keeps no hint either.
+    lay_out_and_draw(&mut bar, 320.0);
+    assert_eq!(bar.hint_room(), None, "no room at all");
+    // Hidden under the window that filled the display, the bar teaches nothing either.
+    lay_out_and_draw(&mut bar, 1280.0);
+    assert!(bar.hint_room().is_some(), "fixture: the wide bar has room");
+    bar.set_presence(TopBarPresence::Hidden);
+    lay_out_and_draw(&mut bar, 1280.0);
+    assert_eq!(bar.hint_room(), None, "a hidden bar shows no hint");
+}

@@ -1,6 +1,7 @@
 //! The desktop's control hints: how to open a window from search, move a window, resize one and
 //! move the view, each taught once at the moment it is useful — beside the control where it is
-//! done, or in the chrome under the bar where no control on screen does it ([`ui::control_hints`]).
+//! done, or in the top bar beside its clock where no control on screen does it
+//! ([`ui::control_hints`]).
 //! The set is data ([`HINTS`]); both hosts drive the same [`ControlHints`] with what their frame
 //! shows ([`HintFrame`]) and draw it above the windows, as they do the strip navigator. What the
 //! person learns is their own record ([`Learned`]), kept with their personal settings; the host
@@ -113,9 +114,11 @@ pub struct HintFrame {
     /// ([`ui::PointerPrecision::Coarse`]), as it does after a touch on the screen. Hints then name
     /// what a finger does.
     pub touch: bool,
-    /// The bar's own band at the top of the screen: where a hint for a gesture with no control on
-    /// screen stands when the desk leaves no room for it under the bar.
-    pub bar: Rect,
+    /// The room the top bar keeps beside its clock ([`crate::topbar::TopBarChrome::hint_room`]):
+    /// where a hint for a gesture with no control on screen stands. `None` while the bar is
+    /// hidden, or keeps no room there: the hint does not show rather than stand over the bar's
+    /// own controls.
+    pub hint_room: Option<Rect>,
 }
 
 impl HintFrame {
@@ -387,15 +390,15 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
             .unwrap_or(spec.words),
     );
     let row = &frame.row;
-    let (stand, edge) = match spec.gesture {
-        // Search opens from no control on screen: its hint stands in the chrome under the
-        // desktop's bar, above every window, pointing at nothing.
+    let (stand, edge, keys) = match spec.gesture {
+        // Search opens from no control on screen: its hint stands in the bar beside the clock,
+        // saying the chord, pointing at nothing.
         Gesture::OpenFromSearch => (
-            Stand::Chrome {
-                bar: frame.bar,
-                below: row.chrome,
+            Stand::InBar {
+                band: frame.hint_room?,
             },
             None,
+            frame.search_keys.clone(),
         ),
         Gesture::MoveWindow => (
             Stand::Beside {
@@ -404,6 +407,7 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
                 points: true,
             },
             None,
+            Vec::new(),
         ),
         Gesture::ResizeEdge => {
             let (line, edge) = row.focused_edge?;
@@ -417,10 +421,11 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
                     points: true,
                 },
                 Some(line),
+                Vec::new(),
             )
         }
-        // What moves the view is no control on the desk either: the hint stands in the chrome
-        // while the strip's own edge, the side the windows hide past, lights along its length.
+        // What moves the view is no control on the desk either: the hint stands in the bar while
+        // the strip's own edge, the side the windows hide past, lights along its length.
         Gesture::PanView => {
             let (x, inward) = match row.beyond {
                 (_, true) => (area.x1, -EDGE_INSET),
@@ -428,14 +433,14 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
                 (false, false) => return None,
             };
             (
-                Stand::Chrome {
-                    bar: frame.bar,
-                    below: row.chrome,
+                Stand::InBar {
+                    band: frame.hint_room?,
                 },
                 Some(vello::kurbo::Line::new(
                     (x + inward, area.y0 + EDGE_INSET),
                     (x + inward, area.y1 - EDGE_INSET),
                 )),
+                Vec::new(),
             )
         }
     };
@@ -452,7 +457,7 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
         stand,
         edge,
         words,
-        keys: Vec::new(),
+        keys,
         touch: frame.touch,
         clear,
     })
@@ -506,10 +511,9 @@ mod tests {
                 over: Vec::new(),
                 app_cards: Vec::new(),
                 windows_on_desk: Vec::new(),
-                chrome: Rect::new(0.0, 40.0, 1440.0, 80.0),
             },
             area: Rect::new(0.0, 40.0, 1440.0, 900.0),
-            bar: Rect::new(0.0, 0.0, 1440.0, 40.0),
+            hint_room: Some(Rect::new(768.0, 0.0, 1040.0, 40.0)),
             search_keys: vec!["Ctrl".into(), "K".into()],
             presented: true,
             ..HintFrame::default()
@@ -537,13 +541,18 @@ mod tests {
         let open = at(Gesture::OpenFromSearch);
         assert_eq!(
             open.stand,
-            Stand::Chrome {
-                bar: frame.bar,
-                below: frame.row.chrome
+            Stand::InBar {
+                band: frame
+                    .hint_room
+                    .expect("the bar keeps room beside its clock")
             },
-            "no control opens it: it stands in the chrome"
+            "no control opens it: it stands in the bar beside the clock"
         );
-        assert_eq!(open.keys, vec!["Ctrl".to_owned(), "K".to_owned()]);
+        assert_eq!(
+            open.keys,
+            vec!["Ctrl".to_owned(), "K".to_owned()],
+            "it says the chord that opens search"
+        );
         assert_eq!(
             at(Gesture::MoveWindow).stand.anchor(),
             Some(Rect::new(100.0, 48.0, 700.0, 84.0)),
@@ -563,7 +572,7 @@ mod tests {
             ),
             "beside the edge it takes, which it lights"
         );
-        // The view moves from no control on the desk either: the chrome, and the edge the windows
+        // The view moves from no control on the desk either: the bar, and the edge the windows
         // hide past lights.
         for (by, at_x) in [
             ((false, true), 1440.0 - EDGE_INSET),
@@ -583,9 +592,10 @@ mod tests {
             let hint = place(spec, &frame).expect("windows hide past an edge");
             assert_eq!(
                 hint.stand,
-                Stand::Chrome {
-                    bar: frame.bar,
-                    below: frame.row.chrome
+                Stand::InBar {
+                    band: frame
+                        .hint_room
+                        .expect("the bar keeps room beside its clock")
                 }
             );
             assert_eq!(
@@ -593,6 +603,24 @@ mod tests {
                 Some(at_x),
                 "the edge the windows hide past"
             );
+        }
+    }
+
+    // Search and moving the view are taught in the bar, beside its clock: a bar that keeps no room
+    // there — hidden behind a window the person filled, or crowded by its own controls — teaches
+    // nothing, rather than standing over the clock or a control beside it.
+    #[test]
+    fn a_bar_with_no_room_beside_its_clock_teaches_no_shortcut() {
+        let mut frame = frame();
+        frame.hint_room = None;
+        for gesture in [Gesture::OpenFromSearch, Gesture::PanView] {
+            let spec = HINTS.iter().find(|s| s.gesture == gesture).unwrap();
+            assert!(place(spec, &frame).is_none(), "{gesture:?}");
+        }
+        // The hints anchored to a window's own controls are not the bar's to keep.
+        for gesture in [Gesture::MoveWindow, Gesture::ResizeEdge] {
+            let spec = HINTS.iter().find(|s| s.gesture == gesture).unwrap();
+            assert!(place(spec, &frame).is_some(), "{gesture:?}");
         }
     }
 

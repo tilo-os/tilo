@@ -43,11 +43,6 @@ pub struct HintPlaces {
     /// ([`crate::presence::interaction_card_slots`]): a place no hint stands
     /// either, since the app's card may be there whether or not it is now.
     pub app_cards: Vec<Rect>,
-    /// The band under the desktop's bar no window reaches: where a hint for
-    /// a gesture with no control on screen to point at hangs, centred and
-    /// above the windows' bars. A desk whose windows reach the bar leaves it
-    /// empty, and that hint stands in the bar itself.
-    pub chrome: Rect,
 }
 
 /// Whether `window`'s content is asking the person to type: a text field of
@@ -111,13 +106,8 @@ impl GroupRow {
                 (rect, content)
             })
             .collect();
-        // The band under the desktop's bar the windows leave: the bar overlays the desk's top
-        // edge, and the windows stand clear of it. A hint for a gesture no control on screen opens
-        // stands there, above every window's own bar.
-        let window_top = on_desk
-            .iter()
-            .map(|(window, _)| window.y0)
-            .fold(viewport.y1, f64::min);
+        // The desktop's bar overlays the desk's top edge and the windows stand clear of it: each
+        // window is reported whole with the content below its own bar.
         HintPlaces {
             viewport,
             windows: self
@@ -146,12 +136,6 @@ impl GroupRow {
                 })
                 .collect(),
             windows_on_desk: on_desk,
-            chrome: Rect::new(
-                viewport.x0,
-                viewport.y0,
-                viewport.x1,
-                window_top.max(viewport.y0),
-            ),
         }
     }
 
@@ -394,11 +378,11 @@ mod tests {
         );
     }
 
-    // The desktop's bar overlays the desk's top edge and the windows stand clear of it: the band
-    // it leaves is where a hint for a gesture no control on screen opens stands, above every
-    // window's own bar and every window's content.
+    // The desktop's bar overlays the desk's top edge and the windows stand clear of it: each
+    // window is reported whole, and its content from below its own bar, so a hint never stands
+    // over either.
     #[test]
-    fn the_desk_leaves_a_band_under_the_bar_for_a_hint_with_nothing_to_point_at() {
+    fn a_shown_window_reports_its_content_below_its_own_bar() {
         let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
         row.set_top_overlay_inset(32.0);
         // Windows come to rest below the bar at once, as they do when the person asks for less
@@ -406,24 +390,12 @@ mod tests {
         let (row, _taffy, _root) =
             relayout_row_owned_with(row, 1200.0, &Theme::dark().with_reduce_motion(true));
         let places = row.hint_places();
-        let top = row
-            .groups
-            .iter()
-            .map(|group| group.get_rect().y0)
-            .fold(f64::INFINITY, f64::min);
-        assert!(
-            top > places.viewport.y0 + 1.0,
-            "fixture: the windows stand clear of the bar"
-        );
-        assert_eq!(places.chrome.y0, places.viewport.y0, "from under the bar");
-        assert_eq!(places.chrome.y1, top, "down to where the windows begin");
-        assert_eq!(
-            places.chrome.x0..places.chrome.x1,
-            places.viewport.x0..places.viewport.x1,
-            "across the desk"
-        );
         assert_eq!(places.windows_on_desk.len(), 2, "{places:?}");
         for (window, content) in &places.windows_on_desk {
+            assert!(
+                window.y0 > places.viewport.y0 + 1.0,
+                "fixture: the window stands clear of the bar: {window:?}"
+            );
             let bar = row
                 .groups
                 .iter()

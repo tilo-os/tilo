@@ -1,5 +1,5 @@
 //! A host's control hints on screen: the [`Coach`] deciding, the card
-//! placed at its anchor and drawn through its motion.
+//! placed beside its anchor or in the bar's room and drawn through its motion.
 
 use super::card::{self, Contents, Frame, Look};
 use super::coach::{Coach, Phase, Timing};
@@ -25,10 +25,9 @@ pub enum Stand {
         side: PopoverSide,
         points: bool,
     },
-    /// In the chrome for a gesture with no control on screen to point at, centred: `below` is the
-    /// band of desk the bar leaves above the first window, where the card hangs under the bar, and
-    /// `bar` the bar's own band, where it stands inside the bar where the desk leaves no room.
-    Chrome { bar: Rect, below: Rect },
+    /// In the top bar for a gesture with no control on screen to point at: the pill stands at
+    /// `band`'s leading end, just past the bar's clock, a line tall, whole or not at all.
+    InBar { band: Rect },
 }
 
 /// How a hint shows right now, as its host places it.
@@ -60,7 +59,7 @@ impl Stand {
     pub fn anchor(&self) -> Option<Rect> {
         match self {
             Stand::Beside { anchor, .. } => Some(*anchor),
-            Stand::Chrome { .. } => None,
+            Stand::InBar { .. } => None,
         }
     }
 }
@@ -263,17 +262,18 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
             words: &spot.words,
             keys: &spot.keys,
         };
-        let chrome = matches!(&spot.stand, Stand::Chrome { .. });
+        let in_bar = matches!(&spot.stand, Stand::InBar { .. });
         if matches!(current.phase, Phase::Shown(_))
             || self
                 .placed
                 .as_ref()
                 .is_some_and(|placed| placed.card.is_zero_area())
         {
-            let size = card::size(&contents, text, theme, chrome);
+            let size = card::size(&contents, text, theme, in_bar);
             let Some((rect, notch)) = place(&spot, size, look.area) else {
-                // Nowhere clear of another surface's content: the hint has no place to point at
-                // and no content of another surface to cover, so it goes, as one whose anchor did.
+                // Nowhere clear of another surface's content, nor room in the bar beside its clock
+                // for the pill whole: the hint has no place to stand and covers nothing, so it
+                // goes, as one whose anchor did.
                 self.placed = None;
                 self.coach.dismiss(now);
                 return;
@@ -303,12 +303,13 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                     notch,
                     look: colours,
                     contents,
-                    chrome,
+                    in_bar,
                     phase,
                     check: 0.0,
                     opacity: arrival.opacity,
                     content_opacity: 1.0,
-                    pulse: arrival.pulse,
+                    // The bar's own pill holds still: no bloom over the bar's neighbours.
+                    pulse: if in_bar { None } else { arrival.pulse },
                 };
                 card::paint(scene, transform * pose, text, theme, &frame);
             }
@@ -324,7 +325,7 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                     notch,
                     look: colours,
                     contents,
-                    chrome,
+                    in_bar,
                     phase,
                     check: 0.0,
                     opacity,
@@ -338,7 +339,7 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                 else {
                     return;
                 };
-                let disc = card::dot_centre(rect, chrome);
+                let disc = card::dot_centre(rect, in_bar);
                 if done.fold < 0.98 {
                     // The card folds into a dot where its check is.
                     let dot = Rect::from_center_size(disc, (DOT, DOT));
@@ -358,7 +359,7 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                         notch: notch.filter(|_| done.fold <= 0.0),
                         look: colours,
                         contents,
-                        chrome,
+                        in_bar,
                         phase,
                         check: done.check,
                         opacity: done.opacity,
@@ -439,16 +440,14 @@ const DOT_KEPT: f64 = 7.0;
 const LANDING: f64 = 24.0;
 /// How far the card stands from its anchor, beyond its notch.
 const ANCHOR_GAP: f64 = 4.0;
-/// How far from the area's edges a card keeps, and from the ends of the chrome's band.
+/// How far from the area's edges a card keeps.
 const AREA_MARGIN: f64 = 8.0;
-/// How far a card in the chrome keeps from the top of its band, and from its foot.
-const CHROME_GAP: f64 = 1.0;
 
-/// Where a card of `size` stands for `place` inside `area`: in the chrome, centred across the band
-/// the desktop's bar leaves above every window and hanging from it; or beside its anchor, on its
-/// side (the other side when there is no room), centred on it, kept inside the area. `None` where
-/// nothing can be cleared: a hint never stands over another surface's content, so one with nowhere
-/// to stand does not show.
+/// Where a card of `size` stands for `place` inside `area`: in the bar, at the leading end of the
+/// room it keeps beside its clock; or beside its anchor, on its side (the other side when there is
+/// no room), centred on it, kept inside the area. `None` where nothing can be cleared: a hint never
+/// stands over another surface's content, nor over the bar's own controls, so one with nowhere to
+/// stand does not show.
 fn place(
     place: &HintPlace,
     size: (f64, f64),
@@ -458,25 +457,19 @@ fn place(
     let room = area.inset(-AREA_MARGIN);
     let clear = |rect: Rect| !place.clear.iter().any(|card| card.overlaps(rect));
     let (anchor, side, points) = match place.stand {
-        // A hint with no control on screen to point at stands in the chrome: centred, hanging
-        // under the desktop's bar while the desk leaves that much room above its first window, and
-        // in the bar itself where the windows reach it. Where neither has room it does not show,
-        // rather than stand over a window.
-        Stand::Chrome { bar, below } => {
-            let x = below.center().x - w / 2.0;
-            let at = |y: f64| Rect::new(x, y, x + w, y + h);
-            // Under the bar while the desk leaves that much clear above its first window; else in
-            // the bar itself, where no room is left under it; else it has nowhere to stand.
-            let hung = below.height() >= h + 2.0 * CHROME_GAP;
-            let inside = bar.height() >= h + 2.0 * CHROME_GAP;
-            let rect = match (hung, inside) {
-                (true, _) => at(below.y0 + CHROME_GAP),
-                (false, true) => at(bar.center().y - h / 2.0),
-                (false, false) => return None,
-            };
-            if rect.x0 < below.x0 || rect.x1 > below.x1 {
+        // A hint with no control on screen to point at stands in the bar, right beside the clock:
+        // the bar keeps that room clear of everything it draws, and where the room cannot hold the
+        // pill whole it does not show rather than stand over the clock or another control.
+        Stand::InBar { band } => {
+            if w > band.width() || h > band.height() {
                 return None;
             }
+            let rect = Rect::new(
+                band.x0,
+                band.center().y - h / 2.0,
+                band.x0 + w,
+                band.center().y + h / 2.0,
+            );
             return clear(rect).then_some((rect, None));
         }
         Stand::Beside {
@@ -619,9 +612,9 @@ mod place_tests {
         }
     }
 
-    fn in_chrome(bar: Rect, below: Rect, clear: Vec<Rect>) -> HintPlace {
+    fn in_bar(band: Rect, clear: Vec<Rect>) -> HintPlace {
         HintPlace {
-            stand: Stand::Chrome { bar, below },
+            stand: Stand::InBar { band },
             edge: None,
             words: "Open anything".into(),
             keys: vec!["Ctrl".into(), "K".into()],
@@ -665,14 +658,15 @@ mod place_tests {
         );
     }
 
-    /// Every placement keeps out of the content it is given, wherever it stands: in the chrome
-    /// under the desktop's bar, centred and hanging from the bar, or beside its anchor on either
-    /// side. A placement that cannot is one that does not show.
+    /// Every placement keeps out of the content it is given, wherever it stands: in the bar at the
+    /// leading end of the room beside its clock, or beside its anchor on either side. A placement
+    /// that cannot is one that does not show.
     #[test]
     fn no_placement_stands_over_the_content_it_keeps_clear_of() {
         let area = Rect::new(0.0, 32.0, 1280.0, 800.0);
-        // The bar's own band above the desk, and the band of desk it leaves the windows.
-        let bar = Rect::new(0.0, 0.0, 1280.0, 32.0);
+        // The room the bar keeps beside its clock: from just past the clock to just before the
+        // bar's own controls on its right, the bar's height across.
+        let band = Rect::new(628.0, 0.0, 1100.0, 32.0);
         // A window's body down the right, the cards its app stands in the body's top corner, and a
         // card standing over the desk at the strip's leading edge. The window begins below the
         // band the bar leaves, as the desk's own windows do.
@@ -681,54 +675,43 @@ mod place_tests {
             Rect::new(1120.0, 84.0, 1240.0, 136.0),
             Rect::new(0.0, 600.0, 300.0, 780.0),
         ];
-        for below in [
-            Rect::new(0.0, 32.0, 1280.0, 56.0),
-            Rect::new(0.0, 32.0, 1280.0, 68.0),
-            Rect::new(0.0, 32.0, 1280.0, 800.0),
-        ] {
-            let Some((rect, notch)) =
-                place(&in_chrome(bar, below, kept.to_vec()), (240.0, 28.0), area)
-            else {
-                // The desk leaves no room under the bar there, and the card stands in the bar.
-                assert!(
-                    below.height() < 32.0 && bar.height() >= 32.0,
-                    "the band had room: {below:?}"
-                );
-                continue;
-            };
-            assert_eq!(notch, None, "it points at no control");
-            assert_eq!(rect.center().x, area.center().x, "centred: {rect:?}");
-            if below.height() >= 32.0 {
-                assert_eq!(
-                    rect.y0,
-                    below.y0 + CHROME_GAP,
-                    "hanging under the bar: {rect:?}"
-                );
-                assert!(below.contains_rect(rect), "{rect:?} in {below:?}");
-            } else {
-                assert!(
-                    bar.contains_rect(rect),
-                    "in the bar where the desk leaves no room: {rect:?} in {bar:?}"
-                );
-            }
-            for kept in kept {
-                assert!(!rect.overlaps(kept), "{rect:?} over {kept:?}");
-            }
+        let (rect, notch) = place(&in_bar(band, kept.to_vec()), (240.0, 28.0), area)
+            .expect("the bar keeps room beside its clock");
+        assert_eq!(notch, None, "it points at no control");
+        assert_eq!(rect.x0, band.x0, "right beside the clock: {rect:?}");
+        assert_eq!(rect.center().y, band.center().y, "a line tall: {rect:?}");
+        assert!(band.contains_rect(rect), "{rect:?} in {band:?}");
+        for kept in kept {
+            assert!(!rect.overlaps(kept), "{rect:?} over {kept:?}");
         }
-        // No room under the bar and a bar too thin to hold it: no hint, rather than one over a
-        // window's own bar.
+        // A bar with no room beside its clock holds no pill: not one over the clock, nor one over
+        // the controls on its right.
         assert!(
             place(
-                &in_chrome(
-                    Rect::new(0.0, 0.0, 1280.0, 20.0),
-                    Rect::new(0.0, 32.0, 1280.0, 40.0),
-                    kept.to_vec()
-                ),
+                &in_bar(Rect::new(628.0, 0.0, 860.0, 32.0), kept.to_vec()),
                 (240.0, 28.0),
                 area
             )
             .is_none(),
-            "no room in the chrome"
+            "no room for the pill whole"
+        );
+        assert!(
+            place(
+                &in_bar(Rect::new(628.0, 0.0, 1100.0, 24.0), kept.to_vec()),
+                (240.0, 28.0),
+                area
+            )
+            .is_none(),
+            "a bar too shallow to hold it"
+        );
+        // A card standing where the bar's pill would go keeps it away: it does not show over it.
+        assert!(
+            place(
+                &in_bar(band, vec![Rect::new(600.0, 0.0, 900.0, 32.0)]),
+                (240.0, 28.0),
+                area
+            )
+            .is_none()
         );
         for side in [
             PopoverSide::Below,

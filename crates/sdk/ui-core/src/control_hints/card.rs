@@ -102,17 +102,17 @@ fn words_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Body).with_weight(TextWeight::Semibold)
 }
 
-/// The chrome's card keeps this far from its ends, and from its top and foot: a pill a line tall,
-/// with the words and the keys alone and no picture, that fits the band under the desktop's bar.
-const CHROME_PAD_X: f64 = 12.0;
-const CHROME_PAD_Y: f64 = 3.0;
+/// The bar's pill keeps this far from its ends, and from its top and foot: a line tall, with the
+/// words and the keys alone and no picture, that fits the bar beside its clock.
+const BAR_PAD_X: f64 = 12.0;
+const BAR_PAD_Y: f64 = 3.0;
 
-/// The card's size for `contents`: a card standing in the chrome is the chrome's pill.
+/// The card's size for `contents`: a card standing in the bar is the bar's pill.
 pub(super) fn size(
     contents: &Contents<'_>,
     text: &mut TextRenderer,
     theme: &Theme,
-    chrome: bool,
+    in_bar: bool,
 ) -> (f64, f64) {
     let (words_w, _) = text.measure_style(contents.words, None, &words_style(theme));
     let keys_w = if contents.keys.is_empty() {
@@ -121,10 +121,10 @@ pub(super) fn size(
         GAP + InputHint::measure_keycap_labels(contents.keys, text, theme)
     };
     let words = f64::from(words_w).ceil() + keys_w;
-    if chrome {
+    if in_bar {
         return (
-            words + 2.0 * CHROME_PAD_X,
-            InputHint::keycap_height(theme) + 2.0 * CHROME_PAD_Y,
+            words + 2.0 * BAR_PAD_X,
+            InputHint::keycap_height(theme) + 2.0 * BAR_PAD_Y,
         );
     }
     (PAD + TILE_W + GAP + words + END, TILE_H + 2.0 * PAD)
@@ -137,9 +137,9 @@ pub(super) fn radius(rect: Rect) -> f64 {
 }
 
 /// The point a done card folds into its dot at: where the card's check stood.
-pub(super) fn dot_centre(rect: Rect, chrome: bool) -> Point {
+pub(super) fn dot_centre(rect: Rect, in_bar: bool) -> Point {
     Point::new(
-        rect.x0 + if chrome { radius(rect) } else { PAD + 30.0 },
+        rect.x0 + if in_bar { radius(rect) } else { PAD + 30.0 },
         rect.center().y,
     )
 }
@@ -152,9 +152,8 @@ pub(super) struct Frame<'a> {
     pub notch: Option<(PopoverSide, f64)>,
     pub look: Look,
     pub contents: Contents<'a>,
-    /// The card stands in the chrome under the desktop's bar: a pill holding the words and keys
-    /// alone.
-    pub chrome: bool,
+    /// The card stands in the bar beside its clock: a pill holding the words and keys alone.
+    pub in_bar: bool,
     /// Where the picture is in its loop.
     pub phase: f64,
     /// How much of the check is drawn (`0` while it teaches).
@@ -240,16 +239,17 @@ pub(super) fn paint(
         &rect.inflate(80.0, 80.0),
     );
     // The halo in the person's colour, and a contact shadow at the foot
-    // that holds the card off light grounds.
-    scene.draw_blurred_rounded_rect(
-        transform,
-        rect.inflate(2.0, 2.0),
-        look.glow,
-        radius + 2.0,
-        crate::surface::std_dev_for(GLOW_BLUR),
-    );
-    // A card standing in the chrome is part of it: it holds no shadow of its own off the desk.
-    if !frame.chrome {
+    // that holds the card off light grounds. A card standing in the bar holds
+    // neither: it is part of the bar, and its halo would spill over the clock
+    // and the controls it stands beside.
+    if !frame.in_bar {
+        scene.draw_blurred_rounded_rect(
+            transform,
+            rect.inflate(2.0, 2.0),
+            look.glow,
+            radius + 2.0,
+            crate::surface::std_dev_for(GLOW_BLUR),
+        );
         crate::surface::shadow(
             scene,
             transform,
@@ -313,10 +313,10 @@ fn paint_contents(
 ) {
     let rect = frame.rect;
     let look = frame.look;
-    // The chrome's card holds the words and the keys alone: it says what the chord is, in the
-    // band under the desktop's bar, without the picture a card beside a control carries.
-    let x = if frame.chrome {
-        rect.x0 + CHROME_PAD_X
+    // The bar's pill holds the words and the keys alone: it says what the chord is, beside the
+    // clock, without the picture a card beside a control carries.
+    let x = if frame.in_bar {
+        rect.x0 + BAR_PAD_X
     } else {
         let tile = Rect::new(
             rect.x0 + PAD,
