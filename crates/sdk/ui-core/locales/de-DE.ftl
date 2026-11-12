@@ -617,6 +617,13 @@ step-running = Führt { $command } aus
 step-running-in = Führt in { $record } aus
 step-working = Arbeitet in { $record }
 step-working-alone = Arbeitet
+
+# Was ein Lauf gerade tut, wenn es kein Schritt in einem Datensatz ist: auf
+# seine Person warten, die Apps oder eine davon ansehen, nach Wörtern suchen.
+step-waiting = Wartet
+step-looking-at = Sieht { $what } an
+step-looking-at-apps = Sieht die Apps an
+step-searching = Sucht nach { $what }
 # Eine mitwirkende Person, deren Schreibmarke ein Textfeld zeichnet: wo sie
 # ist, für eine Vorlesehilfe gesagt. Bei einer Auswahl steht das stattdessen.
 presence-writing-here = { $name } schreibt hier

@@ -127,15 +127,15 @@ pub mod lines {
     /// its person.
     #[must_use]
     pub fn waiting() -> String {
-        "Waiting".to_owned()
+        clip(&ui::step::saying("step-waiting", None))
     }
 
     /// Looking at the apps, or at the one `app` names.
     #[must_use]
     pub fn looking(app: Option<&str>) -> String {
         match app.map(short).filter(|app| !app.is_empty()) {
-            Some(app) => clip(&format!("Looking at {app}")),
-            None => "Looking at the apps".to_owned(),
+            Some(app) => clip(&ui::step::saying("step-looking-at", Some(&app))),
+            None => clip(&ui::step::saying("step-looking-at-apps", None)),
         }
     }
 
@@ -149,7 +149,7 @@ pub mod lines {
     /// Searching for `needle`.
     #[must_use]
     pub fn searching(needle: &str) -> String {
-        clip(&verb_line("Searching for", needle))
+        clip(&ui::step::saying("step-searching", Some(needle.trim())))
     }
 
     /// Taking the action `action` in `app` with `args`: what kind of step its
@@ -190,16 +190,6 @@ pub mod lines {
         clip(&ui::step::line(step))
     }
 
-    /// `<verb> <what>` as one line, the what left out when there is none.
-    fn verb_line(verb: &str, what: &str) -> String {
-        let what = what.trim();
-        if what.is_empty() {
-            verb.to_owned()
-        } else {
-            format!("{verb} {what}")
-        }
-    }
-
     /// `line` as far as a person reads it at a glance, and within the bytes
     /// a presence frame carries.
     fn clip(line: &str) -> String {
@@ -227,6 +217,7 @@ pub mod lines {
             assert_eq!(looking(Some("so.tilo.terminal")), "Looking at Terminal");
             assert_eq!(reading("so.tilo.notes"), "Reading Notes");
             assert_eq!(searching(" invoices "), "Searching for invoices");
+            assert_eq!(waiting(), "Waiting");
             assert_eq!(
                 doing("so.tilo.sheets", tilo_actions::CREATE_ACTION, None),
                 "Creating in Sheets"

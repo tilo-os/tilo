@@ -620,6 +620,13 @@ step-running = Running { $command }
 step-running-in = Running in { $record }
 step-working = Working in { $record }
 step-working-alone = Working
+
+# What a run is at when it is not a step of a record: waiting on its person,
+# looking at the apps or at one of them, searching for words.
+step-waiting = Waiting
+step-looking-at = Looking at { $what }
+step-looking-at-apps = Looking at the apps
+step-searching = Searching for { $what }
 # A peer whose caret a text widget draws in its own text: where they are, said
 # to a reader. A selection says that instead.
 presence-writing-here = { $name } is writing here

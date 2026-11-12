@@ -22,6 +22,17 @@ pub fn line(step: &Step<'_>) -> String {
     }
 }
 
+/// The catalogue message `key` said with `name` as its one argument, in this
+/// window's language: what a run is at when it is not a step of a record —
+/// waiting, looking, searching.
+#[must_use]
+pub fn saying(key: &str, name: Option<&str>) -> String {
+    match name {
+        Some(name) => widget_format(key, &[("what", name.into())]),
+        None => widget_format(key, &[]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "in a test the unwrap is the assertion")]
