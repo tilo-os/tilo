@@ -236,8 +236,9 @@ struct PinHost {
     /// that came to another height than the region placed it at asks for another solve.
     heights: Rc<std::cell::RefCell<Vec<f64>>>,
     index: usize,
-    /// A pin's view changed the height it stands: the region places its box again.
-    resize: Rc<std::cell::Cell<bool>>,
+    /// The view came to another height than the region placed its box at, and the region has
+    /// not solved again since.
+    resize: bool,
     /// How often the pin's view was laid out: a test counts layouts to prove a camera move lays
     /// nothing out again.
     layouts: usize,
@@ -250,7 +251,6 @@ impl PinHost {
         place: PinPlace,
         heights: Rc<std::cell::RefCell<Vec<f64>>>,
         index: usize,
-        resize: Rc<std::cell::Cell<bool>>,
     ) -> Self {
         Self {
             // A place that names how tall it stands fills it; one that does not is as tall as
@@ -265,7 +265,7 @@ impl PinHost {
             theme: None,
             heights,
             index,
-            resize,
+            resize: false,
             layouts: 0,
         }
     }
@@ -298,8 +298,27 @@ impl PinHost {
             *slot = self.height;
         }
         if (self.height - stood).abs() > f64::EPSILON {
-            self.resize.set(true);
+            self.resize = true;
         }
+    }
+
+    /// Note where the region placed the pin's box: the transform its view is drawn, hit and
+    /// reported through, and the box of screen pixels it covers. The region placed the box at the
+    /// camera's zoom, so the view's own space maps onto it exactly, and a pin reads at any zoom.
+    fn attach(&mut self, rect: Rect) {
+        let zoom = if self.place.width > 0.0 {
+            rect.width() / self.place.width
+        } else {
+            1.0
+        };
+        self.transform = Affine::translate(rect.origin().to_vec2()) * Affine::scale(zoom);
+        self.screen = Rect::from_origin_size(rect.origin(), (rect.width(), self.height * zoom));
+        self.host.set_transform(self.transform);
+    }
+
+    /// Whether the view came to a height the region has not placed a box for; clears the flag.
+    fn take_resize(&mut self) -> bool {
+        std::mem::take(&mut self.resize)
     }
 
     /// The view this pin shows, to swap it for another (a place opened a view of its own).
@@ -308,6 +327,7 @@ impl PinHost {
     }
 
     /// How often the pin's view was laid out (a test counts camera moves that lay nothing out).
+    #[cfg(test)]
     fn layouts(&self) -> usize {
         self.layouts
     }
@@ -326,17 +346,9 @@ impl Widget for PinHost {
     }
 
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // The region placed the pin's box; the view's own space maps onto it.
         let rect = crate::widget::layout_rect(tree, node, origin);
-        // The region placed the pin's box at the camera's zoom: the view's own space maps onto
-        // it, so a pin reads at any zoom and hit-tests where it is drawn.
-        let zoom = if self.place.width > 0.0 {
-            rect.width() / self.place.width
-        } else {
-            1.0
-        };
-        self.transform = Affine::translate(rect.origin().to_vec2()) * Affine::scale(zoom);
-        self.screen = Rect::from_origin_size(rect.origin(), (rect.width(), self.height * zoom));
-        self.host.set_transform(self.transform);
+        self.attach(rect);
     }
 
     fn name(&self) -> &str {
@@ -376,7 +388,7 @@ impl Widget for PinHost {
         // The region places the pin's box at the height the view came to: a view that needs a
         // measure, or that came to another height than it placed the box at, asks the region to
         // solve again.
-        self.resize.get() || self.host.widget().layout_needs_measure()
+        self.resize || self.host.widget().layout_needs_measure()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -386,8 +398,6 @@ impl Widget for PinHost {
     fn mark_drawn(&mut self) {
         // The map drew the view under its pose this frame: what it painted is drawn.
         self.host.widget_mut().mark_drawn();
-        // The region placed the box at the height the view came to: its solve took it.
-        self.resize.set(false);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -471,11 +481,14 @@ impl Widget for PinHost {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        self.host.widget_mut().take_structure_dirty()
+        // The pin's view is laid out in the [`Embedded`](crate::widget::Embedded) host's own
+        // tree, which rebuilds it when it changes (`Embedded::layout` reads the view's structure
+        // itself). Reporting it here would tell the window the nodes of *its* tree were replaced.
+        false
     }
 
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        self.host.widget_mut().take_structure_change()
+        crate::widget::StructureChange::None
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -532,9 +545,6 @@ pub struct Map {
     /// when it names one, else what its view came to. The region places each pin's box from
     /// these, so a place that names no height still places its box where its view reaches.
     heights: Rc<std::cell::RefCell<Vec<f64>>>,
-    /// A pin's view came to another height than the region placed it at: the region solves
-    /// again before the frame draws.
-    resize: Rc<std::cell::Cell<bool>>,
     /// The camera the region that places the pins reads, shared with its policy: the policy is
     /// built once and re-solved whenever the camera moves, so the map writes the camera here
     /// and the solve lays the pins out at it. `None` before the region is built.
@@ -590,7 +600,6 @@ impl Map {
             key_pan: f64::from(crate::tokens::Metrics::BASE.wheel_line),
             placed: HashMap::new(),
             heights: Rc::default(),
-            resize: Rc::default(),
             camera_cell: None,
             theme: None,
             name: None,
@@ -833,7 +842,6 @@ impl Map {
                 *place,
                 Rc::clone(&self.heights),
                 index,
-                Rc::clone(&self.resize),
             )));
         }
         // The region's policy is built once and re-solved whenever the camera moves, so it reads
@@ -910,16 +918,20 @@ impl Map {
     }
 
     /// Lay every pin's view out at its own place size, in the view's own space (canvas pixels,
-    /// unzoomed): the region then places each pin's box at the height its view stands. Before the
-    /// region solves, so a place with no height of its own still places its box where its view
-    /// reaches; a camera move never reaches here.
-    fn lay_out_views(&mut self, theme: &Theme, text: &mut TextRenderer) {
+    /// unzoomed). Returns whether any view came to a height the region's solve has not placed a
+    /// box for yet: the region solves again so a place with no height of its own still has its
+    /// box where its view reaches. A camera move lays nothing out: only a place's size or a
+    /// view's content does, which is why this runs where the view is drawn and not every frame.
+    fn lay_out_views(&mut self, theme: &Theme, text: &mut TextRenderer) -> bool {
+        let mut resized = false;
         let count = self.pins.len();
         for index in 0..count {
             if let Some(host) = self.host_mut(index) {
                 host.layout_view(theme, text);
+                resized |= host.take_resize();
             }
         }
+        resized
     }
 
     /// The pins the map holds changed: the region is built again around them (arranged, given
@@ -1335,24 +1347,6 @@ impl Widget for Map {
         node
     }
 
-    /// Lay every pin's view out at its own place size before the region places its box: the
-    /// region's own solve reads the heights the views stand, and a pin laid out again is one
-    /// whose place's size or view changed, never one the camera moved.
-    fn adjust_layout_style(
-        &mut self,
-        _taffy: &mut TaffyTree<()>,
-        _node: NodeId,
-        text: &mut TextRenderer,
-    ) -> bool {
-        let Some(theme) = self.theme.clone() else {
-            return false;
-        };
-        self.lay_out_views(&theme, text);
-        // A view that came to another height than the region placed its box at re-solves the
-        // region this frame (the flag lives with the hosts that set it).
-        self.resize.replace(false)
-    }
-
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.parts.apply_layout(tree, node, origin);
         self.rect = crate::widget::layout_rect(tree, node, origin);
@@ -1439,6 +1433,13 @@ impl Widget for Map {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Each pin's view is laid out at its own place size (only a place or a view that
+        // changed lays it out again, never the camera), and the region solves again where a view
+        // came to a height it has not placed a box for.
+        self.theme = Some(theme.clone());
+        if self.lay_out_views(theme, text) {
+            self.invalidation.invalidate();
+        }
         // A canvas clips what it holds: a place outside the viewport is neither drawn nor hit.
         let viewport = self.rect;
         let clips = viewport.width() > 0.0 && viewport.height() > 0.0;
