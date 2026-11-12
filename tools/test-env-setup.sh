@@ -47,7 +47,8 @@
 #          the images, which take minutes to build.
 # root     TILO_TEST_AS_ROOT=1: the few tests that need root say so with this
 #          step, and keep it where the others run as the test user
-#          (tools/as-test-user.sh).
+#          (tools/as-test-user.sh). In a container's own cgroup root, its
+#          processes move to a leaf so the root delegates its controllers.
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
@@ -201,6 +202,31 @@ ntfs() {
 
 root() {
     provide TILO_TEST_AS_ROOT 1
+    delegate_cgroups
+}
+
+# The limits tests give jobs cgroups of their own, under one that hands its
+# children the controllers. A cgroup holding processes cannot: a container's
+# own root, where every process of the run starts, is one. As root there, its
+# processes move into a leaf and the root hands its children every controller
+# it is given, as a container that starts containers does.
+delegate_cgroups() {
+    local cg=/sys/fs/cgroup pids pid controller
+    [[ $(id -u) == 0 && $(cat /proc/self/cgroup) == 0::/ && -w $cg/cgroup.subtree_control ]] || return 0
+    [[ -z $(cat "$cg/cgroup.subtree_control") ]] || return 0
+    mkdir -p "$cg/init"
+    # Again while any is left: a process may fork while the others move.
+    for _ in 1 2 3 4 5; do
+        pids=$(cat "$cg/cgroup.procs")
+        [[ -n $pids ]] || break
+        for pid in $pids; do
+            echo "$pid" >"$cg/init/cgroup.procs" 2>/dev/null || true
+        done
+    done
+    for controller in $(cat "$cg/cgroup.controllers"); do
+        echo "+$controller" >"$cg/cgroup.subtree_control" ||
+            echo "the cgroup root does not delegate $controller" >&2
+    done
 }
 
 for step; do

@@ -153,6 +153,10 @@ pub enum ProviderError {
     BadName(String),
     #[error("the broker refused: {0}")]
     Refused(String),
+    #[error(
+        "the job asks for a {0} limit, but this cgroup is not given the {0} controller to hold it"
+    )]
+    Undelegated(&'static str),
 }
 
 fn io_err(what: impl std::fmt::Display) -> impl FnOnce(io::Error) -> ProviderError {
@@ -349,6 +353,21 @@ pub fn apply_limits(
     controllers: &[String],
 ) -> Result<(), ProviderError> {
     let has = |c: &str| controllers.iter().any(|x| x == c);
+    // A limit the cgroup cannot hold refuses the job: it never runs
+    // believing itself bounded while it is not.
+    for (controller, asked) in [
+        ("memory", limits.memory_max.is_some()),
+        ("pids", limits.pids_max.is_some()),
+        (
+            "cpu",
+            limits.cpu_weight.is_some() || limits.cpu_max.is_some(),
+        ),
+        ("io", !limits.io.is_empty()),
+    ] {
+        if asked && !has(controller) {
+            return Err(ProviderError::Undelegated(controller));
+        }
+    }
     let put = |file: &str, value: &str| {
         std::fs::write(dir.join(file), value).map_err(io_err(format_args!("{file} = {value}")))
     };
@@ -638,7 +657,26 @@ impl CgroupProvider for Direct {
 
 #[cfg(test)]
 mod tests {
-    use super::Limits;
+    use super::{Limits, ProviderError, apply_limits};
+
+    #[test]
+    fn a_limit_without_its_controller_refuses_the_job() {
+        // Refused before anything is written, so no cgroup is needed.
+        let nowhere = std::path::Path::new("/nonexistent");
+        let memory = Limits {
+            memory_max: Some(1 << 26),
+            pids_max: None,
+            ..Limits::default()
+        };
+        assert!(matches!(
+            apply_limits(nowhere, &memory, &["pids".into()]),
+            Err(ProviderError::Undelegated("memory"))
+        ));
+        assert!(matches!(
+            apply_limits(nowhere, &Limits::default(), &["memory".into()]),
+            Err(ProviderError::Undelegated("pids"))
+        ));
+    }
 
     #[test]
     fn admission_counts_the_reservation_not_the_limit_above_it() {
