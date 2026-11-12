@@ -2532,6 +2532,9 @@ fn serve_admitted(
     // through.
     let agent: Arc<std::sync::Mutex<Option<(String, String, String)>>> = Arc::default();
     let starting = Arc::clone(&agent);
+    // Where the connection came from, when another of the person's devices carried it: the
+    // device whose certificate the remote door verified, which its run then names.
+    let from = facts.origin.as_ref().map(crate::door_runs::device_of);
     let seat = seats.joining(facts.entrance.door());
     let seat_stream = match stream.try_clone() {
         Ok(copy) => Some(copy),
@@ -2556,6 +2559,7 @@ fn serve_admitted(
                 workspace: &workspace,
                 person: &person,
                 seated: &seated,
+                origin: from.as_ref(),
             };
             // Every admitted agent's connection works in a run of its own: one that cannot start
             // acts on nothing, and the client is told why rather than refused action by action.

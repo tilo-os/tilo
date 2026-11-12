@@ -214,6 +214,7 @@ fn approve_task(starter: &DeviceCert) -> NativeTaskActionRequirement {
             revision: 0,
             starter: Some(hex::encode(starter.user_public_key)),
             turn: None,
+            origin: None,
         },
         app: "so.tilo.notes".into(),
         resource_kind: "document".into(),
@@ -284,6 +285,7 @@ impl NativeTaskActionRequirement {
             turn: binding.turn.clone(),
             question: None,
             delegation: None,
+            origin: None,
         };
         self.check_tracker_policy(&policy, workspace, &run, looked, now)
     }

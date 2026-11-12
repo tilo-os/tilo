@@ -23,6 +23,10 @@ pub struct NativeTaskBinding {
     /// receiving device decides it against that message; no turn yet means the
     /// run was asked before turns carried conversations.
     pub turn: Option<tilo_action_policy::turn::Turn>,
+    /// The other device of the starter's that the run's agent works from
+    /// ([`TrackerRun::origin`]). It names where the agent runs in what the
+    /// run does and decides nothing.
+    pub origin: Option<tilo_actions::InvokerDevice>,
 }
 
 impl NativeTaskBinding {
@@ -455,6 +459,10 @@ pub struct TrackerRun {
     /// The delegation the asking device signed for a task agent's run, encoded, or why what the
     /// run carries is none; `None` for a collaborator's run. Read through [`Self::delegation`].
     pub delegation: Option<Result<Vec<u8>, String>>,
+    /// The other device of the starter's that the run's agent works from, for the run of an
+    /// agent door's connection that came from one: the device whose certificate the door
+    /// verified. `None` for every other run, whose agent works on this device.
+    pub origin: Option<tilo_actions::InvokerDevice>,
 }
 
 impl TrackerRun {

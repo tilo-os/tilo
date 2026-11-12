@@ -148,8 +148,31 @@ pub(super) fn admit(f: &Fixture) -> DoorAgent {
         turn: None,
         question: None,
         delegation: Some(Ok(agent.delegation.encode())),
+        origin: None,
     });
     agent
+}
+
+/// The device a door's connection says it came from, in its own request:
+/// nothing the door verified.
+fn request_naming_a_device(invocation: u128, agent: &DoorAgent) -> InvokeRequest {
+    let said = tilo_actions::InvokerDevice::certified([0x66; 32], "Somewhere else");
+    InvokeRequest {
+        context: Some(
+            tilo_actions::ActionContext::default().with_invoker(
+                tilo_actions::ActionInvoker::actor(format!("agent:{}", agent.delegation.agent_id))
+                    .from_device(Some(said)),
+            ),
+        ),
+        ..append_request(invocation)
+    }
+}
+
+/// The invoker the host set on the invocation an application received.
+fn delivered_invoker(wire: &InvocationEnvelope) -> tilo_actions::ActionInvoker {
+    wire.context()
+        .and_then(|context| context.invoker.clone())
+        .expect("the host names the invoker")
 }
 
 fn append_request(invocation: u128) -> InvokeRequest {
@@ -223,6 +246,69 @@ async fn an_admitted_door_connection_takes_an_app_action_in_its_run() {
                 host.observe(&caller, &id).is_some(),
                 "the connection reads its own invocation back"
             );
+            drop(f);
+        })
+        .await;
+}
+
+/// A connection the door admitted from another of the person's devices
+/// works in a run that names that device, and the application its action
+/// reaches is told so by the host, on the invoker beside the task agent it
+/// acts as: the device the run keeps, never one the connection names.
+#[tokio::test(flavor = "current_thread")]
+async fn an_application_is_told_the_device_a_door_connection_came_from() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            let agent = admit(&f);
+            let laptop = tilo_actions::InvokerDevice::certified([0x5c; 32], "Studio laptop");
+            f.native
+                .runs
+                .lock()
+                .unwrap()
+                .last_mut()
+                .expect("the door's run")
+                .origin = Some(laptop.clone());
+            let (_target, stream) = notes_target(&f).await;
+            let host = f.state.task_run_host(&agent.presentation()).unwrap();
+            let caller = connection(&host);
+            host.invoke(&caller, request_naming_a_device(43, &agent))
+                .await
+                .expect("answered")
+                .unwrap();
+            let invoker = delivered_invoker(&stream.next().await.unwrap());
+            assert_eq!(
+                invoker.actor,
+                format!("agent:{}", agent.delegation.agent_id)
+            );
+            assert_eq!(invoker.device, Some(laptop), "the device the door verified");
+            drop(f);
+        })
+        .await;
+}
+
+/// A connection of a program on this device works in a run that names no
+/// device, and the application is told of none, whatever device the
+/// connection's own request names.
+#[tokio::test(flavor = "current_thread")]
+async fn a_door_connection_of_this_device_is_on_no_other_device_whatever_it_says() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            let agent = admit(&f);
+            let (_target, stream) = notes_target(&f).await;
+            let host = f.state.task_run_host(&agent.presentation()).unwrap();
+            let caller = connection(&host);
+            host.invoke(&caller, request_naming_a_device(44, &agent))
+                .await
+                .expect("answered")
+                .unwrap();
+            let invoker = delivered_invoker(&stream.next().await.unwrap());
+            assert_eq!(
+                invoker.actor,
+                format!("agent:{}", agent.delegation.agent_id)
+            );
+            assert_eq!(invoker.device, None, "no door verified a device for it");
             drop(f);
         })
         .await;

@@ -38,6 +38,7 @@ fn run() -> TrackerRun {
         turn: None,
         question: None,
         delegation: None,
+        origin: None,
     }
 }
 

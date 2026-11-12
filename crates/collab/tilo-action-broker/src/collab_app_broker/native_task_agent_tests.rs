@@ -88,6 +88,7 @@ impl Fixture {
             turn: None,
             question: None,
             delegation: Some(Ok(minted.delegation.encode())),
+            origin: None,
         });
         self.state.refresh_native_task_delivery();
     }

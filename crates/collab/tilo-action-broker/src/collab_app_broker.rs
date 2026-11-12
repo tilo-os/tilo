@@ -5124,6 +5124,19 @@ impl AppBrokerState {
         }
         // Never trust an envelope's invoker: the host sets it.
         let context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
+        // Where a run's agent works from is what the agent door verified of
+        // its connection, kept with the run: an envelope names no device.
+        let context = invoker::working_from(
+            context,
+            match durable {
+                Some(DurableContext::Task { binding, .. })
+                    if actor.id.strip_prefix("agent:") == Some(binding.agent_id.as_str()) =>
+                {
+                    binding.origin.as_ref()
+                }
+                _ => None,
+            },
+        );
         // A certified local origin retains its original registered clock and
         // exact person/workspace through an asynchronous directory lookup. Never
         // recapture a replacement origin at dispatch or accept a payload actor.
