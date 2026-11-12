@@ -791,8 +791,9 @@ may act and passes the name of the invoker it admitted.
   (a script that writes a value sends no event), a form's shape when the
   document changed, and a document sends at most one event in 250 ms, so a
   page that rewrites a field forty times in two seconds is told a few times.
-  A field in an open shadow root or an editable region is told when it sends
-  an input event of its own, not when a script rewrites it.
+  A field in an open shadow root is compared like the rest once a read of
+  the page's forms has met it. An editable region is told when it sends an
+  input event of its own, not when a script rewrites it.
 - **An actor is told what the others did.** An answer to a named actor
   carries `others`: the newest eight record entries of other actors since
   that actor last heard from the tab (`others_earlier` counts older ones). An
@@ -821,8 +822,10 @@ not set down in the record and sends no `page_changed`.
 ### A form as typed actions
 
 `action: "forms"` reads the document's forms (or a named `frame`'s) as what
-they ask. Each form has an id (`form1`, `form2` in document order; `page` for
-fields in no form), a `label` (its own name, else the heading it stands under),
+they ask. Each form has an id (`form1`, `form2` in document order, the forms
+that stand in shadow trees numbered after those of the document's own tree;
+`page` for fields in no form), a `label` (its own name, else the heading it
+stands under),
 its `method` and `action` path, a `signature`, `offers` and its `submit`
 buttons by label. Each field has a `name`, a `kind` (`text`, `email`, `tel`, `url`,
 `number`, `date`, `time`, `datetime-local`, `month`, `week`, `range`, `color`,
@@ -879,9 +882,37 @@ not have), answers `form_changed`; a page that has no form at all answers
 `no_form`. `fill_form` takes a place in the tab's
 record with its `answers` as placed; `forms` is a read and takes none.
 
-Fields inside open shadow roots are not read as part of a form; they stay
-reachable by the outline and their own actions. A frame's forms are its own
-document's: `forms` and `fill_form` read and answer them with `frame`.
+On a page built of components a form's questions are the fields a person
+sees in it, found along the flat tree a read follows. A field in a component's
+open shadow tree belongs to no form of the page's tree, and neither does a
+field the page hands a form component through a slot: each is a question of
+the form it is drawn in, in the place it is drawn, and a form that stands in a
+shadow tree is a form of the page like any other. A field of a shadow tree is
+named by the label its component draws for it (the words handed to the label
+through a slot included), else by what names the component: its
+`aria-label`, a label of the page that is for it or around it, its `label`
+attribute. A component that takes part in a form through the page's form
+association (ElementInternals) and draws no input, select or text area is a
+question itself: a `flag` answered by a click when its role is `checkbox` or
+`switch` (so is any component with such a role), the form's submit button
+when its `type` says so, and otherwise a question that carries `unreachable`
+and is not answered by name: `closed_shadow_tree` when the component is drawn
+from a closed shadow tree, which no page action reaches, `no_field_of_its_own`
+when it draws a control of its own making. An answer for it is refused with
+`unreachable_field` and its ref. A page without components is read as it
+always was, and on any page a form whose fields are all its own keeps its
+number, its questions and its signature.
+
+A form is sent by its own path: its own submit button as the submitter, else
+the form's submit. A button a component draws is no submitter of the form, so
+it is pressed, and the form is listened to: `submitted` is true when the form
+then sent, and when it did not, `pressed` names the button and the message
+says the form sent nothing, since what the page did then is its script's. A
+page that takes the form's sending in its own script and keeps the form from
+leaving is said with `taken_by_page`.
+
+A frame's forms are its own document's: `forms` and `fill_form` read and
+answer them with `frame`.
 
 ### Private guarded text input
 

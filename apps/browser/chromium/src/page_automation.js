@@ -469,6 +469,35 @@ globalThis.__tiloPage ||= (() => {
     }
     return text;
   }
+  // What names a component from outside it: its own label attributes, a label
+  // of its tree that is for it or stands around it, and the label it says it
+  // draws.
+  function hostLabel(host) {
+    const said = clean(labelledBy(host), MAX_NAME) || clean(host.getAttribute('aria-label'), MAX_NAME);
+    if (said) return said;
+    const root = host.getRootNode(), labels = [];
+    if (host.id && root.querySelectorAll)
+      for (const label of root.querySelectorAll('label[for]')) if (label.htmlFor === host.id) labels.push(label);
+    const around = host.closest('label');
+    if (around) labels.push(around);
+    return clean(labels.map(label => clean(labelText(label), MAX_NAME) || shownText(label, true)).join(' '), MAX_NAME) ||
+      clean(host.getAttribute('label'), MAX_NAME);
+  }
+  // A field in a shadow tree is named there by a label the component hands
+  // its words through a slot, which the label's own text does not hold, or
+  // outside it, by what names the component that draws the field. A field of
+  // the page's own tree is named as it always was.
+  function shadowLabel(element) {
+    let host = element.getRootNode().host;
+    if (!host) return '';
+    const within = clean([...(element.labels || [])].map(label => shownText(label, true)).join(' '), MAX_NAME);
+    if (within) return within;
+    for (let depth = 0; host && depth < 2; depth++, host = host.getRootNode().host) {
+      const said = hostLabel(host);
+      if (said) return said;
+    }
+    return '';
+  }
   function name(element, kind, options) {
     let text = clean(labelledBy(element), MAX_NAME) || clean(element.getAttribute('aria-label'), MAX_NAME);
     if (text) return text;
@@ -479,7 +508,7 @@ globalThis.__tiloPage ||= (() => {
         return clean(element.value || (input === 'submit' ? 'Submit' : input === 'reset' ? 'Reset' : ''), MAX_NAME);
       if (tag === 'input' && input === 'image') return clean(element.alt || element.value || 'Submit', MAX_NAME);
       text = clean([...(element.labels || [])].map(labelText).join(' '), MAX_NAME);
-      return text || clean(element.getAttribute('placeholder') || element.title, MAX_NAME);
+      return text || shadowLabel(element) || clean(element.getAttribute('placeholder') || element.title, MAX_NAME);
     }
     if (tag === 'img' || tag === 'area') return clean(element.getAttribute('alt') || element.title, MAX_NAME);
     if (tag === 'fieldset') {
@@ -1546,14 +1575,14 @@ globalThis.__tiloPage ||= (() => {
   // The words an element shows, gathered along the flat tree: what its own
   // children say nothing of when the words are its shadow tree's or a slot's.
   const MAX_SHOWN_TEXT_NODES = 2000;
-  function shownText(element) {
+  function shownText(element, fieldless) {
     let text = '', visited = 0;
     const gather = (parent, visible, folded) => {
       for (const child of flatChildren(parent)) {
         if (text.length > MAX_NAME * 2 || ++visited > MAX_SHOWN_TEXT_NODES) return;
         if (child.nodeType === 3) { if (visible && !folded) text += child.data; continue; }
         if (child.nodeType !== 1 || SKIP.has(child.localName) || child.getAttribute('aria-hidden') === 'true' ||
-            !laidOut(child, folded)) continue;
+            (fieldless && FIELD_TAGS.has(child.localName)) || !laidOut(child, folded)) continue;
         const style = getComputedStyle(child);
         if (!style.display.startsWith('inline') && style.display !== 'contents') text += ' ';
         gather(child, style.visibility === 'visible', folds(child, style));
@@ -1573,8 +1602,9 @@ globalThis.__tiloPage ||= (() => {
   function watchRoot(root) {
     if (watchedRoots.has(root)) return;
     watchedRoots.add(root);
+    componentsMet = true;
     for (const field of root.querySelectorAll('input[type=password i]')) wasPassword.add(field);
-    if (typeWatch) typeWatch.observe(root, {subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ['type']});
+    if (typeWatch) typeWatch.observe(root, {subtree: true, childList: true, attributes: true, attributeOldValue: true});
   }
 
   // Every element of this document the outline prints with a ref, in the
@@ -2840,12 +2870,21 @@ globalThis.__tiloPage ||= (() => {
   }
   function heldNow() {
     let seen = 0;
-    for (const control of document.querySelectorAll('input,select,textarea')) {
-      if (++seen > MAX_FIELDS) break;
-      if (control.localName === 'input' && NOT_WATCHED.has(type(control))) continue;
+    const look = control => {
+      if (control.localName === 'input' && NOT_WATCHED.has(type(control))) return;
       const held = heldValue(control), was = lastHeld.get(control);
       lastHeld.set(control, held);
       if (was !== undefined && was !== held) changedSoon().fields.set(control, 'page');
+    };
+    for (const control of document.querySelectorAll('input,select,textarea')) {
+      if (++seen > MAX_FIELDS) return;
+      look(control);
+    }
+    // The fields of shadow trees, as the last read of the page's forms
+    // found them: no selector of the document reaches them.
+    for (const control of shadowFields) {
+      if (++seen > MAX_FIELDS) return;
+      if (control.isConnected) look(control);
     }
   }
   function shapesNow() {
@@ -3049,15 +3088,120 @@ globalThis.__tiloPage ||= (() => {
     // part of it, and is the form's only when nothing stands over the form.
     // A heading of something the page is telling its reader (the summary of
     // what is wrong with the answers) is not a name for the form under it.
-    let last = null;
+    // A form in a shadow tree stands under the last heading of its own tree
+    // before it, else where the component that draws it stands in the page.
+    let last = null, stands = form;
+    while (stands.getRootNode().host) {
+      if (stands === form) for (const heading of form.getRootNode().querySelectorAll('h1,h2,h3')) {
+        if (!(heading.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING)) break;
+        if (!form.contains(heading)) last = heading;
+      }
+      if (last) return clean(last.innerText, MAX_NAME) || clean(shownText(last), MAX_NAME);
+      stands = stands.getRootNode().host;
+    }
     for (const heading of document.querySelectorAll('h1,h2,h3')) {
-      if (!(heading.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING)) break;
-      if (!form.contains(heading) && !heading.closest('[role=alert],[role=alertdialog],[role=status]')) last = heading;
+      if (!(heading.compareDocumentPosition(stands) & Node.DOCUMENT_POSITION_FOLLOWING)) break;
+      if (!stands.contains(heading) && !heading.closest('[role=alert],[role=alertdialog],[role=status]')) last = heading;
     }
     if (last) return clean(last.innerText, MAX_NAME);
     const inside = form.querySelector('h1,h2,h3,h4');
     return inside ? clean(inside.innerText, MAX_NAME) : '';
   }
+  // A page built of components keeps what its forms ask where no selector of
+  // the document reaches: a field in a component's shadow tree belongs to no
+  // form of the page's tree, a field handed to a form component's slot
+  // belongs to none either, and a form may itself stand in a shadow tree.
+  // There a form's questions are the fields a person sees in it, found along
+  // the flat tree, the tree a read follows. A page with no component is read
+  // as it always was, and on any page a form whose fields are all its own
+  // asks what it asked, in the same order and under the same number.
+  const FIELD_TAGS = new Set(['input', 'select', 'textarea', 'button']);
+  const FIELD_ROLES = new Set(['textbox', 'searchbox', 'combobox', 'listbox', 'checkbox', 'radio', 'switch',
+    'slider', 'spinbutton']);
+  // Why a component that is a field cannot be answered by name.
+  const UNREACHABLE = {
+    closed_shadow_tree: 'it is drawn in a closed shadow tree, which no page action reaches',
+    no_field_of_its_own: 'its component draws it without an input, a select or a text area'
+  };
+  let componentsMet = false;
+  function builtOfComponents() {
+    if (componentsMet) return true;
+    for (const element of document.querySelectorAll('*'))
+      if (element.shadowRoot || element.localName.includes('-')) return componentsMet = true;
+    return false;
+  }
+  // The components that are fields themselves, each with how it is answered
+  // ('' by a click, as a box that is ticked; 'submit' as the button that
+  // sends its form) or why it cannot be; and the fields the last read found
+  // in shadow trees, for the watch.
+  let hostFields = new Map(), shadowFields = [];
+  // One walk of the flat tree: the forms that stand in shadow trees, the
+  // fields each form is drawn with beside its own (`foreign`), the fields
+  // drawn in no form, and where each stands among the others.
+  function formTree() {
+    const tree = {forms: [], foreign: new Map(), loose: [], place: new Map(), hosts: new Map(), shadow: []};
+    // The components a form counts among its own elements: they take part
+    // in it through the page's own form association.
+    const taking = new Map();
+    const takes = form => {
+      for (const member of formElements(form)) if (member.localName.includes('-')) taking.set(member, form);
+    };
+    for (const form of document.querySelectorAll('form')) takes(form);
+    let seen = 0, placed = 0;
+    const place = (field, form) => {
+      tree.place.set(field, placed++);
+      if (!form) tree.loose.push(field);
+      else if (tree.foreign.has(form)) tree.foreign.get(form).push(field);
+      else tree.foreign.set(form, [field]);
+    };
+    const walk = (parent, form) => {
+      for (const child of flatChildren(parent)) {
+        if (child.nodeType !== 1 || SKIP.has(child.localName)) continue;
+        if (++seen > MAX_FIND_CANDIDATES) return;
+        const tag = child.localName;
+        if (FIELD_TAGS.has(tag)) {
+          const root = child.getRootNode();
+          if (root !== document && tag !== 'button') tree.shadow.push(child);
+          // A field is its own form's where the page's tree gives it one.
+          // Else it is the form's it is drawn in when the edge of a shadow
+          // tree stands between the two, which is why it has none.
+          if (child.form) tree.place.set(child, placed++);
+          else place(child, form && form.getRootNode() !== root ? form : null);
+          continue;
+        }
+        let within = form;
+        if (tag === 'form') {
+          within = child;
+          if (child.getRootNode() !== document) { tree.forms.push(child); takes(child); }
+        } else if (taking.has(child)) within = taking.get(child);
+        const before = placed;
+        walk(child, within);
+        // A component with no field of the page's own inside it is a field
+        // itself when it takes part in a form, or says by its role that it
+        // is one a click answers or one a read cannot reach.
+        if (!tag.includes('-') || placed !== before) continue;
+        const own = role(child), taken = taking.get(child), said = lower(child.getAttribute('type') || '');
+        if (taken && (own === 'button' || own === 'link' || ['submit', 'reset', 'button'].includes(said))) {
+          if (said !== 'submit') continue;
+          tree.hosts.set(child, 'submit');
+        } else if (own === 'checkbox' || own === 'switch') tree.hosts.set(child, '');
+        else if (!taken && !FIELD_ROLES.has(own)) continue;
+        else if (sealed(child)) tree.hosts.set(child, 'closed_shadow_tree');
+        else if (taken) tree.hosts.set(child, 'no_field_of_its_own');
+        else continue;
+        if (taken) tree.place.set(child, placed++); else place(child, form);
+      }
+    };
+    if (document.body) walk(document.body, null);
+    return tree;
+  }
+  // Whether a button that is not the form's own says it sends a form: any
+  // button sends the form it belongs to, and one in a shadow tree belongs to
+  // none, so it is the form's submit button only when it or its component
+  // says so.
+  const saysSubmit = control => [control, control.getRootNode().host]
+    .some(said => said && ['submit', 'image'].includes(lower(said.getAttribute('type') || '')));
+  const ticked = control => control.localName === 'input' ? control.checked : control.getAttribute('aria-checked') === 'true';
   function formSurface(id, form, controls) {
     const fields = [], submit = [], groups = new Map();
     const shares = control => controls.some(other => other !== control && other.localName === 'input' &&
@@ -3065,11 +3209,25 @@ globalThis.__tiloPage ||= (() => {
     for (const control of controls) {
       if (fields.length >= MAX_FORM_FIELDS) break;
       const tag = control.localName, kind = tag === 'input' ? type(control) : tag;
+      if (hostFields.has(control)) {
+        const how = hostFields.get(control);
+        if (control.hasAttribute('disabled') || control.getAttribute('aria-disabled') === 'true') continue;
+        if (control.checkVisibility && !control.checkVisibility()) continue;
+        if (how === 'submit') { submit.push({label: name(control, 'button') || 'Submit', control}); continue; }
+        const field = {label: name(control, role(control)) || hostLabel(control) || clean(control.getAttribute('name'), MAX_NAME),
+          group: groupName(control), control, host: true,
+          kind: !how ? 'flag' : secret(control) || lower(control.getAttribute('type') || '') === 'password' ? 'secret' : 'text'};
+        if (how) field.unreachable = how;
+        if (control.hasAttribute('required') || control.getAttribute('aria-required') === 'true') field.required = true;
+        fields.push(field);
+        continue;
+      }
       if (!['input', 'select', 'textarea', 'button'].includes(tag) || kind === 'hidden' || control.disabled) continue;
       if (control.checkVisibility && !control.checkVisibility()) continue;
       if (tag === 'button' || ['submit', 'image', 'button', 'reset'].includes(kind)) {
         const sends = tag === 'button' ? control.type === 'submit' : kind === 'submit' || kind === 'image';
-        if (sends) submit.push({label: name(control, 'button') || 'Submit', control});
+        if (sends && (!form || control.form === form || saysSubmit(control)))
+          submit.push({label: name(control, 'button') || 'Submit', control});
         continue;
       }
       // Radios of one name are one question with one answer; checkboxes of
@@ -3088,7 +3246,9 @@ globalThis.__tiloPage ||= (() => {
         if (control.required) group.required = true;
         continue;
       }
-      const field = {label: name(control, role(control)) || clean(control.name, MAX_NAME), group: groupName(control), control};
+      const host = control.getRootNode().host;
+      const field = {label: name(control, role(control)) || clean(control.name || (host && host.getAttribute('name')), MAX_NAME),
+        group: groupName(control), control};
       if (tag === 'select') {
         field.kind = control.multiple ? 'choices' : 'choice';
         field.options = [...control.options].filter(option => option.value !== '' && !option.disabled)
@@ -3126,12 +3286,41 @@ globalThis.__tiloPage ||= (() => {
     // form asking the same questions, offering other answers.
     const offers = signatureOf(fields.filter(field => field.options)
       .map(field => `${field.name}=${field.options.map(option => option.label).join('\u001f')}`).join('|'));
-    return {id, form, label: form ? formLabel(form) : '', method, where, signature, offers, fields, submit};
+    return {id, form, label: form ? formLabel(form) : '', method, where, signature, offers, fields, submit, controls};
   }
   function readForms() {
-    const read = [...document.querySelectorAll('form')].slice(0, MAX_FORMS)
-      .map((form, index) => formSurface(`form${index + 1}`, form, formElements(form)));
-    const loose = [...document.querySelectorAll('input,select,textarea,button')].filter(control => !control.form);
+    const forms = [...document.querySelectorAll('form')];
+    let loose = [...document.querySelectorAll('input,select,textarea,button')].filter(control => !control.form);
+    let members = formElements;
+    hostFields = new Map();
+    if (builtOfComponents()) {
+      const tree = formTree();
+      hostFields = tree.hosts;
+      shadowFields = tree.shadow;
+      // What a field of a shadow tree holds when it is first met is what a
+      // later change of it is told against.
+      for (const field of shadowFields) if (!lastHeld.has(field)) lastHeld.set(field, heldValue(field));
+      // The forms of the page's own tree keep their numbers; those of
+      // shadow trees are numbered after them.
+      forms.push(...tree.forms);
+      loose = tree.loose;
+      // A form's own elements keep the order the page's tree gives them,
+      // and the fields it is drawn with stand among them where they are
+      // drawn.
+      members = form => {
+        const own = formElements(form), foreign = tree.foreign.get(form);
+        if (!foreign) return own;
+        const merged = [];
+        let next = 0;
+        for (const control of own) {
+          const at = tree.place.get(control);
+          while (at !== undefined && next < foreign.length && tree.place.get(foreign[next]) < at) merged.push(foreign[next++]);
+          merged.push(control);
+        }
+        return merged.concat(foreign.slice(next));
+      };
+    }
+    const read = forms.slice(0, MAX_FORMS).map((form, index) => formSurface(`form${index + 1}`, form, members(form)));
     if (loose.some(control => control.localName !== 'button')) read.push(formSurface('page', null, loose));
     return read.filter(surface => surface.fields.length);
   }
@@ -3140,7 +3329,10 @@ globalThis.__tiloPage ||= (() => {
     if (grouped(field)) return field.options.filter(option => option.control.checked).map(option => option.label);
     if (field.kind === 'choice' || field.kind === 'choices')
       return [...field.control.selectedOptions].filter(option => option.value !== '').map(option => clean(option.label, MAX_NAME));
-    if (field.kind === 'flag') return field.control.checked;
+    if (field.kind === 'flag') return ticked(field.control);
+    // A component says what it holds in its own attributes, or not at all.
+    if (field.host) return field.kind === 'secret' ? '' : clean(field.control.getAttribute('aria-valuetext') ||
+      field.control.getAttribute('aria-valuenow') || field.control.getAttribute('value'), MAX_VALUE);
     if (field.kind === 'secret') return field.control.value ? `<${field.control.value.length} characters hidden>` : '';
     if (field.kind === 'file') return [...(field.control.files || [])].map(file => clean(file.name, MAX_NAME));
     return clean(field.control.value, MAX_VALUE);
@@ -3172,6 +3364,10 @@ globalThis.__tiloPage ||= (() => {
         if (field.kind === 'flag') said[0] = 'yes or no';
         if (field.required) { entry.required = true; said.push('required'); }
         if (field.locked) { entry.locked = true; said.push('read-only'); }
+        if (field.unreachable) {
+          entry.unreachable = field.unreachable;
+          said.push(`cannot be answered by name: ${UNREACHABLE[field.unreachable]}`);
+        }
         if (!unanswered(value)) { entry.value = value; said.push(`now ${quote(Array.isArray(value) ? value.join(', ') : value === true ? 'yes' : value)}`); }
         if (grouped(field)) entry.elements = field.options.map(option => refOf(option.control));
         else { entry.element = refOf(field.control); said.push(`[ref=${entry.element}]`); }
@@ -3190,6 +3386,8 @@ globalThis.__tiloPage ||= (() => {
   // would place it; what it left the field holding is its return.
   function placeAnswer(field, value) {
     const ref = grouped(field) ? '' : refOf(field.control);
+    if (field.unreachable)
+      throw failure('unreachable_field', `${quote(field.name)} cannot be answered by name: ${UNREACHABLE[field.unreachable]}; operate ${ref} by its own actions`);
     if (field.kind === 'secret')
       throw failure('secret_field', `${quote(field.name)} is a password or card field; fill ${ref} with fill_secret, which keeps the text out of logs and history`);
     if (field.kind === 'file') throw failure('needs_files', `${quote(field.name)} takes files; choose them for ${ref} with fill_files`);
@@ -3218,8 +3416,8 @@ globalThis.__tiloPage ||= (() => {
     if (field.kind === 'flag') {
       const want = typeof value === 'boolean' ? value : YES.has(lower(value)) ? true : NO.has(lower(value)) ? false : null;
       if (want === null) throw failure('invalid_request', `${quote(field.name)} is answered yes or no`);
-      if (field.control.checked !== want) field.control.click();
-      if (field.control.checked !== want) throw failure('rejected', `The page did not take the answer to ${quote(field.name)}`);
+      if (ticked(field.control) !== want) field.control.click();
+      if (ticked(field.control) !== want) throw failure('rejected', `The page did not take the answer to ${quote(field.name)}`);
       return want ? 'yes' : 'no';
     }
     if (typeof value !== 'string' && typeof value !== 'number') throw failure('invalid_request', `${quote(field.name)} takes text`);
@@ -3279,7 +3477,7 @@ globalThis.__tiloPage ||= (() => {
     const after = readForms().find(candidate => candidate.id === surface.id);
     const opened = after ? after.fields.filter(field => !before.has(field.name)).map(field => field.name) : [];
     const empty = after ? after.fields.filter(field => field.required && unanswered(fieldValue(field))).map(field => field.name) : [];
-    let submitted = false, held = '';
+    let submitted = false, held = '', taken = false, pressed = '';
     if (submitWith !== undefined && submitWith !== null && submitWith !== false) {
       try {
         if (missed.length) held = 'not sent, since not every answer was placed';
@@ -3292,12 +3490,32 @@ globalThis.__tiloPage ||= (() => {
           if (typeof submitWith === 'string' && !button)
             throw failure('no_submit', `the form has no button ${quote(submitWith)}; it has ${surface.submit.map(candidate => quote(candidate.label)).join(', ') || 'none'}`);
           guardSubmission(surface.form, button ? button.control : null, crossOrigin);
-          const invalid = formElements(surface.form).find(control => control.willValidate && !control.validity.valid);
+          const invalid = surface.controls.find(control => control.willValidate && !control.validity.valid);
           if (invalid) held = `not sent: ${summary(invalid)} [ref=${refOf(invalid)}] ${clean(invalid.validationMessage, 200)}`;
           else {
-            const send = HTMLFormElement.prototype.requestSubmit;
-            if (button) Reflect.apply(send, surface.form, [button.control]); else Reflect.apply(send, surface.form, []);
-            submitted = true;
+            // The form's own button sends it as its submitter. A button a
+            // component draws is no submitter of the form: it is pressed, as
+            // the page means it to be, and whether the form was then sent is
+            // heard from the form, not taken for granted.
+            const own = !button || button.control.form === surface.form;
+            let heard = null;
+            const hear = event => { heard = event; };
+            surface.form.addEventListener('submit', hear);
+            try {
+              const send = HTMLFormElement.prototype.requestSubmit;
+              if (!button) Reflect.apply(send, surface.form, []);
+              else if (own) Reflect.apply(send, surface.form, [button.control]);
+              else Reflect.apply(HTMLElement.prototype.click, button.control, []);
+            } finally { surface.form.removeEventListener('submit', hear); }
+            if (own || heard) {
+              submitted = true;
+              // A page that keeps the form from leaving sends the answers
+              // itself, or not at all: that is its script's doing.
+              taken = !!heard && heard.defaultPrevented;
+            } else {
+              pressed = button.label;
+              held = `pressed ${quote(button.label)}, which sent no form: what the page did with the answers is its own script's, so read the page`;
+            }
           }
         }
       } catch (error) {
@@ -3306,15 +3524,18 @@ globalThis.__tiloPage ||= (() => {
     }
     const said = [`Answered ${placed} of ${results.length} questions of ${surface.id}${surface.label ? ' ' + quote(surface.label) : ''}`];
     if (missed.length) said.push(`not placed: ${missed.map(result => `${quote(result.name)} (${result.message})`).join('; ')}`);
-    if (submitted) said.push('sent'); else if (held) said.push(held);
+    if (submitted) said.push(taken ? "sent, and taken by the page's own script instead of leaving as a form" : 'sent');
+    else if (held) said.push(held);
     if (opened.length) said.push(`the form now also asks ${opened.map(quote).join(', ')}`);
     if (!submitted && empty.length) said.push(`still required: ${empty.map(quote).join(', ')}`);
     // What the form is now, by the signature a read of it would give: its
     // caller knows at once that the form it answered asks something else.
     if (after && after.signature !== surface.signature && !opened.length)
       said.push(`the form asks something else now, signature ${after.signature}`);
-    if (!placed && !submitted) throw failure(missed[0] ? missed[0].code : 'invalid_request', said.join('; '));
+    if (!placed && !submitted && !pressed) throw failure(missed[0] ? missed[0].code : 'invalid_request', said.join('; '));
     const data = {form: surface.id, signature: surface.signature, results, set, submitted, now_asks: opened, unanswered: empty};
+    if (taken) data.taken_by_page = true;
+    if (pressed) data.pressed = pressed;
     if (after) data.became = {signature: after.signature, offers: after.offers};
     return {ok: true, message: said.join('; '), data};
   }

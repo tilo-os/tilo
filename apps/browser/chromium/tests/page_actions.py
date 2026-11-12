@@ -830,6 +830,150 @@ READS = {'/shadow': SHADOW, '/code': CODE, '/layout': LAYOUT, '/component-articl
          '/spaced': SPACED, '/waits': WAITS, '/waits-shadow': WAITS_SHADOW}
 
 
+# A sign-up form as a design system's components draw it, modelled on the
+# markup of Web Awesome's form controls (the successor of Shoelace's): each
+# field is a custom element that takes part in the form through
+# ElementInternals and draws a control of the page's own kind in an open
+# shadow tree, under a label the page hands it through a slot or names in an
+# attribute, and the button that sends the form is a component as well.
+# Beside them, a switch drawn with no control of the page's own, as other
+# libraries draw theirs, and a field kept in a closed shadow tree.
+COMPONENT_FORM = b"""<!doctype html><title>Create an account</title>
+<h1>Create an account</h1>
+<form id="signup" action="/signed" method="get">
+  <ds-input name="given" required><span slot="label">Given name</span></ds-input>
+  <ds-input name="email" type="email" label="Email address"></ds-input>
+  <ds-input name="pass" type="password" label="Password"></ds-input>
+  <label for="promo">Promo code</label> <ds-input id="promo" name="promo"></ds-input>
+  <ds-checkbox name="terms" required>Accept the terms</ds-checkbox>
+  <ds-switch name="news" role="switch" aria-checked="false" tabindex="0">Send me news</ds-switch>
+  <ds-sealed name="code" aria-label="Access code"></ds-sealed>
+  <ds-button type="submit">Create account</ds-button>
+</form>
+<script>
+const drawn = (host, html) => {
+  const root = host.attachShadow({mode: 'open'});
+  root.innerHTML = html;
+  return root;
+};
+customElements.define('ds-input', class extends HTMLElement {
+  static formAssociated = true;
+  constructor() {
+    super();
+    const internals = this.attachInternals();
+    const input = drawn(this, `<div part="form-control"><label part="form-control-label" for="input">
+      <slot name="label">${this.getAttribute('label') || ''}</slot></label>
+      <div part="base"><input part="input" id="input" type="${this.getAttribute('type') || 'text'}"
+        ${this.hasAttribute('required') ? 'required' : ''}></div></div>`).querySelector('input');
+    input.addEventListener('input', () => internals.setFormValue(input.value));
+  }
+});
+customElements.define('ds-checkbox', class extends HTMLElement {
+  static formAssociated = true;
+  constructor() {
+    super();
+    const internals = this.attachInternals();
+    const box = drawn(this, `<label part="base"><input class="input" type="checkbox"
+      ${this.hasAttribute('required') ? 'required' : ''}><slot part="label"></slot></label>`).querySelector('input');
+    box.addEventListener('change', () => internals.setFormValue(box.checked ? 'on' : null));
+  }
+});
+customElements.define('ds-switch', class extends HTMLElement {
+  static formAssociated = true;
+  constructor() {
+    super();
+    const internals = this.attachInternals();
+    drawn(this, '<span part="track" style="display:inline-block;width:2em;height:1em;border:1px solid"></span> <slot></slot>');
+    this.addEventListener('click', () => {
+      const on = this.getAttribute('aria-checked') !== 'true';
+      this.setAttribute('aria-checked', String(on));
+      internals.setFormValue(on ? 'yes' : null);
+    });
+  }
+});
+customElements.define('ds-sealed', class extends HTMLElement {
+  static formAssociated = true;
+  constructor() {
+    super();
+    this.attachInternals();
+    this.attachShadow({mode: 'closed'}).innerHTML = '<input placeholder="Sealed code">';
+  }
+});
+customElements.define('ds-button', class extends HTMLElement {
+  static formAssociated = true;
+  constructor() {
+    super();
+    const internals = this.attachInternals();
+    drawn(this, `<button part="base" type="${this.getAttribute('type') || 'button'}"><slot part="label"></slot></button>`);
+    this.addEventListener('click', () => {
+      if (this.getAttribute('type') !== 'submit' || !internals.form) return;
+      // As the library sends a form: through a button of the page's own
+      // tree that is there for the press alone.
+      const proxy = document.createElement('button');
+      proxy.type = 'submit';
+      proxy.style.cssText = 'position:absolute;width:0;height:0;clip-path:inset(50%);overflow:hidden';
+      internals.form.append(proxy);
+      proxy.click();
+      proxy.remove();
+    });
+  }
+});
+</script>"""
+
+
+# A form component: its form stands in its shadow tree and asks for the
+# fields the page hands it through a slot beside one of its own, and it
+# sends what it was told by its own script, never as a form.
+NEWSLETTER_BOX = b"""<script>
+customElements.define('newsletter-box', class extends HTMLElement {
+  constructor() {
+    super();
+    const root = this.attachShadow({mode: 'open'});
+    root.innerHTML = `<form><slot></slot>
+      <label>How often <select name="often"><option value="">Choose</option><option>Weekly</option><option>Monthly</option></select></label>
+      <button>Subscribe</button></form><p id="said"></p>`;
+    root.querySelector('form').addEventListener('submit', event => {
+      event.preventDefault();
+      root.getElementById('said').textContent = 'subscribed ' + this.querySelector('input').value + ' ' +
+        root.querySelector('select').value;
+    });
+  }
+});
+</script>"""
+NEWSLETTER = b'<newsletter-box><label>Your email <input name="mail" type="email" required></label></newsletter-box>'
+# Two forms that stand in shadow trees: one whose fields are all its own, and
+# the form component.
+FORM_COMPONENTS = b"""<!doctype html><title>Members</title>
+<h1>Members</h1>
+<login-panel></login-panel>
+<h2>Newsletter</h2>
+""" + NEWSLETTER + b"""
+<script>
+customElements.define('login-panel', class extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({mode: 'open'}).innerHTML = `<form action="/signed" method="get">
+      <label>Member name <input name="user" required></label>
+      <label>Passphrase <input name="pw" type="password"></label>
+      <button>Sign in</button></form>`;
+  }
+});
+</script>""" + NEWSLETTER_BOX
+# The form of a page without components, on a page that has them: one before
+# it, which draws a form of its own.
+APPLY_AMONG = APPLY.replace(b'<h1>Apply for a permit</h1>', NEWSLETTER + b'<h1>Apply for a permit</h1>') + NEWSLETTER_BOX
+assert APPLY_AMONG != APPLY + NEWSLETTER_BOX
+# Plain pages, for what reading their forms costs: one form of thirty fields,
+# and three thousand paragraphs with no form.
+THIRTY = ('<!doctype html><title>Thirty</title><h1>Thirty questions</h1><form action="/done" method="get">' +
+          ''.join(f'<label>Question {number} <input name="q{number}"></label>' for number in range(1, 31)) +
+          '<button>Send</button></form>').encode()
+PLAIN_LONG = ('<!doctype html><title>Plain</title><h1>Plain</h1>' +
+              ''.join(f'<p>Paragraph {number} of a page that asks nothing.</p>' for number in range(1, 3001))).encode()
+READS.update({'/component-form': COMPONENT_FORM, '/form-components': FORM_COMPONENTS, '/apply-among': APPLY_AMONG,
+              '/thirty': THIRTY, '/plain-long': PLAIN_LONG})
+
+
 # A shop, from its search to an order's confirmation: the stand-in for a real
 # order, which is never placed on a real site. Its bag and its orders are the
 # server's own, so a test reads what the shop received.
@@ -1667,6 +1811,253 @@ class PageActions(unittest.TestCase):
         self.assertEqual([(field['name'], field['how']) for field in changed['fields']], [('Search the letters', 'input')])
         self.assertEqual((changed['frame_name'], changed['frame_url']), ('Newsletter sign-up', self.server.other + '/signup'))
         self.assertNotIn('budget', json.dumps(changed))
+
+    def test_a_form_s_fields_inside_components_are_its_questions(self):
+        # A design system draws each field of a form in a component's shadow
+        # tree. The form's own list of elements then holds the components and
+        # none of the fields; the form asks what a person sees it ask.
+        self.h.navigate(self.url + '/component-form')
+        read = self.ok('forms')
+        self.assertEqual([form['form'] for form in read['data']['forms']], ['form1'], read)
+        form = read['data']['forms'][0]
+        self.assertEqual((form['label'], form['method'], form['action'], form['submit']),
+                         ('Create an account', 'GET', '/signed', ['Create account']))
+        asked = {field['name']: field for field in form['fields']}
+        # Each is named by the label its component draws for it: words the
+        # page hands the component through a slot, words the component was
+        # given in an attribute, and a label of the page that is for the
+        # component.
+        self.assertEqual(list(asked), ['Given name', 'Email address', 'Password', 'Promo code', 'Accept the terms',
+                                       'Send me news', 'Access code'])
+        self.assertEqual([field['kind'] for field in form['fields']],
+                         ['text', 'email', 'secret', 'text', 'flag', 'flag', 'text'])
+        self.assertEqual([name for name in asked if asked[name].get('required')], ['Given name', 'Accept the terms'])
+        # The questions are the fields the read prints, by their names and refs.
+        outline = self.outline()
+        for line, name in (('textbox "Given name"', 'Given name'), ('textbox "Email address"', 'Email address'),
+                           ('textbox "Promo code"', 'Promo code'), ('checkbox "Accept the terms"', 'Accept the terms'),
+                           ('switch "Send me news"', 'Send me news')):
+            self.assertEqual(self.ref(outline, line), asked[name]['element'], name)
+        self.assertRegex(read['outline'], r'  - "Given name": text, required, \[ref=d\d+e\d+\]')
+        # The review of the page's fields speaks of each by the same question.
+        review = {field['name']: field for field in self.ok('fields')['data']['fields']}
+        for name in ('Given name', 'Email address', 'Promo code', 'Accept the terms', 'Send me news'):
+            self.assertEqual((review[name]['form'], review[name]['question']), ('form1', name), review[name])
+        # The same form read again on a later visit is the same form.
+        self.h.navigate(self.url + '/component-form')
+        self.assertEqual(self.ok('forms')['data']['forms'][0]['signature'], form['signature'])
+
+    def test_a_component_that_takes_part_in_its_form_is_answered_and_sent(self):
+        # The components take part in the form through the page's own form
+        # association: an answer placed in a component's field is what the
+        # component hands the form, a switch drawn with no control of the
+        # page's own is answered by the click that turns it, and the form is
+        # sent by the button the form shows, which is a component too.
+        self.h.navigate(self.url + '/component-form')
+        self.server.signed = None
+        signature = self.ok('forms')['data']['forms'][0]['signature']
+        sent = self.ok('fill_form', form=signature, submit=True, actor='ada', answers={
+            'Given name': 'Ada', 'Email address': 'ada@example.org', 'Promo code': 'SPRING',
+            'Accept the terms': True, 'Send me news': 'yes'})
+        self.assertEqual([(result['name'], result['ok']) for result in sent['data']['results']],
+                         [('Given name', True), ('Email address', True), ('Promo code', True),
+                          ('Accept the terms', True), ('Send me news', True)], sent)
+        self.assertEqual((sent['data']['submitted'], sent['data'].get('taken_by_page'), sent['data'].get('pressed')),
+                         (True, None, None), sent)
+        self.reads('text "/signed"', 'the form never left the page')
+        self.assertEqual(self.server.signed, {'given': ['Ada'], 'email': ['ada@example.org'], 'promo': ['SPRING'],
+                                              'terms': ['on'], 'news': ['yes']})
+        answers = self.ok('ledger', since=0)['data']['entries'][-1]['answers']
+        self.assertIn({'name': 'Given name', 'value': 'Ada'}, answers)
+        self.assertIn({'name': 'Send me news', 'value': 'yes'}, answers)
+        # A required question left empty holds the form back, as it does in
+        # a form of the page's own fields.
+        self.h.navigate(self.url + '/component-form')
+        self.server.signed = None
+        held = self.ok('fill_form', form='form1', submit='Create account', answers={'Promo code': 'SPRING'})
+        self.assertFalse(held['data']['submitted'], held)
+        self.assertEqual(held['data']['unanswered'], ['Given name', 'Accept the terms'])
+        self.assertIn('not sent', held['message'])
+        self.assertIsNone(self.server.signed)
+
+    def test_a_form_inside_a_shadow_tree_is_found_answered_and_sent(self):
+        # A component may draw a whole form in its shadow tree. It is a form
+        # of the page like any other: numbered, named, known by a signature,
+        # answered by its questions and sent as a form.
+        self.h.navigate(self.url + '/form-components')
+        self.server.signed = None
+        read = self.ok('forms')
+        self.assertEqual([form['form'] for form in read['data']['forms']], ['form1', 'form2'], read)
+        form = read['data']['forms'][0]
+        self.assertEqual((form['label'], form['method'], form['action'], form['submit']),
+                         ('Members', 'GET', '/signed', ['Sign in']))
+        self.assertEqual([(field['name'], field['kind'], field.get('required', False)) for field in form['fields']],
+                         [('Member name', 'text', True), ('Passphrase', 'secret', False)])
+        self.assertRegex(form['signature'], r'^[0-9a-f]{8}$')
+        sent = self.ok('fill_form', form=form['signature'], answers={'Member name': 'ada'}, submit=True, actor='ada')
+        self.assertEqual((sent['data']['submitted'], sent['data'].get('taken_by_page')), (True, None), sent)
+        self.reads('text "/signed"', 'the form never left the page')
+        self.assertEqual(self.server.signed, {'user': ['ada']})
+
+    def test_a_form_component_asks_for_the_fields_the_page_hands_it(self):
+        # A form component keeps its form in its shadow tree and is handed
+        # its fields by the page, through a slot. No form of the page's tree
+        # owns such a field; the form a person sees it in asks for it, in
+        # the place it is drawn, beside the fields that are the form's own.
+        self.h.navigate(self.url + '/form-components')
+        read = self.ok('forms')
+        self.assertEqual([form['form'] for form in read['data']['forms']], ['form1', 'form2'], read)
+        form = read['data']['forms'][1]
+        self.assertEqual((form['label'], form['submit']), ('Newsletter', ['Subscribe']))
+        asked = {field['name']: field for field in form['fields']}
+        self.assertEqual(list(asked), ['Your email', 'How often'])
+        self.assertEqual((asked['Your email']['kind'], asked['Your email'].get('required')), ('email', True))
+        self.assertEqual((asked['How often']['kind'], asked['How often']['choices']), ('choice', ['Weekly', 'Monthly']))
+        review = {field['name']: field for field in self.ok('fields')['data']['fields']}
+        self.assertEqual((review['Your email']['form'], review['Your email']['question']), ('form2', 'Your email'))
+        # The component sends what it was told by its own script and keeps
+        # the form from leaving: the answer says the page took it, and the
+        # page is where it was.
+        sent = self.ok('fill_form', form='form2', submit=True, actor='ada',
+                       answers={'Your email': 'ada@example.org', 'How often': 'Weekly'})
+        self.assertEqual([result['ok'] for result in sent['data']['results']], [True, True], sent)
+        self.assertEqual((sent['data']['submitted'], sent['data'].get('taken_by_page')), (True, True), sent)
+        self.assertIn("taken by the page's own script", sent['message'])
+        self.assertIn('text "subscribed ada@example.org Weekly"', self.outline())
+        self.assertEqual(urlparse(self.ok('outline')['url']).path, '/form-components')
+
+    def test_a_secret_inside_a_component_is_asked_for_as_a_secret(self):
+        # A password a component draws in its shadow tree is a secret in the
+        # form's questions, in the review, in the record and in what the
+        # engine tells of the page's own changes.
+        self.h.navigate(self.url + '/component-form')
+        said = []
+
+        def heard(answer):
+            said.append(answer)
+            return answer
+        form = heard(self.ok('forms'))['data']['forms'][0]
+        asked = {field['name']: field for field in form['fields']}
+        self.assertEqual(asked['Password']['kind'], 'secret')
+        answered = heard(self.ok('fill_form', form='form1', actor='ada',
+                                 answers={'Promo code': 'SPRING', 'Password': 'hunter2-secret'}))
+        results = {result['name']: result for result in answered['data']['results']}
+        self.assertEqual((results['Promo code']['ok'], results['Password']['code'], results['Password']['element']),
+                         (True, 'secret_field', asked['Password']['element']))
+        refused = heard(self.page('fill', element=asked['Password']['element'], text='hunter2-secret', actor='ada'))
+        self.assertEqual((refused['ok'], refused['code']), (False, 'secret_field'), refused)
+        heard(self.ok('fill', element=asked['Password']['element'], text='hunter2-secret', secret=True, actor='ada'))
+        password = 'document.querySelector("ds-input[name=pass]").shadowRoot.querySelector("input")'
+        self.assertEqual(self.main_world(password + '.value'), 'hunter2-secret')
+        now = {field['name']: field for field in heard(self.ok('forms'))['data']['forms'][0]['fields']}
+        self.assertEqual(now['Password']['value'], '<14 characters hidden>')
+        review = {field['name']: field for field in heard(self.ok('fields', actor='rev'))['data']['fields']}
+        self.assertEqual((review['Password']['value'], review['Password']['question'], review['Password']['set']['by']),
+                         ('<14 characters hidden>', 'Password', 'ada'))
+        # A secret the page's own script writes is named as changed, never told.
+        mark = len(self.h.seen)
+        self.main_world('(' + password + '.value = "battery-staple", 1)')
+        told = self.told('page_changed', mark)
+        self.assertEqual([(field['name'], field['how'], field['form'], field['question']) for field in told['fields']],
+                         [('Password', 'page', 'form1', 'Password')], told)
+        said.append(told)
+        said.append(heard(self.ok('ledger', since=0, actor='cy')))
+        everything = json.dumps(said)
+        for text in ('hunter2', 'battery', 'staple'):
+            self.assertNotIn(text, everything)
+
+    def test_a_field_in_a_closed_shadow_tree_is_listed_and_said_to_be_out_of_reach(self):
+        # A field a component keeps in a closed shadow tree cannot be read
+        # or written by any page action. The form has it all the same: it is
+        # listed with why it cannot be answered and the ref that names it,
+        # and an answer given for it is refused for that reason alone.
+        self.h.navigate(self.url + '/component-form')
+        read = self.ok('forms')
+        asked = {field['name']: field for field in read['data']['forms'][0]['fields']}
+        self.assertEqual((asked['Access code']['kind'], asked['Access code'].get('unreachable')),
+                         ('text', 'closed_shadow_tree'), asked['Access code'])
+        self.assertRegex(asked['Access code']['element'], r'^d\d+e\d+$')
+        self.assertRegex(read['outline'], r'  - "Access code": text, cannot be answered by name: it is drawn in a closed '
+                                          r'shadow tree, which no page action reaches, \[ref=d\d+e\d+\]')
+        # No other question is said to be out of reach.
+        self.assertEqual([name for name in asked if 'unreachable' in asked[name]], ['Access code'])
+        answered = self.ok('fill_form', form='form1', submit=True, actor='ada',
+                           answers={'Promo code': 'SPRING', 'Access code': '1234'})
+        results = {result['name']: result for result in answered['data']['results']}
+        self.assertTrue(results['Promo code']['ok'])
+        self.assertEqual((results['Access code']['ok'], results['Access code']['code'], results['Access code']['element']),
+                         (False, 'unreachable_field', asked['Access code']['element']))
+        self.assertIn('closed shadow tree', results['Access code']['message'])
+        self.assertFalse(answered['data']['submitted'])
+        self.assertIn('not sent, since not every answer was placed', answered['message'])
+        # The read of the page says of the same element that it cannot read it.
+        line = [line for line in self.outline().splitlines() if 'closed shadow tree' in line]
+        self.assertEqual(len(line), 1, line)
+        self.assertIn(f'[ref={asked["Access code"]["element"]}]', line[0])
+
+    def test_the_engine_says_when_the_page_changes_a_field_inside_a_component(self):
+        # What the page's own script writes into a field of a shadow tree is
+        # told as it is for a field of the page's own tree: which field, by
+        # the question its form asks, and nothing of what it holds.
+        self.h.navigate(self.url + '/component-form')
+        asked = {field['name']: field for field in self.ok('forms')['data']['forms'][0]['fields']}
+        self.assertIn('Email address', asked)
+        mark = len(self.h.seen)
+        self.main_world('(document.querySelector("ds-input[name=email]").shadowRoot.querySelector("input").value = "eve@example.org", 1)')
+        told = self.told('page_changed', mark)
+        self.assertEqual([(field['role'], field['name'], field['how'], field['form'], field['question'], field['element'])
+                          for field in told['fields']],
+                         [('textbox', 'Email address', 'page', 'form1', 'Email address', asked['Email address']['element'])], told)
+        self.assertNotIn('eve@example.org', json.dumps(told))
+        # A field the component draws later makes the form ask more, and
+        # that is told too: the form, by what it is now.
+        before = self.ok('forms')['data']['forms'][0]
+        mark = len(self.h.seen)
+        self.main_world('(document.querySelector("ds-input[name=promo]").shadowRoot.querySelector("[part=base]")'
+                        '.insertAdjacentHTML("beforeend", "<input aria-label=\\"Second promo code\\">"), 1)')
+        told = self.told('page_changed', mark, lambda event: event['forms'])
+        grown = self.ok('forms')['data']['forms'][0]
+        self.assertNotEqual(grown['signature'], before['signature'])
+        self.assertIn('Second promo code', [field['name'] for field in grown['fields']])
+        self.assertEqual(told['forms'], [{'form': 'form1', 'signature': grown['signature'], 'offers': grown['offers']}])
+
+    def test_a_form_found_before_keeps_its_number_and_signature_among_components(self):
+        # A form of the page's own fields is the form it was on a page that
+        # also has components: the same number, the same signature and the
+        # same questions, so what was remembered of it still names it. A form
+        # a component draws before it in the page is numbered after it.
+        self.h.navigate(self.url + '/apply')
+        plain = self.ok('forms')['data']['forms']
+        self.assertEqual(len(plain), 1)
+        self.h.navigate(self.url + '/apply-among')
+        among = self.ok('forms')['data']['forms']
+        self.assertEqual([form['form'] for form in among], ['form1', 'form2'], among)
+        for key in ('form', 'label', 'method', 'action', 'signature', 'offers', 'submit'):
+            self.assertEqual(among[0][key], plain[0][key], key)
+        self.assertEqual([(field['name'], field['kind'], field.get('choices')) for field in among[0]['fields']],
+                         [(field['name'], field['kind'], field.get('choices')) for field in plain[0]['fields']])
+        self.assertEqual([field['name'] for field in among[1]['fields']], ['Your email', 'How often'])
+        # An answer names the form by the signature it had on the plain page.
+        answered = self.ok('fill_form', form=plain[0]['signature'], answers={'Arrival': '2027-02-03'})
+        self.assertEqual((answered['data']['form'], answered['data']['signature']), ('form1', plain[0]['signature']))
+
+    def test_reading_a_plain_page_s_forms_stays_quick(self):
+        # What a read of a plain page's forms costs, there and back: one
+        # form of thirty fields, and a long page that has no form. The times
+        # are printed for whoever compares two engines.
+        for path, what, questions in (('/thirty', 'one form of 30 fields', 30), ('/plain-long', 'a 3000-line page', 0)):
+            self.h.navigate(self.url + path)
+            read = self.ok('forms')
+            self.assertEqual(sum(len(form['fields']) for form in read['data']['forms']), questions, read['message'])
+            took = []
+            for _ in range(25):
+                start = time.perf_counter()
+                self.ok('forms')
+                took.append((time.perf_counter() - start) * 1000)
+            took.sort()
+            print(f'perf chromium forms read of {what}: least {took[0]:.2f} ms, middle {took[len(took) // 2]:.2f} ms',
+                  flush=True)
+            self.assertLess(took[len(took) // 2], 1000, took)
 
     def test_the_engine_says_when_the_page_changes_a_field_or_a_form_itself(self):
         # Whoever reviews a page is told when the page's own script changes
