@@ -42,9 +42,13 @@ def parse(ref: str) -> tuple[str, str, str]:
 
 def fetch(url: str, token: str | None = None) -> bytes:
     headers = {"Accept": ACCEPT}
+    request = Request(url, headers=headers)
     if token:
-        headers["Authorization"] = f"Bearer {token}"
-    with urlopen(Request(url, headers=headers), timeout=60) as response:
+        # The registry's own token, not the blob store's: a blob GET answers 302 to storage
+        # that signs its own URL and refuses a request that also carries an Authorization
+        # header, so the token is not carried across the redirect.
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
+    with urlopen(request, timeout=60) as response:
         return response.read()
 
 
@@ -86,6 +90,13 @@ def main() -> int:
         return 2
     try:
         body = manifest(sys.argv[2])
+        if sys.argv[1] == "digest":
+            print("sha256:" + hashlib.sha256(body).hexdigest())
+            return 0
+        if sys.argv[1] == "config":
+            body = config(sys.argv[2], body)
+        sys.stdout.write(body.decode())
+        return 0
     except HTTPError as error:
         if error.code == 404:
             print(f"registry-manifest: manifest unknown: {sys.argv[2]}", file=sys.stderr)
@@ -95,13 +106,6 @@ def main() -> int:
     except (URLError, OSError, ValueError) as error:
         print(f"registry-manifest: {sys.argv[2]}: {error}", file=sys.stderr)
         return 3
-    if sys.argv[1] == "digest":
-        print("sha256:" + hashlib.sha256(body).hexdigest())
-    elif sys.argv[1] == "config":
-        sys.stdout.write(config(sys.argv[2], body).decode())
-    else:
-        sys.stdout.write(body.decode())
-    return 0
 
 
 if __name__ == "__main__":
