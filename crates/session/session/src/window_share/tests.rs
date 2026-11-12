@@ -1947,6 +1947,41 @@ fn a_window_is_shared_by_naming_the_tab_it_is_shown_in() {
     );
 }
 
+/// A share whose window was minted by a device this session has not heard in the workspace is
+/// the one case the workspace's governance is asked who it admits: a window of a device that was
+/// heard, or of this one, never asks.
+#[test]
+fn only_a_share_of_an_unheard_device_asks_who_the_workspace_admits() {
+    let host = device(0x71);
+    let salt = tilo_desktop_model::ids::device_salt_of_key(host.as_bytes());
+    let tab = tilo_desktop_model::ids::compose_id(salt, 3);
+    let mut policy = tilo_action_policy::WorkspacePolicy::new(WORKSPACE, person(0x71));
+    let heard = BTreeMap::from([(salt, hex::encode(host.as_bytes()))]);
+    let unheard = BTreeMap::from([(salt.wrapping_add(1), hex::encode(device(0x72).as_bytes()))]);
+    assert!(
+        !super::shares_of_unheard(&policy, &unheard),
+        "a workspace that shares no window asks nothing"
+    );
+    policy.grants.extend(
+        tilo_action_policy::share::share_grants(
+            WORKSPACE,
+            &person(0x71),
+            &window_share_id(tab),
+            &tilo_desktop_model::window_share::window_node(WORKSPACE, APP, tab),
+            tilo_action_policy::share::ShareAccess::View,
+        )
+        .expect("a window's share"),
+    );
+    assert!(
+        super::shares_of_unheard(&policy, &unheard),
+        "the device that minted the shared window was not heard here"
+    );
+    assert!(
+        !super::shares_of_unheard(&policy, &heard),
+        "the device that minted the shared window was heard here"
+    );
+}
+
 /// Two devices that hold one workspace each list the other's windows already, as windows open on
 /// another device: the desk's own record says so before anything is shared. A share of such a
 /// window is pictured in the tab that stood for it, and when the share ends that tab stays, since

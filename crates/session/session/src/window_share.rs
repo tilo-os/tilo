@@ -36,7 +36,9 @@ use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, InputEvent, Selection};
 
 use tilo_desktop::chrome::ActiveExposure;
-use tilo_desktop_model::window_share::{window_node, window_share_id, window_shares};
+use tilo_desktop_model::window_share::{
+    window_node, window_of_node, window_share_id, window_shares,
+};
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, peer_salt_of,
 };
@@ -248,6 +250,10 @@ pub(crate) struct WindowShares {
     /// What the workspaces' other devices called themselves while this session ran: what a window
     /// open on one of them names it by, whether the device is heard now or not.
     devices: HeardDevices,
+    /// The devices each workspace's governance admits, as last read and when. It is read only
+    /// while the workspace shares a window of a device this session has not heard there, and then
+    /// no more often than a view is asked for again.
+    admitted: BTreeMap<String, (Instant, Vec<[u8; 32]>)>,
 }
 
 /// What this session heard the workspaces' other devices call themselves: a cache of what was
@@ -806,7 +812,7 @@ impl WindowShares {
     /// without anyone naming the window there.
     fn follow_governance(&mut self, desk: &DesktopHandle, sync: &Client, now: Instant) {
         let mut tree = desk.read(Clone::clone);
-        let shared = self.shared_in(&tree, sync);
+        let shared = self.shared_in(&tree, sync, now);
         let live: BTreeSet<TabId> = shared.iter().map(|shared| shared.tab).collect();
         let mut changed = self.take_ended(desk, &mut tree, &live);
         for shared in &shared {
@@ -818,13 +824,23 @@ impl WindowShares {
     }
 
     /// The windows another device shares in `tree` 's workspaces, as their governance names them.
-    fn shared_in(&self, tree: &DesktopTree, sync: &Client) -> Vec<Shared> {
+    fn shared_in(&mut self, tree: &DesktopTree, sync: &Client, now: Instant) -> Vec<Shared> {
         let now_ms = tilo_clock::unix_now_ms();
         let mut shared = Vec::new();
         for held in &tree.workspaces {
             let workspace = held.policy.workspace.clone();
             let devices = sync.workspace_devices(&workspace);
-            let owners = owners_of(self.salt, sync.publisher(), &devices);
+            let mut owners = owners_of(self.salt, sync.publisher(), &devices);
+            // A device hosts the windows it minted whether or not it said anything of itself
+            // here: the workspace's governance admits it, and that is who a share's host is read
+            // from when the devices heard do not name one.
+            if shares_of_unheard(&held.policy, &owners) {
+                for device in self.admitted_to(sync, &workspace, now) {
+                    owners
+                        .entry(tilo_desktop_model::ids::device_salt_of_key(&device))
+                        .or_insert_with(|| hex::encode(device));
+                }
+            }
             for (tab, share) in window_shares(&held.policy, &owners, now_ms) {
                 if peer_salt_of(tab) == self.salt {
                     // This device's own window: it streams from here, and shows no tab of itself.
@@ -845,6 +861,38 @@ impl WindowShares {
             }
         }
         shared
+    }
+
+    /// The devices `workspace` 's governance admits, read again once what was read is older than a
+    /// view's ask: none for a session that holds no workspaces, or a workspace it cannot read.
+    fn admitted_to(&mut self, sync: &Client, workspace: &str, now: Instant) -> Vec<[u8; 32]> {
+        if let Some((read_at, devices)) = self.admitted.get(workspace)
+            && now.duration_since(*read_at) < VIEW_AGAIN
+        {
+            return devices.clone();
+        }
+        let devices = match sync.engine().map(|engine| engine.roster_devices(workspace)) {
+            Some(Ok(devices)) => devices,
+            Some(Err(error)) => {
+                // Said once while it stays so: the reads that follow would say the same.
+                if self
+                    .admitted
+                    .get(workspace)
+                    .is_none_or(|(_, known)| !known.is_empty())
+                {
+                    tracing::warn!(
+                        %error,
+                        workspace,
+                        "the devices the workspace admits cannot be read"
+                    );
+                }
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        self.admitted
+            .insert(workspace.to_owned(), (now, devices.clone()));
+        devices
     }
 
     /// Take the tabs of shares the governance no longer names out of `tree`,
@@ -2172,6 +2220,19 @@ fn owners_of(
         );
     }
     owners
+}
+
+/// Whether `policy` shares a window that none of `owners` minted: one whose host this session has
+/// not heard in the workspace.
+fn shares_of_unheard(
+    policy: &tilo_action_policy::WorkspacePolicy,
+    owners: &BTreeMap<u16, String>,
+) -> bool {
+    policy
+        .grants
+        .iter()
+        .filter_map(|grant| window_of_node(&grant.node))
+        .any(|(_, tab)| !owners.contains_key(&peer_salt_of(tab)))
 }
 
 /// The desk without the tab `tab` , and without the strip `strip` when that was made for it and
