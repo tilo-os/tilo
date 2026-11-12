@@ -2,6 +2,7 @@
 //! grows through on the way to its document, and the name it keeps over it.
 
 use super::{Element, ListModel, VirtualList, Widget};
+use crate::arriving::Arrival;
 use crate::widget::Decorator;
 
 /// How far a row's height may be from where it is going before it is drawn on its way there
@@ -51,10 +52,46 @@ impl<M: ListModel> VirtualList<M> {
         self.invalidate_rows(changed);
     }
 
+    /// Hold the item `item` open where its row stands, as a host keeping which item is open asks
+    /// it to, or none. An item no row of the list shows closes the row standing open. An item
+    /// the rows cannot answer for yet — the app is reading them, or its row has not arrived, so
+    /// whether it opens where it stands is unknown — leaves the row standing open as it is, and
+    /// opens as its row arrives: a window that moves to another place to show an item names
+    /// the item before the place's rows are there.
+    pub fn hold_open(&mut self, item: Option<&str>) {
+        self.held_open = None;
+        let Some(item) = item else {
+            self.set_open(None);
+            return;
+        };
+        let index = self
+            .model
+            .key_presenting(item)
+            .and_then(|key| Some((self.model.index_of(&key)?, key)));
+        match index {
+            Some((index, key)) if matches!(self.model.row_state(index), Arrival::Ready(())) => {
+                self.set_open(Some(key));
+            }
+            Some(_) => self.held_open = Some(item.to_owned()),
+            None if self.model.len() > 0 && self.model.key_at(0).is_none() => {
+                self.held_open = Some(item.to_owned());
+            }
+            None => self.set_open(None),
+        }
+    }
+
+    /// The item held open waiting for its row ([`Self::hold_open`]), asked again as rows arrive.
+    pub(super) fn open_held(&mut self) {
+        if let Some(item) = self.held_open.take() {
+            self.hold_open(Some(&item));
+        }
+    }
+
     /// The person opened `key` where it stands, or closed it when it was the row standing open:
     /// the row grows into its document, and a host keeping which item is open hears it as
     /// [`VirtualList::on_opened`].
     pub(super) fn open_where_it_stands(&mut self, key: M::Key) {
+        self.held_open = None;
         let closing = self.open.as_ref() == Some(&key);
         self.set_open(if closing { None } else { Some(key) });
         self.report_open();
@@ -63,6 +100,7 @@ impl<M: ListModel> VirtualList<M> {
     /// The person closed the row standing open (Escape, or a press beside it), if one stands
     /// open. Whether it did.
     pub(super) fn close_open(&mut self) -> bool {
+        self.held_open = None;
         if self.open.is_none() {
             return false;
         }

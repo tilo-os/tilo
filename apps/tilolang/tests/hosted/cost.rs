@@ -1779,6 +1779,82 @@ fn a_row_opens_where_it_stands_after_tasks_are_checked() {
     );
 }
 
+/// A task in another place opened from search, as a hit's `open` shows it, with or without a task
+/// typed into the entry first: the window goes to the task's place and opens its row into its
+/// page, though the place's rows arrive after the window names the task open. A row clicked
+/// there next opens as well.
+#[test]
+fn a_task_opened_from_search_shows_its_page() {
+    use ui::winit::keyboard::NamedKey;
+
+    let _motion = ui::motion::testing::settled();
+    for typed in [false, true] {
+        let chunks = seeded_tasks(SMALL);
+        let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+        let mut session = Session::tasks_over_in(&route, chunks, None);
+        let today = session.titles();
+        let entries: Vec<ui::tilo_resource::search_index::IndexEntry> = session
+            .sent
+            .borrow()
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::PublishSearchIndex { delta_json } => Some(
+                    ui::tilo_resource::search_index::IndexDelta::decode(delta_json)
+                        .expect("the session takes every delta")
+                        .upsert,
+                ),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        if typed {
+            session.window.chord(&["ctrl"], "n");
+            session.settle();
+            session.window.type_text("Buy milk");
+            session.window.press_key(NamedKey::Enter);
+            session.settle();
+            assert!(
+                task_in_record(&session, "Buy milk", false),
+                "the entry's task is in the workspace"
+            );
+        }
+        // A task of the Inbox, neither due today nor done.
+        let hit = entries
+            .iter()
+            .find(|entry| entry.title == "Item 1" && !today.contains(&entry.title))
+            .expect("a task of the Inbox Today does not show");
+        let title = hit.title.clone();
+        let anchor = hit.resource.clone();
+        session
+            .host
+            .instances_mut()
+            .next()
+            .expect("the window's instance")
+            .reveal(anchor);
+        session.settle();
+        assert!(
+            opened_title_field(&mut session).is_some(),
+            "{title}, opened from search (typed first: {typed}), shows its page: rows {:?}",
+            session.titles()
+        );
+        // Another row of the place the window moved to opens into its page as a click asks.
+        let other = session
+            .titles()
+            .into_iter()
+            .find(|shown| *shown != title)
+            .expect("another row of the Inbox");
+        let (x, y) = shown_at(&mut session, &other);
+        session.window.click_at(x, y);
+        session.settle();
+        assert!(
+            opened_title_field(&mut session).is_some(),
+            "{other}, clicked after {title} opened from search (typed first: {typed}), shows its \
+             page: rows {:?}",
+            session.titles()
+        );
+    }
+}
+
 /// The row standing open into its item where it stands: the page a person reads there, and the
 /// field they type the item's title into. `None` while no row stands open.
 fn opened_title_field(session: &mut Session) -> Option<String> {

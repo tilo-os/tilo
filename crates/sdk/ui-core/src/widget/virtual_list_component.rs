@@ -459,18 +459,6 @@ impl DescribedRows {
         }
     }
 
-    /// Whether the rows are named: a list a host renders names none until it has read them, and
-    /// a list given its items whole names them from the start.
-    fn names_rows(&self) -> bool {
-        match &self.held {
-            Held::Nothing => false,
-            Held::Given(items) => !items.is_empty(),
-            Held::Rendered(rows) => rows
-                .try_borrow()
-                .is_ok_and(|rows| rows.is_empty() || rows.key_at(0).is_some()),
-        }
-    }
-
     fn key_presenting(&self, id: &str) -> Option<String> {
         match &self.held {
             Held::Nothing => None,
@@ -855,19 +843,6 @@ pub(crate) fn by_hand() -> bool {
         crate::motion::recent_input(crate::time::now()),
         Some(crate::tokens::MotionSource::Pointer | crate::tokens::MotionSource::Gesture)
     )
-}
-
-/// The list with `open` standing open where it stands in it: the row showing that item, unless
-/// the item is no row of the list (a place that does not hold it).
-fn with_open<M: ListModel<Key = String>>(
-    mut list: VirtualList<M>,
-    open: Option<&ResourceId>,
-    rows: &DescribedRows,
-) -> VirtualList<M> {
-    if let Some(key) = open.and_then(|item| rows.key_presenting(&item.0)) {
-        list.set_open(Some(key));
-    }
-    list
 }
 
 /// The resource the item `key` shows, as an event carries it.
@@ -1615,7 +1590,9 @@ impl Described for DescribedList {
                 fired.fire(Some(Value::List(items)));
             });
         }
-        list = with_open(list, open.as_ref(), &reading.borrow());
+        // The item the host holds open stands open where its row stands, unless the item is no
+        // row of the list (a place that does not hold it).
+        list.hold_open(open.as_ref().map(|item| item.0.as_str()));
         if !opened_changed.is_none() || !closed_changed.is_none() {
             let (opened, closed) = (opened_changed, closed_changed);
             let opening = Rc::clone(&reading);
@@ -1698,15 +1675,9 @@ impl Described for DescribedList {
         // rows it left and arrived at build again.
         list.set_unread(unseen_from);
         // The item the host holds open: its row grows into its document where it stands, and
-        // an item that left the list opens nothing. An item the rows cannot be asked about yet
-        // — the app is reading them anew — leaves the row the person has open as it is: it is
-        // the row they are reading, and the rows that come name it again.
-        let standing = open
-            .as_ref()
-            .and_then(|item| reading.borrow().key_presenting(&item.0));
-        if standing.is_some() || open.is_none() || reading.borrow().names_rows() {
-            list.set_open(standing);
-        }
+        // an item that left the list opens nothing. An item the rows cannot answer for yet
+        // leaves the row the person has open as it is, and opens as its row arrives.
+        list.hold_open(open.as_ref().map(|item| item.0.as_str()));
         if let Some(picked) = picked {
             list.set_selection(picked);
         }

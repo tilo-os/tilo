@@ -467,6 +467,10 @@ pub struct VirtualList<M: ListModel> {
     /// ([`ListModelChange::Reset`]): its keys are read anew, and until they arrive the row is
     /// not one that left ([`Self::close_open_leaving`]).
     rereading_open: Option<M::Key>,
+    /// The item a host holds open whose row cannot say yet whether it opens where it stands:
+    /// the rows are being read, or its row has not arrived. It opens as its row arrives
+    /// ([`Self::hold_open`]).
+    held_open: Option<String>,
     /// Rows whose measured height is on its way to another, at the height they show now: a row
     /// that grew into its item, or whose content changed, moves the rows after it as it
     /// arrives, and the list clips it to the height it shows.
@@ -740,6 +744,7 @@ impl<M: ListModel> VirtualList<M> {
             on_closed: None,
             open: None,
             rereading_open: None,
+            held_open: None,
             growth: Vec::new(),
             growing: HashSet::new(),
             menus: RowMenus::None,
@@ -1887,6 +1892,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         let received_changes = !model_changes.is_empty();
         if received_changes {
             self.notify_model_changes(&model_changes);
+        }
+        if legacy_wakeup || received_changes {
+            self.open_held();
         }
         let mut changed = legacy_wakeup || received_changes;
         changed |= self.take_retry();
