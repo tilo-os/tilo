@@ -15,6 +15,13 @@
 # opt-in checks it moves.
 #
 # `heavy = true` marks a check a release is verified by, and not part of an ordinary change's run.
+#
+# A Python tool of `tools/` a check runs is run isolated (`python3 -I`), as `tools/ci/python.py`
+# needs and every check below does: without it the interpreter puts the script's directory on
+# `sys.path` and lists that directory to look the script's imports up, so the check reads every
+# file beside the tool and reruns when any of them changes — an edit to one `tools/ci` script
+# reached hundreds of checks. A tool that imports a sibling module is the exception, and says so
+# where it is run.
 
 # The image every check runs in unless it says otherwise: pinned by digest, so a moving tag can't
 # change what a check runs in without a commit saying so. Move it by changing this line.
@@ -46,7 +53,7 @@ WGPU_ADAPTER_NAME = "llvmpipe"
 # lints run once per architecture (`test-x86_64`, `test-aarch64`, `clippy-x86_64`,
 # `clippy-aarch64`): a result on one says nothing about the other, which a check that requires no
 # architecture would let it stand for. `package-sets` fails while this list and
-# `python3 tools/ci/package_sets.py per-arch` disagree.
+# `python3 -I tools/ci/package_sets.py per-arch` disagree.
 #
 # app-catalogue app-cli browser compat-service env-tools fs-native install launcher launcher-macos
 # local-model-service runtime-bundle store tilo-agent-participant tilo-app-cli
@@ -387,7 +394,7 @@ git = true
 
 [[check]]
 name = "suite-{group}"
-run = "python3 tools/ci/suites.py run --jobs 8 --group {group}"
+run = "python3 -I tools/ci/suites.py run --jobs 8 --group {group}"
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
@@ -404,11 +411,11 @@ heavy = true
 
 [[check.matrix.set]]
 when = { group = "browser-compute-web" }
-run = "python3 tools/ci/suites.py run --jobs 8 --group browser-compute-web"
+run = "python3 -I tools/ci/suites.py run --jobs 8 --group browser-compute-web"
 
 [[check.matrix.set]]
 when = { group = "browser-runtime-web" }
-run = "python3 tools/ci/suites.py run --jobs 8 --group browser-runtime-web"
+run = "python3 -I tools/ci/suites.py run --jobs 8 --group browser-runtime-web"
 
 # ---- Per-area checks -------------------------------------------------------------
 #
@@ -435,8 +442,8 @@ default = false
 
 [[check]]
 name = "codemap"
-run = "python3 tools/docs/codemap.py --check"
-fix = "python3 tools/docs/codemap.py"
+run = "python3 -I tools/docs/codemap.py --check"
+fix = "python3 -I tools/docs/codemap.py"
 
 [[check]]
 name = "fmt"
@@ -453,11 +460,11 @@ fix = "cargo hakari generate && cargo hakari manage-deps --yes"
 
 [[check]]
 name = "sdk-licenses"
-run = "python3 -m unittest tools/tests/test_sdk_licenses.py && python3 tools/sdk/check_licenses.py"
+run = "python3 -m unittest tools/tests/test_sdk_licenses.py && python3 -I tools/sdk/check_licenses.py"
 
 [[check]]
 name = "client-licenses"
-run = "python3 -m unittest tools/tests/test_client_licenses.py && python3 tools/sdk/check_client_licenses.py"
+run = "python3 -m unittest tools/tests/test_client_licenses.py && python3 -I tools/sdk/check_client_licenses.py"
 
 [[check]]
 name = "lockfile"
@@ -480,7 +487,7 @@ heavy = true
 
 [[check]]
 name = "changes"
-run = "base=$(git rev-parse main)\nif [ \"$base\" = \"$(git rev-parse HEAD)\" ]; then base=$(git rev-parse HEAD^); fi\npython3 tools/policy/check_commit_policy.py \"$base\"\npython3 tools/policy/check_interfaces.py against \"$base\"\npython3 tools/policy/check_format_migrations.py against \"$base\"\npython3 tools/policy/check_wire_enums.py against \"$base\"\npython3 tools/perf/tapp_size_ratchet.py check-budget --base \"$base\"\npython3 tools/perf/runtime_size_ratchet.py check-budget --base \"$base\"\npython3 tools/web/wasm_size_ratchet.py check-budget --base \"$base\"\n"
+run = "base=$(git rev-parse main)\nif [ \"$base\" = \"$(git rev-parse HEAD)\" ]; then base=$(git rev-parse HEAD^); fi\npython3 tools/policy/check_commit_policy.py \"$base\"\npython3 tools/policy/check_interfaces.py against \"$base\"\npython3 tools/policy/check_format_migrations.py against \"$base\"\npython3 tools/policy/check_wire_enums.py against \"$base\"\npython3 tools/perf/tapp_size_ratchet.py check-budget --base \"$base\"\npython3 tools/perf/runtime_size_ratchet.py check-budget --base \"$base\"\npython3 -I tools/web/wasm_size_ratchet.py check-budget --base \"$base\"\n"
 git = true
 
 [[check]]
@@ -515,7 +522,7 @@ heavy = true
 
 [[check]]
 name = "release-trust"
-run = "dnf install -y --setopt=install_weak_deps=False skopeo openssl >/dev/null\npython3 tools/signing/release_trust.py check-committed\npython3 os/tests/release_trust_chain_native.py\n"
+run = "dnf install -y --setopt=install_weak_deps=False skopeo openssl >/dev/null\npython3 -I tools/signing/release_trust.py check-committed\npython3 os/tests/release_trust_chain_native.py\n"
 requires = ["arch=x86_64"]
 isolation = "vm"
 on = ["dispatch", "idle"]
@@ -523,7 +530,7 @@ heavy = true
 
 [[check]]
 name = "release-trust-expiry"
-run = "dnf install -y --setopt=install_weak_deps=False openssl >/dev/null\npython3 tools/signing/release_trust.py check-committed\n"
+run = "dnf install -y --setopt=install_weak_deps=False openssl >/dev/null\npython3 -I tools/signing/release_trust.py check-committed\n"
 requires = ["arch=x86_64"]
 isolation = "vm"
 cache = false
@@ -540,7 +547,7 @@ heavy = true
 
 [[check]]
 name = "default-builds-{arch}"
-run = "for package in $(python3 tools/ci/package_features.py --default-builds --all); do\n    cargo test --locked --no-run -p \"$package\"\ndone\n"
+run = "for package in $(python3 -I tools/ci/package_features.py --default-builds --all); do\n    cargo test --locked --no-run -p \"$package\"\ndone\n"
 requires = ["arch={arch}"]
 on = ["dispatch", "idle"]
 heavy = true
@@ -571,7 +578,7 @@ heavy = true
 
 [[check]]
 name = "wasm"
-run = "bash tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)"
+run = "bash tools/ci/check-wasm.sh $(python3 -I tools/ci/package_sets.py browser)"
 env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
 on = ["dispatch", "idle"]
 heavy = true
@@ -682,8 +689,8 @@ secrets = ["NPM_TOKEN", "PYPI_TOKEN"]
 
 [[check]]
 name = "sdk-policy"
-run = "python3 tools/policy/check_app_capabilities.py\npython3 tools/web/generate_web_desktop.py --check\npython3 tools/apps/generate_catalogue_fleet.py --check\npython3 tools/sdk/publish_check.py --report-only\n"
-fix = "python3 tools/web/generate_web_desktop.py && python3 tools/apps/generate_catalogue_fleet.py"
+run = "python3 tools/policy/check_app_capabilities.py\npython3 -I tools/web/generate_web_desktop.py --check\npython3 -I tools/apps/generate_catalogue_fleet.py --check\npython3 -I tools/sdk/publish_check.py --report-only\n"
+fix = "python3 -I tools/web/generate_web_desktop.py && python3 -I tools/apps/generate_catalogue_fleet.py"
 
 [[check]]
 name = "sdk-linux"
@@ -701,7 +708,7 @@ heavy = true
 # from `TILO_SOURCE_REVISION` when a build farm names one.
 [[check]]
 name = "sdk-web-size"
-run = "cargo build --locked -p tilo-app-cli --bin tilo-app\ncargo test --locked --manifest-path tools/web/wasm-split/Cargo.toml\napp=$CARGO_TARGET_DIR/debug/tilo-app\n# model-providers-web builds the same bundle path in the dev profile, possibly\n# at the same time in the same build directory, so the release bundle has its own.\nexport CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web\nbundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle\n\"$app\" build --target web --bundle desktop --release apps/calculator\npython3 tools/web/wasm_size_ratchet.py measure desktop \"$bundle\"\n"
+run = "cargo build --locked -p tilo-app-cli --bin tilo-app\ncargo test --locked --manifest-path tools/web/wasm-split/Cargo.toml\napp=$CARGO_TARGET_DIR/debug/tilo-app\n# model-providers-web builds the same bundle path in the dev profile, possibly\n# at the same time in the same build directory, so the release bundle has its own.\nexport CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web\nbundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle\n\"$app\" build --target web --bundle desktop --release apps/calculator\npython3 -I tools/web/wasm_size_ratchet.py measure desktop \"$bundle\"\n"
 needs = ["test-assets"]
 env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 
@@ -768,7 +775,7 @@ heavy = true
 
 [[check]]
 name = "real-fuse"
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\nbash os/tests/tilo-session-lifecycle.sh\ncargo test --locked -p tilo-user-identity projection --lib -- --nocapture\ncargo test --locked -p tilo-fs replica_ack::tests::exact_nonce_version_peer_and_freshness_are_bound --lib -- --nocapture\ncargo test --locked -p tilo-fs sync::tests::namespace_documents_reach_only_entitled_peers_and_readers_cannot_author --lib -- --nocapture\ncargo test --locked -p tilo-fs --lib -- --exact fs::tests::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions\ncargo test --locked -p tilo-fs durable_backup::tests --lib -- --nocapture\ncargo test --locked -p tilo-fs --lib -- --exact record_repository::tests::signed_transactions_merges_and_batches_project_whole_and_survive_restart record_repository::tests::a_received_changeset_applies_whole_or_not_at_all durable_backup::tests::backups_retain_generations_and_recover_from_the_newest_valid_one\ncargo test --locked -p tilo-fs namespace::tests::byte_names_survive_load_save_rename_and_replication_exactly --lib -- --nocapture\ncargo test --locked -p tilo-fs history::tests::history_logs_read_legacy_and_fail_closed_on_damage --lib -- --nocapture\ncargo test --locked -p tilo-fs record_transaction::tests::journal_restarts_exactly_with_monotonic_phases_and_whole_batches --lib -- --nocapture\ncargo test --locked -p tilo-fs transaction_coordinator::tests::broadcast_failure_recovers_exact_committed_namespace_without_duplicate_history --lib -- --nocapture\ncargo test --locked -p tilo-fs availability::tests::availability_registry_persists_by_stable_record_id_and_rejects_tampering --lib -- --nocapture\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\nbash os/tests/tilo-session-lifecycle.sh\ncargo test --locked -p tilo-user-identity projection --lib -- --nocapture\ncargo test --locked -p tilo-fs replica_ack::tests::exact_nonce_version_peer_and_freshness_are_bound --lib -- --nocapture\ncargo test --locked -p tilo-fs sync::tests::namespace_documents_reach_only_entitled_peers_and_readers_cannot_author --lib -- --nocapture\ncargo test --locked -p tilo-fs --lib -- --exact fs::tests::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions\ncargo test --locked -p tilo-fs durable_backup::tests --lib -- --nocapture\ncargo test --locked -p tilo-fs --lib -- --exact record_repository::tests::signed_transactions_merges_and_batches_project_whole_and_survive_restart record_repository::tests::a_received_changeset_applies_whole_or_not_at_all durable_backup::tests::backups_retain_generations_and_recover_from_the_newest_valid_one\ncargo test --locked -p tilo-fs namespace::tests::byte_names_survive_load_save_rename_and_replication_exactly --lib -- --nocapture\ncargo test --locked -p tilo-fs history::tests::history_logs_read_legacy_and_fail_closed_on_damage --lib -- --nocapture\ncargo test --locked -p tilo-fs record_transaction::tests::journal_restarts_exactly_with_monotonic_phases_and_whole_batches --lib -- --nocapture\ncargo test --locked -p tilo-fs transaction_coordinator::tests::broadcast_failure_recovers_exact_committed_namespace_without_duplicate_history --lib -- --nocapture\ncargo test --locked -p tilo-fs availability::tests::availability_registry_persists_by_stable_record_id_and_rejects_tampering --lib -- --nocapture\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
@@ -795,7 +802,7 @@ heavy = true
 
 [[check]]
 name = "real-fuse-shares"
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-fs --test collab_release_matrix -- --nocapture --test-threads=1\ncargo test --locked -p tilo-fs --test corruption_matrix -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-fs --test collab_release_matrix -- --nocapture --test-threads=1\ncargo test --locked -p tilo-fs --test corruption_matrix -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
@@ -804,7 +811,7 @@ heavy = true
 
 [[check]]
 name = "real-fuse-relay"
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-relay --test it personal_device_process::ordinary_device_enrollment_survives_approver_offline_with_home_peer_route -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-relay --test it personal_device_process::ordinary_device_enrollment_survives_approver_offline_with_home_peer_route -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
@@ -813,7 +820,7 @@ heavy = true
 
 [[check]]
 name = "real-fuse-runtime"
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-runtime --lib standalone::files -- --nocapture --test-threads=1\ncargo test --locked -p file-explorer --test live_collaborative_mount -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-runtime --lib standalone::files -- --nocapture --test-threads=1\ncargo test --locked -p file-explorer --test live_collaborative_mount -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
@@ -1116,14 +1123,14 @@ heavy = true
 
 [[check]]
 name = "sdk-macos"
-run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=${CARGO_TARGET_DIR:-$PWD/target}/debug\nrustup target add wasm32-unknown-unknown\n# The template takes the SDK from this tree as a git repository (`--sdk-git file://\u2026`, at HEAD):\n# commit the tree here, so HEAD is exactly the files checked, a working tree's changes included.\nif ! git rev-parse --git-dir >/dev/null 2>&1; then\n  git init -q\n  git add -A\n  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@localhost GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@localhost git commit -q -m 'the checked tree'\nfi\nTILO_SDK_SOURCE=git cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nfor app in calculator notes; do\n  bundle=$(\"$bin/tilo-app\" build --target macos \"apps/$app\" | tail -n 1)\n  plutil -lint \"$bundle/Contents/Info.plist\"\n  codesign --verify --deep --strict \"$bundle\"\n  \"$bundle/Contents/MacOS/$app\" --shots \"$TMPDIR/$app.png\"\n  test -s \"$TMPDIR/$app.png\"\ndone\n\"$bin/tilo-app\" package --target macos apps/calculator --output \"$TMPDIR/Calculator-macos.zip\" --force\ntest -s \"$TMPDIR/Calculator-macos.zip\"\ntest -s \"$TMPDIR/Calculator-macos.zip.json\"\n"
+run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=${CARGO_TARGET_DIR:-$PWD/target}/debug\nrustup target add wasm32-unknown-unknown\n# The template takes the SDK from this tree as a git repository (`--sdk-git file://\u2026`, at HEAD):\n# commit the tree here, so HEAD is exactly the files checked, a working tree's changes included.\nif ! git rev-parse --git-dir >/dev/null 2>&1; then\n  git init -q\n  git add -A\n  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@localhost GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@localhost git commit -q -m 'the checked tree'\nfi\nTILO_SDK_SOURCE=git cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nfor app in calculator notes; do\n  bundle=$(\"$bin/tilo-app\" build --target macos \"apps/$app\" | tail -n 1)\n  plutil -lint \"$bundle/Contents/Info.plist\"\n  codesign --verify --deep --strict \"$bundle\"\n  \"$bundle/Contents/MacOS/$app\" --shots \"$TMPDIR/$app.png\"\n  test -s \"$TMPDIR/$app.png\"\ndone\n\"$bin/tilo-app\" package --target macos apps/calculator --output \"$TMPDIR/Calculator-macos.zip\" --force\ntest -s \"$TMPDIR/Calculator-macos.zip\"\ntest -s \"$TMPDIR/Calculator-macos.zip.json\"\n"
 requires = ["os=macos", "arch=arm64"]
 on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
 name = "apps-macos"
-run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\npackages=$(python3 tools/ci/macos_apps.py)\ncargo build --locked $packages\n# Nextest discovers the tests itself, one process per test as on Linux; the doctests run even\n# when a test failed.\nstatus=0\ncargo nextest run --locked --profile ci --no-fail-fast $packages || status=$?\ncargo test --locked --no-fail-fast --doc $packages || status=$?\nexit $status\n"
+run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\npackages=$(python3 -I tools/ci/macos_apps.py)\ncargo build --locked $packages\n# Nextest discovers the tests itself, one process per test as on Linux; the doctests run even\n# when a test failed.\nstatus=0\ncargo nextest run --locked --profile ci --no-fail-fast $packages || status=$?\ncargo test --locked --no-fail-fast --doc $packages || status=$?\nexit $status\n"
 requires = ["os=macos", "arch=arm64"]
 on = ["dispatch", "idle"]
 heavy = true
@@ -2003,7 +2010,7 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "image-release-tools"
-run = "python3 tools/ci/publish/oci-index.py /target/publish/release-tools/index /target/publish/release-tools/x86_64/image.oci.tar /target/publish/release-tools/aarch64/image.oci.tar"
+run = "python3 -I tools/ci/publish/oci-index.py /target/publish/release-tools/index /target/publish/release-tools/x86_64/image.oci.tar /target/publish/release-tools/aarch64/image.oci.tar"
 needs = ["image-release-tools-x86_64", "image-release-tools-aarch64"]
 outputs = ["/target/publish/release-tools/index/image.oci.tar", "/target/publish/release-tools/index/digest"]
 default = false
@@ -2037,7 +2044,7 @@ arch = ["x86_64", "aarch64"]
 # to the runs and outputs) of the signing and publishing checks below.
 [[check]]
 name = "image-ci-builder"
-run = "python3 tools/ci/publish/oci-index.py /target/publish/ci-builder/index /target/publish/ci-builder/x86_64/image.oci.tar"
+run = "python3 -I tools/ci/publish/oci-index.py /target/publish/ci-builder/index /target/publish/ci-builder/x86_64/image.oci.tar"
 needs = ["image-ci-builder-x86_64"]
 outputs = ["/target/publish/ci-builder/index/image.oci.tar", "/target/publish/ci-builder/index/digest"]
 default = false
@@ -2448,7 +2455,7 @@ on = ["idle"]
 
 [[check]]
 name = "app-screenshots"
-run = "bash tools/screenshots/build.sh \"$CARGO_TARGET_DIR/app-screenshots-build\"\nrm -rf /target/app-screenshots\nbash tools/test-env.sh python3 tools/screenshots/run.py --out /target/app-screenshots \\\n  --bin-dir \"$CARGO_TARGET_DIR/app-screenshots-build/bin\" --lib-dir \"$CARGO_TARGET_DIR/app-screenshots-build/lib\" \\\n  || echo \"app-screenshots: some situations failed (see summary.json)\"\n"
+run = "bash tools/screenshots/build.sh \"$CARGO_TARGET_DIR/app-screenshots-build\"\nrm -rf /target/app-screenshots\nbash tools/test-env.sh python3 -I tools/screenshots/run.py --out /target/app-screenshots \\\n  --bin-dir \"$CARGO_TARGET_DIR/app-screenshots-build/bin\" --lib-dir \"$CARGO_TARGET_DIR/app-screenshots-build/lib\" \\\n  || echo \"app-screenshots: some situations failed (see summary.json)\"\n"
 env = { TILO_TEST_NTFS_FIXTURES = "0", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/app-screenshots/**"]
@@ -4027,7 +4034,7 @@ default = false
 # image to carry (os/Containerfile.builder), so the checks that build with fonts fetch none.
 [[check]]
 name = "font-seed"
-run = "python3 tools/font-catalog.py seed crates/sdk/ui-core/assets/fonts /target/font-seed"
+run = "python3 -I tools/font-catalog.py seed crates/sdk/ui-core/assets/fonts /target/font-seed"
 outputs = ["/target/font-seed/**"]
 default = false
 
@@ -4039,7 +4046,7 @@ default = false
 
 [[check]]
 name = "test-assets"
-run = "python3 tools/test-assets.py --cache-root /target/test-assets apps/ebook/assets/artifacts.json apps/pdf-viewer/tests/fixtures/artifacts.json apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json apps/video-editor/sample-media/artifacts.json apps/video-player/tests/fixtures/artifacts.json crates/doc/fixtures/artifacts.json crates/platform/tilo-pdf/tests/fixtures/artifacts.json"
+run = "python3 -I tools/test-assets.py --cache-root /target/test-assets apps/ebook/assets/artifacts.json apps/pdf-viewer/tests/fixtures/artifacts.json apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json apps/video-editor/sample-media/artifacts.json apps/video-player/tests/fixtures/artifacts.json crates/doc/fixtures/artifacts.json crates/platform/tilo-pdf/tests/fixtures/artifacts.json"
 outputs = ["/target/test-assets/**"]
 default = false
 
@@ -4521,7 +4528,7 @@ dispatch_inputs = { images = "", expected_content_sha256 = "", publish = "true" 
 
 [[check]]
 name = "cloud-rystic-build"
-run = "python3 tools/ci/rystic_ci.py build --artifacts \"$CARGO_TARGET_DIR/rystic-ci\"\npython3 tools/ci/rystic_ci.py install-cli --artifacts \"$CARGO_TARGET_DIR/rystic-ci\"\n"
+run = "python3 -I tools/ci/rystic_ci.py build --artifacts \"$CARGO_TARGET_DIR/rystic-ci\"\npython3 -I tools/ci/rystic_ci.py install-cli --artifacts \"$CARGO_TARGET_DIR/rystic-ci\"\n"
 requires = ["arch=x86_64", "os=linux"]
 outputs = ["/target/rystic-ci/**"]
 default = false
