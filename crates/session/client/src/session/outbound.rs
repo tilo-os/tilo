@@ -51,7 +51,8 @@ impl Task {
             let Some(frames) = self.engine.held_writes().lock().get(&route).cloned() else {
                 continue;
             };
-            let (_, taken) = self.commit_frames(&route, frames).await;
+            let taken = frames.len();
+            self.commit_frames(&route, frames).await;
             let mut held = self.engine.held_writes().lock();
             if let Some(frames) = held.get_mut(&route) {
                 frames.drain(..taken.min(frames.len()));
@@ -64,26 +65,21 @@ impl Task {
         self.release_barriers();
     }
 
-    /// Seal, sign and commit `frames` of `route` into this device's custody, in one owner turn;
-    /// the entries it committed, as the host names them, and how many of `frames` it is done with
-    /// (all of them, committed or not). What this device writes, its readers read at once, and
-    /// custody keeps however long its host is away.
-    pub(super) async fn commit_frames(
-        &mut self,
-        route: &DocumentRoute,
-        frames: Vec<Vec<u8>>,
-    ) -> (Vec<[u8; 32]>, usize) {
+    /// Seal, sign and commit `frames` of `route` into this device's custody, in one owner turn,
+    /// done with all of them, committed or not. What this device writes, its readers read at
+    /// once, and custody keeps however long its host is away.
+    pub(super) async fn commit_frames(&mut self, route: &DocumentRoute, frames: Vec<Vec<u8>>) {
         let owner = self.replicas.owner();
         let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
             self.fail(
                 "protocol-rejected",
                 "A document names an invalid workspace.",
             );
-            return (Vec::new(), frames.len());
+            return;
         };
         let Some(keys) = self.keys_of(route) else {
             self.fail("signature-rejected", "the route's channel keys went away");
-            return (Vec::new(), frames.len());
+            return;
         };
         // The state carrying these keys is written before a write sealed
         // under them leaves ([`ChannelPeer::save_deferred`]): an admission
@@ -132,11 +128,11 @@ impl Task {
             Ok(committed) => committed,
             Err(error) => {
                 self.fail("signature-rejected", error);
-                return (Vec::new(), frames.len());
+                return;
             }
         };
         if committed.is_empty() {
-            return (Vec::new(), frames.len());
+            return;
         }
         self.landed(route, Some(self.config.cert.device_public_key));
         let ids: Vec<[u8; 32]> = committed
@@ -147,7 +143,6 @@ impl Task {
         // What this device publishes, its own replica holds.
         self.note_delivered(route, &ids);
         self.count_custody();
-        (ids, frames.len())
     }
 
     /// `workspace`'s writes in this device's custody: id, bytes, channel and retention.

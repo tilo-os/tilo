@@ -81,8 +81,12 @@ impl Typist {
     }
 
     fn change(&mut self, key: &str) -> Vec<u8> {
+        self.put(key, key)
+    }
+
+    fn put(&mut self, key: &str, value: &str) -> Vec<u8> {
         let before: Vec<ChangeHash> = self.0.get_heads();
-        self.0.put(ROOT, key, key).unwrap();
+        self.0.put(ROOT, key, value).unwrap();
         self.0.commit_edit("fixture", "topic");
         self.0.save_after(&before)
     }
@@ -902,4 +906,92 @@ async fn a_compaction_the_host_refused_leaves_the_device_in_step() {
     })
     .await;
     assert_eq!(refused.len(), 1, "the host refused one compaction");
+}
+
+/// A record's history holds one checkpoint however often its host asks for one: the member it
+/// asks compacts the history, and every replica takes that in place of exactly the writes it
+/// covers. Edited well past the bound of a sealed history, the host's stored copy stays a
+/// fraction of it, takes every write, and a member that joins late reads the record with every
+/// change ever made to it.
+#[tokio::test]
+async fn a_record_its_host_checkpoints_stays_bounded_past_its_bound_of_writes() {
+    /// What a sealed history may hold where it is admitted.
+    const BOUND: usize = 16 * 1024 * 1024;
+    /// Writes of a value an app keeps rewriting, as a document's body is.
+    const WRITES: usize = 1100;
+    const VALUE: usize = 16 * 1024;
+    /// Writes between two checkpoints the host asks for.
+    const ASKED: usize = 50;
+    let (fixture, mut host, _) = governed_fixture_at(tilo_clock::wall());
+    let late = enrolled_with(fixture.clone());
+    let joined = enrolled_with(fixture);
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let member = member_key().verifying_key().to_bytes();
+    let (_, keys) = rotated_channel();
+    owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
+    let mut typist = Typist::over(&base(owner, workspace), 1);
+    let (mut order, mut written, mut stored) = (0, 0, 0);
+    // What the host serves a member joining: its last checkpoint and the writes since.
+    let mut served: Vec<NeighbourMsg> = Vec::new();
+    for index in 0..WRITES {
+        let value = format!("{index:08}").repeat(VALUE / 8);
+        let changes = typist.put(&format!("k{}", index % 8), &value);
+        written += changes.len();
+        assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+        let asked = index % ASKED == ASKED - 1;
+        if asked {
+            assert_eq!(
+                owner
+                    .compact_record(workspace, (APP, ""), &member_key(), now)
+                    .await,
+                Ok(1),
+                "a member holding the keys compacts the record"
+            );
+        }
+        for message in answer(owner, workspace, now, &mut order) {
+            host.receive_from(TransportOrigin::RelayDelta(member), message.clone(), now)
+                .unwrap_or_else(|error| panic!("the host takes write {index}: {error}"));
+            if matches!(&message,
+                NeighbourMsg::AppDocument { envelope, .. } if envelope.kind == OpKind::Compaction)
+            {
+                served.clear();
+            }
+            served.push(message);
+        }
+        if asked {
+            stored = stored.max(host.durable().unwrap().len());
+        }
+    }
+    assert!(written > BOUND, "{written} bytes written");
+    assert!(
+        stored < BOUND / 4,
+        "the host stores {stored} bytes of a record written {written} bytes"
+    );
+    assert!(history(&host, &keys).len() <= ASKED + 1);
+    for message in served {
+        let NeighbourMsg::AppDocument { envelope, .. } = &message else {
+            panic!("a document write");
+        };
+        let author = TransportOrigin::RetainedRelayDelta(*envelope.author.as_bytes());
+        late.owner
+            .receive(late.workspace, author, message, late.now)
+            .unwrap();
+    }
+    let mut read = opened(&late.owner, late.workspace, &keys);
+    let held: BTreeSet<ChangeHash> = read
+        .get_changes(&[])
+        .iter()
+        .map(automerge::Change::hash)
+        .collect();
+    let every: BTreeSet<ChangeHash> = typist
+        .0
+        .get_changes(&[])
+        .iter()
+        .map(automerge::Change::hash)
+        .collect();
+    assert!(
+        every.is_subset(&held),
+        "a member joining late holds every change ever made"
+    );
+    assert_eq!(read.get_heads(), typist.0.get_heads());
 }

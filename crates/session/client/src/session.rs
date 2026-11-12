@@ -27,7 +27,6 @@ use crate::{
 use std::time::Duration;
 use tilo_session_core::remote::Heard;
 
-use collab_types::DocumentMutation;
 use tilo_relay_client::{CoeditPayload, DeviceSigner};
 use tilo_relay_protocol::Envelope;
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -286,6 +285,7 @@ fn session_task(
         awaiting_surface: BTreeMap::new(),
         surfaces_arrived: false,
         compactions: Vec::new(),
+        answering: Vec::new(),
         replays: BTreeSet::new(),
         held_barriers: Vec::new(),
         admission_since: None,
@@ -446,6 +446,9 @@ struct Task {
     surfaces_arrived: bool,
     /// Compactions the host asked for and this session has not answered yet.
     compactions: Vec<(u64, [u8; 16], DocumentRoute)>,
+    /// Compactions committed for the host's requests, each with the entries delivered before
+    /// it, answered once custody sends them ([`Self::answer_compactions`]).
+    answering: Vec<Answering>,
     /// Records whose writes the replica asked to hear again, replayed by the host.
     replays: BTreeSet<DocumentRoute>,
     /// This device's replicas, as the page's and agents' readers read them.
@@ -509,6 +512,10 @@ struct HeldAction {
 /// Entry ids a route remembers for compaction. Past it, later entries are
 /// left out of statements and simply stay retained.
 const MAX_DELIVERED_ENTRIES: usize = 1 << 17;
+/// A compaction request this device compacted for: the workspace, the request, the record and
+/// the entries delivered for it before.
+type Answering = (u64, [u8; 16], DocumentRoute, Vec<[u8; 32]>);
+
 /// Open compaction requests kept; the oldest goes first.
 const MAX_COMPACTIONS: usize = 16;
 
@@ -516,8 +523,6 @@ const MAX_COMPACTIONS: usize = 16;
 /// given up: an action that waited for a session's admission longer than this
 /// many actions is better refused than delivered late.
 const MAX_HELD_ACTIONS: usize = 64;
-/// The most of a record this session reads to compact it.
-const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 
 impl Task {
     fn note_delivered(&mut self, route: &DocumentRoute, entries: &[[u8; 32]]) {
@@ -633,66 +638,107 @@ impl Task {
         self.compactions.push((workspace_id, request, route));
     }
 
-    /// Commit a snapshot of `route` as this device's replica holds it for request `request`,
-    /// then send the signed statement of what it covers: every entry delivered for the route
-    /// before. Returns `false` when the session could not take an envelope.
-    async fn compact(
-        &mut self,
-        (workspace_id, request, route): (u64, [u8; 16], DocumentRoute),
-        client: &RelayClient,
-    ) -> bool {
+    /// Compact `route`'s sealed history as this device's replica holds it for request `request`:
+    /// the compaction is the record's checkpoint, which every replica takes in place of exactly
+    /// the writes it folds. It is answered once custody sends it ([`Self::answer_compactions`]).
+    async fn compact(&mut self, (workspace_id, request, route): (u64, [u8; 16], DocumentRoute)) {
         let covered: Vec<[u8; 32]> = self
             .delivered
             .get(&route)
             .map(|known| known.iter().copied().collect())
             .unwrap_or_default();
-        // A record this device cannot read whole yet is compacted by another member.
-        let Ok(crate::engine::RecordReading::Captured {
-            bytes: snapshot, ..
-        }) = self.engine.read_record(
-            &route.cluster_id,
-            (&route.app_id, &route.record),
-            tilo_peer_state::owner::Holding::default(),
-            MAX_SNAPSHOT_BYTES,
-        )
-        else {
-            return true;
+        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
+            return;
         };
-        let Ok(frames) = DocumentMutation::Snapshot(snapshot.clone()).encode_frames() else {
-            return true;
-        };
-        let (snapshot_entries, _) = self.commit_frames(&route, frames).await;
-        if snapshot_entries.is_empty() {
-            return true;
-        }
-        if !self.send_custody(workspace_id, client) {
-            return false;
-        }
-        let statement = tilo_relay_protocol::compaction::CoverageStatement {
-            workspace_id,
-            channel: neighbour_wire::app_document_channel(&route.app_id, &route.record),
-            request,
-            snapshot: snapshot_entries,
-            covered,
-            heads: tilo_relay_protocol::compaction::snapshot_heads(&snapshot).unwrap_or_default(),
-        };
-        let Ok(statement) = statement.encode() else {
-            return true;
-        };
-        let Ok(signature) = self
-            .signer
-            .sign(tilo_relay_protocol::compaction::signing_bytes(&statement))
+        let now = crate::clock::system_time(tilo_clock::unix_now_ns());
+        // A record this device cannot compact whole yet is compacted by another member.
+        match self
+            .replicas
+            .owner()
+            .compact_record(
+                workspace,
+                (&route.app_id, &route.record),
+                self.signer.as_ref(),
+                now,
+            )
             .await
-        else {
-            return true;
-        };
-        client
-            .send(Envelope::Compacted {
+        {
+            Ok(0) => {}
+            Ok(_) => {
+                if self.answering.len() >= MAX_COMPACTIONS {
+                    self.answering.remove(0);
+                }
+                self.answering.push((workspace_id, request, route, covered));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "a sealed record the host asked for stays uncompacted");
+            }
+        }
+    }
+
+    /// Send the signed statement of each compaction custody sent, of what it covers: every entry
+    /// delivered for its record before it was asked. Returns `false` when the session could not
+    /// take an envelope.
+    async fn answer_compactions(&mut self, client: &RelayClient) -> bool {
+        for (workspace_id, request, route, covered) in std::mem::take(&mut self.answering) {
+            let drafted = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)
+                .and_then(|workspace| {
+                    self.replicas
+                        .owner()
+                        .drafted_compaction(workspace, (&route.app_id, &route.record))
+                        .ok()
+                })
+                .flatten();
+            let Some(entry) = drafted else {
+                self.answering.push((workspace_id, request, route, covered));
+                continue;
+            };
+            let snapshot = vec![tilo_relay_protocol::compaction::entry_id(&entry)];
+            // What this device publishes, its own replica holds.
+            self.note_delivered(&route, &snapshot);
+            let statement = tilo_relay_protocol::compaction::CoverageStatement {
+                workspace_id,
+                channel: neighbour_wire::app_document_channel(&route.app_id, &route.record),
+                request,
+                snapshot,
+                covered,
+                heads: self.compaction_heads(&route, &entry).unwrap_or_default(),
+            };
+            let Ok(statement) = statement.encode() else {
+                continue;
+            };
+            let Ok(signature) = self
+                .signer
+                .sign(tilo_relay_protocol::compaction::signing_bytes(&statement))
+                .await
+            else {
+                continue;
+            };
+            let answer = Envelope::Compacted {
                 workspace_id,
                 statement,
                 signature,
-            })
-            .is_ok()
+            };
+            if client.send(answer).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The heads of the record `entry`, custody's compaction of `route`, holds.
+    fn compaction_heads(&self, route: &DocumentRoute, entry: &[u8]) -> Option<Vec<[u8; 32]>> {
+        let message: neighbour_wire::NeighbourMsg = postcard::from_bytes(entry).ok()?;
+        let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message else {
+            return None;
+        };
+        let ciphertext = collab_types::sealed_ciphertext(&envelope).ok()?;
+        let plaintext = self
+            .keys_of(route)?
+            .open_content(envelope.artifact, &envelope.encryption?, &ciphertext)
+            .ok()?;
+        let snapshot = collab_types::DocumentMutation::decode(&plaintext).ok()?;
+        tilo_relay_protocol::compaction::snapshot_heads(snapshot.data())
     }
 
     fn fail(&self, code: &'static str, message: impl Into<String>) {
@@ -975,9 +1021,7 @@ impl Task {
             self.replay_surfaced(client);
         }
         for compaction in std::mem::take(&mut self.compactions) {
-            if !self.compact(compaction, client).await {
-                return false;
-            }
+            self.compact(compaction).await;
         }
         // What the host brought into a sealed record's history is this device's to fold, as its
         // own writes are before each of them.
@@ -1001,10 +1045,11 @@ impl Task {
         // chance to hand it more.
         for workspace_id in self.workspaces.clone() {
             if !self.send_custody(workspace_id, client) {
-                break;
+                return true;
             }
         }
-        true
+        // A compaction is answered once custody sent it.
+        self.answer_compactions(client).await
     }
 
     /// Ask the host for every joined workspace whole again, as a refresh

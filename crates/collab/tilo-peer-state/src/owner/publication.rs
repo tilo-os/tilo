@@ -1887,21 +1887,78 @@ impl NativeWorkspaceOwner {
         signer: &dyn collab_types::signer::DeviceSigner,
         now: SystemTime,
     ) -> Result<usize, String> {
+        self.compact(workspace, None, signer, now).await
+    }
+
+    /// [`Self::compact_outgoing`], with `record` of `app` compacted now whatever share of its
+    /// bound its history used: the checkpoint a workspace's host asks of a member is this
+    /// compaction, which every replica takes in place of exactly the writes it covers, so a
+    /// record's history never holds a checkpoint beside the writes it re-states.
+    ///
+    /// # Errors
+    /// As [`Self::commit_outgoing`].
+    pub async fn compact_record(
+        &self,
+        workspace: WorkspaceId,
+        (app, record): (&str, &str),
+        signer: &dyn collab_types::signer::DeviceSigner,
+        now: SystemTime,
+    ) -> Result<usize, String> {
+        let route = (app.to_owned(), record.to_owned());
+        self.compact(workspace, Some(route), signer, now).await
+    }
+
+    /// Custody's entry of this device's latest compaction of `record` of `app` in `workspace`,
+    /// once it is drafted to send: `None` while it waits for its place, or when custody holds
+    /// none.
+    ///
+    /// # Errors
+    /// The workspace is not held here.
+    pub fn drafted_compaction(
+        &self,
+        workspace: WorkspaceId,
+        (app, record): (&str, &str),
+    ) -> Result<Option<Vec<u8>>, String> {
+        self.with_current(workspace, |view| {
+            let publication = state(view)?;
+            let latest = publication.entries.iter().rev().find(|entry| {
+                postcard::from_bytes::<NeighbourMsg>(&entry.bytes).is_ok_and(|message| {
+                    matches!(&message, NeighbourMsg::AppDocument { app_id, record_id, envelope, .. }
+                        if app_id == app && record_id == record && envelope.kind == OpKind::Compaction)
+                })
+            });
+            Ok(latest
+                .filter(|entry| !publication.slots.contains(&entry.id))
+                .map(|entry| entry.bytes.clone()))
+        })
+    }
+
+    async fn compact(
+        &self,
+        workspace: WorkspaceId,
+        asked: Option<(String, String)>,
+        signer: &dyn collab_types::signer::DeviceSigner,
+        now: SystemTime,
+    ) -> Result<usize, String> {
         let Some(keys) = self.0.history_keys.lock().clone() else {
             return Ok(0);
         };
         self.draft_next(workspace, signer, keys.as_ref(), now)
             .await?;
-        if self.with_current(workspace, |view| {
-            Ok(view
-                .peer
-                .publication()
-                .sealed_records_to_compact()
-                .is_empty())
-        })? {
+        // A record asked for is compacted at once, whatever share of its bound it used.
+        if asked.is_none()
+            && self.with_current(workspace, |view| {
+                Ok(view
+                    .peer
+                    .publication()
+                    .sealed_records_to_compact()
+                    .is_empty())
+            })?
+        {
             return Ok(0);
         }
-        if let Some(wait) = self.0.compaction_wait.lock().get_mut(&workspace)
+        if asked.is_none()
+            && let Some(wait) = self.0.compaction_wait.lock().get_mut(&workspace)
             && *wait > 0
         {
             *wait = wait.saturating_sub(1);
@@ -1910,7 +1967,12 @@ impl NativeWorkspaceOwner {
         let runs = (self.0.store.as_ref(), workspace);
         let draft = |view: &NativeCommittedView| {
             let device = view.device().device_public_key;
-            let due = view.peer.publication().sealed_records_to_compact();
+            let mut due = view.peer.publication().sealed_records_to_compact();
+            if let Some(route) = asked
+                && !due.contains(&route)
+            {
+                due.push(route);
+            }
             let publication = state(view)?;
             let mut open = |write: &SignedOp| keys.open(workspace, write);
             due.into_iter()
