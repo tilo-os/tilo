@@ -224,6 +224,13 @@ pub trait BrowserSessions: Send + Sync {
     /// The workspace's browser session stopped, or must: its device is
     /// forgotten and its window no longer exists.
     fn stop(&self, workspace: &str);
+
+    /// Ask the hosts that run sessions as `plane`'s device, from `endpoint`:
+    /// this host's own, once it runs. Sessions that need no host to ask
+    /// ignore it.
+    fn ask_from(&self, plane: tilo_peer_state::actions::ActionPlane, endpoint: iroh::Endpoint) {
+        let _ = (plane, endpoint);
+    }
 }
 
 /// What a host counts page actions against: its plans and the account's
@@ -463,6 +470,13 @@ impl HostedBrowsers {
                 }
             }));
         *self.authority.lock_recover() = Some(authority);
+    }
+
+    /// Ask the VM hosts that start sessions as `plane`'s device, from
+    /// `endpoint`: this host's own. Until then every open is refused, as
+    /// the host is not running yet.
+    pub fn ask_from(&self, plane: tilo_peer_state::actions::ActionPlane, endpoint: iroh::Endpoint) {
+        self.sessions.ask_from(plane, endpoint);
     }
 
     /// The window `workspace_id`'s Browser is in, when one is up.
