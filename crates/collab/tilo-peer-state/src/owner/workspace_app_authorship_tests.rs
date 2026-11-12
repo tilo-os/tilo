@@ -167,3 +167,70 @@ async fn the_owners_own_grants_never_restrict_their_app_delegation() {
             .is_ok()
     );
 }
+
+/// Letting one app use another app's action is one governance change, signed
+/// through the owner's turn: the grant it drafts is the same on every attempt, so
+/// the turn that signs it settles and the grant lands — once, however often the
+/// same change is committed.
+#[tokio::test]
+async fn an_app_action_grant_is_owner_signed_and_the_same_grant_however_often_given() {
+    use crate::workspace_membership::{AppAction, SettingsChange};
+    use tilo_action_policy::Subject;
+
+    let fixture = fixture();
+    let named = AppAction::new(
+        "so.tilo.lang.today",
+        "so.tilo.lang.notes",
+        "tl:so.tilo.lang.notes:root",
+        "file-note",
+    )
+    .expect("an app's action, named");
+    let request = OwnerCommitRequest {
+        workspace: testing::WORKSPACE.into(),
+        operation: CommitOperation::WorkspaceMembershipCommand {
+            invocation: uuid::Uuid::new_v4(),
+            caller: fixture.certificate.clone(),
+            command: WorkspaceMembershipCommand::Settings(SettingsChange::GrantAppAction(
+                named.clone(),
+            )),
+        },
+    };
+    fixture
+        .owner
+        .commit_workspace_membership_command(request.clone(), &fixture.key, fixture.now)
+        .await
+        .expect("the workspace's owner lets Today file its note");
+    let everyday = |owner: &crate::owner::NativeWorkspaceOwner| {
+        owner
+            .with_current(WorkspaceId::parse(testing::WORKSPACE).unwrap(), |view| {
+                let now = std::time::SystemTime::now();
+                let policy = view
+                    .peer()
+                    .permissions(fixture.certificate.device_public_key, now)
+                    .map_err(|error| error.to_string())?
+                    .policy;
+                Ok(policy
+                    .grants
+                    .into_iter()
+                    .filter(|grant| grant.subject == Subject::app("so.tilo.lang.today"))
+                    .collect::<Vec<_>>())
+            })
+            .unwrap()
+    };
+    let once = everyday(&fixture.owner);
+    let [granted] = once.as_slice() else {
+        panic!("one grant: {once:?}");
+    };
+    assert_eq!(granted.id, named.grant_id());
+    fixture
+        .owner
+        .commit_workspace_membership_command(request, &fixture.key, fixture.now)
+        .await
+        .expect("the same change again");
+    let reopened = crate::owner::open_file(&fixture.directory.path().join("owner.json")).unwrap();
+    assert_eq!(
+        everyday(&reopened).len(),
+        1,
+        "the grant the owner signed is the one it keeps"
+    );
+}

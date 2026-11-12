@@ -7,7 +7,9 @@ use super::{
     PublishedSurface,
 };
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
+use tilo_peer_state::workspace_membership::{
+    AppAction, SettingsChange, WorkspaceMembershipCommand,
+};
 
 const APP: &str = "so.tilo.desktop";
 const RECORD: &str = "membership";
@@ -111,6 +113,16 @@ impl AppBrokerState {
                 governance_resource(workspace),
                 "rename",
                 Some(encoded(&serde_json::json!({ "name": name }))?),
+            ),
+            WorkspaceMembershipCommand::Settings(SettingsChange::GrantAppAction(action)) => (
+                governance_resource(workspace),
+                tilo_desktop_model::APP_ACTION_GRANT_ACTION_ID,
+                Some(encoded(action)?),
+            ),
+            WorkspaceMembershipCommand::Settings(SettingsChange::RevokeAppAction(action)) => (
+                governance_resource(workspace),
+                tilo_desktop_model::APP_ACTION_REVOKE_ACTION_ID,
+                Some(encoded(action)?),
             ),
             WorkspaceMembershipCommand::Settings(_) => {
                 return Err(
@@ -594,7 +606,7 @@ impl AppBrokerState {
             {
                 continue;
             }
-            let governance = people_actions(&governance_resource(&workspace));
+            let governance = governance_actions(&governance_resource(&workspace));
             let membership = self.publish_workspace_surface(
                 Surface::Membership,
                 &workspace,
@@ -761,24 +773,6 @@ fn membership_command(envelope: &InvocationEnvelope) -> Result<WorkspaceMembersh
         let input: AppAuthorship =
             serde_json::from_str(encoded).map_err(|error| error.to_string())?;
         WorkspaceMembershipCommand::GrantAppAuthorship { app: input.app }
-    } else if envelope.resource == WORKSPACE && envelope.action == "grant" {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Give {
-            grant: tilo_action_policy::Grant,
-        }
-        let encoded = bounded_argument(envelope, "grant")?;
-        let input: Give = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
-        WorkspaceMembershipCommand::Grant { grant: input.grant }
-    } else if envelope.resource == WORKSPACE && envelope.action == "revoke" {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct TakeBack {
-            grant: tilo_action_policy::GrantId,
-        }
-        let encoded = bounded_argument(envelope, "grant")?;
-        let input: TakeBack = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
-        WorkspaceMembershipCommand::Revoke { grant: input.grant }
     } else {
         return Err("unknown workspace membership command".into());
     };
@@ -811,6 +805,24 @@ fn people_command(
     };
     if workspace.is_empty() {
         return Err("a workspace's governance names its workspace".into());
+    }
+    if envelope.action == tilo_desktop_model::APP_ACTION_GRANT_ACTION_ID
+        || envelope.action == tilo_desktop_model::APP_ACTION_REVOKE_ACTION_ID
+    {
+        let named: AppAction = serde_json::from_str(bounded_argument(envelope, "the app action")?)
+            .map_err(|error| error.to_string())?;
+        let named = AppAction::new(
+            &named.app,
+            &named.target_app,
+            &named.resource,
+            &named.action,
+        )?;
+        let change = if envelope.action == tilo_desktop_model::APP_ACTION_GRANT_ACTION_ID {
+            SettingsChange::GrantAppAction(named)
+        } else {
+            SettingsChange::RevokeAppAction(named)
+        };
+        return Ok(Some(WorkspaceMembershipCommand::Settings(change)));
     }
     if envelope.action == "rename" {
         #[derive(serde::Deserialize)]
@@ -960,35 +972,59 @@ fn membership_actions() -> Vec<PublishedAction> {
             "Application id",
         )],
     )];
-    actions.push(membership_action(
-        WORKSPACE,
-        "grant",
-        "Workspace",
-        "Give a grant",
-        vec![tilo_actions::ActionParam::required(
-            "grant",
-            tilo_actions::ParamType::Object,
-            "The grant: id, subject, node, kinds, answer, lifetime",
-        )],
-    ));
-    actions.push(membership_action(
-        WORKSPACE,
-        "revoke",
-        "Workspace",
-        "Take back a grant",
-        vec![tilo_actions::ActionParam::required(
-            "grant",
-            tilo_actions::ParamType::Text,
-            "The grant's id",
-        )],
-    ));
     actions.extend(bot_actions());
     actions
 }
 
-/// The changes to a workspace's people, as the workspace's governance offers
-/// them: the verbs its clients already name (`tilo_action_policy::roles::
-/// governance`), made here at this device and admitted by every device.
+/// The changes to a workspace's governance, as it offers them: its people, its own
+/// name, and the permission of one app to use another's action — made here at this
+/// device and admitted by every device.
+fn governance_actions(resource: &str) -> Vec<PublishedAction> {
+    let mut actions = people_actions(resource);
+    actions.extend(app_action_actions(resource));
+    actions
+}
+
+/// One app's use of another app's action, as the workspace's governance offers it:
+/// the same grant the consent sheet's "Always allow" writes, given by name.
+fn app_action_actions(resource: &str) -> Vec<PublishedAction> {
+    let named = || {
+        [
+            ("app", "The application this lets act."),
+            ("target_app", "The application whose action it uses."),
+            (
+                "resource",
+                "The resource of that application, as it publishes it.",
+            ),
+            ("action", "The action on that resource."),
+        ]
+        .into_iter()
+        .map(|(name, description)| {
+            tilo_actions::ActionParam::required(name, tilo_actions::ParamType::Text, description)
+        })
+        .collect()
+    };
+    vec![
+        people_action(
+            resource,
+            tilo_desktop_model::APP_ACTION_GRANT_ACTION_ID,
+            "App actions",
+            "Let an app use another app's action",
+            named(),
+        ),
+        people_action(
+            resource,
+            tilo_desktop_model::APP_ACTION_REVOKE_ACTION_ID,
+            "App actions",
+            "Take back an app's use of another app's action",
+            named(),
+        ),
+    ]
+}
+
+/// The changes to a workspace's people, as the workspace's governance offers them:
+/// the verbs its clients already name (`tilo_action_policy::roles::governance`),
+/// and its own name.
 fn people_actions(resource: &str) -> Vec<PublishedAction> {
     use tilo_action_policy::roles::governance;
     let person = || {
@@ -1426,12 +1462,10 @@ mod tests {
                 )
                 .0;
                 state.refresh_workspace_membership_services().unwrap();
-                // The workspace's own governance is offered, so giving and
-                // taking back a grant are actions here.
+                // The workspace's own governance is offered, so letting one app
+                // use another's action is an action here.
                 let expected = vec![
                     (WORKSPACE, "grant-app-authorship"),
-                    (WORKSPACE, "grant"),
-                    (WORKSPACE, "revoke"),
                     (WORKSPACE, "install-bot"),
                     (WORKSPACE, "renew-bot"),
                     (WORKSPACE, "adopt-bot"),
@@ -1584,11 +1618,9 @@ mod tests {
                 assert_eq!(state.published_surfaces_generation(), 0);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 1);
-                assert_eq!(membership_surface_counts(&state, &workspace), (1, 12));
+                assert_eq!(membership_surface_counts(&state, &workspace), (1, 10));
                 let expected = vec![
                     (WORKSPACE, "grant-app-authorship"),
-                    (WORKSPACE, "grant"),
-                    (WORKSPACE, "revoke"),
                     (WORKSPACE, "install-bot"),
                     (WORKSPACE, "renew-bot"),
                     (WORKSPACE, "adopt-bot"),
@@ -1621,7 +1653,7 @@ mod tests {
                     1,
                     "an admitted agent adds no membership action"
                 );
-                assert_eq!(membership_surface_counts(&state, &workspace), (1, 12));
+                assert_eq!(membership_surface_counts(&state, &workspace), (1, 10));
                 assert_membership_action_set(&state, &workspace, &expected);
                 let peer = *state
                     .workspace_membership_peers
@@ -1898,7 +1930,57 @@ mod tests {
         );
         assert!(
             membership_command(&envelope(WORKSPACE, "grant", None)).is_err(),
-            "the closed membership verbs keep their own arguments"
+            "a grant is the governance's, not the desk's own"
+        );
+    }
+
+    /// One app's use of another app's action is the workspace's governance change
+    /// too: the same grant the consent sheet's "Always allow" writes, given by a
+    /// person who names the app, the other app, its resource and the action.
+    #[test]
+    fn an_apps_use_of_another_apps_action_is_the_governance_change_it_names() {
+        let governance = governance_resource("8f0ee7bd-30e8-4e2f-9f17-2e57cbcf84b2");
+        let named = serde_json::json!({
+            "app": "so.tilo.lang.today",
+            "target_app": "so.tilo.lang.notes",
+            "resource": "tl:so.tilo.lang.notes:root",
+            "action": "file-note",
+        });
+        let app_action = || {
+            AppAction::new(
+                "so.tilo.lang.today",
+                "so.tilo.lang.notes",
+                "tl:so.tilo.lang.notes:root",
+                "file-note",
+            )
+            .unwrap()
+        };
+        for (verb, change) in [
+            (
+                tilo_desktop_model::APP_ACTION_GRANT_ACTION_ID,
+                SettingsChange::GrantAppAction(app_action()),
+            ),
+            (
+                tilo_desktop_model::APP_ACTION_REVOKE_ACTION_ID,
+                SettingsChange::RevokeAppAction(app_action()),
+            ),
+        ] {
+            assert_eq!(
+                membership_command(&envelope(&governance, verb, Some(named.clone()))).unwrap(),
+                WorkspaceMembershipCommand::Settings(change),
+                "{verb} is the governance change it names"
+            );
+        }
+        let unnamed =
+            serde_json::json!({"app": "", "target_app": "t", "resource": "r", "action": "a"});
+        assert!(
+            membership_command(&envelope(
+                &governance,
+                tilo_desktop_model::APP_ACTION_GRANT_ACTION_ID,
+                Some(unnamed),
+            ))
+            .is_err(),
+            "a grant names the app it lets act"
         );
     }
 
@@ -1914,21 +1996,40 @@ mod tests {
         assert!(actions.iter().any(|action| {
             action.resource == WORKSPACE && action.action == "grant-app-authorship"
         }));
-        // The changes to the workspace's people are the governance resource a
+        assert!(
+            actions
+                .iter()
+                .all(|action| action.action != "grant" && action.action != "revoke"),
+            "a grant is the workspace's governance, never the desk's own copy of it"
+        );
+        // The changes to the workspace's governance are the governance resource a
         // client names without a catalogue page.
         let governance = governance_resource(&workspace.id().to_string());
-        let people = people_actions(&governance);
+        let changes = governance_actions(&governance);
         assert_eq!(
-            people.len(),
-            8,
-            "every change the people's governance takes"
+            changes.len(),
+            10,
+            "every change the workspace's governance takes"
         );
-        assert!(people.iter().all(|action| {
+        assert!(changes.iter().all(|action| {
             action.resource == governance
                 && action.resource_kind == tilo_actions::remote::WORKSPACE_GOVERNANCE_KIND
                 && action.contract.kind == tilo_actions::ActionKind::Outside
         }));
-        assert!(people.iter().any(|action| action.action == "ban"));
+        assert!(changes.iter().any(|action| action.action == "ban"));
+        let app_action = changes
+            .iter()
+            .find(|offered| offered.action == tilo_desktop_model::APP_ACTION_GRANT_ACTION_ID)
+            .expect("an app's use of another app's action is a governance change");
+        assert_eq!(
+            app_action
+                .params
+                .iter()
+                .map(|param| param.name.as_ref())
+                .collect::<Vec<_>>(),
+            ["app", "target_app", "resource", "action"],
+            "it names the app, the other app, its resource and the action"
+        );
     }
 
     /// The changes to a workspace's people are published where every client
@@ -1964,7 +2065,7 @@ mod tests {
                     tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
                 );
                 assert_eq!(offered.resource_kind, "workspace.permissions");
-                assert_eq!(surface.actions.len(), 8);
+                assert_eq!(surface.actions.len(), 10);
                 assert!(
                     state
                         .governance_surface(&workspace, &resource, "call")

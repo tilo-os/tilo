@@ -412,6 +412,28 @@ impl AppAction {
         Ok(named)
     }
 
+    /// The id of the grant this names: one standing grant per app, target app, resource and
+    /// action, so granting it again gives that grant rather than a second copy, and a turn that
+    /// drafts the change signs the same grant when it drafts it again.
+    #[must_use]
+    pub fn grant_id(&self) -> tilo_action_policy::GrantId {
+        let named = [
+            self.app.as_str(),
+            self.target_app.as_str(),
+            self.resource.as_str(),
+            self.action.as_str(),
+        ]
+        .join("\0");
+        // The first 128 bits of the digest: unique for every action a workspace's apps
+        // name, and short enough to read in a grant's id.
+        let digest: String = blake3::hash(named.as_bytes())
+            .to_hex()
+            .chars()
+            .take(32)
+            .collect();
+        tilo_action_policy::GrantId(format!("app-action:{digest}"))
+    }
+
     /// The node the grant names, inside `workspace`'s node.
     #[must_use]
     pub fn node(&self, workspace: &TreePath) -> TreePath {
