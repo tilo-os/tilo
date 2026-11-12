@@ -591,3 +591,61 @@ fn the_host_speaks_for_each_run_it_executes_and_nobody_else_does() {
     assert!(board.set_host(Some(member)));
     assert!(board.member(stand_in(host, run)).is_none());
 }
+
+/// The line beside an agent's face names the step it is on, never the one
+/// before: a view sent again, or one that arrives after a newer view, is the
+/// one already taken and is not taken again.
+#[test]
+fn an_agents_line_never_rolls_back_to_the_step_before() {
+    use collab_types::presence::{ShellPresence, stand_in};
+    let (host, run) = ([3; 32], "agent-run:4");
+    let saying = |seq: u32, line: &str| {
+        Presence::desktop(
+            WORKSPACE,
+            Payload::Shell(Box::new(ShellPresence {
+                seq,
+                sent_at_ms: u64::from(seq),
+                label: "Claude Code".into(),
+                agent: true,
+                colour: "#81a8ff".into(),
+                activity: Some(line.into()),
+                place: None,
+                size: [0, 0],
+                windows: Vec::new(),
+                selection: None,
+                chat: None,
+                reaction: None,
+            })),
+        )
+        .spoken_for(run)
+    };
+    let mut board = board();
+    board.set_host(Some(host));
+    let line = |board: &Board| {
+        super::shown(
+            board
+                .member(stand_in(host, run))
+                .expect("the run is a member"),
+            1.0,
+        )
+        .activity
+    };
+
+    // Each step the run takes is said once, with a higher sequence.
+    assert!(board.hear(host, &saying(1, "Looking at the apps"), 1.0));
+    assert_eq!(line(&board).as_deref(), Some("Looking at the apps"));
+    assert!(board.hear(host, &saying(2, "Editing Notes"), 2.0));
+    assert_eq!(line(&board).as_deref(), Some("Editing Notes"));
+
+    // The view of the step before, sent again or arrived late, changes
+    // nothing: the line stays on the step the run is on.
+    assert!(
+        !board.hear(host, &saying(1, "Looking at the apps"), 3.0),
+        "the step before is not news"
+    );
+    assert_eq!(line(&board).as_deref(), Some("Editing Notes"));
+
+    // The next step, in turn, is.
+    assert!(board.hear(host, &saying(3, "Reading Notes"), 4.0));
+    assert_eq!(line(&board).as_deref(), Some("Reading Notes"));
+}
