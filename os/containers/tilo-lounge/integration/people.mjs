@@ -1277,6 +1277,54 @@ try {
   console.log('ok: the same gesture scrolls Sheets and leaves the strip');
   mark('a sideways swipe over Sheets');
 
+  // Report a problem: the bar's own avatar, then the card's row. After a
+  // while here the bar asks about the person beside their avatar, and while
+  // that question waits the avatar opens it rather than their card: a person
+  // puts it off, as the question offers, and opens their card then. A failed
+  // check keeps no outputs, so what was pressed and what the card offered are
+  // said in the log.
+  const reportProblem = async () => {
+    // The bar's own avatar, by the whole name the bar gives it ("<name> (you):
+    // your profile"): a chat author's card or anything else named after the
+    // person is not it.
+    const avatar = async () => {
+      const before = await namesOf(a.tab);
+      const own = before.find(name => / \(you\): your profile$/.test(name));
+      if (!own) await failed(`the bar shows no avatar of the person's own: shown ${JSON.stringify(before)}`, a.tab);
+      if (!await press(a.tab, own)) await failed(`the bar's avatar "${own}" has no bounds to press`, a.tab);
+      await settle(a.tab, 2);
+      const after = await namesOf(a.tab);
+      const seen = new Set(before);
+      console.log(`report a problem: pressed "${own}"; it brought ${JSON.stringify(after.filter(name => !seen.has(name)))}`);
+      return after;
+    };
+    let shown = await avatar();
+    if (shown.includes('Not now')) {
+      await press(a.tab, 'Not now');
+      await settle(a.tab, 2);
+      shown = await avatar();
+    }
+    const reportRow = await choose(a.tab, /^Report a problem/);
+    if (!reportRow) {
+      // The row is there once the page holds the Lounge's feedback channel:
+      // why it does not is in what the page said about feedback.
+      const said = (a.tab.log ?? []).filter(line => /feedback/i.test(line)).slice(-10);
+      await failed(`the profile card offers no Report a problem: shown ${JSON.stringify(await namesOf(a.tab))}; the page said of feedback: ${JSON.stringify(said)}`, a.tab);
+    }
+    // Picking what to report takes every event: nothing under the pointer
+    // reacts to it, and the strip the desk shows stays where it was.
+    await settle(a.tab, 2);
+    const pickingPan = await panOf(a.tab);
+    await sidewaysSwipe(a.tab, centre.x, centre.y, true);
+    if ((await panOf(a.tab))?.offset !== pickingPan?.offset) {
+      failed('a sideways wheel panned the strip under the report picker');
+    }
+    report.reportProblem = reportRow;
+    console.log(`ok: Report a problem opens its picker (${reportRow})`);
+    mark('Report a problem');
+    await key(a.tab, 'Escape');
+  };
+
   let invited = null;
   if (!brief) {
     // A pinch, which a browser sends as Ctrl+wheel, is the window's zoom and
@@ -1321,39 +1369,7 @@ try {
     mark('the text menu');
     await key(a.tab, 'Escape');
 
-    // Report a problem: the bar's own avatar, then the card's row. After a
-    // while here the bar asks about the person beside their avatar, and while
-    // that question waits the avatar opens it rather than their card: a
-    // person puts it off, as the question offers, and opens their card then.
-    const avatar = async () => {
-      await press(a.tab, (await namesOf(a.tab)).find(name => /\(you\)/.test(name)) ?? 'Profile');
-      await settle(a.tab, 2);
-    };
-    await avatar();
-    if ((await namesOf(a.tab)).includes('Not now')) {
-      await press(a.tab, 'Not now');
-      await settle(a.tab, 2);
-      await avatar();
-    }
-    const reportRow = await choose(a.tab, /^Report a problem/);
-    if (!reportRow) {
-      // The row is there once the page holds the Lounge's feedback channel:
-      // why it does not is in what the page said about feedback.
-      const said = (a.tab.log ?? []).filter(line => /feedback/i.test(line)).slice(-10);
-      failed(`the profile card offers no Report a problem: shown ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}; the page said of feedback: ${JSON.stringify(said)}`);
-    }
-    // Picking what to report takes every event: nothing under the pointer
-    // reacts to it, and the strip the desk shows stays where it was.
-    await settle(a.tab, 2);
-    const pickingPan = await panOf(a.tab);
-    await sidewaysSwipe(a.tab, centre.x, centre.y, true);
-    if ((await panOf(a.tab))?.offset !== pickingPan?.offset) {
-      failed('a sideways wheel panned the strip under the report picker');
-    }
-    report.reportProblem = reportRow;
-    console.log(`ok: Report a problem opens its picker (${reportRow})`);
-    mark('Report a problem');
-    await key(a.tab, 'Escape');
+    await reportProblem();
 
     // The launcher's chord opens the search, and Escape closes it opening
     // nothing: the keys a browser leaves to the page. The desk has every app
@@ -1523,6 +1539,9 @@ try {
     mark('A\'s desk shows the invitee');
     await dump(a.tab, '11-a-people-invited');
   }
+  // The short check opens the card too: it is the step that tells a bar whose
+  // own avatar went missing or opens nothing.
+  if (brief) await reportProblem();
 
   // Nothing failed in either page.
   const both = [...a.tab.log, ...b.tab.log, ...(invited?.tab.log ?? [])];
