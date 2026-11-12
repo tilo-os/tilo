@@ -197,6 +197,8 @@ fn a_box_send_reaches_the_conversation_the_two_already_have() {
             to: vec![Recipient::found(RecipientKind::Person, ada, "Ada")],
             attached: vec![carried],
             text: "can you look?".into(),
+            parent: None,
+            body: None,
             opens: Some(true),
         })
         .expect("Bob's box sends");
@@ -261,6 +263,8 @@ fn a_box_send_of_a_subject_alone_posts_the_message_without_words() {
             to: vec![Recipient::found(RecipientKind::Person, ada, "Ada")],
             attached: vec![carried.clone()],
             text: String::new(),
+            parent: None,
+            body: None,
             opens: Some(true),
         })
         .expect("Bob's box sends the task alone");
@@ -297,6 +301,8 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
             to: vec![Recipient::found(RecipientKind::Agent, agent, "Ada")],
             attached: Vec::new(),
             text: "please look".into(),
+            parent: None,
+            body: None,
             opens: Some(true),
         })
         .expect("Bob's box sends");
@@ -343,6 +349,8 @@ fn the_conversation_a_send_answers_opens_in_a_window() {
             to: vec![Recipient::found(RecipientKind::Agent, agent, "Ada")],
             attached: Vec::new(),
             text: "please look".into(),
+            parent: None,
+            body: None,
             opens: Some(true),
         })
         .expect("Bob's box sends");
@@ -395,6 +403,8 @@ fn a_box_send_answers_the_conversation_it_landed_in() {
             )],
             attached: Vec::new(),
             text: "look at this".into(),
+            parent: None,
+            body: None,
             opens: Some(true),
         })
         .expect("Bob's box sends");

@@ -445,6 +445,11 @@ pub struct ChatApp {
     // window's person, recorded in history and replicated. See
     // [`crate::record`].
     pub(crate) dispatch: Option<ui::framework::Dispatcher<crate::resource::Chat>>,
+    /// Chat's `send`, as the window publishes it: the action the composer's
+    /// send button runs, and the one an agent's send and the desk's send-to
+    /// box run. The button is where it lands, so a marker drawn for anyone
+    /// sending rests there.
+    pub(crate) send_action: Option<ui::tilo_actions::ActionAddress>,
     /// The read receipt last sent on its own and not answered yet, by
     /// channel, and the one the door refused: a receipt the door does not
     /// offer this person (a viewer) is not sent again until they read
@@ -811,6 +816,7 @@ impl ChatApp {
             host_model: crate::host_model::HostModel::default(),
             expanded_agent: std::collections::HashSet::new(),
             dispatch: None,
+            send_action: None,
             read_asked: None,
             read_refused: None,
             chain: None,
@@ -1181,6 +1187,17 @@ impl ChatApp {
         dispatcher: ui::framework::Dispatcher<crate::resource::Chat>,
     ) {
         self.dispatch = Some(dispatcher);
+    }
+
+    /// Take the resource the window publishes its actions on: the composer's
+    /// send button is where Chat's `send` lands, so a person's press, an
+    /// agent's send and the desk's send-to box are one action at one control.
+    pub(crate) fn with_send_action(
+        mut self,
+        actions: &ui::framework::Actions<crate::resource::Chat>,
+    ) -> Self {
+        self.send_action = Some(crate::effects::ChatEffect::SEND.on(actions.resource_id()));
+        self
     }
 
     /// Keep the composers' drafts in the person's own `record`: theirs
@@ -2292,10 +2309,13 @@ impl Widget for ChatApp {
         // which carry device and destructive-operation metadata. Keep their
         // synthetic accessibility subtrees outside generic action projection.
         // Only the shared separators use the generic widget effect contract.
+        // The send button keeps its readable key: it is where the chat's
+        // `send` lands, and the marker drawn for whoever sends is found by
+        // that key.
         for child in &mut children {
             if !matches!(
                 child.action_target.as_deref(),
-                Some("sidebar-resize" | "inspector-resize")
+                Some("sidebar-resize" | "inspector-resize" | "chat.send")
             ) {
                 child.semantic_key = None;
             }
@@ -2400,11 +2420,12 @@ impl Widget for ChatApp {
         ) {
             return false;
         }
-        let messages_before = matches!(hit, Hit::Send).then(|| {
-            crate::projection::read(state)
-                .message_rows(&self.held_messages(), &self.active_channel)
-                .len()
-        });
+        let messages_before =
+            matches!(hit, Hit::Send | Hit::RetrySend | Hit::ThreadSend).then(|| {
+                crate::projection::read(state)
+                    .message_rows(&self.held_messages(), &self.active_channel)
+                    .len()
+            });
         self.on_hit(hit, state);
         messages_before.is_none_or(|before| {
             crate::projection::read(state)

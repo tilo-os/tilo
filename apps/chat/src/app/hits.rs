@@ -67,6 +67,13 @@ pub(crate) enum Hit {
     FocusMain,
     FocusThread,
     Send,
+    /// Send again what the composer kept after a refused send: its own
+    /// control, beside the send button, so a marker for a send rests on the
+    /// button rather than on the retry line.
+    RetrySend,
+    /// Send what the thread's box holds: the thread has its own button, so a
+    /// send from the conversation's box is found at that box and nowhere else.
+    ThreadSend,
     /// Bring back the message of your own you just deleted.
     UndoDelete,
     /// Return a scrolled conversation to its newest message without changing
@@ -164,6 +171,8 @@ impl Hit {
             Self::FocusEdit => "chat.message-edit".into(),
             Self::HostModel(command) => format!("chat.model.{command}"),
             Self::Send => "chat.send".into(),
+            Self::RetrySend => "chat.retry-send".into(),
+            Self::ThreadSend => "chat.thread-send".into(),
             Self::UndoDelete => "chat.undo-delete".into(),
             Self::JumpToLatest => "chat.jump-to-latest".into(),
             Self::ThreadScroll(end) => format!("chat.thread-scroll-{end}"),
@@ -376,7 +385,8 @@ impl ChatApp {
                     Hit::HostModel(command) => {
                         (copy(&format!("chat-model-{command}")), Role::Button, false)
                     }
-                    Hit::Send => (copy("chat-send-message"), Role::Button, false),
+                    Hit::Send | Hit::ThreadSend => (copy("chat-send-message"), Role::Button, false),
+                    Hit::RetrySend => (copy("chat-retry"), Role::Button, false),
                     Hit::UndoDelete => (copy("chat-undo"), Role::Button, false),
                     Hit::JumpToLatest => (copy("chat-jump-latest-message"), Role::Button, false),
                     Hit::ThreadScroll(end) => (
@@ -733,6 +743,8 @@ impl ChatApp {
                         | Hit::CallParticipantsToggle
                         | Hit::Attach
                         | Hit::Send
+                        | Hit::RetrySend
+                        | Hit::ThreadSend
                         | Hit::AddReaction { .. }
                         | Hit::MessageBar { .. }
                         | Hit::MessageMore { .. }

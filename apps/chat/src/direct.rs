@@ -82,21 +82,7 @@ impl ChatApp {
         self.request_relayout();
     }
 
-    /// Post `text`, with what it carries, to the conversation `id` now, as
-    /// the record's `post` does, and say whether it was taken.
-    pub(crate) fn post_to_conversation(
-        &self,
-        id: &Id,
-        text: &str,
-        attachments: Vec<tilo_reference::Attached>,
-    ) -> Result<(), String> {
-        self.messages_chain()?
-            .invoke(&post(id, text, attachments))
-            .map(drop)
-            .map_err(|error| error.to_string())
-    }
-
-    /// Post `text` to the conversation `id`, as [`Self::post_to_conversation`],
+    /// Post `text` to the conversation `id`, as [`Self::send_message`] does,
     /// and tell `then` whether it was taken: at once, or, on a device whose
     /// messages are still on their way from the workspace (back from away),
     /// once they are here and it was written after them.
@@ -107,9 +93,11 @@ impl ChatApp {
         then: impl FnOnce(Result<(), String>) + 'static,
     ) {
         match self.messages_chain() {
-            Ok(chain) => chain.invoke_then(&post(id, text, Vec::new()), move |posted| {
-                then(posted.map(drop).map_err(|error| error.to_string()));
-            }),
+            Ok(chain) => {
+                chain.invoke_then(&post(id, text, None, None, Vec::new()), move |posted| {
+                    then(posted.map(drop).map_err(|error| error.to_string()));
+                });
+            }
             Err(unavailable) => then(Err(unavailable)),
         }
     }
@@ -130,19 +118,26 @@ impl ChatApp {
     /// # Errors
     /// The box names nobody this chat knows, a conversation beside other
     /// recipients, or a message with neither words nor anything to carry.
-    pub(crate) fn send_from_box(
+    pub(crate) fn send_message(
         &self,
-        to: &[ui::floating_surface::Recipient],
-        attached: Vec<tilo_reference::Attached>,
-        text: &str,
-        opens: bool,
+        message: SendMessage<'_>,
         chat: &Chat,
     ) -> Result<Effected, String> {
+        let SendMessage {
+            to,
+            attached,
+            text,
+            parent,
+            body,
+            opens,
+        } = message;
         if text.trim().is_empty() && attached.is_empty() {
             return Err(crate::i18n::t("chat-send-empty"));
         }
         let id = self.conversation_named(to, chat)?;
-        self.post_to_conversation(&id, text, attached)?;
+        self.messages_chain()?
+            .invoke(&post(&id, text, parent.map(Id::from_raw), body, attached))
+            .map_err(|error| error.to_string())?;
         // The conversation stands where the box stood: a window of the desk,
         // floated over it, that the workspace's record keeps for every
         // member.
@@ -259,14 +254,34 @@ impl ChatApp {
     }
 }
 
-/// The record's `post` of `text`, with what it carries, to the conversation `id`.
-fn post(id: &Id, text: &str, attachments: Vec<tilo_reference::Attached>) -> Invoke<ChatPart> {
+/// What a box holds for one send: who it goes to, what it says, what it
+/// carries, the message it answers in a thread, its own paragraphs, and
+/// whether the conversation opens where the box stood.
+pub(crate) struct SendMessage<'a> {
+    pub to: &'a [ui::floating_surface::Recipient],
+    pub attached: Vec<tilo_reference::Attached>,
+    pub text: &'a str,
+    /// The message it answers in a thread, by its id.
+    pub parent: Option<String>,
+    pub body: Option<Vec<tilo_document::ClipBlock>>,
+    pub opens: bool,
+}
+
+/// The record's `post` of `text`, with what it carries and the paragraphs it
+/// was written in, to the conversation `id`.
+fn post(
+    id: &Id,
+    text: &str,
+    parent: Option<Id>,
+    body: Option<Vec<tilo_document::ClipBlock>>,
+    attachments: Vec<tilo_reference::Attached>,
+) -> Invoke<ChatPart> {
     ChatPart::POST.with(chat_part::Post {
         message: crate::messages::NewMessage {
             channel: id.clone(),
             text: text.to_owned(),
-            parent: None,
-            body: None,
+            parent,
+            body,
             attachments,
             mentions: None,
             written: None,

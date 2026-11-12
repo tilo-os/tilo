@@ -1910,3 +1910,22 @@ fn a_secondary_click_in_the_composer_offers_the_text_menu_where_it_is_drawn() {
     );
     frame.close_components();
 }
+
+/// An agent's send is the action the composer's send button presses: the
+/// marker drawn for it rests on that button, never on a place it guessed. An
+/// agent names the action the way its listing shows it — `send` on the chat's
+/// own record — so that is the address the button has to answer.
+#[test]
+fn an_agents_send_lands_on_the_composers_send_button() {
+    let (mut frame, _records, _checkout) = semantic_component_harness("chat-agent-send");
+    let button = semantic_target_rect(&frame.inspection().root, "chat.send")
+        .expect("the composer's send button is drawn");
+    let locus = frame
+        .semantic_locus(&ui::headless::agent_acting("chat.workspace", "send"))
+        .expect("an agent's send finds the send button");
+    assert!(
+        button.contains(locus.center()),
+        "the agent sends at the send button: {locus:?} in {button:?}"
+    );
+    frame.close_components();
+}

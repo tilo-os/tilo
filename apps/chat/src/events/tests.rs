@@ -247,7 +247,7 @@ fn with_no_channel_open_the_composer_takes_no_text() {
     reason = "one labelled phase per original scenario, each with its own fresh fixture"
 )]
 fn composer_edits_the_draft_and_sends_through_the_action_route() {
-    // Phase: send_affordance_dispatches_a_send_message_action.
+    // Phase: send_affordance_sends_what_the_draft_holds_to_the_channel.
     {
         let (mut app, mut doc) = app_with_doc();
         app.active_channel = "c_general".into();
@@ -255,15 +255,12 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
         app.thread_open = None;
         crate::testing::write_draft(&mut app, &mut doc, "hi from the composer");
         app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
-        let action = app
-            .dispatched_parts
-            .borrow()
-            .iter()
-            .map(|action| serde_json::to_value(action).unwrap())
-            .find(|action| action["action"] == "post")
-            .expect("send dispatched a post");
-        assert_eq!(action["args"]["channel"], "c_general");
-        assert_eq!(action["args"]["text"], "hi from the composer");
+        let sent = crate::testing::messages(&doc, "c_general");
+        assert_eq!(
+            sent.last().map(|message| message.text.as_str()),
+            Some("hi from the composer"),
+            "send sends what the draft holds to the conversation shown"
+        );
     }
 
     // Phase: typing_then_send_appends_a_message.
@@ -600,7 +597,9 @@ fn a_refused_post_keeps_its_text_and_says_it_was_not_sent() {
     let retries = app
         .hits
         .iter()
-        .filter(|(rect, hit)| matches!(hit, Hit::Send) && rect.y0 >= app.composer_main.rect().y1)
+        .filter(|(rect, hit)| {
+            matches!(hit, Hit::RetrySend) && rect.y0 >= app.composer_main.rect().y1
+        })
         .count();
     assert_eq!(retries, 1, "Retry stands under the composer");
 }
