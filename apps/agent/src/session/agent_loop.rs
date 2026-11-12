@@ -1107,17 +1107,14 @@ impl Session {
         let mut turn = 0;
         loop {
             if state.turns.is_some_and(|turns| turn >= turns) {
-                return Ok(LoopEnd::Failed(format!(
-                    "The task used all {turn} model turns of its budget before it finished \
-                     ({} action(s) completed). Raise its turns and run it again.",
-                    state.completed
+                return Ok(LoopEnd::Failed(crate::i18n::t_args(
+                    "agent-fail-turns",
+                    &[("turns", turn.into()), ("actions", state.completed.into())],
                 )));
             }
             let left = total_budget.map(|total| total.saturating_sub(began.elapsed()));
             if left.is_some_and(|left| left.is_zero()) {
-                return Ok(LoopEnd::Failed(
-                    "The task ran out of time before it finished".into(),
-                ));
+                return Ok(LoopEnd::Failed(crate::i18n::t("agent-fail-time")));
             }
             // This explicit caller budget comes only from the broker-minted
             // owner policy; the gateway still enforces its selected-model ceiling.
@@ -1208,7 +1205,7 @@ impl Session {
         } else if !presentation.detail.is_empty() {
             presentation.detail.as_str()
         } else {
-            "Model turn completed"
+            &crate::i18n::t("agent-model-turn-completed")
         };
         let message: String = readable.chars().take(280).collect();
         turn.published_presentation = Some(presentation.clone());
@@ -1278,7 +1275,9 @@ impl Session {
         timeout: Duration,
     ) -> Result<Option<LoopEnd>> {
         if self.task_cancelled(run)? {
-            return Ok(Some(LoopEnd::Cancelled("Cancelled before planning".into())));
+            return Ok(Some(LoopEnd::Cancelled(crate::i18n::t(
+                "agent-run-cancelled-before-planning",
+            ))));
         }
         if let Some(message) = self.spend_exhausted() {
             return Ok(Some(LoopEnd::Failed(message)));
@@ -1297,9 +1296,9 @@ impl Session {
         self.poll_cancellation(run)?;
         if self.cancellation_known()? {
             self.turn = None;
-            return Ok(Some(LoopEnd::Cancelled(
-                "Cancelled before the next step".into(),
-            )));
+            return Ok(Some(LoopEnd::Cancelled(crate::i18n::t(
+                "agent-run-cancelled-before-step",
+            ))));
         }
         if self
             .native_task
@@ -1321,7 +1320,7 @@ impl Session {
             if self.task_budget_expired() {
                 let message = self.interrupt_turn_presentation(
                     run,
-                    "The explicit task time budget expired",
+                    &crate::i18n::t("agent-fail-budget"),
                     false,
                 )?;
                 return Ok(Some(LoopEnd::Failed(message)));
@@ -1330,8 +1329,11 @@ impl Session {
             self.publish_turn_presentation(run)?;
             self.absorb_catalogue_updates();
             if self.cancellation_known()? {
-                let message =
-                    self.interrupt_turn_presentation(run, "Cancelled while thinking", true)?;
+                let message = self.interrupt_turn_presentation(
+                    run,
+                    &crate::i18n::t("agent-cancel-thinking"),
+                    true,
+                )?;
                 return Ok(Some(LoopEnd::Cancelled(message)));
             }
             if self
@@ -1341,7 +1343,11 @@ impl Session {
             {
                 // New directions take the next turn. Steps already running
                 // settle first, as a step in progress always has.
-                self.interrupt_turn_presentation(run, "Superseded by new directions", true)?;
+                self.interrupt_turn_presentation(
+                    run,
+                    &crate::i18n::t("agent-cancel-superseded"),
+                    true,
+                )?;
                 if let Some(message) = self.drain_in_flight(run, state, &mut failed)? {
                     return Ok(Some(LoopEnd::Cancelled(message)));
                 }
@@ -1383,9 +1389,7 @@ impl Session {
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
                 if self.task_budget_expired() {
                     self.turn = None;
-                    return Ok(Some(LoopEnd::Failed(
-                        "The explicit task time budget expired".into(),
-                    )));
+                    return Ok(Some(LoopEnd::Failed(crate::i18n::t("agent-fail-budget"))));
                 }
                 let handling = ui::time::now();
                 let handled = self.handle_call(run, state, &call, &mut failed)?;
@@ -1410,7 +1414,7 @@ impl Session {
             if turn_began.elapsed().saturating_sub(stepping) > timeout + Duration::from_secs(5) {
                 let message = self.interrupt_turn_presentation(
                     run,
-                    "The model turn did not finish in time",
+                    &crate::i18n::t("agent-fail-turn-not-finished"),
                     false,
                 )?;
                 return Ok(Some(LoopEnd::Failed(message)));
@@ -1463,9 +1467,9 @@ impl Session {
                     // as after any turn that dispatched no finish.
                     return Ok(None);
                 }
-                return Ok(Some(LoopEnd::Failed(format!(
-                    "The model call failed: {error}. Check the model in Settings, under Agent \
-                     models, then run this again."
+                return Ok(Some(LoopEnd::Failed(crate::i18n::t_args(
+                    "agent-fail-model-call",
+                    &[("error", error.into())],
                 ))));
             }
         };
@@ -1490,8 +1494,9 @@ impl Session {
                 if let Some(end) = state.finished_despite_failed_plan(&error) {
                     return Ok(Some(end));
                 }
-                return Ok(Some(LoopEnd::Failed(format!(
-                    "The model's answer couldn't be used: {error}. Run this again."
+                return Ok(Some(LoopEnd::Failed(crate::i18n::t_args(
+                    "agent-fail-model-answer",
+                    &[("error", error.into())],
                 ))));
             }
         };
@@ -1705,7 +1710,7 @@ impl Session {
         let Some(step) = self.step_of(run, state, call) else {
             return Ok(());
         };
-        let note = step.note();
+        let note = crate::i18n::step(&step);
         if state.told_step.as_deref() == Some(note.as_str()) || state.steps_told >= MOST_STEPS_TOLD
         {
             return Ok(());
@@ -2095,7 +2100,7 @@ impl Session {
             Err(TaskActionStop::Failed(message)) => Ok((refused_report(message), None)),
             Err(TaskActionStop::Cancelled(message)) => Ok((
                 InvokeReport::default(),
-                Some(message.unwrap_or_else(|| "Cancelled while an action was running".into())),
+                Some(message.unwrap_or_else(|| crate::i18n::t("agent-run-cancelled-in-action"))),
             )),
         }
     }
@@ -2206,7 +2211,9 @@ impl Session {
             return Ok(Started::InOrder);
         }
         if self.cancelled_before_step()? {
-            return Ok(Started::Cancelled("Cancelled before the next step".into()));
+            return Ok(Started::Cancelled(crate::i18n::t(
+                "agent-run-cancelled-before-step",
+            )));
         }
         let index = state.completed + state.in_flight.len();
         self.chooser
@@ -2237,7 +2244,7 @@ impl Session {
                         Started::Refused(Box::new(refused_report(message)))
                     }
                     TaskActionStop::Cancelled(message) => Started::Cancelled(
-                        message.unwrap_or_else(|| "Cancelled while an action was running".into()),
+                        message.unwrap_or_else(|| crate::i18n::t("agent-run-cancelled-in-action")),
                     ),
                 })
             }
@@ -2291,7 +2298,7 @@ impl Session {
                 Err(TaskActionStop::Failed(message)) => refused_report(message),
                 Err(TaskActionStop::Cancelled(message)) => {
                     cancelled.get_or_insert_with(|| {
-                        message.unwrap_or_else(|| "Cancelled while an action was running".into())
+                        message.unwrap_or_else(|| crate::i18n::t("agent-run-cancelled-in-action"))
                     });
                     continue;
                 }

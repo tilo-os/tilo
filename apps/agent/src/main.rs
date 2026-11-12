@@ -215,6 +215,10 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let mut cli = Cli::parse();
+    // The person's settings, as every launched app reads them: what this
+    // process says to them is in the language they chose there, which the
+    // launcher's collaboration service answers.
+    ui::collaboration::install_channel_settings();
     let managed = std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some();
     let model_timeout_ms = cli
         .model_timeout_ms

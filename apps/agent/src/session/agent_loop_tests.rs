@@ -1865,6 +1865,40 @@ fn a_run_with_no_model_says_so_and_never_blames_permissions() {
     );
 }
 
+/// The same run on a German desktop: the person reads the missing model, and
+/// where to choose one, in German, and the Settings page is named as it is
+/// named there.
+#[test]
+fn a_german_desktop_reads_the_missing_model_in_german() {
+    let _german = crate::i18n::chosen("de-DE");
+    let mut f = fixture("zzz", World::default(), Vec::new());
+    f.session.chooser = Chooser::new(false, Duration::from_secs(5));
+    f.session.run_task(&f.run).unwrap();
+    let sent = f.sent.borrow();
+    let notes = notes(&sent);
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.contains("kein Modell") && note.contains("Agentenmodelle")),
+        "the run announces the missing model in German: {notes:?}"
+    );
+    assert!(
+        !notes.iter().any(|note| note.contains("No model")),
+        "no note stays English on a German desktop: {notes:?}"
+    );
+    let runtime_collab::TaskRunUpdate::Failed { message } = terminal(&sent) else {
+        panic!("a run with nothing to do fails: {:?}", terminal(&sent));
+    };
+    assert!(
+        message.contains("Es ist kein Modell eingerichtet"),
+        "the reply says the one thing that fixes it, in German: {message}"
+    );
+    assert!(
+        message.contains("Einstellungen") && message.contains("Agentenmodelle"),
+        "the way to fix it names the German Settings page: {message}"
+    );
+}
+
 /// What the conversation was told, one entry per record, in order.
 fn recorded(sent: &[CollabRequest], action: &str) -> Vec<serde_json::Map<String, Value>> {
     sent.iter()
@@ -2537,7 +2571,9 @@ fn explicit_total_task_deadline_stops_silent_transport_before_any_step() {
     assert!(f.session.task_deadline.is_none());
     assert!(
         matches!(terminal(&f.sent.borrow()), runtime_collab::TaskRunUpdate::Failed { message }
-        if message.contains("task time budget"))
+        if message == crate::i18n::t("agent-fail-budget")),
+        "the task's own budget is what ended it: {:?}",
+        terminal(&f.sent.borrow())
     );
 }
 

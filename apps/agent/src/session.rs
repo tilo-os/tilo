@@ -109,9 +109,9 @@ struct Following {
 impl Following {
     fn into_outcome(self) -> Result<StepOutcome, TaskActionStop> {
         self.outcome.unwrap_or_else(|| {
-            Err(TaskActionStop::Failed(
-                "Task action did not reach a terminal state before its deadline".into(),
-            ))
+            Err(TaskActionStop::Failed(crate::i18n::t(
+                "agent-fail-no-terminal-state",
+            )))
         })
     }
 }
@@ -123,11 +123,17 @@ fn task_action_from_offer(
     let peer_id = match (offer.broker_peer_id, offer.broker_provider.as_ref()) {
         (Some(peer), _) => peer,
         (None, Some(_)) => 0,
-        (None, None) => return Err("Tasks cannot invoke a local-only action".into()),
+        (None, None) => return Err(crate::i18n::t("agent-fail-local-only")),
     };
     if !offer.wants_content() {
-        tilo_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments)
-            .map_err(|error| format!("The planned action arguments are invalid: {error}"))?;
+        tilo_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments).map_err(
+            |error| {
+                crate::i18n::t_args(
+                    "agent-fail-arguments",
+                    &[("error", error.to_string().into())],
+                )
+            },
+        )?;
     }
     Ok(TaskAction {
         app: offer.app.clone(),
@@ -473,6 +479,9 @@ impl Session {
         reason = "one task run keeps planning, per-step reporting and the terminal update in a single auditable sequence"
     )]
     fn run_task_steps(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+        // What this run says is the person's language as it stands now: they
+        // may have changed it since the app started.
+        crate::i18n::follow();
         self.task_deadline = run.execution_budget.and_then(|budget| {
             ui::time::now().checked_add(Duration::from_millis(u64::from(budget.total_ms)))
         });
@@ -510,7 +519,7 @@ impl Session {
         self.report_task(
             run,
             runtime_collab::TaskRunUpdate::Progress {
-                message: "Reading the actions this workspace's apps publish".into(),
+                message: crate::i18n::t("agent-run-reading-actions"),
                 presentation: None,
             },
         )?;
@@ -538,7 +547,7 @@ impl Session {
                             finish
                                 .reply
                                 .as_deref()
-                                .unwrap_or("Needs your decision before continuing"),
+                                .unwrap_or(&crate::i18n::t("agent-run-needs-decision")),
                         );
                     }
                     // The model's own reply is the run's result, whole: an
@@ -554,25 +563,19 @@ impl Session {
             .as_ref()
             .is_some_and(|state| state.pending.is_some())
         {
-            return self.fail_task(
-                run,
-                "Directions require model planning or person review; none were acknowledged",
-            );
+            return self.fail_task(run, &crate::i18n::t("agent-run-directions-require-review"));
         }
         // The rules-only planner has no model call to overlap: settle the
         // poll already out before planning, as before.
         if self.task_cancelled(run)? {
-            return self.cancel_task(run, "Cancelled before planning");
+            return self.cancel_task(run, &crate::i18n::t("agent-run-cancelled-before-planning"));
         }
         let (actions, reply) = match self.plan_task(run, &plan) {
             Ok((actions, reply)) if !actions.is_empty() => (actions, reply),
             Ok(_) => {
                 return self.fail_task(
                     run,
-                    &planning::unmatched(
-                        &plan,
-                        "No published action carries the words of the request.",
-                    ),
+                    &planning::unmatched(&plan, &crate::i18n::t("agent-plan-no-action")),
                 );
             }
             Err(message) => return self.fail_task(run, &message),
@@ -581,7 +584,7 @@ impl Session {
         let mut previous: Option<StepOutcome> = None;
         for (index, action) in actions.iter().enumerate() {
             if self.task_cancelled(run)? {
-                return self.cancel_task(run, "Cancelled before the next action");
+                return self.cancel_task(run, &crate::i18n::t("agent-run-cancelled-before-action"));
             }
             let arguments = match arguments_for_step(
                 action.carries.as_deref(),
@@ -594,11 +597,13 @@ impl Session {
             self.report_task(
                 run,
                 runtime_collab::TaskRunUpdate::Progress {
-                    message: format!(
-                        "Running {} of {}: {}",
-                        index + 1,
-                        actions.len(),
-                        action.label
+                    message: crate::i18n::t_args(
+                        "agent-run-step",
+                        &[
+                            ("index", (index + 1).into()),
+                            ("total", actions.len().into()),
+                            ("action", action.label.as_str().into()),
+                        ],
                     ),
                     presentation: None,
                 },
@@ -612,7 +617,7 @@ impl Session {
                     previous = Some(outcome);
                 }
                 Err(TaskActionStop::Cancelled(_)) => {
-                    return self.cancel_task(run, "Cancelled while an action was running");
+                    return self.cancel_task(run, &crate::i18n::t("agent-run-cancelled-in-action"));
                 }
                 Err(TaskActionStop::Failed(message)) => return self.fail_task(run, &message),
             }

@@ -554,6 +554,42 @@ class CopyLanguageTests(unittest.TestCase):
                 "content, and so is one built as sample data")
 
 
+    def test_a_task_runs_update_is_copy_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn run(&mut self) -> Result<()> {",
+                "    self.report(TaskRunUpdate::Progress {",
+                '        message: "Reading the actions this workspace publishes".into(),',
+                "        presentation: None,",
+                "    })?;",
+                "    self.report(TaskRunUpdate::Progress {",
+                "        message: format!(\"Running {} of {}\", index, total),",
+                "        presentation: None,",
+                "    })?;",
+                "    self.report(TaskRunUpdate::Progress {",
+                "        message: crate::i18n::t(\"demo-name\"),",
+                "        presentation: None,",
+                "    })?;",
+                "    self.report(TaskRunUpdate::Failed {",
+                "        message: self.why(),",
+                "    })",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Reading the actions this workspace publishes", "Running {} of {}"],
+                "a headless participant has no window: the words it hands a run's "
+                "update are what the person reads, and a sentence built around a "
+                "value is copy like any other; what it resolved through its own "
+                "catalogue, or holds in its own words, is not")
+
     def test_the_tree_passes(self):
         self.assertEqual(
             copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS,

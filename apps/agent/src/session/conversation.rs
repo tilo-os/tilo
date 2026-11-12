@@ -198,7 +198,7 @@ impl Session {
             .first()
             .map(|row| row.action.clone())
             .or_else(|| step.previews.first().map(|row| row.action.clone()))
-            .unwrap_or_else(|| "a program".to_owned());
+            .unwrap_or_else(|| crate::i18n::t("agent-step-program"));
         let resource = step
             .changes
             .first()
@@ -229,11 +229,11 @@ impl Session {
         let (resource, label) = match call {
             crate::tools::web::Call::Search { query, .. } => (
                 "web.search",
-                tilo_actions::task_step::TaskStep::Searching(query.clone()).note(),
+                crate::i18n::step(&tilo_actions::task_step::TaskStep::Searching(query.clone())),
             ),
             crate::tools::web::Call::Page { url, .. } => (
                 "web.page",
-                tilo_actions::task_step::TaskStep::Reading(url.clone()).note(),
+                crate::i18n::step(&tilo_actions::task_step::TaskStep::Reading(url.clone())),
             ),
         };
         let (outcome, why) = if report.succeeded {

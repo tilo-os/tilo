@@ -528,23 +528,27 @@ impl NoMatch {
     #[must_use]
     pub fn explanation(&self) -> String {
         match self {
-            Self::Nothing => "I don't know how to do that here.".to_owned(),
-            Self::Ambiguous(labels) if labels.is_empty() => {
-                "That could mean more than one thing. Which one?".to_owned()
-            }
+            Self::Nothing => crate::i18n::t("agent-match-nothing"),
+            Self::Ambiguous(labels) if labels.is_empty() => crate::i18n::t("agent-match-several"),
             Self::Ambiguous(labels) => {
-                format!(
-                    "That could mean {}. Which one?",
-                    labels
-                        .iter()
-                        .map(|label| label.to_lowercase())
-                        .collect::<Vec<_>>()
-                        .join(" or ")
-                )
+                let mut alternatives = labels
+                    .iter()
+                    .map(|label| label.to_lowercase())
+                    .collect::<Vec<_>>()
+                    .into_iter();
+                let mut joined = alternatives.next().unwrap_or_default();
+                for label in alternatives {
+                    joined = crate::i18n::t_args(
+                        "agent-match-or",
+                        &[("a", joined.as_str().into()), ("b", label.as_str().into())],
+                    );
+                }
+                crate::i18n::t_args("agent-match-one-of", &[("actions", joined.into())])
             }
-            Self::NeedsText(label) => {
-                format!("“{label}” needs the words to use, in quotes.")
-            }
+            Self::NeedsText(label) => crate::i18n::t_args(
+                "agent-match-needs-text",
+                &[("label", label.as_str().into())],
+            ),
         }
     }
 }

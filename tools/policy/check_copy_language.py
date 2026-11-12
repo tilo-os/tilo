@@ -103,6 +103,13 @@ to `.type_mut().label` counts too. The test is syntactic, on purpose: a
 sentence that travels through a chain of app helpers is a migration to do, not
 a checker to build.
 
+A headless participant has no window of its own: it says what it does to the
+person through a task run's update, which the task's own surface shows as it
+is. A crate that ships a translation and hands that update an English literal
+— or an English `format!` sentence, or a local holding one — ships the source
+language into a German desktop's task as surely as a button would, so the
+update's message is checked like any other copy.
+
 The toolkit's own crates are outside that sweep: a widget's demo and example
 code paints sample content, not a window's copy.
 """
@@ -555,6 +562,17 @@ COPY_FIELDS = (
 # value is what a constructor paints.
 RETURNS_WORDS = re.compile(r"->\s*(?:&\s*(?:'static\s+)?str\b|String\b|Cow<)")
 
+
+# What a run reports to the person whose task it is, in a message the task's
+# own surface shows as it is: the words a headless participant has instead of
+# a window. Its message is the first field of each.
+WIRE_MESSAGE_BUILDERS = (
+    "TaskRunUpdate::Progress {",
+    "TaskRunUpdate::Succeeded {",
+    "TaskRunUpdate::Failed {",
+    "TaskRunUpdate::Cancelled {",
+)
+
 # What a surface titles a published resource or action with: the action
 # directory and the palette show it as the row a person reads before invoking
 # anything, and a reason an action is unavailable is a sentence they read.
@@ -703,6 +721,30 @@ def closes_value(code: str, start: int, end: int) -> bool:
     if at >= end:
         return True
     return next_significant(code, at) in ",})]"
+
+
+def struct_field(code: str, begin: int, end: int, name: str) -> tuple[int, int]:
+    """The value of field `name` in the struct literal whose body is
+    `code[begin:end]`, or of the shorthand `name` binding; an empty range when
+    it has neither."""
+    position = begin
+    segment = begin
+    depth = 0
+    while position <= end:
+        character = code[position] if position < end else ","
+        if character in "([{":
+            depth += 1
+        elif character in ")]}":
+            depth -= 1
+        elif character == "," and depth == 0:
+            field = code[segment:position].strip()
+            if field == name:
+                return segment, position
+            if field.startswith(f"{name}:"):
+                return segment + code[segment:position].index(":") + 1, position
+            segment = position + 1
+        position += 1
+    return 0, 0
 
 
 def argument(code: str, start: int, index: int) -> tuple[int, int]:
@@ -1242,8 +1284,9 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
             continue
         text = path.read_text(errors="replace")
         builders = tuple(b for b in COPY_BUILDERS if b in text) if builder_unit else ()
+        wire = tuple(b for b in WIRE_MESSAGE_BUILDERS if b in text) if builder_unit else ()
         labels = builder_unit and ACTION_LABEL.search(text) is not None
-        if (not builders and not labels
+        if (not builders and not wire and not labels
                 and not any(call in text for call, _ in TEXT_CONSTRUCTORS + SPEC_BUILDERS)):
             continue
         code, literals = rust_source.lex(text)
@@ -1276,6 +1319,8 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                     if kept[literal.start] == "x":
                         hits.append(literal)
 
+        bindings = (copy_bindings(code, starts, by_start, kept)
+                    if window or labels else {})
         for builder in builders:
             start = code.find(builder)
             while start >= 0:
@@ -1284,8 +1329,17 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                     begin += 1
                 painted(begin, end)
                 start = code.find(builder, start + len(builder))
-        bindings = (copy_bindings(code, starts, by_start, kept)
-                    if window or labels else {})
+        for builder in wire:
+            start = code.find(builder)
+            while start >= 0:
+                opened = start + len(builder) - 1
+                close = rust_source.matching(code, opened)
+                # The message is the sequence itself: a literal or a
+                # `format!` template handed to it, never a local named
+                # somewhere else in the file.
+                begin, end = struct_field(code, opened + 1, close, "message")
+                sentences(begin, end, close, {})
+                start = code.find(builder, start + len(builder))
         if labels:
             for field in ACTION_LABEL.finditer(code):
                 end = statement_end(code, field.end())
