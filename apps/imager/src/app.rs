@@ -46,6 +46,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::local_state::LocalState;
 use ui::portal::{FileFilter, PickRequest};
@@ -64,6 +65,7 @@ use crate::model::{
     TargetDriveIcon, TiloRelease, fmt_eta, fmt_rate, fmt_size,
 };
 use crate::page::{self, Frame};
+use crate::resource::CATALOG;
 use crate::resource::{Imager, ImagerEffect};
 use crate::write::{JobControl, WriteRequest, spawn_job};
 use ui::framework::{
@@ -953,7 +955,12 @@ impl ImagerApp {
                     .role(ButtonRole::Destructive)
                     .with_accessible_name(&self.target().map_or_else(
                         || "Erase and write the selected drive".to_string(),
-                        |drive| format!("Erase and write {}", drive.dev_path()),
+                        |drive| {
+                            CATALOG.t_args(
+                                "imager-a11y-erase-drive",
+                                &[("drive", ArgValue::Text(drive.dev_path()))],
+                            )
+                        },
                     ));
                 // The button presses the drive's own published write, so the
                 // host asks for the drive's name before anything is erased,
@@ -1078,7 +1085,7 @@ impl ImagerApp {
             && !self.source_listed(source)
         {
             body = body.push(Box::new(Section::titled(
-                "Selected image",
+                CATALOG.t("imager-section-selected-image"),
                 vec![Box::new(
                     ListRow::new("imager.selected", &source.name)
                         .icon(Icon::Disc3)
@@ -1096,7 +1103,10 @@ impl ImagerApp {
                 .filter_map(|index| self.release_row(index))
                 .collect()
         };
-        body = body.push(Box::new(Section::titled("Tilo releases", releases)));
+        body = body.push(Box::new(Section::titled(
+            CATALOG.t("imager-section-releases"),
+            releases,
+        )));
         let recent = self.shown_recent();
         if !recent.is_empty() {
             let rows = recent
@@ -1115,7 +1125,10 @@ impl ImagerApp {
                     ) as Box<dyn Widget>)
                 })
                 .collect();
-            body = body.push(Box::new(Section::titled("Recent", rows)));
+            body = body.push(Box::new(Section::titled(
+                CATALOG.t("imager-section-recent"),
+                rows,
+            )));
         }
         body
     }
@@ -1238,7 +1251,11 @@ impl ImagerApp {
         let mut body = page::body("Prepare the setup");
         if let Some(source) = &self.source {
             body = body.push(Box::new(
-                Text::new(&format!("Selected image: {}", source.name)).with_role(TextRole::Caption),
+                Text::new(&CATALOG.t_args(
+                    "imager-selected-image",
+                    &[("name", ArgValue::Text(source.name.clone()))],
+                ))
+                .with_role(TextRole::Caption),
             ));
         }
         if let Some(binding) = self

@@ -81,7 +81,7 @@ use tilo_actions::remote::{
 use tilo_actions::selection::logical_resource_id;
 use tilo_actions::{ActionFailure, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+use tilo_relay_protocol::certify::{ConfirmationAnswer, PageDeparture, PendingConfirmation};
 use tilo_user_identity::{
     Answered, DeviceCapabilities, DeviceCert, HostWitness, Parties, sign_device_cert,
 };
@@ -1462,7 +1462,9 @@ fn update_of_error(
 
 /// The question `request` puts to the person, as their approving devices
 /// draw it: the agent that asked, by the name it goes by, the action as the
-/// caller described it, and the workspace it acts in.
+/// caller described it, the workspace it acts in, and — when what it asks
+/// about is a page about to send something — the page it leaves from, what it
+/// sends there, and the filled page as a picture they can see.
 fn question(
     workspace: &str,
     caller: &tilo_actions::remote::Caller,
@@ -1477,15 +1479,21 @@ fn question(
         tilo_actions::remote::CallerPrincipal::Agent(agent) => agent.clone(),
         _ => String::new(),
     };
+    let departure = departure_of(context);
     PendingConfirmation {
         id,
         agent_id,
         agent_label: caller
             .agent_name()
             .map_or_else(|| address.action.clone(), str::to_owned),
-        action_label: context
-            .and_then(|context| context.purpose.clone())
-            .unwrap_or_else(|| address.action.clone()),
+        action_label: departure.as_ref().map_or_else(
+            || {
+                context
+                    .and_then(|context| context.purpose.clone())
+                    .unwrap_or_else(|| address.action.clone())
+            },
+            PageDeparture::doing,
+        ),
         resource_label: context
             .and_then(|context| context.resource.as_ref())
             .map_or_else(
@@ -1502,8 +1510,36 @@ fn question(
             .map_or_else(|| "destructive".to_owned(), |facet| facet.value.clone()),
         workspace: workspace.to_owned(),
         expires_at_ns: until_ns,
+        page: departure,
         ..PendingConfirmation::default()
     }
+}
+
+/// The page departure `context` reports ([`DEPARTURE_FACET`]), when it reports
+/// one: a window that holds a page's own departure states what it is about to
+/// send and the picture of the filled page, and the session holding it passes
+/// them on with the question it asks.
+///
+/// [`DEPARTURE_FACET`]: tilo_actions::remote::browser::DEPARTURE_FACET
+fn departure_of(context: Option<&tilo_actions::ActionContext>) -> Option<PageDeparture> {
+    let facts = tilo_actions::remote::browser::departure_facts(context);
+    let stated = |name: &str| {
+        facts
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default()
+    };
+    let departure = PageDeparture {
+        page: stated("page"),
+        kind: stated("kind"),
+        method: stated("method"),
+        destination: stated("destination"),
+        picture: Some(stated("picture")).filter(|picture| !picture.is_empty()),
+    };
+    // A window that reported nothing about its page is no departure: it asks
+    // about an action, not about something leaving a page.
+    (departure != PageDeparture::default()).then_some(departure)
 }
 
 /// [`Reason::NoPaymentMethod`] for an account whose period's free actions are

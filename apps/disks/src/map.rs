@@ -11,8 +11,10 @@
 
 use std::collections::HashMap;
 
+use crate::locales::CATALOG;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::charts::legend;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -456,19 +458,15 @@ impl Widget for PartitionMap {
         let g = &self.geometry;
         let origin = self.rect.origin().to_vec2();
         let mut group = AccessNode::new(Role::Group)
-            .with_name(ui::i18n::I18nManager::lookup_plain("disks-partition-map"))
+            .with_name(crate::locales::CATALOG.t("disks-partition-map"))
             .with_hashed_key("disks.partition-map")
             .with_bounds(self.rect);
         if self.pending.is_some() {
-            return Some(
-                group.with_description(ui::i18n::I18nManager::lookup_plain("disks-loading")),
-            );
+            return Some(group.with_description(crate::locales::CATALOG.t("disks-loading")));
         }
         group.children.push(
             AccessNode::new(Role::Button)
-                .with_name(ui::i18n::I18nManager::lookup_plain(
-                    "disks-select-whole-disk",
-                ))
+                .with_name(crate::locales::CATALOG.t("disks-select-whole-disk"))
                 .with_bounds(g.chip + origin)
                 .with_action_target("disks.part:whole")
                 .with_state(
@@ -483,7 +481,10 @@ impl Widget for PartitionMap {
             }
             group.children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(format!("Select partition {}", entry.device))
+                    .with_name(CATALOG.t_args(
+                        "disks-partition-a11y",
+                        &[("device", ArgValue::Text(entry.device.clone()))],
+                    ))
                     .with_description(entry.label.clone())
                     .with_bounds(*rect + origin)
                     .with_action_target(format!("disks.part:{}", entry.device))

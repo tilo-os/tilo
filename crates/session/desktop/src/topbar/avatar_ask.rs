@@ -6,8 +6,9 @@
 //! question, what answering brings where there is room, "Not now" and the
 //! answer. Where it does not fit beside the clock's lane it takes that lane
 //! too, over the glance value it covers, and a bar narrow enough to leave no
-//! room anywhere gives it the band itself: the ask stands on the bar and on
-//! nothing else, whatever the width.
+//! room anywhere gives it the band up to the person's own face: the ask stands
+//! on the bar and on nothing else, whatever the width, and the face it stops
+//! short of is still the person's to press for their own card.
 //!
 //! It never leaves the band, so it can never cover a window's bar or content,
 //! and it can never be covered by the cards the bar opens: those hang below
@@ -107,7 +108,15 @@ impl TopBarChrome {
             rooms.push(Room::beside(right_x, self.center_rect.x1 + gap));
             rooms.push(Room::beside(right_x, self.center_lane.x0 + gap));
             rooms.push(Room::beside(right_x, past_workspace));
-            rooms.push(Room::band(self.rect.x0 + seat, self.rect.x1 - seat));
+            // The band taken whole stops short of the person's own face, which the bar draws at its
+            // end: their face stays theirs to press, and the ask's answer never stands under it.
+            let band_right = if self.own_avatar_rect.is_zero_area() {
+                self.rect.x1 - seat
+            } else {
+                (self.own_avatar_rect.x0 - f64::from(theme.tokens.spacing.s2))
+                    .min(self.rect.x1 - seat)
+            };
+            rooms.push(Room::band(self.rect.x0 + seat, band_right));
         }
         // The question stands whole wherever a room holds it. Its decline gives way first — a press
         // anywhere else folds the ask — so the question is never cut where its own words fit beside
@@ -254,16 +263,19 @@ impl TopBarChrome {
                 } else if self.ask.later.contains(p) {
                     *handled = chrome.intent(ChromeIntent::PutOffAvatarAsk);
                     true
+                } else if self.own_avatar_rect.contains(p) {
+                    // The person's own face is theirs whoever else's surface reaches it: a bar too
+                    // narrow for the ask's words gives it the band, and the face stands drawn over
+                    // its end. The press goes on to the bar, which opens their own card — the card
+                    // offers what the ask asks.
+                    false
                 } else if self.ask.pill.contains(p) {
                     // Its own surface: nothing under it to reach.
                     *handled = true;
                     true
                 } else {
-                    // The avatar opens the profile card past the ask; a press anywhere else is the
-                    // person moving on.
-                    if !self.own_avatar_rect.contains(p) {
-                        let _ = chrome.intent(ChromeIntent::CollapseAvatarAsk);
-                    }
+                    // A press anywhere but the avatar is the person moving on from the ask.
+                    let _ = chrome.intent(ChromeIntent::CollapseAvatarAsk);
                     false
                 }
             }
@@ -888,7 +900,8 @@ mod tests {
 
     /// A bar too narrow for the ask's words beside its own controls opens it across the band: the
     /// question and its chips stand there, on the bar and on nothing else, and the pill takes its
-    /// own presses.
+    /// own presses. The person's own face keeps the last word on itself, so a press on it opens
+    /// their card wherever the ask reaches.
     #[test]
     fn a_narrow_bar_opens_the_ask_across_the_band() {
         let (mut frame, host) = asking_desktop((420, 800));
@@ -902,6 +915,12 @@ mod tests {
         assert!(
             ask.x0 >= bar.x0 && ask.x1 <= bar.x1,
             "the ask {ask:?} stays on the bar's width"
+        );
+        let avatar = frame.bar().own_avatar_rect();
+        let answer = frame.bar().avatar_ask_answer_rect();
+        assert!(
+            answer.intersect(avatar).is_zero_area(),
+            "the answer {answer:?} stands clear of the person's own face {avatar:?}, which is drawn over the ask"
         );
 
         // Its own surface takes the press: nothing under it, and the ask stays open rather than
@@ -919,8 +938,17 @@ mod tests {
             "a press on the pill does not fold it"
         );
 
+        // The person's face opens their own card, which offers what the ask asks, however narrow the
+        // bar is and wherever the ask stands.
+        host.intents.borrow_mut().clear();
+        Framed::harness_mut(&mut frame).click_at(avatar.center().x, avatar.center().y);
+        assert_eq!(
+            *host.intents.borrow(),
+            [ChromeIntent::ToggleProfile],
+            "the face opens the person's own card"
+        );
+
         // Its answer stands in the pill, and answering there reaches the host.
-        let answer = frame.bar().avatar_ask_answer_rect();
         assert!(
             ask.y0 <= answer.y0 && answer.y1 <= ask.y1,
             "the answer {answer:?} is inside the pill {ask:?}"

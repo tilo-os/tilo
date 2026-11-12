@@ -52,6 +52,7 @@ mod bounded;
 mod content;
 mod feedback;
 mod keys;
+mod ledger;
 mod link;
 mod opened;
 mod publish;
@@ -79,6 +80,7 @@ use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_records::WorkspaceRecords;
 use collab_types::DocumentMutation;
 use keys::{Keys, catalogue_keys};
+use ledger::Ledger;
 use run_context::{caller_context, said_run_title};
 use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
@@ -114,69 +116,6 @@ const JOIN_WAIT: Duration = Duration::from_secs(30);
 /// keys are on their way. A named record whose keys have not arrived by
 /// then is refused, never acted on half seen.
 const KEYS_WAIT: Duration = Duration::from_secs(10);
-/// Invocations remembered for retries, status and history.
-const REMEMBERED: usize = 1024;
-
-struct Entry {
-    caller: Caller,
-    request: InvokeRequest,
-    update: InvocationUpdate,
-    /// Where the invocation left its actor in the record it acted on.
-    left_at: Option<ActorPlace>,
-    /// Set while the host's shell runs this invocation: what a cancel of it,
-    /// or a Ctrl+C in the session it runs in, stops.
-    stop: Option<Arc<AtomicBool>>,
-    /// The person was asked to allow it ([`bounded`]): it was answered
-    /// accepted, and settles as failed rather than being forgotten.
-    asked: bool,
-    /// The token naming the person's answer, once they allowed it.
-    witness: Option<String>,
-    /// What the person is asked about it, once it waits for their answer
-    /// ([`bounded::About`]).
-    about: Option<Box<bounded::About>>,
-}
-
-#[derive(Default)]
-struct Ledger {
-    entries: HashMap<InvocationId, Entry>,
-    order: VecDeque<InvocationId>,
-    running: Option<InvocationId>,
-}
-
-impl Ledger {
-    fn insert(&mut self, caller: &Caller, request: InvokeRequest) {
-        while self.order.len() >= REMEMBERED {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
-            }
-        }
-        let invocation = request.invocation;
-        self.order.push_back(invocation);
-        self.entries.insert(
-            invocation,
-            Entry {
-                caller: caller.clone(),
-                request,
-                update: InvocationUpdate::Accepted { invocation },
-                left_at: None,
-                stop: None,
-                asked: false,
-                witness: None,
-                about: None,
-            },
-        );
-    }
-
-    fn forget(&mut self, id: &InvocationId) {
-        self.entries.remove(id);
-        self.order.retain(|candidate| candidate != id);
-    }
-
-    fn owned(&self, caller: &Caller, id: &InvocationId) -> Option<&Entry> {
-        self.entries.get(id).filter(|entry| entry.caller == *caller)
-    }
-}
-
 enum Job {
     Feedback {
         workspace_id: u64,
@@ -566,7 +505,15 @@ impl WorkspaceActions {
                 let state = InvocationState::new(invocation, entry.update.clone());
                 return receipt(state.receipt().status);
             }
-            ledger.insert(caller, request);
+            if !ledger.insert(caller, request) {
+                return receipt(ReceiptStatus::Rejected {
+                    error: ActionHostError::Unavailable {
+                        reason: "the host is running as many actions as it keeps track of; \
+                                 ask again shortly"
+                            .into(),
+                    },
+                });
+            }
         }
         let (done, answer) = pending();
         let job = Job::Invoke {
@@ -1159,6 +1106,11 @@ struct Worker {
 /// The door's answer for an action it has nothing by that address.
 fn unknown_action() -> Outcome {
     Outcome::Rejected(ActionHostError::UnknownAction)
+}
+
+/// Whether the page a request names was listed before `current` moved on.
+fn stale_revision(revision: Option<&str>, current: &str) -> bool {
+    revision.is_some_and(|revision| revision != current)
 }
 
 /// Whether `caller` is `person`, or an agent a device of theirs handed its
@@ -2254,17 +2206,15 @@ impl Worker {
         let state = self
             .refresh(workspace_id, keys.needs())
             .map_err(Outcome::Rejected)?;
-        if request
-            .revision
-            .as_ref()
-            .is_some_and(|revision| *revision != state.revision.to_string())
-        {
-            return Err(Outcome::Rejected(ActionHostError::StaleRevision));
-        }
+        // A page names its source's revision: the workspace's, or a registered
+        // read's committed source (checked where that source is read, below).
         let workspace = state.workspace.clone();
         let target = &request.target;
         let owner = self.serves_as_owner(caller);
         if let Some(named) = provider_workspace(&target.provider) {
+            if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
+                return Err(Outcome::Rejected(ActionHostError::StaleRevision));
+            }
             return self
                 .open_asked(workspace_id, caller, named, target)
                 .map(|output| (output, None));
@@ -2287,6 +2237,9 @@ impl Worker {
                 .map_err(|error| *error)?
         {
             return Ok((output, None));
+        }
+        if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
+            return Err(Outcome::Rejected(ActionHostError::StaleRevision));
         }
         let mounted = self.mount(&route, &state).map_err(|_| unknown_action())?;
         if target.address.action == ui::tilo_resource::share::SHARE_LINK {
@@ -2498,7 +2451,8 @@ impl Worker {
 
     /// Commit what the owner's action changed, each record on its own
     /// route: a part it started is held beside the record it acted on.
-    /// The error is why a commit failed.
+    /// Whether the host comes to hold each durably is logged
+    /// ([`Self::watch_saved`]). The error is why a commit failed.
     fn commit_taken(
         &mut self,
         workspace_id: u64,
@@ -2506,12 +2460,15 @@ impl Worker {
         taken: Vec<(DocumentRoute, DocumentMutation)>,
     ) -> Result<(), String> {
         let holder = self.holder_of(route);
+        let mut written = Vec::with_capacity(taken.len());
         for (changed, mutation) in taken {
             if changed != holder {
                 self.beside.insert(changed.clone(), holder.clone());
             }
             self.commit(workspace_id, &changed, &mutation)?;
+            written.push(publish::Written::of(&changed, &mutation));
         }
+        self.watch_saved(workspace_id, written);
         Ok(())
     }
 

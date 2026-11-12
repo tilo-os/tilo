@@ -20,6 +20,7 @@ use ui::widget::{
     Stepper, Text, Tone, Widget,
 };
 
+use crate::locales::CATALOG;
 use crate::model::{Model, Phase, Projection, Quality, age_label, data_label, dial, qualities};
 use crate::resource::{Measurement, SpeedEffect, SpeedTest};
 use crate::run::{Reading, Runs, Stage};
@@ -410,15 +411,20 @@ fn results_column(model: &Model) -> Column {
         .unwrap_or_else(|| "Cloudflare".to_owned());
     // Only what was measured is shown: before a test there are no numbers,
     // and a dash in their place reads as a value.
-    let mut facts = vec![Property::new("Server", server)];
+    let mut facts = vec![Property::new(CATALOG.t("speed-test-server"), server)];
     if let Some(jitter) = readings.jitter {
         facts.push(
-            Property::new("Jitter", format!("{jitter:.1} ms")).with_kind(ui::TextKind::Numeric),
+            Property::new(CATALOG.t("speed-test-jitter"), format!("{jitter:.1} ms"))
+                .with_kind(ui::TextKind::Numeric),
         );
     }
     if readings.bytes > 0 {
         facts.push(
-            Property::new("Data used", data_label(readings.bytes)).with_kind(ui::TextKind::Numeric),
+            Property::new(
+                CATALOG.t("speed-test-data-used"),
+                data_label(readings.bytes),
+            )
+            .with_kind(ui::TextKind::Numeric),
         );
     }
     let facts = PropertyList::new(facts);
@@ -442,10 +448,13 @@ fn results_column(model: &Model) -> Column {
                 "Mbps",
             )),
         ]);
-        column = column.push(Box::new(Section::titled("Results", vec![Box::new(tiles)])));
+        column = column.push(Box::new(Section::titled(
+            CATALOG.t("speed-test-section-results"),
+            vec![Box::new(tiles)],
+        )));
     }
     column = column.push(Box::new(Section::titled(
-        "Connection",
+        CATALOG.t("speed-test-section-connection"),
         vec![Box::new(facts)],
     )));
 
@@ -460,7 +469,7 @@ fn results_column(model: &Model) -> Column {
             })
             .collect();
         column = column.push(Box::new(Section::titled(
-            "Connection quality",
+            CATALOG.t("speed-test-section-quality"),
             vec![Box::new(PropertyList::new(rows))],
         )));
     }
@@ -485,7 +494,10 @@ fn results_column(model: &Model) -> Column {
                 )
             })
             .collect();
-        column = column.push(Box::new(Section::titled("Recent tests", rows)));
+        column = column.push(Box::new(Section::titled(
+            CATALOG.t("speed-test-section-recent"),
+            rows,
+        )));
     }
     column
 }

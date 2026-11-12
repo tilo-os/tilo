@@ -190,12 +190,48 @@ const open = async (name, app) => {
     const rows = await paletteRows();
     await sleep(300);
     const again = await paletteRows();
-    if (first(rows) === name && JSON.stringify(rows) === JSON.stringify(again)) break;
+    // The rows on screen are the search's answer to the text typed only once
+    // it says it owes none: an Enter on an earlier query's rows waits for it.
+    const answered = await tab.evaluate('globalThis.tiloMount?.state()?.searchSearching === false').catch(() => false);
+    if (answered && first(rows) === name && JSON.stringify(rows) === JSON.stringify(again)) break;
     if (Date.now() > deadline) await fail(`the search offers no ${name} first: ${JSON.stringify(again)}`);
   }
+  // Which frame showed the window, counted two ways: from the frame counter
+  // the page reads when the browser fires Enter, and from the count the desk
+  // says it had presented when it took the key (\`framesAtKey\`). A frame
+  // presented between the two is the browser's event still on its way, not
+  // the desk being slow.
+  await tab.evaluate(`(() => {
+    const mount = globalThis.tiloMount;
+    const host = mount.canvas.parentElement;
+    const w = globalThis.__bootOpen = {app: ${JSON.stringify(app)}, atKeydown: null, shown: null, atKey: null, trace: []};
+    addEventListener('keydown', event => {
+      if (event.key === 'Enter' && w.atKeydown === null) w.atKeydown = Number(host.dataset.frames ?? 0);
+    }, {capture: true, once: true});
+    const read = () => {
+      if (w.atKeydown === null || w.shown !== null) return;
+      const state = mount.state() ?? {};
+      const frame = Number(host.dataset.frames ?? 0);
+      if (w.trace.at(-1)?.frame !== frame) {
+        w.trace.push({frame, atKey: state.framesAtKey ?? null, searchOpen: !!state.searchOpen,
+          listed: (mount.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === w.app)});
+      }
+      if ((mount.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === w.app)) {
+        w.shown = Number(host.dataset.frames ?? 0);
+        w.atKey = mount.state()?.framesAtKey ?? null;
+      }
+    };
+    new MutationObserver(read).observe(host, {attributes: true, attributeFilter: ['data-frames']});
+    w.read = read;
+  })()`);
   await key('Enter');
   await until(`(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(app)})`,
     `${name}'s window showing`);
+  await until(`(() => { const w = globalThis.__bootOpen; w?.read?.(); return w?.shown !== null; })()`,
+    `the frame showing ${name}'s window`, 60_000);
+  const counted = JSON.parse(await tab.evaluate('JSON.stringify(globalThis.__bootOpen)'));
+  report.opens = [...(report.opens ?? []), counted];
+  console.log(`frames: ${name} shown on frame ${counted.shown}; the page read ${counted.atKeydown} at Enter, the desk had presented ${counted.atKey} when it took the key; frames between: ${JSON.stringify(counted.trace)}`);
 };
 await open('Notes', 'so.tilo.notes');
 console.log('ok: Notes opened from the search');

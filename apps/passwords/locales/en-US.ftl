@@ -38,3 +38,20 @@ passwords-export-acknowledge = I understand the file is not encrypted
 ## Window and accessibility copy
 passwords-confirm-export = Confirm that you understand before choosing a file.
 passwords-a11y-vault = Vault
+
+## Facts, property labels and section titles
+passwords-and-more = { $count ->
+    [one] And one more
+   *[other] And { $count } more
+}
+passwords-allowed-apps = Allowed apps
+passwords-review-about = About this review
+passwords-encryption-key = Encryption key
+passwords-checked-against = Checked against
+passwords-checked = Passwords checked
+passwords-review-attention = Needs attention
+passwords-review-done = Nothing to fix
+passwords-review-empty = Nothing to check yet
+passwords-last-changed = Last changed
+passwords-notes = Notes
+passwords-tags = Tags

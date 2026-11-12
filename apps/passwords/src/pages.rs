@@ -16,11 +16,13 @@ use ui::widget::{
     TextInputKind, Tone,
 };
 
+use crate::CATALOG;
 use crate::actions::PasswordsEffect;
 use crate::vault::{
     Core, Dialog, DraftField, Request, Requests, Screen, Shared, identity, identity_label,
     is_favorite, kind_label, origin_label, secret_label,
 };
+use ui::i18n::ArgValue;
 
 /// Shown in place of a secret that is not revealed.
 const MASK: &str = "••••••••••••";
@@ -298,14 +300,17 @@ fn properties(core: &Core, item: &SecretItem) -> Vec<Property> {
         .filter(|tag| *tag != "favorite")
         .collect();
     if !tags.is_empty() {
-        rows.push(Property::new("Tags", tags.join(", ")));
+        rows.push(Property::new(CATALOG.t("passwords-tags"), tags.join(", ")));
     }
     if item.kind != SecretItemKind::SecureNote && core.has_private_note(&item.id) {
-        rows.push(Property::new("Notes", "Hidden until you edit the item"));
+        rows.push(Property::new(
+            CATALOG.t("passwords-notes"),
+            "Hidden until you edit the item",
+        ));
     }
     let ago = crate::vault::now_unix().saturating_sub(item.updated_unix);
     rows.push(Property::new(
-        "Last changed",
+        CATALOG.t("passwords-last-changed"),
         ui::format::relative(i64::try_from(ago).unwrap_or(i64::MAX)),
     ));
     rows
@@ -332,17 +337,11 @@ fn input(shared: &Shared, field: DraftField, value: &str) -> TextInput {
         DraftField::Password => input.with_secret(true),
         DraftField::Notes => input
             .with_min_lines(4)
-            .with_placeholder(ui::i18n::I18nManager::lookup_plain("passwords-add-note")),
-        DraftField::Tags => {
-            input.with_placeholder(ui::i18n::I18nManager::lookup_plain("passwords-tags-hint"))
-        }
-        DraftField::CustomFields => {
-            input
-                .with_min_lines(3)
-                .with_placeholder(ui::i18n::I18nManager::lookup_plain(
-                    "passwords-custom-fields-hint",
-                ))
-        }
+            .with_placeholder(crate::CATALOG.t("passwords-add-note")),
+        DraftField::Tags => input.with_placeholder(crate::CATALOG.t("passwords-tags-hint")),
+        DraftField::CustomFields => input
+            .with_min_lines(3)
+            .with_placeholder(crate::CATALOG.t("passwords-custom-fields-hint")),
     };
     input
         .with_initial_value(value)
@@ -522,7 +521,7 @@ fn review(core: &Core) -> Element {
                 "Save a password and the review checks it for reuse, weakness and age.",
                 TextRole::Body,
             )])
-            .with_header(SectionHeader::group("Nothing to check yet")),
+            .with_header(SectionHeader::group(CATALOG.t("passwords-review-empty"))),
         ));
     } else if rows.is_empty() {
         groups.push(Box::new(
@@ -530,24 +529,28 @@ fn review(core: &Core) -> Element {
                 "Every saved password is unique, strong and recent.",
                 TextRole::Body,
             )])
-            .with_header(SectionHeader::group("Nothing to fix")),
+            .with_header(SectionHeader::group(CATALOG.t("passwords-review-done"))),
         ));
     } else {
         let count = rows.len();
-        groups.push(Box::new(
-            Section::new(rows).with_header(SectionHeader::group("Needs attention").count(count)),
-        ));
+        groups.push(Box::new(Section::new(rows).with_header(
+            SectionHeader::group(CATALOG.t("passwords-review-attention")).count(count),
+        )));
     }
     let mut facts = vec![
-        Property::new("Passwords checked", health.total.to_string()).with_kind(TextKind::Numeric),
-        Property::new("Checked against", CHECKED_AGAINST),
+        Property::new(CATALOG.t("passwords-checked"), health.total.to_string())
+            .with_kind(TextKind::Numeric),
+        Property::new(CATALOG.t("passwords-checked-against"), CHECKED_AGAINST),
     ];
     if let Some(custody) = core.custody {
-        facts.push(Property::new("Encryption key", custody));
+        facts.push(Property::new(
+            CATALOG.t("passwords-encryption-key"),
+            custody,
+        ));
     }
     groups.push(Box::new(
         Section::new(vec![Box::new(PropertyList::new(facts))])
-            .with_header(SectionHeader::group("About this review")),
+            .with_header(SectionHeader::group(CATALOG.t("passwords-review-about"))),
     ));
     titled_page("Password review", None, groups)
 }
@@ -612,8 +615,9 @@ fn app_access(core: &Core, requests: &Requests) -> Element {
     }
     if !grants.is_empty() {
         sections.push(Box::new(
-            Section::new(vec![Box::new(PropertyList::new(grants))])
-                .with_header(SectionHeader::group("Allowed apps").count(count)),
+            Section::new(vec![Box::new(PropertyList::new(grants))]).with_header(
+                SectionHeader::group(CATALOG.t("passwords-allowed-apps")).count(count),
+            ),
         ));
     }
     titled_page(
@@ -861,10 +865,17 @@ fn import_dialog(
         children.push(Box::new(Section::new(listed)));
     }
     if new.len() > 5 {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a count only selects a plural form; exactness past 2^52 is irrelevant"
+        )]
+        let number = new.len().saturating_sub(5) as f64;
         children.push(Box::new(
-            Text::new(&format!("And {} more", new.len().saturating_sub(5)))
-                .with_role(TextRole::Caption)
-                .dimmed(),
+            Text::new(
+                &CATALOG.t_args("passwords-and-more", &[("count", ArgValue::Number(number))]),
+            )
+            .with_role(TextRole::Caption)
+            .dimmed(),
         ));
     }
     let title = match new.len() {
@@ -881,9 +892,7 @@ fn export_dialog(acknowledged: bool, reminded: bool, requests: &Requests) -> Mod
     let ack = {
         let requests = Rc::clone(requests);
         Checkbox::from_state(&ui::LocalState::new(acknowledged))
-            .with_label(ui::i18n::I18nManager::lookup_plain(
-                "passwords-export-acknowledge",
-            ))
+            .with_label(crate::CATALOG.t("passwords-export-acknowledge"))
             .on_view("passwords-export-acknowledge", move |on| {
                 requests.borrow_mut().push(Request::Acknowledge(on));
             })

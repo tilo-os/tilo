@@ -312,7 +312,7 @@ const armOpen = (tab, app) => tab.evaluate(`(() => {
   const mount = globalThis.tiloMount;
   const host = mount.canvas.parentElement;
   const watch = globalThis.__tiloOpen = {app: ${JSON.stringify(app)}, pressedAt: null,
-    framesAtPress: null, shownAt: null, framesShown: null};
+    framesAtPress: null, shownAt: null, framesShown: null, framesAtKey: null};
   if (!globalThis.__tiloOpenKeys) {
     globalThis.__tiloOpenKeys = true;
     addEventListener('keydown', event => {
@@ -331,6 +331,10 @@ const armOpen = (tab, app) => tab.evaluate(`(() => {
     if ((mount.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === w.app)) {
       w.shownAt = performance.now();
       w.framesShown = Number(host.dataset.frames ?? 0);
+      // The frames the desk had presented when it took the key, as it says
+      // itself: the frame after that one is the first that can show the
+      // window, whatever the page's counter read when the browser fired it.
+      w.framesAtKey = mount.state()?.framesAtKey ?? null;
     }
   };
   new MutationObserver(read).observe(host, {attributes: true, attributeFilter: ['data-frames', 'data-phase']});
@@ -356,17 +360,18 @@ const openMarks = tab => tab.evaluate(`(() => {
   const watch = globalThis.__tiloOpen;
   watch?.read?.();
   globalThis.__tiloOpen = undefined;
-  if (!watch || watch.pressedAt === null || watch.shownAt === null) {
+  if (!watch || watch.pressedAt === null || watch.shownAt === null || watch.framesAtKey === null) {
     // What the watch saw, so an unmeasured open says which condition held it back.
     const host = globalThis.tiloMount?.canvas?.parentElement;
     return JSON.stringify({ok: false, pressed: watch?.pressedAt != null, shown: watch?.shownAt != null,
       phase: host?.dataset.phase ?? null, frames: Number(host?.dataset.frames ?? NaN), framesAtPress: watch?.framesAtPress ?? null,
+      framesAtKey: watch?.framesAtKey ?? null,
       entry: (globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === watch?.app),
       subscribes: typeof globalThis.tiloMount?.navigation?.subscribe === 'function'});
   }
   return JSON.stringify({ok: true,
     presentMs: Math.round(watch.shownAt - watch.pressedAt),
-    frames: watch.framesShown - watch.framesAtPress});
+    frames: watch.framesShown - watch.framesAtKey});
 })()`).then(JSON.parse);
 
 // A canvas-drawn desktop takes the pointer; the search chord is Ctrl+K away

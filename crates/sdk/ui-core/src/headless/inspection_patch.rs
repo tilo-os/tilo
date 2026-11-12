@@ -238,6 +238,7 @@ fn access_own_eq(a: &AccessNode, b: &AccessNode) -> bool {
         name,
         description,
         value,
+        value_length,
         text_selection,
         state,
         live,
@@ -257,6 +258,7 @@ fn access_own_eq(a: &AccessNode, b: &AccessNode) -> bool {
         && *name == b.name
         && *description == b.description
         && *value == b.value
+        && *value_length == b.value_length
         && *text_selection == b.text_selection
         && *state == b.state
         && *live == b.live

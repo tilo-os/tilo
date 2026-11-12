@@ -211,3 +211,35 @@ fn a_content_source_that_takes_seconds_does_not_keep_the_ready_rows_searching() 
         "the card is not searching"
     );
 }
+
+/// Rows that answer an earlier query are not the search's answer to what is typed now: the
+/// search says it is still searching until the field's own text is answered. A page that waits
+/// for the search to settle before Enter otherwise pressed it on the earlier rows, and the
+/// palette rightly held the key for the typed query's answer, a frame later.
+#[test]
+fn rows_of_an_earlier_query_are_not_the_answer_to_the_one_typed() {
+    let (mut search, released, _asked) = with_slow_content();
+    released.store(true, Ordering::SeqCst);
+    search.set_query("cal");
+    frames_until(&mut search, "Calendar");
+    let deadline = ui::time::now() + Duration::from_secs(10);
+    while !search.settled() && ui::time::now() < deadline {
+        frame(&mut search);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(search.settled(), "\"cal\" is answered");
+    // A key more, typed into the field as a key event types it: the rows follow in the desk's
+    // next pass, and until then the rows on screen are still "cal"'s.
+    search.palette_mut().set_query("cale");
+    assert!(
+        !search.settled(),
+        "the rows shown answer \"cal\", not \"cale\": {:?}",
+        titles(&search)
+    );
+    let deadline = ui::time::now() + Duration::from_secs(10);
+    while !search.settled() && ui::time::now() < deadline {
+        frame(&mut search);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(search.settled(), "\"cale\" is answered in its turn");
+}

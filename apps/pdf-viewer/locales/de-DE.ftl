@@ -162,3 +162,15 @@ pdf-viewer-signature-placed = Platziert
 pdf-viewer-signing-as = Unterschrieben als
 pdf-viewer-signature-your = Deine Unterschrift
 pdf-viewer-comment-placeholder = Kommentar schreiben…
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+pdf-a11y-signed = Signiert am { $date } auf Seite { $page }
+pdf-a11y-signature-by = Signatur von { $signer }
+pdf-a11y-comment = { $author } auf Seite { $page }; { $replies ->
+    [one] eine Antwort
+   *[other] { $replies } Antworten
+}
+pdf-a11y-match = Treffer { $match } auf Seite { $page }
+pdf-a11y-page-of = Seite { $current } von { $pages }
+pdf-a11y-page = Seite { $page }
+pdf-drawn-signed = Signiert am { $date }

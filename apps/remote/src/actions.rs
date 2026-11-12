@@ -16,6 +16,8 @@ use ui::framework::LiveRow;
 use ui::tilo_resource::{self, AbsolutePath, Effect};
 
 use crate::model::{Connection, ConnectionId, ConnectionKind};
+use crate::resource::CATALOG;
+use ui::i18n::ArgValue;
 
 /// What Remote does that is no edit of the saved connections: showing them,
 /// opening and closing live sessions, typing into one, and the SSH host-key
@@ -105,9 +107,12 @@ pub(crate) fn connect_spec(connection: &Connection) -> ActionSpec {
         connection: connection.id,
     }
     .bound()
-    .with_description(format!(
-        "Open a live session to this saved connection. {}",
-        readiness.detail(connection.kind)
+    .with_description(CATALOG.t_args(
+        "remote-action-open-session",
+        &[(
+            "detail",
+            ArgValue::Text(readiness.detail(connection.kind).to_owned()),
+        )],
     ));
     spec.type_mut().contract.tags = vec!["network".into(), "session".into()];
     if readiness.can_connect() {
@@ -187,9 +192,12 @@ pub fn session_row(
                 observed: observed.clone(),
             }
             .bound()
-            .with_description(format!(
-                "Explicitly trust {} {} for this device only after out-of-band verification.",
-                observed.algorithm, observed.fingerprint
+            .with_description(CATALOG.t_args(
+                "remote-action-trust-host-key",
+                &[
+                    ("algorithm", ArgValue::Text(observed.algorithm.clone())),
+                    ("fingerprint", ArgValue::Text(observed.fingerprint.clone())),
+                ],
             )),
             HOST_KEY_TAGS,
         )),

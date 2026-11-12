@@ -50,6 +50,27 @@ thread_local! {
     static QUEUED: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
     /// What presents them: one function for the page's whole life.
     static RUN_QUEUED: Closure<dyn FnMut()> = Closure::new(present_queued);
+    /// Whether an input's frame is drawn in the input's own task
+    /// (`__tiloDomInputSync`, read once): the measurement the change was
+    /// judged by compares it with drawing it in the task after.
+    static INPUT_SYNC: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether an input's frame is drawn in the input's own task. A page that
+/// sets `__tiloDomInputSync` before it mounts says which; the default is to.
+fn input_sync() -> bool {
+    INPUT_SYNC.with(|sync| {
+        if let Some(value) = sync.get() {
+            return value;
+        }
+        let value =
+            js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("__tiloDomInputSync"))
+                .ok()
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true);
+        sync.set(Some(value));
+        value
+    })
 }
 
 /// Present the frame of every mount an input queued one for.
@@ -168,15 +189,34 @@ impl Mount {
     }
 
     /// Present the frame an input just asked for before the browser paints
-    /// again: in a task right after the input's own, so that the key and
-    /// the text it commits (two events of one task) share one frame. A
-    /// mount drawn on the canvas waits for its animation frame.
+    /// again, inside the input's own task: the browser lays out and paints
+    /// the elements this writes when the task ends, as it does for a plain
+    /// page that changes its own DOM in the handler, and nothing waits for an
+    /// animation frame. A mount drawn on the canvas waits for its animation
+    /// frame.
     pub(super) fn present_after_input(&mut self) {
-        self.pending = true;
         if !shows(self.id) {
+            self.pending = true;
             self.window.request_redraw();
             return;
         }
+        if input_sync() {
+            // The task after this one is not the next thing the browser does:
+            // a rendering update may come first, and then the frame drawn
+            // here shows a frame later than the key that asked for it.
+            //
+            // Nothing is drawn that the frame does not have to show: one key
+            // reaches the app twice (its keydown, then the text the page's own
+            // field committed), and the second of the two usually changed
+            // nothing the first had not. Drawing each cost two frames' work
+            // before the browser could paint either.
+            match self.draw_dom() {
+                Ok(()) if !self.pending => {}
+                _ => self.window.request_redraw(),
+            }
+            return;
+        }
+        self.pending = true;
         let first = QUEUED.with_borrow_mut(|queued| {
             let first = queued.is_empty();
             queued.insert(self.id);

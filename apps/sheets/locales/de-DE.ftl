@@ -91,3 +91,11 @@ sheets-window-detail = Bearbeitbare Arbeitsmappe mit Formelleiste und Blattregis
 
 ## Fenster- und Barrierefreiheits-Texte
 sheets-numbers-none = Keine Zahlen in diesem Bereich
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+sheets-a11y-comment-by = Kommentar von { $author }
+sheets-a11y-chart-extent = { $start }:{ $end }; im Diagramm-Kärtchen öffnen, umbenennen, Typ oder Zellen ändern oder löschen
+sheets-a11y-worksheet = Arbeitsblatt; ausgewählter Bereich { $range }; { $columns } Spalten mal { $rows } Zeilen; nur das sichtbare Fenster des Rasters wird angesagt
+sheets-a11y-row = Zeile { $row }
+sheets-a11y-cell = Spalte { $column }, Zeile { $row }
+sheets-a11y-column = Spalte { $letter }

@@ -1470,7 +1470,8 @@ impl ActionSpec {
     /// window invokes it without naming anything — it is bound here — while
     /// a caller reading the published action learns which item this one is
     /// bound to, and answers that one among several a page or a list
-    /// publishes side by side.
+    /// publishes side by side. Calling it again for another name states that
+    /// one beside the first, so a row can state every value it is bound to.
     ///
     /// Nothing an invocation carries changes: the value invocations run is
     /// still the bound one ([`Self::with_bound`]), and naming it is how a
@@ -1485,7 +1486,7 @@ impl ActionSpec {
             other => other.to_string(),
         };
         let ty = Arc::make_mut(&mut self.ty);
-        ty.params = vec![crate::ActionParam {
+        let stated = crate::ActionParam {
             name: name.to_owned().into(),
             ty: crate::ParamType::Text,
             required: false,
@@ -1494,7 +1495,11 @@ impl ActionSpec {
             choices: vec![value.into()],
             schema: None,
             nullable: false,
-        }];
+        };
+        match ty.params.iter_mut().find(|param| param.name == name) {
+            Some(param) => *param = stated,
+            None => ty.params.push(stated),
+        }
         self
     }
 

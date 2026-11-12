@@ -127,6 +127,8 @@ fn dialog(question: &PendingConfirmation) -> Dialog {
         kind: question.kind.clone(),
         undoable: question.undoable,
         workspace: question.workspace.clone(),
+        page: question.page_origin(),
+        picture: question.page.as_ref().and_then(|page| page.picture.clone()),
     }
     .dialog(&format!("agent-question:{}", hex::encode(question.id)))
 }

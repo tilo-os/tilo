@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 
+use ui::i18n::ArgValue;
 use ui::widget::{
     Button, Column, ControlSize, Dropdown, Element, Field, ModalDialog, Property, PropertyList,
     Row, Text, Widget,
@@ -13,6 +14,7 @@ use ui::widget::{
 use ui::{LocalState, TextRole};
 
 use super::{ContactsApp, DuplicateReview};
+use crate::account_editor::CATALOG;
 use crate::actions::MergeField;
 use crate::model::{Contact, ContactId};
 use crate::vcard::VCardVersion;
@@ -302,11 +304,14 @@ impl ContactsApp {
             let label = duplicate_field_label(*field);
             let current = duplicate_field_value(&review.survivor, *field);
             let other = duplicate_field_value(&review.source, *field);
-            let keep = "Keep this card's".to_owned();
-            let take = "Keep the other card's".to_owned();
+            let keep = CATALOG.t("contacts-keep-this-card");
+            let take = CATALOG.t("contacts-keep-other-card");
             let mut menu = Dropdown::from_state(vec![keep.clone(), take.clone()], choice)
                 .with_id(&format!("contacts.duplicate.{field:?}"))
-                .with_accessible_name(format!("{label} to keep"));
+                .with_accessible_name(CATALOG.t_args(
+                    "contacts-keep-field",
+                    &[("field", ArgValue::Text(label.to_owned()))],
+                ));
             menu.set_value_options(vec![
                 ("current".to_owned(), keep),
                 ("other".to_owned(), take),
@@ -325,8 +330,8 @@ impl ContactsApp {
                     .with_rhythm(ui::tokens::Rhythm::Related)
                     .push(Box::new(heading))
                     .push(Box::new(PropertyList::new(vec![
-                        Property::new("This card", current),
-                        Property::new("Other card", other),
+                        Property::new(CATALOG.t("contacts-this-card"), current),
+                        Property::new(CATALOG.t("contacts-other-card"), other),
                     ]))),
             ));
         }

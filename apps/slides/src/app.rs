@@ -23,6 +23,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use crate::effects::SlidesEffect;
+use crate::strings::CATALOG;
 use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSurface, SubmitKey};
 use ui::framework::{Dispatcher, Live, TextControl, ViewCx};
 use ui::icons::Icon;
@@ -2770,21 +2771,15 @@ impl Widget for SlidesApp {
             .collect();
             return Some(
                 AccessNode::new(Role::Dialog)
-                    .with_name(ui::i18n::I18nManager::lookup_plain("slides-a11y-shortcuts"))
-                    .with_description(ui::i18n::I18nManager::lookup_plain(
-                        "slides-a11y-shortcuts-reference",
-                    ))
+                    .with_name(crate::strings::tr("slides-a11y-shortcuts"))
+                    .with_description(crate::strings::tr("slides-a11y-shortcuts-reference"))
                     .with_state(AccessState::new().modal(true))
                     .with_children(vec![
                         AccessNode::new(Role::List)
-                            .with_name(ui::i18n::I18nManager::lookup_plain(
-                                "slides-a11y-shortcuts-heading",
-                            ))
+                            .with_name(crate::strings::tr("slides-a11y-shortcuts-heading"))
                             .with_children(shortcuts),
                         AccessNode::new(Role::Button)
-                            .with_name(ui::i18n::I18nManager::lookup_plain(
-                                "slides-a11y-close-shortcuts",
-                            ))
+                            .with_name(crate::strings::tr("slides-a11y-close-shortcuts"))
                             .with_action_target("slides.help.close")
                             .with_state(AccessState::new().focusable(true)),
                     ]),
@@ -2821,15 +2816,19 @@ impl Widget for SlidesApp {
             .collect();
             return Some(
                 AccessNode::new(Role::Document)
-                    .with_name(format!("Presenting {}", self.deck.title))
+                    .with_name(CATALOG.t_args(
+                        "slides-a11y-presenting",
+                        &[("deck", ArgValue::Text(self.deck.title.clone()))],
+                    ))
                     .with_value(format!("Slide {} of {count}: {title}", self.cur_slide + 1))
-                    .with_description(format!("Elapsed {}", self.presentation.clock()))
+                    .with_description(CATALOG.t_args(
+                        "slides-a11y-elapsed",
+                        &[("time", ArgValue::Text(self.presentation.clock()))],
+                    ))
                     .with_state(AccessState::new().focusable(true))
                     .with_children(vec![
                         AccessNode::new(Role::Toolbar)
-                            .with_name(ui::i18n::I18nManager::lookup_plain(
-                                "slides-a11y-presentation-controls",
-                            ))
+                            .with_name(crate::strings::tr("slides-a11y-presentation-controls"))
                             .with_children(controls),
                     ]),
             );
@@ -2860,7 +2859,13 @@ impl Widget for SlidesApp {
                     .unwrap_or_else(|| format!("Slide {}", index + 1));
                 AccessNode::new(Role::Button)
                     .with_name(title)
-                    .with_description(format!("Slide {} of {count}", index + 1))
+                    .with_description(CATALOG.t_args(
+                        "slides-a11y-slide-of",
+                        &[
+                            ("slide", ArgValue::Text((index + 1).to_string())),
+                            ("count", ArgValue::Text(count.to_string())),
+                        ],
+                    ))
                     .with_action_target(format!("slides.slide:{}", slide.id))
                     .with_position(index + 1, count)
                     .with_state(
@@ -2931,25 +2936,34 @@ impl Widget for SlidesApp {
 
         let children = vec![
             AccessNode::new(Role::Toolbar)
-                .with_name(ui::i18n::I18nManager::lookup_plain("slides-a11y-controls"))
+                .with_name(crate::strings::tr("slides-a11y-controls"))
                 .with_children(controls),
             AccessNode::new(Role::List)
-                .with_name(ui::i18n::I18nManager::lookup_plain("slides-title"))
-                .with_description(format!(
-                    "Showing slides {} through {} of {count}",
-                    start + 1,
-                    (start + A11Y_SLIDE_WINDOW).min(count)
+                .with_name(crate::strings::tr("slides-title"))
+                .with_description(CATALOG.t_args(
+                    "slides-a11y-slide-window",
+                    &[
+                        ("first", ArgValue::Text((start + 1).to_string())),
+                        (
+                            "last",
+                            ArgValue::Text((start + A11Y_SLIDE_WINDOW).min(count).to_string()),
+                        ),
+                        ("count", ArgValue::Text(count.to_string())),
+                    ],
                 ))
                 .with_children(slides),
             AccessNode::new(Role::Canvas)
-                .with_name(format!("Slide {} canvas", self.cur_slide + 1))
+                .with_name(CATALOG.t_args(
+                    "slides-a11y-slide-canvas",
+                    &[("slide", ArgValue::Text((self.cur_slide + 1).to_string()))],
+                ))
                 .with_children(elements),
         ];
         Some(
             AccessNode::new(Role::Document)
                 .with_name(self.deck.title.clone())
                 .with_value(format!("Slide {} of {count}", self.cur_slide + 1))
-                .with_description(ui::i18n::I18nManager::lookup_plain("slides-a11y-editor"))
+                .with_description(crate::strings::tr("slides-a11y-editor"))
                 .with_state(AccessState::new().focusable(true))
                 .with_children(children),
         )

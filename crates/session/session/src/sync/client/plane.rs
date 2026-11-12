@@ -142,14 +142,14 @@ impl Serving {
     /// What the session serves on the endpoint it is about to bind: the endpoint it fills in once
     /// bound, and what answers beside the workspaces' traffic.
     pub(crate) fn new(
-        endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
+        bound: Bound,
         link: Option<Arc<ChannelLink>>,
         actions: Arc<std::sync::OnceLock<DeviceActions>>,
         protocols: tilo_network_actor::local_host::Protocols,
         documents: Option<super::PeerDocuments>,
     ) -> Self {
         Self {
-            bound: Bound { endpoint },
+            bound,
             beside: Beside {
                 link,
                 actions,
@@ -176,10 +176,21 @@ pub(crate) struct Beside {
 }
 
 /// This device's endpoint as the session binds it: the bound endpoint itself,
-/// once it is.
-#[derive(Clone, Default)]
+/// once it is, and the relays it holds back until something needs it dialable.
+#[derive(Clone)]
 pub(crate) struct Bound {
     pub(crate) endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
+    pub(crate) relays: tilo_endpoint_reachability::EndpointRelays,
+}
+
+impl Bound {
+    /// The endpoint to bind, filled in once it is, holding back `relays`.
+    pub(crate) fn new(
+        endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
+        relays: tilo_endpoint_reachability::EndpointRelays,
+    ) -> Self {
+        Self { endpoint, relays }
+    }
 }
 
 /// What this device answers on from the moment its endpoint is bound: the peer actor the session's
@@ -448,7 +459,7 @@ async fn listening(
     bound: &Bound,
 ) -> Option<Listening> {
     let lookup = iroh::address_lookup::memory::MemoryLookup::new();
-    let (builder, deferred_relays) = match endpoint_for(identity) {
+    let (builder, deferred_relays) = match endpoint_for(identity, &bound.relays) {
         Ok(building) => building,
         Err(error) => {
             let _ = ready.send(Err(error));

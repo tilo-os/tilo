@@ -21,7 +21,7 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
     use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
     let app = "so.tilo.chat";
     let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
-    let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
+    let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
     let mut kept = automerge::AutoCommit::load(&snapshot).unwrap();
@@ -55,7 +55,7 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
     assert_eq!(held.read(stored_version), Some(current));
     // The migration is sent with the replica's changes, so the workspace's copy
     // is brought up too.
-    let Some(DocumentMutation::Incremental(migration)) = held.take_mutation() else {
+    let Some(DocumentMutation::Incremental(migration)) = held.take_mutation().unwrap() else {
         panic!("the migration is sent");
     };
     let mut workspace = kept.clone();
@@ -141,6 +141,7 @@ fn an_agent_mount_and_a_person_mount_converge() {
     let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let snapshot = page
         .take_mutation()
+        .unwrap()
         .expect("a new record is published whole");
     assert!(matches!(snapshot, DocumentMutation::Snapshot(_)));
     let mut agent = common::open(
@@ -154,13 +155,14 @@ fn an_agent_mount_and_a_person_mount_converge() {
     )
     .unwrap();
     // Whatever mounting wrote, the person's mount takes it in.
-    if let Some(opened) = agent.take_mutation() {
+    if let Some(opened) = agent.take_mutation().unwrap() {
         page.apply(&opened).unwrap();
     }
     let (note, arguments) = common::scratchpad_body("Drafted by the agent");
     agent.invoke(&note, &arguments, false).unwrap();
     let edit = agent
         .take_mutation()
+        .unwrap()
         .expect("the edit is the agent's own change");
     page.apply(&edit).unwrap();
     assert!(
@@ -168,16 +170,21 @@ fn an_agent_mount_and_a_person_mount_converge() {
         "{}",
         body(&page)
     );
-    assert!(agent.take_mutation().is_none(), "nothing is taken twice");
+    assert!(
+        agent.take_mutation().unwrap().is_none(),
+        "nothing is taken twice"
+    );
 
     // And back: the person's edit reaches the agent, and the agent never
     // republishes it as its own.
     let (note, arguments) = common::scratchpad_body("Ada's revision");
     page.invoke(&note, &arguments, false).unwrap();
-    agent.apply(&page.take_mutation().unwrap()).unwrap();
+    agent
+        .apply(&page.take_mutation().unwrap().unwrap())
+        .unwrap();
     assert!(body(&agent).contains("Ada's revision"), "{}", body(&agent));
     assert!(
-        agent.take_mutation().is_none(),
+        agent.take_mutation().unwrap().is_none(),
         "a received change is not the agent's"
     );
 }
@@ -254,12 +261,15 @@ fn only_the_creator_seeds_a_record() {
     {
         let app = definition.app_id();
         let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
-        let snapshot = page.take_mutation().expect("a new record is published");
+        let snapshot = page
+            .take_mutation()
+            .unwrap()
+            .expect("a new record is published");
         let created = content(&page);
 
         // Joined after the content was published.
         let mut after = joined(&catalogue, &page, bytes(snapshot)).expect("the record opens");
-        if let Some(opened) = after.take_mutation() {
+        if let Some(opened) = after.take_mutation().unwrap() {
             page.apply(&opened).unwrap();
         }
         if content(&page) != created {
@@ -277,7 +287,7 @@ fn only_the_creator_seeds_a_record() {
         };
         let whole = page.read(|doc| doc.clone().save()).unwrap();
         early.apply(&DocumentMutation::Snapshot(whole)).unwrap();
-        if let Some(opened) = early.take_mutation() {
+        if let Some(opened) = early.take_mutation().unwrap() {
             page.apply(&opened).unwrap();
         }
         if content(&page) != created {
@@ -396,7 +406,7 @@ fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::pol
 fn ada_and_her_bot(kinds: ui::permissions::policy::KindSet) -> (Replica, Replica) {
     let mut page =
         common::open("so.tilo.scratchpad", "ada", ReplicaActor::Owner, Seed::New).unwrap();
-    let snapshot = page.take_mutation().unwrap();
+    let snapshot = page.take_mutation().unwrap().unwrap();
     let bot = common::open(
         page.app_id(),
         "bot:b1",
@@ -417,7 +427,7 @@ fn ada_and_her_bot(kinds: ui::permissions::policy::KindSet) -> (Replica, Replica
 #[test]
 fn a_bot_replica_edits_within_its_grant_for_its_installer() {
     let (mut page, mut bot) = ada_and_her_bot(ui::permissions::policy::KindSet::READ_UNDOABLE);
-    if let Some(opened) = bot.take_mutation() {
+    if let Some(opened) = bot.take_mutation().unwrap() {
         page.apply(&opened).unwrap();
     }
     let (note, arguments) = common::scratchpad_body("Mirrored by the bot");
@@ -436,7 +446,7 @@ fn a_bot_replica_edits_within_its_grant_for_its_installer() {
             ));
     bot.invoke_with(None, Some(context), &note, &arguments, false)
         .unwrap();
-    page.apply(&bot.take_mutation().unwrap()).unwrap();
+    page.apply(&bot.take_mutation().unwrap().unwrap()).unwrap();
     assert!(
         body(&page).contains("Mirrored by the bot"),
         "{}",
@@ -537,7 +547,7 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_door() 
     .unwrap();
     let part = chat::parts::part(0);
     assert!(bot.keeps_beside(&part));
-    let started = page.take_record_mutations();
+    let started = page.take_record_mutations().unwrap();
     assert!(
         matches!(&started[..], [(record, DocumentMutation::Snapshot(_))] if *record == part),
         "the page started the first part"
@@ -645,7 +655,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
     let arguments = serde_json::json!({ "channel": channel, "text": "welcome!" });
     bot.invoke(&post, arguments.as_object().unwrap(), false)
         .unwrap();
-    let started = bot.take_record_mutations();
+    let started = bot.take_record_mutations().unwrap();
     assert!(
         matches!(&started[..], [(record, DocumentMutation::Snapshot(_))] if *record == chat::parts::part(0)),
         "the bot started the first part"
@@ -669,7 +679,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
 #[test]
 fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     let mut made = common::open("so.tilo.notes", "ada", ReplicaActor::Owner, Seed::New).unwrap();
-    let Some(DocumentMutation::Snapshot(genesis)) = made.take_mutation() else {
+    let Some(DocumentMutation::Snapshot(genesis)) = made.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
     let standing = ui::permissions::PermissionContext::member_of(
@@ -706,7 +716,7 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     agent
         .invoke(&new_note, arguments.as_object().unwrap(), false)
         .unwrap();
-    let Some(DocumentMutation::Incremental(wrote)) = agent.take_mutation() else {
+    let Some(DocumentMutation::Incremental(wrote)) = agent.take_mutation().unwrap() else {
         panic!("the agent's note is handed back to be saved");
     };
     let mut doc = automerge::AutoCommit::new();
@@ -731,7 +741,7 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
 #[test]
 fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
     let mut made = common::open("so.tilo.notes", "ada", ReplicaActor::Owner, Seed::New).unwrap();
-    let Some(DocumentMutation::Snapshot(genesis)) = made.take_mutation() else {
+    let Some(DocumentMutation::Snapshot(genesis)) = made.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
     let standing = ui::permissions::PermissionContext::member_of(
@@ -770,7 +780,7 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
         agent
             .invoke(&new_note, arguments.as_object().unwrap(), false)
             .unwrap();
-        let Some(DocumentMutation::Incremental(changes)) = agent.take_mutation() else {
+        let Some(DocumentMutation::Incremental(changes)) = agent.take_mutation().unwrap() else {
             panic!("the agent's note is handed back to be saved");
         };
         wrote.push(changes);

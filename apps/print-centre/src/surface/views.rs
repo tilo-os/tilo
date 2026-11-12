@@ -8,6 +8,7 @@
 //! or padding: text names its role, buttons their role, and the toolkit
 //! spaces what it composes.
 
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::tokens::{Spacing, SpacingStep, TextRole};
 use ui::widget::toggle_group::Segment;
@@ -22,6 +23,7 @@ use super::{
     Door, El, PrintChoice, PrintPreview, ScanState, Snapshot, UiCommand, display_name,
     failed_areas, friendly_queue_state, friendly_reason, job_title, supply_level,
 };
+use crate::locales::CATALOG;
 use crate::resource::{
     OCR_LANGUAGES, PrintCentreEffect, PrintDefaults, SCAN_COLORS, SCAN_RESOLUTIONS, SCAN_SOURCES,
 };
@@ -211,7 +213,7 @@ pub(super) fn loading_view() -> El {
             copy("Looking for printers, scanners and unfinished documents."),
             Box::new(
                 ProgressBar::indeterminate()
-                    .with_label(ui::i18n::I18nManager::lookup_plain("print-centre-loading")),
+                    .with_label(crate::locales::CATALOG.t("print-centre-loading")),
             ),
         ])))
 }
@@ -403,10 +405,9 @@ pub(super) fn live_view(snapshot: &Snapshot, tx: &Door) -> El {
             Box::new(
                 bare_column()
                     .with_rhythm(ui::tokens::Rhythm::Section)
-                    .push(Box::new(
-                        Section::new(Vec::new())
-                            .with_header(SectionHeader::heading("Your printers")),
-                    ))
+                    .push(Box::new(Section::new(Vec::new()).with_header(
+                        SectionHeader::heading(CATALOG.t("print-centre-section-printers")),
+                    )))
                     .push(Box::new(
                         CardGrid::new(queues.iter().map(|queue| printer_card(queue, tx)).collect())
                             .with_card_width(CardWidth::Wide),
@@ -463,7 +464,7 @@ fn live_tools(
         UiCommand::Diagnostics,
     ));
     Box::new(Section::titled(
-        "Tools",
+        CATALOG.t("print-centre-section-tools"),
         vec![Box::new(tools.into_iter().fold(
             bare_column().with_rhythm(ui::tokens::Rhythm::Section),
             Column::push,
@@ -582,19 +583,24 @@ pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &Door) -> El {
         .count();
     let check = Section::new(vec![Box::new(PropertyList::new(vec![
         Property::new(
-            "Printers responding",
+            CATALOG.t("print-centre-printers-responding"),
             format!("{responding} of {}", queues.len()),
         ),
         Property::new(
-            "Reporting ink or toner levels",
+            CATALOG.t("print-centre-reporting-levels"),
             format!(
                 "{supply_reports} {}",
                 plural(supply_reports, "printer", "printers")
             ),
         ),
-        Property::new("Scanners available", scanners.len().to_string()),
+        Property::new(
+            CATALOG.t("print-centre-scanners"),
+            scanners.len().to_string(),
+        ),
     ]))])
-    .with_header(SectionHeader::heading("Connection check"));
+    .with_header(SectionHeader::heading(
+        CATALOG.t("print-centre-section-connection-check"),
+    ));
     let mut items: Vec<El> = Vec::new();
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, true, false, true), tx) {
         items.push(issue);
@@ -802,9 +808,9 @@ pub(super) fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &Door)
             .collect(),
         _ => vec![copy("This printer does not report supply levels.")],
     };
-    let status = Property::new("State", friendly_queue_state(queue));
+    let status = Property::new(CATALOG.t("print-centre-state"), friendly_queue_state(queue));
     let availability = Property::new(
-        "Availability",
+        CATALOG.t("print-centre-availability"),
         if queue.default {
             "Preferred printer"
         } else {
@@ -826,14 +832,13 @@ pub(super) fn discovery_view(
     tx: &Door,
 ) -> El {
     let body: El = match result {
-        None => {
-            section(vec![
-                copy("Looking for printers on your network."),
-                Box::new(ProgressBar::indeterminate().with_label(
-                    ui::i18n::I18nManager::lookup_plain("print-centre-finding-printers"),
-                )),
-            ])
-        }
+        None => section(vec![
+            copy("Looking for printers on your network."),
+            Box::new(
+                ProgressBar::indeterminate()
+                    .with_label(crate::locales::CATALOG.t("print-centre-finding-printers")),
+            ),
+        ]),
         Some(Ok(printers)) if printers.is_empty() => section(vec![
             copy(
                 "No printers found. Make sure the printer is awake and connected to the same network, then search again.",
@@ -904,9 +909,7 @@ fn printer_picker(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Dro
         .collect::<Vec<_>>();
     let mut picker = Dropdown::new(Vec::new(), "")
         .with_id("print-centre.print.printer")
-        .with_placeholder(&ui::i18n::I18nManager::lookup_plain(
-            "print-centre-choose-printer",
-        ));
+        .with_placeholder(&crate::locales::CATALOG.t("print-centre-choose-printer"));
     picker.set_value_options(options);
     if let Some(selected) = selected {
         picker.set_selected(selected);
@@ -941,34 +944,35 @@ fn document_card(filename: &str, preview: &PrintPreview, tx: &Door) -> El {
         PrintPreview::Ready { page, pages, .. } => (*page, *pages),
         _ => (0, 0),
     };
-    let preview_widget: El =
-        match preview {
-            PrintPreview::Ready {
-                rgba,
-                width,
-                height,
-                ..
-            } => Box::new(
-                Container::new()
-                    .with_height(300.0)
-                    .with_no_padding()
-                    .with_child(Box::new(
-                        Image::from_rgba(rgba.clone(), *width, *height)
-                            .filling()
-                            .with_alt(format!("Preview of {filename}")),
-                    )),
-            ),
-            PrintPreview::Loading => Box::new(Container::new().with_height(138.0).with_child(
-                Box::new(ProgressBar::indeterminate().with_label(
-                    ui::i18n::I18nManager::lookup_plain("print-centre-preparing-preview"),
+    let preview_widget: El = match preview {
+        PrintPreview::Ready {
+            rgba,
+            width,
+            height,
+            ..
+        } => Box::new(
+            Container::new()
+                .with_height(300.0)
+                .with_no_padding()
+                .with_child(Box::new(
+                    Image::from_rgba(rgba.clone(), *width, *height)
+                        .filling()
+                        .with_alt(format!("Preview of {filename}")),
                 )),
-            )),
-            PrintPreview::Unavailable => Box::new(
-                bare_column()
-                    .push(copy("Preview unavailable"))
-                    .push(muted("The original document is unchanged.")),
-            ),
-        };
+        ),
+        PrintPreview::Loading => Box::new(
+            Container::new()
+                .with_height(138.0)
+                .with_child(Box::new(ProgressBar::indeterminate().with_label(
+                    crate::locales::CATALOG.t("print-centre-preparing-preview"),
+                ))),
+        ),
+        PrintPreview::Unavailable => Box::new(
+            bare_column()
+                .push(copy("Preview unavailable"))
+                .push(muted("The original document is unchanged.")),
+        ),
+    };
     let body = if pages > 1 {
         let shown = page.min(pages.saturating_sub(1));
         // The count keeps its own line above the pager: a card this narrow
@@ -979,8 +983,14 @@ fn document_card(filename: &str, preview: &PrintPreview, tx: &Door) -> El {
                 .with_intrinsic_height()
                 .push(preview_widget)
                 .push(Box::new(
-                    Text::new(&format!("Page {} of {}", shown.saturating_add(1), pages))
-                        .with_role(TextRole::Label),
+                    Text::new(&CATALOG.t_args(
+                        "print-centre-page-of",
+                        &[
+                            ("page", ArgValue::Text(shown.saturating_add(1).to_string())),
+                            ("pages", ArgValue::Text(pages.to_string())),
+                        ],
+                    ))
+                    .with_role(TextRole::Label),
                 ))
                 .push(Box::new(
                     Row::new()
@@ -1028,9 +1038,7 @@ fn print_settings(picker: Dropdown, form: &PrintForm<'_>, tx: &Door) -> Form {
                 "Pages",
                 TextInput::from_state(form.range)
                     .with_id("print-centre.print.pages")
-                    .with_placeholder(ui::i18n::I18nManager::lookup_plain(
-                        "print-centre-all-pages",
-                    ))
+                    .with_placeholder(crate::locales::CATALOG.t("print-centre-all-pages"))
                     .with_accessible_name(crate::locales::CATALOG.t("print-centre-a11y-pages")),
             )
             .with_help("Print some of the pages, as in 3-5 or 1, 4, 9. Leave it empty for all."),
@@ -1224,8 +1232,11 @@ fn page_details(
             TextRole::Heading,
         ))
         .push(Box::new(PropertyList::new(vec![
-            Property::new("Orientation", orientation),
-            Property::new("Text language", &page_data.ocr_language),
+            Property::new(CATALOG.t("print-centre-orientation"), orientation),
+            Property::new(
+                CATALOG.t("print-centre-text-language"),
+                &page_data.ocr_language,
+            ),
         ])))
         .push(muted(&page_data.ocr_note));
     if let Some(recognized) = &page_data.recognized_text {

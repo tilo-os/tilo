@@ -218,11 +218,11 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     };
     browser
         .peer
-        .write(record, &source.take_mutation().unwrap())
+        .write(record, &source.take_mutation().unwrap().unwrap())
         .unwrap();
     // The message's own record is the part, published on its own route.
     let route = resource_support::part_route(&workspace.workspace, &part);
-    for (changed, mutation) in source.take_record_mutations() {
+    for (changed, mutation) in source.take_record_mutations().unwrap() {
         assert_eq!(changed, part);
         browser.peer.write(route.clone(), &mutation).unwrap();
     }
@@ -610,7 +610,7 @@ impl Page {
             cluster_id: self.cluster_id.clone(),
             record: page.wire_record().to_owned(),
         };
-        let mutation = page.take_mutation().unwrap();
+        let mutation = page.take_mutation().unwrap().unwrap();
         before_publish(&route);
         self.peer.write(route.clone(), &mutation).unwrap();
         // The host never echoes a device's own change back to it.

@@ -1620,7 +1620,8 @@ async fn window_device(fixture: &Fixture, material: &Material) -> RelayClient {
 
 /// A departure the window holds, reported as the session in the VM reports
 /// one: the invocation that would answer it, named by the id the window
-/// published it with.
+/// published it with, and the departure itself in its context — the page it
+/// leaves from, what it sends and where — as the window states it.
 fn held(correlation: u64, id: u32) -> RemoteActionMessage {
     RemoteActionMessage::Confirm {
         correlation,
@@ -1637,6 +1638,16 @@ fn held(correlation: u64, id: u32) -> RemoteActionMessage {
             )])),
             context: Some(tilo_actions::ActionContext {
                 purpose: Some("POST https://orders.example".into()),
+                facets: [
+                    ("page", "https://orders.example"),
+                    ("kind", "submit"),
+                    ("method", "POST"),
+                    ("destination", "https://orders.example"),
+                    ("picture", "tilo.content:5f2b"),
+                ]
+                .into_iter()
+                .map(|(name, value)| tilo_actions::remote::browser::departure_facet(name, value))
+                .collect(),
                 ..tilo_actions::ActionContext::default()
             }),
             confirmation: None,
@@ -1684,10 +1695,23 @@ async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_name
         .unwrap();
     let question = asked(&mut approver).await;
     assert_eq!(
-        question.action_label, "POST https://orders.example",
-        "the person is told what leaves"
+        question.action_label, "send the form to https://orders.example (POST)",
+        "the person is told what leaves, where, and how"
     );
     assert_eq!(question.resource_label, PAGE_RESOURCE);
+    let page = question
+        .page
+        .as_ref()
+        .expect("the question names the page it leaves from");
+    assert_eq!(page.page, "https://orders.example");
+    assert_eq!(page.kind, "submit");
+    assert_eq!(page.method, "POST");
+    assert_eq!(page.destination, "https://orders.example");
+    assert_eq!(
+        page.picture.as_deref(),
+        Some("tilo.content:5f2b"),
+        "and the picture of the filled page, by its content address"
+    );
 
     // The same departure reported again is not put to them twice.
     window

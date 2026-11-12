@@ -165,3 +165,14 @@ diff-a11y-side-by-side = Base, ours, and theirs are shown side by side.
 
 diff-a11y-folders-truncated = Only the first part of the folders was compared
 diff-a11y-choose-file = Choose a file to compare it
+
+## Facts, property labels and section titles
+diffmerge-a11y-change-lines = Change { $change }: lines { $first } through { $last }
+diffmerge-a11y-show-file = Show { $source } file
+diffmerge-a11y-changes = { $changes ->
+    [one] One change. Scroll to review the aligned source lines.
+   *[other] { $changes } changes. Scroll to review the aligned source lines.
+}
+diffmerge-a11y-between = Diff between { $left } and { $right }
+diffmerge-a11y-for-change = { $choice } for change { $change }
+diffmerge-a11y-show-source = Show { $source } source

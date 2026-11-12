@@ -19,3 +19,23 @@ monitor-monitor-flat = { $new ->
 
 ## Window and accessibility copy
 monitor-a11y-processes = Processes
+
+## Facts, property labels and section titles
+monitor-command = Command
+monitor-running-for = Running for
+monitor-open-files = Open files
+monitor-virtual-memory = Virtual memory
+monitor-threads = Threads
+monitor-parent = Parent
+monitor-app = App
+monitor-status = Status
+monitor-user = User
+monitor-memory-children = Memory with children
+monitor-cpu-children = CPU with children
+monitor-processor = Processor
+monitor-kernel = Kernel
+monitor-host-name = Host name
+
+monitor-section-system = System
+monitor-legend-in-use = In use { $percent }
+monitor-section-memory = Memory

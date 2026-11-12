@@ -342,13 +342,14 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
 }
 
 /// A visa backend's agent asking to submit what it filled in for its
-/// customer, as a reviewer is asked before it goes out.
+/// customer, as a reviewer is asked before it goes out: the page it leaves
+/// from, and the filled page as a picture.
 fn visa_question(run: &str, handle: &str) -> Dialog {
     let argument = |label: &str, value: &str| (label.to_owned(), value.to_owned());
     super::AgentQuestion {
         agent: "Jane Doe’s agent".to_owned(),
         run: run.to_owned(),
-        action: "Submit the application".to_owned(),
+        action: "Send the form to https://consulate.example (POST)".to_owned(),
         resource: "Schengen visa: Jane Doe".to_owned(),
         arguments: vec![
             argument("Name", "Jane Doe"),
@@ -360,6 +361,55 @@ fn visa_question(run: &str, handle: &str) -> Dialog {
         kind: "outside".to_owned(),
         undoable: false,
         workspace: "Applicant: Jane Doe".to_owned(),
+        page: Some("https://consulate.example".to_owned()),
+        picture: Some("fixture:filled-form".to_owned()),
     }
     .dialog(handle)
+}
+
+/// The filled page the visa question shows, kept in a store of this
+/// process's own and named by its content address: a screenshot of the sheet
+/// draws a picture of a form the way a person's device draws the host's.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    reason = "a capture fixture lays a fixed-sized form out in small, bounded pixel math"
+)]
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn lend_filled_form() -> Option<String> {
+    const WIDTH: u32 = 480;
+    const HEIGHT: u32 = 270;
+    let mut rgba = vec![255_u8; (WIDTH * HEIGHT * 4) as usize];
+    let mut fill = |x: u32, y: u32, width: u32, height: u32, rgb: [u8; 3]| {
+        for row in y..(y + height).min(HEIGHT) {
+            for column in x..(x + width).min(WIDTH) {
+                let at = ((row * WIDTH + column) * 4) as usize;
+                rgba[at..at + 3].copy_from_slice(&rgb);
+            }
+        }
+    };
+    // A page with a heading, the fields the agent filled, and its button:
+    // enough of a form that a person sees what leaves.
+    fill(0, 0, WIDTH, 30, [44, 62, 120]);
+    fill(24, 54, 210, 12, [60, 66, 78]);
+    for row in 0..5u32 {
+        let top = 88 + row * 32;
+        fill(24, top, 120, 8, [186, 192, 202]);
+        fill(170, top - 8, 270, 22, [241, 243, 247]);
+        fill(178, top, 80 + row * 14, 7, [86, 92, 106]);
+    }
+    fill(320, 232, 130, 26, [44, 62, 120]);
+    let png = ui::png::encode_rgba8(WIDTH, HEIGHT, &rgba).ok()?;
+    let store = ui::content::ContentStore::memory();
+    let hash = store.put(&png).ok()?;
+    ui::pictures::lend_content(Some(store));
+    ui::tilo_actions::content_resource(&hash)
+}
+
+/// A page reads its pictures from its host, and a capture of this sheet is
+/// taken where the process keeps content: on a page there is no store to keep
+/// the fixture's own picture in, so the sheet draws none.
+#[cfg(target_arch = "wasm32")]
+pub(super) fn lend_filled_form() -> Option<String> {
+    None
 }

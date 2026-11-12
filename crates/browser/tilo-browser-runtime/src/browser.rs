@@ -496,6 +496,12 @@ pub(crate) struct Mount {
     /// one (the mount closing) settles its request as failed.
     image_tickets: RefCell<HashMap<(usize, String), ui::image_store::ImageCompletionTicket>>,
     error: Option<String>,
+    /// How many frames this mount had presented when the desk took the last
+    /// pressed key: the frame after that one is the first that can show what
+    /// the key did. A page reading its own frame counter when the browser
+    /// fires the key reads it earlier than that, as a frame can be presented
+    /// between the browser's event and the desk taking it.
+    frames_at_key: Option<u64>,
     /// When this mount made its GPU again lately ([`Mount::frame_failed`]).
     gpu_remakes: crate::gpu_recovery::GpuRemakes,
     /// The last composed scene exceeded `scene_within_limits` (reported once).
@@ -1616,6 +1622,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         image_tickets: RefCell::default(),
         error: None,
         gpu_remakes: crate::gpu_recovery::GpuRemakes::default(),
+        frames_at_key: None,
         oversized_scene: false,
         skipped_frame: false,
         followed_view: ui::headless::FollowedView::default(),
@@ -2797,6 +2804,15 @@ impl Mount {
         self.publish(id);
     }
 
+    /// A pressed key reaching the desk: how many frames were presented by then.
+    fn note_key(&mut self, event: &WindowEvent) {
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Pressed
+        {
+            self.frames_at_key = Some(self.frames);
+        }
+    }
+
     /// Let go of the GPU this mount draws with and make a new device, surface
     /// and renderer: the next generation, whose first frame draws the desk
     /// whole.
@@ -2935,6 +2951,9 @@ impl Mount {
             "tab": format!("{id:x}"),
             "error": self.error,
             "frames": self.frames,
+            // How many frames were presented when the desk took the last key:
+            // the frame after it is the first that can show the key's effect.
+            "framesAtKey": self.frames_at_key,
             // Frames the GPU never reported drawn since it last reported one:
             // a page that freezes without an error says so here.
             "gpuStalls": self.gpu.as_ref().map_or(0, |gpu| gpu.pacing.stalls()),

@@ -211,7 +211,7 @@ async fn post_with(
             .into_iter()
             .find(|id| !before.contains(id))
             .expect("the post is in a part");
-        (id, page.take_record_mutations())
+        (id, page.take_record_mutations().unwrap())
     };
     for (record, mutation) in taken {
         match mutation {
@@ -1056,7 +1056,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
             false,
         )
         .unwrap();
-        match page.take_record_mutations().pop() {
+        match page.take_record_mutations().unwrap().pop() {
             Some((_, DocumentMutation::Snapshot(bytes))) => bytes,
             other => panic!("the page started the first part: {other:?}"),
         }

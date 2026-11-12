@@ -113,3 +113,6 @@ themes-preview-desktop = Desktop
 themes-preview-list = List
 themes-preview-dialog = Dialog
 themes-preview-presence = Presence
+
+## Facts, property labels and section titles
+themes-contrast-low = Too little contrast: { $findings }

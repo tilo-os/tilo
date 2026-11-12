@@ -55,6 +55,7 @@ use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
 use ui::a11y::Politeness;
+use ui::i18n::ArgValue;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -69,6 +70,7 @@ use install_profile_model::{
     FILESYSTEMS, valid_full_name, valid_hostname, valid_locale, valid_timezone_name, valid_username,
 };
 
+use crate::resource::CATALOG;
 use crate::setup::destination::action_button::ActionButton;
 use crate::setup::destination::control::{Bound, Control, Press, Presses};
 use crate::setup::destination::disk_row::{capacity, disk_row};
@@ -144,12 +146,12 @@ fn alongside_install_impact(guided: bool, dev: &str) -> String {
     )
 }
 
-fn alongside_confirmation_operation(guided: bool) -> &'static str {
-    if guided {
-        "guided free-space partition plan"
+fn alongside_confirmation_operation(guided: bool) -> String {
+    CATALOG.t(if guided {
+        "installer-operation-guided-plan"
     } else {
-        "Tilo boot and root format"
-    }
+        "installer-operation-tilo-format"
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1028,7 +1030,10 @@ impl InstallerApp {
                 if let Some(completion) = self.profile_completion.as_mut() {
                     completion.filesystem = FieldCompletion::NeedsRepair;
                 }
-                self.status = format!("{message}. Installation is unavailable.");
+                self.status = CATALOG.t_args(
+                    "installer-install-unavailable",
+                    &[("message", ArgValue::Text(message.clone()))],
+                );
             }
         }
     }
@@ -2255,9 +2260,12 @@ impl InstallerApp {
 
         if let Some(uri) = self.network.snapshot.portal_uri.as_deref() {
             children.push(Box::new(
-                Text::new(&format!("Network sign-in address: {uri}"))
-                    .with_role(TextRole::Caption)
-                    .with_color(theme.text_primary),
+                Text::new(&CATALOG.t_args(
+                    "installer-network-signin-address",
+                    &[("uri", ArgValue::Text(uri.to_owned()))],
+                ))
+                .with_role(TextRole::Caption)
+                .with_color(theme.text_primary),
             ));
             children.push(Box::new(
                 Text::new(&crate::setup::strings::t("installer-network-privileged"))
@@ -2266,8 +2274,9 @@ impl InstallerApp {
             ));
         } else if let Some(error) = self.network.snapshot.portal_error.as_deref() {
             children.push(Box::new(
-                Text::new(&format!(
-                    "A sign-in page was detected but cannot be opened: {error}"
+                Text::new(&CATALOG.t_args(
+                    "installer-network-signin-unavailable",
+                    &[("error", ArgValue::Text(error.to_owned()))],
                 ))
                 .with_role(TextRole::Caption)
                 .with_color(dim),
@@ -2302,9 +2311,12 @@ impl InstallerApp {
 
         if let Some(error) = self.network.snapshot.wifi_error.as_deref() {
             children.push(Box::new(
-                Text::new(&format!("Wi-Fi controls unavailable: {error}"))
-                    .with_role(TextRole::Caption)
-                    .with_color(dim),
+                Text::new(&CATALOG.t_args(
+                    "installer-wifi-unavailable",
+                    &[("error", ArgValue::Text(error.to_owned()))],
+                ))
+                .with_role(TextRole::Caption)
+                .with_color(dim),
             ));
         } else {
             for (i, network) in self.network.snapshot.networks.iter().take(5).enumerate() {
@@ -2451,10 +2463,9 @@ impl InstallerApp {
             .filter(|_| self.selected_disk_hosts_installer())
         {
             children.push(Box::new(
-                Text::new(&format!(
-                    "Tilo will be installed alongside {} in the space Tilo Imager prepared. This disk also holds the running installer; {} and its files are not changed.",
-                    host.display_name(),
-                    host.display_name()
+                Text::new(&CATALOG.t_args(
+                    "installer-install-alongside",
+                    &[("host", ArgValue::Text(host.display_name()))],
                 ))
                 .with_role(TextRole::Caption)
                 .with_color(dim),
@@ -3078,7 +3089,7 @@ impl InstallerApp {
         disk: &str,
     ) {
         let (expected, operation) = match self.install_method {
-            InstallMethod::Erase => (disk, "whole-disk erase"),
+            InstallMethod::Erase => (disk, CATALOG.t("installer-operation-erase")),
             InstallMethod::Alongside => (
                 if self.uses_guided_alongside() {
                     disk
@@ -3091,9 +3102,15 @@ impl InstallerApp {
             ),
         };
         children.push(Box::new(
-            Text::new(&format!("Type {expected} to confirm the {operation}"))
-                .with_role(TextRole::Caption)
-                .with_color(theme.text_dim),
+            Text::new(&CATALOG.t_args(
+                "installer-type-to-confirm",
+                &[
+                    ("expected", ArgValue::Text(expected.to_owned())),
+                    ("operation", ArgValue::Text(operation)),
+                ],
+            ))
+            .with_role(TextRole::Caption)
+            .with_color(theme.text_dim),
         ));
         children.push(Box::new(
             TextInput::from_state(&self.erase_confirmation)
@@ -3128,9 +3145,12 @@ impl InstallerApp {
             None => "<no disk>".to_string(),
         };
         let mut summary = Vec::new();
-        summary.push(Property::new("Disk", &disk_value));
         summary.push(Property::new(
-            "Install method",
+            CATALOG.t("installer-property-disk"),
+            &disk_value,
+        ));
+        summary.push(Property::new(
+            CATALOG.t("installer-property-method"),
             if self.install_method == InstallMethod::Alongside {
                 "Alongside — preserve existing partitions"
             } else {
@@ -3142,11 +3162,11 @@ impl InstallerApp {
         {
             if let Some(plan) = self.guided_alongside_plan() {
                 summary.push(Property::new(
-                    "Tilo storage",
+                    CATALOG.t("installer-property-storage"),
                     self.alongside_allocation_summary(&plan),
                 ));
                 summary.push(Property::new(
-                    "Existing partitions",
+                    CATALOG.t("installer-property-existing-partitions"),
                     "Preserved byte-for-byte; none resized, moved, or deleted",
                 ));
                 if let Some(host) = self
@@ -3154,71 +3174,98 @@ impl InstallerApp {
                     .filter(|_| self.selected_disk_hosts_installer())
                 {
                     let host = host.display_name();
-                    summary.push(Property::new("This disk",
-                        format!(
-                            "Also holds the running installer and your existing {host} system. {host} stays untouched."
+                    summary.push(Property::new(
+                        CATALOG.t("installer-property-this-disk"),
+                        CATALOG.t_args(
+                            "installer-disk-holds-installer",
+                            &[("host", ArgValue::Text(host.clone()))],
                         ),
                     ));
                     summary.push(Property::new(
-                        "Installer space",
+                        CATALOG.t("installer-property-installer-space"),
                         "Returned to Tilo automatically after you first sign in",
                     ));
                     summary.push(Property::new(
-                        "Choose an OS",
-                        format!(
-                            "The next restart starts Tilo once; {host} stays the firmware default"
+                        CATALOG.t("installer-property-choose-os"),
+                        CATALOG.t_args(
+                            "installer-choose-os-restart",
+                            &[("host", ArgValue::Text(host.clone()))],
                         ),
                     ));
                 } else {
-                    summary.push(Property::new("Choose an OS",
+                    summary.push(Property::new(CATALOG.t("installer-property-choose-os"),
                         "Use the firmware boot picker; its current default and existing entries are preserved",
                     ));
                 }
             } else {
                 summary.push(Property::new(
-                    "Tilo root",
+                    CATALOG.t("installer-property-tilo-root"),
                     disk.alongside_root()
                         .map_or("<missing>", |p| p.name.as_str()),
                 ));
                 summary.push(Property::new(
-                    "Tilo EFI partition",
+                    CATALOG.t("installer-property-tilo-efi"),
                     disk.efi_partition()
                         .map_or("<missing>", |p| p.name.as_str()),
                 ));
-                summary.push(Property::new("Choose an OS",
+                summary.push(Property::new(CATALOG.t("installer-property-choose-os"),
                     "Tilo adds safe menu shortcuts for unambiguous Windows/Linux loaders on this shared EFI partition",
                 ));
             }
         }
         if self.install_method == InstallMethod::Alongside {
             summary.push(Property::new(
-                "Boot choice",
+                CATALOG.t("installer-property-boot-choice"),
                 crate::setup::strings::t(ALONGSIDE_BOOT_GUIDANCE),
             ));
             summary.push(Property::new(
-                "Existing files",
+                CATALOG.t("installer-property-existing-files"),
                 crate::setup::strings::t(ALONGSIDE_FILES_GUIDANCE),
             ));
         }
-        summary.push(Property::new("Filesystem", self.filesystem()));
-        summary.push(Property::new("Encryption", self.encryption_summary()));
-        summary.push(Property::new("Hostname", local_text(&self.hostname).trim()));
-        summary.push(Property::new("Time zone", self.timezone().trim()));
-        summary.push(Property::new("Keyboard layout", self.keymap().trim()));
         summary.push(Property::new(
-            "More video and audio formats",
+            CATALOG.t("installer-property-filesystem"),
+            self.filesystem(),
+        ));
+        summary.push(Property::new(
+            CATALOG.t("installer-property-encryption"),
+            self.encryption_summary(),
+        ));
+        summary.push(Property::new(
+            CATALOG.t("installer-property-hostname"),
+            local_text(&self.hostname).trim(),
+        ));
+        summary.push(Property::new(
+            CATALOG.t("installer-property-timezone"),
+            self.timezone().trim(),
+        ));
+        summary.push(Property::new(
+            CATALOG.t("installer-property-keyboard"),
+            self.keymap().trim(),
+        ));
+        summary.push(Property::new(
+            CATALOG.t("installer-property-formats"),
             if self.codecs {
                 "Install once the new system is online"
             } else {
                 "Not now (available later in Settings, Updates)"
             },
         ));
-        summary.push(Property::new("Username", local_text(&self.username).trim()));
+        summary.push(Property::new(
+            CATALOG.t("installer-property-username"),
+            local_text(&self.username).trim(),
+        ));
         let full_name = local_text(&self.full_name);
         if !full_name.trim().is_empty() {
-            summary.push(Property::new("Name", full_name.trim()));
+            summary.push(Property::new(
+                CATALOG.t("installer-property-name"),
+                full_name.trim(),
+            ));
         }
-        summary.push(Property::new("Network", self.network.connection_summary()));
+        summary.push(Property::new(
+            CATALOG.t("installer-property-network"),
+            self.network.connection_summary(),
+        ));
         children.push(Box::new(
             PropertyList::new(summary).with_id("installer.review.summary"),
         ));

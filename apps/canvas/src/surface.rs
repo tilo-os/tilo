@@ -19,6 +19,7 @@ use ui::tilo_resource::Invoke;
 use serde_json::{Value, json};
 use ui::a11y::{AccessNode, Role};
 use ui::framework::{Dispatcher, ResourceSurface, SurfaceCx};
+use ui::i18n::ArgValue;
 use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::tilo_actions::ActionOutput;
 use ui::vello::Scene;
@@ -40,6 +41,7 @@ use crate::gesture::points::Editable;
 use crate::gesture::read::{Sampled, Sampling};
 use crate::gesture::text::{TextSession, Typed};
 use crate::gesture::{Ink, edit};
+use crate::locales::CATALOG;
 use crate::model::{Artwork, Mark, Shape};
 use crate::render::{Options, Renderer};
 use crate::resource::ViewOp;
@@ -3219,11 +3221,15 @@ impl Widget for CanvasSurface {
                 } else {
                     self.art.title.clone()
                 })
-                .with_description(format!(
-                    "{} by {} units, {layers} layers, {marks} marks, {} selected; inspect lists them and look shows them",
-                    self.art.width,
-                    self.art.height,
-                    self.selection.len()
+                .with_description(CATALOG.t_args(
+                    "canvas-a11y-artwork",
+                    &[
+                        ("width", ArgValue::Text(self.art.width.to_string())),
+                        ("height", ArgValue::Text(self.art.height.to_string())),
+                        ("layers", ArgValue::Text(layers.to_string())),
+                        ("marks", ArgValue::Text(marks.to_string())),
+                        ("selected", ArgValue::Text(self.selection.len().to_string())),
+                    ],
                 )),
         )
     }

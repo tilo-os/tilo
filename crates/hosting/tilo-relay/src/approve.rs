@@ -242,7 +242,9 @@ async fn wait(
 }
 
 /// One question as this program says it: the action it runs, what it acts
-/// on, who asks, where, and what it risks.
+/// on, who asks, where, and what it risks — and, for a page about to send
+/// something, the page it leaves from, what it sends there and the picture of
+/// the filled page the person is shown.
 fn described(question: &PendingConfirmation) -> serde_json::Value {
     serde_json::json!({
         "question": {
@@ -254,6 +256,13 @@ fn described(question: &PendingConfirmation) -> serde_json::Value {
             "risk": question.risk,
             "kind": question.kind,
             "arguments": question.arguments,
+            "page": question.page.as_ref().map(|page| serde_json::json!({
+                "page": page.page,
+                "kind": page.kind,
+                "method": page.method,
+                "destination": page.destination,
+                "picture": page.picture,
+            })),
         },
     })
 }
@@ -262,6 +271,7 @@ fn described(question: &PendingConfirmation) -> serde_json::Value {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
+    use tilo_relay_protocol::certify::PageDeparture;
 
     /// What a page writes for a person, and what this program opens: the
     /// envelope a page keeps and the recovery key it showed, nothing else.
@@ -325,7 +335,9 @@ mod tests {
         );
     }
 
-    /// The question a person reads names what it is about.
+    /// The question a person reads names what it is about, and a page it
+    /// leaves from by its origin, what it sends there and the picture of the
+    /// filled page.
     #[test]
     fn a_question_says_what_it_is_about() {
         let question = PendingConfirmation {
@@ -334,6 +346,13 @@ mod tests {
             agent_label: "Jane Doe's agent".into(),
             workspace: "ws-browser".into(),
             risk: "outside".into(),
+            page: Some(PageDeparture {
+                page: "https://consulate.example".into(),
+                kind: "submit".into(),
+                method: "POST".into(),
+                destination: "https://consulate.example".into(),
+                picture: Some("tilo.content:5f2b".into()),
+            }),
             ..PendingConfirmation::default()
         };
 
@@ -342,5 +361,21 @@ mod tests {
         assert_eq!(said["question"]["action"], "Submit the visa application");
         assert_eq!(said["question"]["agent"], "Jane Doe's agent");
         assert_eq!(said["question"]["workspace"], "ws-browser");
+        assert_eq!(
+            said["question"]["page"]["page"],
+            "https://consulate.example"
+        );
+        assert_eq!(said["question"]["page"]["method"], "POST");
+        assert_eq!(said["question"]["page"]["kind"], "submit");
+        assert_eq!(said["question"]["page"]["picture"], "tilo.content:5f2b");
+        // A question about no page says nothing about one.
+        let plain = PendingConfirmation {
+            page: None,
+            ..question
+        };
+        assert_eq!(
+            described(&plain)["question"]["page"],
+            serde_json::Value::Null
+        );
     }
 }

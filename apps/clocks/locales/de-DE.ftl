@@ -86,3 +86,11 @@ clocks-minutes = { $minutes } Min.
 clocks-one-hour = 1 Stunde
 clocks-hours = { $hours } Std.
 clocks-hours-minutes = { $hours } Std. { $minutes } Min.
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+clocks-timer-duration = Timerdauer: { $name }
+
+## Die Dauerfelder eines Timers
+clocks-field-hours = Stunden
+clocks-field-minutes = Minuten
+clocks-field-seconds = Sekunden

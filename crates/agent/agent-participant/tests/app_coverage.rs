@@ -80,7 +80,7 @@ fn every_web_app_takes_an_edit_through_its_published_operations() {
             gaps.push(format!("{}: {refused:#?}", definition.app_id()));
         } else {
             assert!(
-                app.0.take_mutation().is_some(),
+                app.0.take_mutation().unwrap().is_some(),
                 "{}: an edit leaves a change to publish",
                 definition.app_id()
             );

@@ -2,12 +2,13 @@
 //! dialog, so what is drawn, what is pressed and what a reader meets are
 //! one layout.
 
+use ui::BLOB_SCHEME;
 use ui::prelude::*;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Button, ButtonRole, Column, Element, FieldRole, FieldSpec, IconSize, IconWidget, ListRow,
-    ModalDialog, Property, PropertyList, Row, SecretKind, SecretPrompt, Text, TextInput,
-    TextInputKind, Tone, Widget,
+    Button, ButtonRole, Column, Container, Element, FieldRole, FieldSpec, IconSize, IconWidget,
+    Image, ImageFit, ListRow, ModalDialog, PictureSource, Property, PropertyList, Row, SecretKind,
+    SecretPrompt, Text, TextInput, TextInputKind, Tone, Widget,
 };
 
 use super::{
@@ -23,6 +24,11 @@ pub(super) const DIALOG_ID: &str = "portal-sheet";
 pub(super) const PROMPT_ID: &str = "portal-secret-prompt";
 /// How many facts a review lists before it counts the rest.
 const LISTED_FACTS: usize = 6;
+/// How tall the picture of what a question allows stands: one screen's
+/// shape, narrower than the sheet it sits in.
+const PICTURE_HEIGHT: f32 = 180.0;
+/// The corner the picture is cut to.
+const PICTURE_RADIUS: f32 = 8.0;
 
 /// What every part of the view acts through.
 #[derive(Clone)]
@@ -182,6 +188,9 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
                 .with_id("portal-code"),
         ));
     }
+    if let Some(picture) = dialog.picture.as_ref().and_then(|held| picture(held)) {
+        body = body.push(picture);
+    }
     // A review has nothing to choose: nothing stands between its words and
     // its buttons.
     if !matches!(dialog.body, Body::Review) {
@@ -253,6 +262,28 @@ fn facts(dialog: &Dialog) -> Element {
         ));
     }
     Box::new(column)
+}
+
+/// The picture of what the person is allowing, by the content address the
+/// host named it under: the filled page a departure leaves from, as wide as
+/// the sheet and one screen's shape tall. `None` for an address that names no
+/// content, which no sheet here reads.
+fn picture(address: &str) -> Option<Element> {
+    let hash = ui::tilo_actions::content_hash(address)?;
+    let source = PictureSource {
+        src: format!("{BLOB_SCHEME}{hash}"),
+    };
+    Some(Box::new(
+        Container::new()
+            .with_id("portal-sheet-picture")
+            .with_size(ui::tokens::Metrics::BASE.panel_width_sheet, PICTURE_HEIGHT)
+            .with_child(Box::new(
+                Image::from_picture(ui::Pictures::window(), source)
+                    .with_fit(ImageFit::Contain)
+                    .with_corner_radius(PICTURE_RADIUS)
+                    .filling(),
+            )),
+    ))
 }
 
 /// What allowing it risks, apart from the words above it: the theme's

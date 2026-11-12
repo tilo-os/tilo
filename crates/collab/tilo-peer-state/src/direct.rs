@@ -225,17 +225,11 @@ impl Reader {
             };
             let identity = Frame::of(&message).map(|frame| (frame.lineage, frame.seq));
             store::advance(&mut self.cursors, std::slice::from_ref(&message));
-            match self.link.judge(author, message, true) {
-                Ok(heard) => {
-                    if let Ok(identity) = identity {
-                        self.caught.insert(identity);
-                    }
-                    self.pending.push_back(heard);
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "a frame a reader missed could not be judged again");
-                }
+            if let Ok(identity) = identity {
+                self.caught.insert(identity);
             }
+            self.pending
+                .push_back(self.link.judge(author, message, true));
         }
     }
 }
@@ -269,6 +263,9 @@ enum OnlyHere {
 /// what runs it, once its dialer has answered.
 pub struct Dialed {
     connection: Connection,
+    /// The device dialled: whose the frames are that the other end's history names no author
+    /// for.
+    device: [u8; 32],
     control: Control,
     /// Subscribed when the dial was answered: what this device sends from
     /// then on is the link's to carry, never lost between the dial and the
@@ -285,7 +282,7 @@ impl Dialed {
     /// the reason it gave ([`DirectSync::end`]).
     pub async fn run(self, link: &DirectSync) -> Result<(), String> {
         let ran = link
-            .link(&self.connection, true, self.control, self.live)
+            .link(&self.connection, Some(self.device), self.control, self.live)
             .await;
         refusal(&self.connection).map_or(ran, Err)
     }
@@ -755,8 +752,11 @@ impl DirectSync {
         self.0.fan_out.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Dial the device at `addr` from `endpoint` and answer its admission,
-    /// leaving the link ready to run ([`Dialed::run`]).
+    /// Dial `device` at `addr` from `endpoint` and answer its admission,
+    /// leaving the link ready to run ([`Dialed::run`]). `addr` is the device's
+    /// own key, or the service address of a relay its signed host hint binds
+    /// to it: a relay answers on a key of its own, and what its history names
+    /// no author for is still its device's.
     ///
     /// # Errors
     ///
@@ -766,6 +766,7 @@ impl DirectSync {
         &self,
         endpoint: &Endpoint,
         addr: impl Into<EndpointAddr>,
+        device: [u8; 32],
     ) -> Result<Dialed, String> {
         let connection = endpoint
             .connect(addr, DIRECT_ALPN)
@@ -785,6 +786,7 @@ impl DirectSync {
         let live = self.0.outgoing.subscribe();
         Ok(Dialed {
             connection,
+            device,
             control: Control { send, recv },
             live,
         })
@@ -800,7 +802,9 @@ impl DirectSync {
         endpoint: &Endpoint,
         addr: impl Into<EndpointAddr>,
     ) -> Result<(), String> {
-        let dialed = self.dial(endpoint, addr).await?;
+        let addr = addr.into();
+        let device = *addr.id.as_bytes();
+        let dialed = self.dial(endpoint, addr, device).await?;
         dialed.run(self).await
     }
 
@@ -822,10 +826,10 @@ impl DirectSync {
         // Each side's catch-up is history, however old what it carries: it is
         // judged as retained, never as a late live frame.
         for authored in host.catch_up()? {
-            member.admit(authored.from, authored.message, true)?;
+            member.admit(authored.from, authored.message, true);
         }
         for authored in member.catch_up()? {
-            host.admit(authored.from, authored.message, true)?;
+            host.admit(authored.from, authored.message, true);
         }
         member.replay_from(host)?;
         if member.0.store.is_none() {
@@ -848,9 +852,9 @@ impl DirectSync {
             for message in &frames {
                 let author = store::author_of(message)
                     .ok_or("the store replayed a message that is not a document frame")?;
-                if self.admit(author, message.clone(), true)? {
+                if self.admit(author, message.clone(), true) {
                     for state in host.answer_state_request() {
-                        self.admit(state.from, state.message, true)?;
+                        self.admit(state.from, state.message, true);
                     }
                 }
             }
@@ -891,20 +895,22 @@ impl DirectSync {
             return Err(refuse(&connection, "this device holds no such workspace"));
         }
         let live = self.0.outgoing.subscribe();
-        self.link(&connection, false, Control { send, recv }, live)
+        self.link(&connection, None, Control { send, recv }, live)
             .await
     }
 
     /// Sync with the device on the other end of `connection` until the link
-    /// ends, whichever side dialled.
+    /// ends, whichever side dialled: `dialled` names the device this side
+    /// dialled, and the side that accepted reads it off the connection.
     async fn link(
         &self,
         connection: &Connection,
-        dialing: bool,
+        dialled: Option<[u8; 32]>,
         control: Control,
         live: broadcast::Receiver<Authored>,
     ) -> Result<(), String> {
-        let remote = *connection.remote_id().as_bytes();
+        let dialing = dialled.is_some();
+        let remote = dialled.unwrap_or_else(|| *connection.remote_id().as_bytes());
         // The device that accepted a dial refuses one of the workspace's
         // roster it does not know before a frame is read; the one that
         // dialled cannot judge, and takes only what its roster verifies.
@@ -1023,7 +1029,7 @@ impl DirectSync {
     async fn ask_store(&self, control: &mut Control) -> Result<(), String> {
         fetch_store(control, self.cursors(), |frames| {
             for (author, message) in frames {
-                self.admit(*author, message.clone(), true)?;
+                self.admit(*author, message.clone(), true);
             }
             Ok(())
         })
@@ -1234,7 +1240,7 @@ impl DirectSync {
                 }
                 continue;
             }
-            if self.admit(authored.from, authored.message, false)? {
+            if self.admit(authored.from, authored.message, false) {
                 let _ = link.send(OnlyHere::Ask);
             }
         }
@@ -1247,22 +1253,18 @@ impl DirectSync {
     ///
     /// Returns whether the frame left something waiting for history this
     /// device does not hold ([`crate::ReceiveOutcome::lacks_history`]): the
-    /// device that sent it is asked for its state.
-    fn admit(
-        &self,
-        claimed: [u8; 32],
-        message: NeighbourMsg,
-        retained: bool,
-    ) -> Result<bool, String> {
+    /// device that sent it is asked for its state. What the workspace
+    /// refuses of a frame is that frame's verdict, never the link's.
+    fn admit(&self, claimed: [u8; 32], message: NeighbourMsg, retained: bool) -> bool {
         let author = store::author_of(&message).unwrap_or(claimed);
         if channel_governance(&message) {
             if self.fans_out() && !retained {
                 self.answer_request(&message);
             }
             self.carry_governance(author, message, retained);
-            return Ok(false);
+            return false;
         }
-        let mut heard = self.judge(author, message, retained)?;
+        let mut heard = self.judge(author, message, retained);
         let lacks_history = heard
             .report
             .as_ref()
@@ -1291,7 +1293,7 @@ impl DirectSync {
             });
         }
         self.tell(heard);
-        Ok(lacks_history)
+        lacks_history
     }
 
     /// What this device sends the other end of a link to ask for the state
@@ -1320,14 +1322,9 @@ impl DirectSync {
 
     /// Admit `message`, `author`'s frame, into this device's workspace: what
     /// the workspace decided of it, as its engine hears it.
-    fn judge(
-        &self,
-        author: [u8; 32],
-        message: NeighbourMsg,
-        retained: bool,
-    ) -> Result<Heard, String> {
+    fn judge(&self, author: [u8; 32], message: NeighbourMsg, retained: bool) -> Heard {
         match &self.0.admission {
-            Some(admission) => Ok(self.admit_owned(admission, author, message, retained)),
+            Some(admission) => self.admit_owned(admission, author, message, retained),
             None => self.admit_local(author, message, retained),
         }
     }
@@ -1409,12 +1406,7 @@ impl DirectSync {
     /// Take `message` into this device's own replica: whether it is the
     /// workspace's governor decides there too, and what it refuses is filed
     /// where the write's author reads why.
-    fn admit_local(
-        &self,
-        author: [u8; 32],
-        message: NeighbourMsg,
-        retained: bool,
-    ) -> Result<Heard, String> {
+    fn admit_local(&self, author: [u8; 32], message: NeighbourMsg, retained: bool) -> Heard {
         let origin = if retained {
             TransportOrigin::RetainedRelayDelta(author)
         } else {
@@ -1422,10 +1414,10 @@ impl DirectSync {
         };
         // The certificate the verdicts below are filed under is this device's
         // own, read before the replica is locked: a replica locked already is
-        // not to be read again.
+        // not to be read again. A device not in the roster files none.
         let own = matches!(message, NeighbourMsg::AppDocument { .. })
-            .then(|| self.certificate())
-            .transpose()?;
+            .then(|| self.certificate().ok())
+            .flatten();
         let mut replica = self.0.replica.lock();
         let now = SystemTime::now();
         let mut landed = false;
@@ -1435,13 +1427,14 @@ impl DirectSync {
                 // The verdicts cleared are this device's own, filed under its
                 // own certificate: the carrier's says who sent the frame, not
                 // whose verdicts a landed write clears.
-                if landed && let Some(own) = &own {
-                    landed = replica.workspace_mut().clear_landed_write(
-                        own,
-                        &message,
-                        &self.0.key,
-                        now,
-                    )? || landed;
+                if landed
+                    && let Some(own) = &own
+                    && let Err(error) =
+                        replica
+                            .workspace_mut()
+                            .clear_landed_write(own, &message, &self.0.key, now)
+                {
+                    tracing::warn!(%error, "a landed write's verdict was not cleared");
                 }
                 Ok(report)
             }
@@ -1451,26 +1444,30 @@ impl DirectSync {
                 // where the author reads why its write is not here. Any other
                 // frame is the link's alone to drop.
                 if let Some(own) = &own {
-                    landed = replica.workspace_mut().refuse_write(
+                    let filed = replica.workspace_mut().refuse_write(
                         own,
                         &message,
                         &reason.to_string(),
                         &self.0.key,
                         now,
-                    )?;
+                    );
+                    landed = filed.unwrap_or_else(|error| {
+                        tracing::warn!(%error, "a refused write's verdict was not filed");
+                        false
+                    });
                 }
                 Err(reason.to_string())
             }
         };
         drop(replica);
-        Ok(Heard {
+        Heard {
             author,
             message,
             landed,
             retained,
             report,
             fresh: true,
-        })
+        }
     }
 
     /// Keep `message` at this device's store when it is a sealed document
@@ -1647,7 +1644,7 @@ impl ProtocolHandler for Serving {
                 .link(named)
                 .ok_or_else(|| refuse(&connection, "this host holds no such workspace"))?;
             let live = link.0.outgoing.subscribe();
-            link.link(&connection, false, Control { send, recv }, live)
+            link.link(&connection, None, Control { send, recv }, live)
                 .await
         };
         serve
@@ -1800,7 +1797,7 @@ impl ProtocolHandler for Owning {
                 Err(reason) => return Err(refuse(&connection, &reason)),
             };
             let live = link.0.outgoing.subscribe();
-            link.link(&connection, false, Control { send, recv }, live)
+            link.link(&connection, None, Control { send, recv }, live)
                 .await
         };
         serve
@@ -1823,11 +1820,11 @@ async fn forward(
         match live.recv().await {
             Ok(authored) if already_theirs(&authored, device.device(), sender.device()) => {}
             Ok(authored) => {
-                if device.admit(authored.from, authored.message, retained)? {
+                if device.admit(authored.from, authored.message, retained) {
                     for state in sender.answer_state_request() {
                         // What still waits after the answer waits for history
                         // the sender lacks too: asking again brings nothing.
-                        device.admit(state.from, state.message, true)?;
+                        device.admit(state.from, state.message, true);
                     }
                 }
             }

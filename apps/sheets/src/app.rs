@@ -30,6 +30,7 @@ use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, Windo
 
 use ui::chart_palette::ChartPalette;
 use ui::collaboration::PresencePayload;
+use ui::i18n::ArgValue;
 use ui::portal::{FileFilter, PickRequest};
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextStyle};
@@ -68,6 +69,7 @@ use crate::fill;
 use crate::grid::{Grid, GridCmd, GridMetrics};
 use crate::infer::infer_entry;
 use crate::model::{Addr, CellFormat, CellValue, a1_to_addr, format_value};
+use crate::resource::CATALOG;
 use crate::resource::verbs;
 use crate::settings::{DocSettings, EffectiveLocale};
 use crate::workbook::{Cell, ChartKind, ChartSnapshot, CommentThread, Workbook};
@@ -1085,7 +1087,10 @@ impl Widget for SheetsApp {
             .map(|&column| {
                 let letter = crate::model::col_to_letters(column);
                 AccessNode::new(Role::Cell)
-                    .with_name(format!("Column {letter}"))
+                    .with_name(CATALOG.t_args(
+                        "sheets-a11y-column",
+                        &[("letter", ArgValue::Text(letter.clone()))],
+                    ))
                     .with_value(letter)
                     .with_position(column as usize + 1, window.total_columns as usize)
             })
@@ -1116,7 +1121,13 @@ impl Widget for SheetsApp {
                     };
                     AccessNode::new(Role::Cell)
                         .with_name(reference)
-                        .with_description(format!("Column {column}, row {}", cell.addr.1 + 1))
+                        .with_description(CATALOG.t_args(
+                            "sheets-a11y-cell",
+                            &[
+                                ("column", ArgValue::Text(column)),
+                                ("row", ArgValue::Text((cell.addr.1 + 1).to_string())),
+                            ],
+                        ))
                         .with_optional_value((!value.is_empty()).then_some(value))
                         .with_position(cell.addr.0 as usize + 1, window.total_columns as usize)
                         .with_bounds(cell.bounds)
@@ -1128,7 +1139,10 @@ impl Widget for SheetsApp {
                 })
                 .collect();
             AccessNode::new(Role::Row)
-                .with_name(format!("Row {}", row.index + 1))
+                .with_name(CATALOG.t_args(
+                    "sheets-a11y-row",
+                    &[("row", ArgValue::Text((row.index + 1).to_string()))],
+                ))
                 .with_position(row.index as usize + 1, window.total_rows as usize)
                 .with_state(AccessState::new().selected(selected))
                 .with_key(u64::from(row.index))
@@ -1142,11 +1156,13 @@ impl Widget for SheetsApp {
             .unwrap_or_else(|| "Worksheet".into());
         let sheet = AccessNode::new(Role::Table)
             .with_name(sheet_name)
-            .with_description(format!(
-                "Worksheet; selected range {}; {} columns by {} rows; only the visible grid window is announced",
-                self.grid.selection_label(),
-                window.total_columns,
-                window.total_rows,
+            .with_description(CATALOG.t_args(
+                "sheets-a11y-worksheet",
+                &[
+                    ("range", ArgValue::Text(self.grid.selection_label())),
+                    ("columns", ArgValue::Text(window.total_columns.to_string())),
+                    ("rows", ArgValue::Text(window.total_rows.to_string())),
+                ],
             ))
             .with_value(format!("Active cell {active_name}"))
             .with_bounds(window.bounds)
@@ -1161,10 +1177,24 @@ impl Widget for SheetsApp {
                         let target = format!("sheets.annotation:chart:{}", chart.id);
                         AccessNode::new(Role::ListItem)
                             .with_name(format!("{} chart", chart.title))
-                            .with_description(format!(
-                                "{}:{}; open, rename, change its type or cells, or delete from the chart card",
-                                crate::model::addr_to_a1(chart.start.0, chart.start.1),
-                                crate::model::addr_to_a1(chart.end.0, chart.end.1)
+                            .with_description(CATALOG.t_args(
+                                "sheets-a11y-chart-extent",
+                                &[
+                                    (
+                                        "start",
+                                        ArgValue::Text(crate::model::addr_to_a1(
+                                            chart.start.0,
+                                            chart.start.1,
+                                        )),
+                                    ),
+                                    (
+                                        "end",
+                                        ArgValue::Text(crate::model::addr_to_a1(
+                                            chart.end.0,
+                                            chart.end.1,
+                                        )),
+                                    ),
+                                ],
                             ))
                             .with_children(vec![
                                 AccessNode::new(Role::Button)
@@ -1172,7 +1202,9 @@ impl Widget for SheetsApp {
                                     .with_action_target(format!("{target}:manage"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
-                                    .with_name(crate::resource::CATALOG.t("sheets-open-chart-range"))
+                                    .with_name(
+                                        crate::resource::CATALOG.t("sheets-open-chart-range"),
+                                    )
                                     .with_action_target(format!("{target}:open"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
@@ -1214,7 +1246,10 @@ impl Widget for SheetsApp {
                     .chain(self.sheet_comments.iter().map(|thread| {
                         let target = format!("sheets.annotation:comment:{}", thread.id);
                         AccessNode::new(Role::ListItem)
-                            .with_name(format!("Comment by {}", self.author_name(&thread.author)))
+                            .with_name(CATALOG.t_args(
+                                "sheets-a11y-comment-by",
+                                &[("author", ArgValue::Text(self.author_name(&thread.author)))],
+                            ))
                             .with_description(format!(
                                 "{}; {} replies; {}",
                                 thread.body,
@@ -1232,7 +1267,9 @@ impl Widget for SheetsApp {
                                     .with_action_target(format!("{target}:edit"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
-                                    .with_name(crate::resource::CATALOG.t("sheets-open-comment-anchor"))
+                                    .with_name(
+                                        crate::resource::CATALOG.t("sheets-open-comment-anchor"),
+                                    )
                                     .with_action_target(format!("{target}:open"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)

@@ -18,7 +18,9 @@ use ui::search::SearchResult;
 use ui::tilo_resource::{Derived, SearchBody, SearchPiece, SearchText, SearchWeight};
 
 use crate::model::{AnnoKind, Annotation, Book, LibraryEntry};
+use crate::resource::CATALOG;
 use crate::resource::{Ebook, book_place_resource, mark_place_resource};
+use ui::i18n::ArgValue;
 
 pub const BOOK_KIND: &str = "Books";
 pub const CHAPTER_KIND: &str = "Chapters";
@@ -412,10 +414,16 @@ impl BookSearch {
                 Self::preview(annotation),
                 mark_place_resource(annotation, comment),
             )
-            .with_subtitle(format!(
-                "{} in chapter {} of {title}",
-                annotation.kind.label(),
-                annotation.chapter + 1
+            .with_subtitle(CATALOG.t_args(
+                "ebook-a11y-annotation-hit",
+                &[
+                    ("kind", ArgValue::Text(annotation.kind.label().to_owned())),
+                    (
+                        "chapter",
+                        ArgValue::Text((annotation.chapter + 1).to_string()),
+                    ),
+                    ("title", ArgValue::Text(title.clone())),
+                ],
             ))
             .with_icon(match annotation.kind {
                 AnnoKind::Bookmark => Icon::Bookmark,

@@ -28,7 +28,9 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::app::{Core, Shared};
+use crate::i18n::CATALOG;
 use crate::model::{Article, Filter, Id, relative_time};
+use ui::i18n::ArgValue;
 use ui::widget::DrawChild;
 
 pub(crate) const EMPTY_LIBRARY_TITLE: &str = "No feeds yet";
@@ -579,7 +581,10 @@ impl Core {
                     .accessibility(row.rect, format!("feeds.article:{}", row.id))
                     .with_children(vec![
                         AccessNode::new(Role::ToggleButton)
-                            .with_name(format!("Star {}", article.title))
+                            .with_name(CATALOG.t_args(
+                                "feeds-a11y-star",
+                                &[("article", ArgValue::Text(article.title.clone()))],
+                            ))
                             .with_state(AccessState::new().focusable(true).checked(article.starred))
                             .with_bounds(row.star.unwrap_or(row.rect))
                             .with_action_target(format!("feeds.star:{}", row.id)),

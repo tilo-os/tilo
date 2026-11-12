@@ -56,9 +56,17 @@ when the builder is handed it directly, so both count.
 
 A surface — an app's window or a session role's — paints through the toolkit's
 text constructors (`Text::new`, the `with_*`/`set_*` label and accessible-name
-setters, the paint helpers that take the scene first), not only through the
-builders above. A literal handed to one of those is the same defect on a German
-desktop, so surfaces are checked for them too.
+setters, the paint helpers that take the scene first, a property list's own
+label, a section's title), not only through the builders above. A literal
+handed to one of those is the same defect on a German desktop, so surfaces are
+checked for them too.
+A sentence built around a value is copy as much as a plain one: a `format!`
+whose template reads as English and whose result reaches one of those calls —
+as an argument, or through the local it is stored in — fails, because a German
+window needs the catalogue's own sentence with the value in it (Fluent
+variables and plural branches). The test is syntactic, on purpose: a sentence
+that travels through a chain of app helpers is a migration to do, not a
+checker to build.
 
 The toolkit's own crates are outside that sweep: a widget's demo and example
 code paints sample content, not a window's copy.
@@ -458,6 +466,10 @@ COPY_BUILDERS = (
 # arguments carries them (0-based). `draw_text` and `draw_style` take the scene
 # first, so the words are the second argument.
 TEXT_CONSTRUCTORS = (
+    ("Property::new(", 0),
+    ("Section::titled(", 0),
+    ("SectionHeader::heading(", 0),
+    ("SectionHeader::group(", 0),
     ("Text::new(", 0),
     ("Notification::new(", 0),
     (".with_name(", 0),
@@ -491,6 +503,11 @@ TEXT_CONSTRUCTORS = (
 # Where a surface's own words are painted: the roots whose crates draw a
 # window a person opens.
 SURFACE_ROOTS = ("apps/", "crates/session/")
+
+BINDING = re.compile(
+    r"(?m)^\s*(?:let\s+(?:mut\s+)?([a-z_][a-z0-9_]*)|[\w.()]+\.([a-z_][a-z0-9_]*))\s*"
+    r"(?::[^=;\n]+)?=(?!=)"
+)
 
 
 def english_words(value: str) -> bool:
@@ -586,6 +603,80 @@ def surfaces(root: Path) -> list[str]:
             if unit.startswith(SURFACE_ROOTS)]
 
 
+def format_template(code: str, starts: list[int],
+                    by_start: dict[int, rust_source.Literal],
+                    begin: int, end: int) -> list[rust_source.Literal]:
+    """The `format!` templates inside `[begin, end)`: the sentence a person
+    reads once the values are in it."""
+    found = []
+    at = code.find("format!", begin, end)
+    while at >= 0:
+        open_paren = code.find("(", at, end)
+        if open_paren >= 0:
+            following = bisect.bisect_right(starts, open_paren)
+            if following < len(starts):
+                literal = by_start[starts[following]]
+                if literal.start < end and not code[open_paren + 1 : literal.start].strip():
+                    found.append(literal)
+        at = code.find("format!", at + 1, end)
+    return found
+
+
+def statement_end(code: str, start: int) -> int:
+    """Where the statement that starts at `start` ends: its `;` at this depth or
+    the bracket that closes the enclosing block."""
+    position = start
+    while position < len(code):
+        if code[position] in "([{":
+            position = rust_source.matching(code, position)
+            continue
+        if code[position] in ";}" or code[position:position + 2] == "\n\n":
+            return position
+        position += 1
+    return len(code)
+
+
+def copy_bindings(code: str, starts: list[int],
+                  by_start: dict[int, rust_source.Literal],
+                  kept: str) -> dict[str, list[rust_source.Literal]]:
+    """Sentences of words built around a value, by the name they are stored in,
+    so a constructor handed that name counts as handing it the sentence.
+
+    Only a value that is the sentence (a `format!`, or a `match`/`if` that
+    picks one) counts. A sentence built inside a call — an error in
+    `ok_or_else(|| format!(…))?` — is an outcome the surface shows in its own
+    words, not a value a constructor gets handed.
+    """
+    found: dict[str, list[rust_source.Literal]] = {}
+    for binding in BINDING.finditer(code):
+        name = binding.group(1) or binding.group(2)
+        value = code[binding.end():statement_end(code, binding.end())]
+        words = value.lstrip()
+        for prefix in ("&", "Some(", "Some (", "match ", "if "):
+            if words.startswith(prefix):
+                words = words[len(prefix):].lstrip()
+                break
+        if not words.startswith(("format!", "match ", "if ")):
+            continue
+        for literal in format_template(code, starts, by_start, binding.end(),
+                                       statement_end(code, binding.end())):
+            if kept[literal.start] == "x" and english_words(literal.value):
+                found.setdefault(name, []).append(literal)
+    return found
+
+
+def named_in(code: str, begin: int, end: int, name: str) -> bool:
+    """Whether `name` is used as a whole identifier inside `[begin, end)`."""
+    at = code.find(name, begin, end)
+    while at >= 0:
+        before = code[at - 1 : at]
+        after = code[at + len(name) : at + len(name) + 1]
+        if not (before.isalnum() or before == "_" or after.isalnum() or after == "_"):
+            return True
+        at = code.find(name, at + len(name), end)
+    return False
+
+
 def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
     """(file, line, text) of each English literal handed to a copy builder by a
     crate that ships translations, in production code; and of each literal or
@@ -630,12 +721,22 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 painted(begin, end)
                 start = code.find(builder, start + len(builder))
         if window:
+            bindings = copy_bindings(code, starts, by_start, kept)
             for call, index in TEXT_CONSTRUCTORS:
                 start = code.find(call)
                 while start >= 0:
                     begin, end = argument(code, start + len(call), index)
                     painted(begin, end)
                     close = rust_source.matching(code, start + len(call) - 1)
+                    for literal in format_template(code, starts, by_start, begin, close):
+                        if kept[literal.start] == "x" and english_words(literal.value):
+                            hits.append(literal)
+                    for name, stored in bindings.items():
+                        if not named_in(code, begin, close, name):
+                            continue
+                        for literal in stored:
+                            if kept[literal.start] == "x":
+                                hits.append(literal)
                     start = code.find(call, start + len(call))
         for literal in dict.fromkeys(hits):
             found.append((

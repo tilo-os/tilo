@@ -415,11 +415,12 @@ impl PeerGovernance<'_> {
             let root = identity.device_cert.user_public_key;
             let person = hex::encode(root);
             let role = workspace_policy.active_role(&person);
-            let administrator = role == Some(Role::Owner)
-                || workspace_policy
-                    .grants
-                    .iter()
-                    .any(|grant| grant.id == administrator_grant_id(root));
+            // Named once for the person, not once for each grant it is held
+            // against: every member's row asks this.
+            let administrator = role == Some(Role::Owner) || {
+                let id = administrator_grant_id(root);
+                workspace_policy.grants.iter().any(|grant| grant.id == id)
+            };
             let active_role = if role == Some(Role::Owner) {
                 Some(crate::join::MemberRole::Editor)
             } else {

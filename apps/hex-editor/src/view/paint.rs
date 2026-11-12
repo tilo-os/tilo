@@ -7,6 +7,7 @@
 //! and the empty state. The file's name, the edit mode, the inspector's
 //! toggle, a failure's notice, search and History are the window bar's.
 
+use ui::i18n::ArgValue;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer, TextStyle};
@@ -21,6 +22,7 @@ use super::Editor;
 use super::layout::Geo;
 use crate::inspector::{self, Interpretation};
 use crate::model::Column;
+use crate::resource::CATALOG;
 
 /// Hex digits, so a cell's two characters need no allocation.
 const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
@@ -377,7 +379,13 @@ impl Editor {
     ) {
         use ui::chrome::status_bar::{StatusReadout, draw_readouts};
         let cursor = self.model.cursor();
-        let offset = format!("Offset 0x{cursor:08X} ({cursor})");
+        let offset = CATALOG.t_args(
+            "hex-offset-readout",
+            &[
+                ("offset", ArgValue::Text(format!("{cursor:08X}"))),
+                ("cursor", ArgValue::Text(cursor.to_string())),
+            ],
+        );
         let selected = self.model.selection_len();
         let selected = (selected > 0).then(|| format!("{} selected", byte_count(selected)));
         let edited = self.model.dirty_count();

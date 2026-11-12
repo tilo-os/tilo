@@ -532,6 +532,7 @@ keyboard-shortcuts-list-description = Jedes Kürzel des Desktops mit seinen aktu
 ## Gerät bittet sein Geschwistergerät um den Schlüssel, mit dem es startet.
 network-agent-question-title = { $agent } möchte „{ $action }“ ausführen
 network-agent-question-detail = In „{ $resource }“ im Arbeitsbereich „{ $workspace }“.
+network-agent-question-page = Seite
 network-agent-question-outside = Es wirkt außerhalb von Tilo.
 network-agent-question-outside-final = Es wirkt außerhalb von Tilo und lässt sich nicht rückgängig machen.
 network-agent-question-sensitive = Es kann private Daten offenlegen.

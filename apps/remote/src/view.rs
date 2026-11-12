@@ -20,6 +20,7 @@ use ui::widget::{
 use crate::actions::RemoteEffect;
 use crate::app::Action;
 use crate::model::{AuthMethod, ConnectionId, ConnectionKind, Remote};
+use crate::resource::CATALOG;
 use ui::framework::Actions as ResourceActions;
 use ui::tilo_resource::Invoke;
 
@@ -211,10 +212,13 @@ pub(crate) fn connection_list(
             vec![Box::new(Section::new(list(rows.iter().collect())))]
         } else {
             vec![
-                Box::new(Section::new(list(pinned)).with_header(SectionHeader::group("Pinned"))),
+                Box::new(
+                    Section::new(list(pinned))
+                        .with_header(SectionHeader::group(CATALOG.t("remote-pinned"))),
+                ),
                 Box::new(
                     Section::new(list(others))
-                        .with_header(SectionHeader::group("Other connections")),
+                        .with_header(SectionHeader::group(CATALOG.t("remote-other-connections"))),
                 ),
             ]
         };
@@ -331,7 +335,9 @@ fn device_list(requests: &Requests, devices: &[DeviceModel]) -> Element {
             }) as Element
         })
         .collect();
-    Box::new(Section::new(rows).with_header(SectionHeader::group("Nearby devices")))
+    Box::new(
+        Section::new(rows).with_header(SectionHeader::group(CATALOG.t("remote-nearby-devices"))),
+    )
 }
 
 /// Which machine, where it is, who signs in and how, and how it is filed.

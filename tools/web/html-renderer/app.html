@@ -17,6 +17,12 @@
 // the default) or on the WebGPU canvas (`?render=gpu`), for comparing the two.
 const params = new URLSearchParams(location.search);
 const dom = params.get('render') !== 'gpu';
+// `&sync=0` draws an input's frame in the task after it instead of in the
+// input's own task, to compare the two.
+if (params.get('sync') === '0') globalThis.__tiloDomInputSync = false;
+// `&sync=0` draws an input's frame in the task after it instead of in the
+// input's own task, to compare the two.
+if (params.get('sync') === '0') globalThis.__tiloDomInputSync = false;
 const marks = window.renderMarks = {navigationStart: 0, presented: []};
 const {mountDesktop} = await import('./host.mjs');
 window.mount = await mountDesktop(document.getElementById('app'), {
@@ -34,7 +40,9 @@ window.mount = await mountDesktop(document.getElementById('app'), {
   onDomFrame: stats => {
     marks.presented.push(performance.now());
     marks.dom = {...stats};
-    (marks.domFrames ??= []).push([stats.writes, stats.created, stats.lastMs]);
+    // writes, new elements, the presenter's own time, the frame's work in
+    // wasm (update, layout, draw) and its encoding to DOM operations.
+    (marks.domFrames ??= []).push([stats.writes, stats.created, stats.lastMs, stats.meta.layoutMs, stats.meta.encodeMs, stats.meta.draws, stats.meta.texts]);
   },
 });
 marks.mounted = performance.now();

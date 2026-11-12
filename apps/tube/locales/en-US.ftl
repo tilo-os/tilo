@@ -213,3 +213,11 @@ tube-record = Watched a video
 tube-import = Brought in videos watched on another device
 tube-forget = Removed a video from the watch history
 tube-clear = Cleared the watch history
+
+## Facts, property labels and section titles
+tube-search-heading = Search: { $query }
+
+tube-queue-shared = Shared watch queue
+tube-video = Video
+tube-creator = Creator
+tube-playlist = Playlist

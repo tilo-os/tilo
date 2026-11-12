@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 use std::rc::Rc;
+use ui::i18n::ArgValue;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::ModelPath;
@@ -37,6 +38,7 @@ use crate::keypad::{CalcScreen, DisplaySlot, MEM_KEYS};
 use crate::mathfield::MathField;
 use crate::model::{self, CalcModel, KeypadPage, Mode, PlotFn};
 use crate::plot_panel::PlotPanel;
+use crate::resource::CATALOG;
 use crate::resource::Calculator;
 
 use ui::tilo_resource::Id;
@@ -1637,13 +1639,9 @@ impl Widget for CalculatorApp {
             Mode::Calc => {
                 let mut controls = Vec::new();
                 let mut display = AccessNode::new(Role::TextInput)
-                    .with_name(ui::i18n::I18nManager::lookup_plain(
-                        "calculator-a11y-expression",
-                    ))
+                    .with_name(crate::resource::CATALOG.t("calculator-a11y-expression"))
                     .with_value(self.model.expr.clone())
-                    .with_description(ui::i18n::I18nManager::lookup_plain(
-                        "calculator-a11y-expression-hint",
-                    ))
+                    .with_description(crate::resource::CATALOG.t("calculator-a11y-expression-hint"))
                     .with_action_target("calculator.expression")
                     .with_bounds(self.calc.expression_rect())
                     .with_state(AccessState::new().focusable(true))
@@ -1689,9 +1687,7 @@ impl Widget for CalculatorApp {
                 }
                 children.push(
                     AccessNode::new(Role::Toolbar)
-                        .with_name(ui::i18n::I18nManager::lookup_plain(
-                            "calculator-a11y-controls",
-                        ))
+                        .with_name(crate::resource::CATALOG.t("calculator-a11y-controls"))
                         .with_hashed_key("calculator.keypad-controls")
                         .with_children(controls),
                 );
@@ -1714,12 +1710,8 @@ impl Widget for CalculatorApp {
                     .collect();
                 children.push(
                     AccessNode::new(Role::Group)
-                        .with_name(ui::i18n::I18nManager::lookup_plain(
-                            "calculator-a11y-keypad",
-                        ))
-                        .with_description(ui::i18n::I18nManager::lookup_plain(
-                            "calculator-a11y-keypad-hint",
-                        ))
+                        .with_name(crate::resource::CATALOG.t("calculator-a11y-keypad"))
+                        .with_description(crate::resource::CATALOG.t("calculator-a11y-keypad-hint"))
                         .with_hashed_key("calculator.keypad")
                         .with_children(keys),
                 );
@@ -1730,15 +1722,13 @@ impl Widget for CalculatorApp {
         }
         Some(
             AccessNode::new(Role::Group)
-                .with_name(ui::i18n::I18nManager::lookup_plain("calculator-title"))
+                .with_name(crate::resource::CATALOG.t("calculator-title"))
                 .with_value(if self.model.expr.is_empty() {
                     "Empty expression".to_string()
                 } else {
                     self.model.expr.clone()
                 })
-                .with_description(ui::i18n::I18nManager::lookup_plain(
-                    "calculator-a11y-workspace",
-                ))
+                .with_description(crate::resource::CATALOG.t("calculator-a11y-workspace"))
                 .with_state(
                     AccessState::new()
                         .focusable(true)
@@ -1910,10 +1900,15 @@ impl CalculatorApp {
                     panel.delete_rect(index),
                 );
                 let mut field = AccessNode::new(Role::TextInput)
-                    .with_name(format!(
-                        "{} {} formula",
-                        title.trim_end_matches('s'),
-                        index + 1
+                    .with_name(CATALOG.t_args(
+                        "calculator-graph-field",
+                        &[
+                            (
+                                "kind",
+                                ArgValue::Text(title.trim_end_matches('s').to_owned()),
+                            ),
+                            ("number", ArgValue::Text((index + 1).to_string())),
+                        ],
                     ))
                     .with_value(row.expr.clone())
                     .with_action_target(format!("calculator.graph.field:{slug}:{index}"))
@@ -1922,10 +1917,15 @@ impl CalculatorApp {
                     field = field.with_bounds(bounds);
                 }
                 let mut visible = AccessNode::new(Role::ToggleButton)
-                    .with_name(format!(
-                        "Show {} {}",
-                        title.trim_end_matches('s'),
-                        index + 1
+                    .with_name(CATALOG.t_args(
+                        "calculator-graph-show",
+                        &[
+                            (
+                                "kind",
+                                ArgValue::Text(title.trim_end_matches('s').to_owned()),
+                            ),
+                            ("number", ArgValue::Text((index + 1).to_string())),
+                        ],
                     ))
                     .with_action_target(format!("calculator.graph.visible:{slug}:{index}"))
                     .with_state(AccessState::new().focusable(true).checked(row.visible));
@@ -1933,15 +1933,18 @@ impl CalculatorApp {
                     visible = visible.with_bounds(bounds);
                 }
                 let mut delete = AccessNode::new(Role::Button)
-                    .with_name(format!(
-                        "Delete {} {}",
-                        title.trim_end_matches('s'),
-                        index + 1
+                    .with_name(CATALOG.t_args(
+                        "calculator-graph-delete",
+                        &[
+                            (
+                                "kind",
+                                ArgValue::Text(title.trim_end_matches('s').to_owned()),
+                            ),
+                            ("number", ArgValue::Text((index + 1).to_string())),
+                        ],
                     ))
                     .with_action_target(format!("calculator.graph.delete:{slug}:{index}"))
-                    .with_description(ui::i18n::I18nManager::lookup_plain(
-                        "calculator-a11y-remove-formula",
-                    ))
+                    .with_description(crate::resource::CATALOG.t("calculator-a11y-remove-formula"))
                     .with_state(AccessState::new().focusable(true));
                 if let Some(bounds) = delete_bounds {
                     delete = delete.with_bounds(bounds);
@@ -1955,7 +1958,13 @@ impl CalculatorApp {
                 );
             }
             let mut add = AccessNode::new(Role::Button)
-                .with_name(format!("Add {}", title.trim_end_matches('s')))
+                .with_name(CATALOG.t_args(
+                    "calculator-graph-add",
+                    &[(
+                        "kind",
+                        ArgValue::Text(title.trim_end_matches('s').to_owned()),
+                    )],
+                ))
                 .with_action_target(format!("calculator.graph.add:{slug}"))
                 .with_state(AccessState::new().focusable(true));
             if let Some(bounds) = add_bounds {

@@ -72,10 +72,10 @@ async fn the_host_mints_a_message_link_with_its_range() {
     };
     publisher
         .peer
-        .write(route.clone(), &source.take_mutation().unwrap())
+        .write(route.clone(), &source.take_mutation().unwrap().unwrap())
         .unwrap();
     let route = part_route(&workspace.workspace, &chat::parts::part(0));
-    for (_, mutation) in source.take_record_mutations() {
+    for (_, mutation) in source.take_record_mutations().unwrap() {
         publisher.peer.write(route.clone(), &mutation).unwrap();
     }
     publisher.peer.barrier().unwrap().recv().unwrap().unwrap();

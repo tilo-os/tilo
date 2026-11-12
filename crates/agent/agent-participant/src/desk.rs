@@ -55,7 +55,9 @@ pub(crate) fn place_view(
 ) -> Option<Vec<u8>> {
     let mut doc = desktop.clone();
     let mut desktop = shared_record::read(&doc, None).or_else(|| fresh(workspace, name?))?;
-    if shown_at(&desktop, view.app_id, view.record).is_some() {
+    if shown_at(&desktop, view.app_id, view.record).is_some()
+        || (view.record.is_empty() && opening(&desktop, view.app_id))
+    {
         return None;
     }
     let author = opener.person;
@@ -89,6 +91,19 @@ fn shown_at(desktop: &SharedDesktop, app: &str, record: &str) -> Option<u64> {
                 })
         })
         .map(|(tab, _)| *tab)
+}
+
+/// Whether a window of `app` stands on `desktop` with no record noted for it yet: a window still
+/// opening, whose app has not bound what it shows. An app opens its primary record when nothing
+/// names another, so that window is about to show it: a person whose window loads slowly is not
+/// given a second one beside it.
+fn opening(desktop: &SharedDesktop, app: &str) -> bool {
+    desktop.tree.workspaces.iter().any(|workspace| {
+        workspace.tabs().any(|tab| {
+            matches!(&tab.tile, TileContent::LocalApp { app_id, .. } if app_id == app)
+                && !desktop.records.iter().any(|(noted, _)| *noted == tab.id)
+        })
+    })
 }
 
 /// The desktop the first page in `workspace` makes: the workspace itself,
@@ -354,6 +369,45 @@ mod tests {
         let groups = &desktop.tree.workspaces[0].strips[0].window_groups;
         assert_eq!(groups.len(), 2, "beside the Notes window: {desktop:?}");
         assert_eq!(groups[0].id, 20);
+    }
+
+    /// A person's Notes window still loading has noted no record yet: it is about to show Notes'
+    /// primary record, so the note the agent makes there opens no second window beside it.
+    #[test]
+    fn a_window_still_opening_its_apps_primary_record_gets_no_second() {
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Workspace");
+        workspace.strips = vec![Strip {
+            id: StripId(10),
+            name: "Main".into(),
+            window_groups: vec![group(20, tab(21, "so.tilo.notes"))],
+        }];
+        let desktop = SharedDesktop {
+            tree: tilo_desktop_model::DesktopTree {
+                workspaces: vec![workspace],
+                ..tilo_desktop_model::DesktopTree::default()
+            },
+            records: Vec::new(),
+            authors: std::collections::BTreeMap::new(),
+            opened_by: std::collections::BTreeMap::new(),
+        };
+        let mut doc = AutoCommit::new();
+        shared_record::write(&mut doc, &desktop).unwrap();
+        doc.commit();
+        let notes = View {
+            app_id: "so.tilo.notes",
+            title: "Notes",
+            record: "",
+            beside: None,
+        };
+        assert!(place_view(&doc, (WORKSPACE, None), &opener(), &notes).is_none());
+        let page = View {
+            record: "a-page-record",
+            ..notes
+        };
+        assert!(
+            place_view(&doc, (WORKSPACE, None), &opener(), &page).is_some(),
+            "a record of its own still gets its window"
+        );
     }
 
     #[test]

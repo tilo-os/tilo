@@ -98,10 +98,15 @@ impl Reach {
                 host: Host::Paired(host),
             });
         }
-        let addr = payload.endpoint_addr;
-        let dialed = tokio::time::timeout(Duration::from_secs(10), link.dial(&self.endpoint, addr))
-            .await
-            .map_err(|_| "native link connection timed out".to_string())??;
+        // The relay answers on a service key of its own, which the hint's signature binds to the
+        // host device: the link's history is that device's.
+        let host = payload.host_device_certificate.device_public_key;
+        let dialed = tokio::time::timeout(
+            Duration::from_secs(10),
+            link.dial(&self.endpoint, payload.endpoint_addr, host),
+        )
+        .await
+        .map_err(|_| "native link connection timed out".to_string())??;
         Ok(Linked {
             link,
             host: Host::Dialled(Box::new(dialed)),

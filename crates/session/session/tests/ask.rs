@@ -1,7 +1,8 @@
 //! A question the session puts to the person about themselves: it waits on
 //! their own avatar in the top bar, never as a banner over their windows,
 //! and their answer takes it away. A bar too narrow for its words opens it
-//! as a card under the bar, where it is read and answered.
+//! across the bar's band, where it is read and answered, and folded it waits
+//! as a dot on the avatar while the avatar itself opens the person's own card.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -236,10 +237,11 @@ fn an_ask_about_the_person_waits_on_their_avatar_until_they_answer_it() {
     );
 }
 
-/// A bar too narrow for the ask's words beside the avatar opens it as a card under the bar: the
-/// question is read there and its answer is pressed there, where the person sees it.
+/// A bar too narrow for the ask's words beside its own controls opens it across the bar's band: the
+/// question is read there and its answer is pressed there, where the person sees it, clear of the
+/// person's own face.
 #[test]
-fn an_ask_that_does_not_fit_the_bar_opens_as_a_card_under_it() {
+fn an_ask_that_does_not_fit_the_bar_opens_across_its_band() {
     let _settled = ui::motion::testing::settled();
     let mut session = session_on(NARROW, HEIGHT);
     tilo_session::identity::offer(
@@ -253,25 +255,23 @@ fn an_ask_that_does_not_fit_the_bar_opens_as_a_card_under_it() {
     session.step(REFRESH).expect("a frame");
 
     let (_, tree) = bar(&session);
-    let (_, (_, _, avatar_right, band_bottom)) = avatar(&tree);
+    let (_, (_, _, avatar_left, band_bottom)) = avatar(&tree);
     let (_, answer) = button(&tree, "Keep your name and work?");
     let (x0, y0, x1, y1) = place(&answer);
     assert!(
-        y0 >= band_bottom,
-        "the ask's answer stands in a card under the bar, which ends at {band_bottom}, not at {y0}"
+        y0 >= 0.0 && y1 <= band_bottom,
+        "the ask's answer stands in the bar's band, which ends at {band_bottom}, not at {y0}..{y1}"
     );
-    let margin = ui::widget::floating_surface::viewport_margin(&ui::theme::Theme::dark());
     assert!(
-        x0 >= margin && x1 <= f64::from(NARROW) - margin && x1 >= avatar_right,
-        "the answer's card keeps the floating layer's {margin}px margin from both edges of the screen \
-         and hangs under the avatar, which ends at {avatar_right}: {x0}..{x1}"
+        x1 <= avatar_left,
+        "the ask's answer stops short of the person's own face, which begins at {avatar_left}: {x0}..{x1}"
     );
     keep(&mut session, "ask-narrow-420");
 
     press(&mut session, (f64::midpoint(x0, x1), f64::midpoint(y0, y1)));
     assert!(
         session.handle().personal_ask().is_none(),
-        "the person answered the ask in the card under the bar"
+        "the person answered the ask across the bar"
     );
     assert!(
         session.handle().take_host_choices().is_empty(),
@@ -280,12 +280,13 @@ fn an_ask_that_does_not_fit_the_bar_opens_as_a_card_under_it() {
     keep(&mut session, "ask-narrow-420-answered");
 }
 
-/// Folded on a narrow bar, the ask waits as the avatar's dot, and the avatar opens it again: under
-/// the bar, where it can be answered.
+/// Folded, the ask waits as the avatar's dot, and a press on the avatar opens the person's own card,
+/// which offers what the ask asks: the ask itself stays folded.
 #[test]
-fn a_folded_ask_on_a_narrow_bar_opens_from_its_avatar() {
+fn a_folded_ask_leaves_the_avatar_to_open_the_own_card() {
     let _settled = ui::motion::testing::settled();
     let mut session = session_on(NARROW, HEIGHT);
+    session.handle().set_host_actions(vec![keep_identity()]);
     tilo_session::identity::offer(
         session.handle(),
         &told(&session),
@@ -313,18 +314,19 @@ fn a_folded_ask_on_a_narrow_bar_opens_from_its_avatar() {
     keep(&mut session, "ask-narrow-420-folded");
     let (_, (x0, y0, x1, y1)) = avatar(&tree);
     press(&mut session, (f64::midpoint(x0, x1), f64::midpoint(y0, y1)));
-    assert!(
-        session.handle().personal_ask().is_some_and(|ask| ask.open),
-        "the avatar opens the ask again"
-    );
     session.step(REFRESH).expect("a frame");
-    let (_, tree) = bar(&session);
-    let (_, (_, _, _, band_bottom)) = avatar(&tree);
-    let (_, answer) = button(&tree, "Keep your name and work?");
-    let (_, y0, _, _) = place(&answer);
     assert!(
-        y0 >= band_bottom,
-        "the ask opens as a card under the bar, which ends at {band_bottom}, not at {y0}"
+        session.handle().personal_ask().is_some_and(|ask| !ask.open),
+        "the avatar leaves the ask folded"
     );
-    keep(&mut session, "ask-narrow-420-dot-opened");
+    let labels = session.accessible_labels();
+    assert!(
+        labels.iter().any(|label| label == "Your profile"),
+        "the avatar opens the person's own card: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label == "Keep with passkey"),
+        "and the card offers what the ask asks: {labels:?}"
+    );
+    keep(&mut session, "ask-narrow-420-folded-card");
 }

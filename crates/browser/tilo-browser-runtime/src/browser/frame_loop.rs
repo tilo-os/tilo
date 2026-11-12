@@ -303,6 +303,7 @@ impl ApplicationHandler<u64> for Runner {
                     m.semantics.borrow_mut().note_input(&event, ui::time::now());
                     let start = m.metric_start();
                     let passes = m.frame.relayout_frames();
+                    m.note_key(&event);
                     crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
                     m.metric_end("input", start);
                     m.publish_committed(&event);

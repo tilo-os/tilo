@@ -378,12 +378,13 @@ impl PolicyField {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    /// The catalogue message naming how many snapshots of this class to keep.
+    pub fn keep_label_key(self) -> &'static str {
         match self {
-            PolicyField::Hourly => "Hourly",
-            PolicyField::Daily => "Daily",
-            PolicyField::Weekly => "Weekly",
-            PolicyField::Monthly => "Monthly",
+            PolicyField::Hourly => "backups-keep-hourly",
+            PolicyField::Daily => "backups-keep-daily",
+            PolicyField::Weekly => "backups-keep-weekly",
+            PolicyField::Monthly => "backups-keep-monthly",
         }
     }
 

@@ -113,3 +113,6 @@ themes-preview-desktop = Schreibtisch
 themes-preview-list = Liste
 themes-preview-dialog = Dialog
 themes-preview-presence = Anwesenheit
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+themes-contrast-low = Zu wenig Kontrast: { $findings }
