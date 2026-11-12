@@ -64,6 +64,7 @@ from two_people import (  # noqa: E402
     joined,
     members_of,
     owner_of,
+    stand_in,
     workspaces,
 )
 
@@ -400,6 +401,14 @@ def main() -> int:
             check("the package Tasks runs in gives it no network of its own", offline, how)
 
             step("5", "a task typed on the host reaches the peer's Tasks")
+            # A session's desk can end up in another workspace while the apps open, and the
+            # workspace's app actions are then out of reach of that session's own person. Each
+            # desk is put back where the work is, and the drift is said rather than hidden.
+            for session in (host, peer):
+                moved = (front_workspace(session) or {}).get("room")
+                if moved != room:
+                    note(f"{session.tag}'s desk had moved to {moved}; standing it in {room}")
+                    stand_in(session, room)
             # The peer's own Tasks is asked from the workspace the task crosses in: the app a
             # person's desk shows there is the one whose copy of it must list the task, and a
             # desk that stands elsewhere offers none of that workspace's actions at all.
