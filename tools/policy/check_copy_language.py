@@ -79,8 +79,12 @@ Two more ways a word reaches a window without the constructor coming first:
   as a page outline) says nothing about the word it is handed, so only a name
   whose every definition hands copy back counts, and a value that is a name the
   model answers with (`CameraApp`, `demo.thing`) is not copy. A constructor
-  handed the call directly is the same defect; that class is the next
-  migration, so this check reads the positions above for now.
+  handed the call directly (`Text::new(kind_label(kind))`) is the same defect
+  as one handed a call through a helper: the words the function returns are
+  what the constructor paints. A name the keyboard prints (`Backspace`) is not
+  words a person reads in their language, so it is listed in
+  `copy_source_literals.toml` like any other literal no catalogue has to
+  carry.
 - as a struct field named like copy, where a `let` binds the struct and a copy
   builder reads the field back (`let row = Row { title: "Open settings", … };
   Text::new(row.title)`), or where the struct's own type paints the field
@@ -1451,6 +1455,9 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 end = statement_end(code, field.end())
                 sentences(field.end(), end, end, bindings)
         if window:
+            if crate not in helpers:
+                helpers[crate] = helper_table(by_crate[crate])
+                returning[crate] = returning_words(root, by_crate[crate])
             ranges = []
             for call, index in TEXT_CONSTRUCTORS:
                 start = code.find(call)
@@ -1459,6 +1466,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                     sentences(begin, end, rust_source.matching(code, start + len(call) - 1),
                               bindings)
                     ranges.append((begin, end))
+                    found.extend(words_returned_in(code, begin, end, returning[crate]))
                     start = code.find(call, start + len(call))
             for call, index in SPEC_BUILDERS:
                 start = code.find(call)
@@ -1467,11 +1475,8 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                     sentences(begin, end, rust_source.matching(code, start + len(call) - 1),
                               bindings)
                     ranges.append((begin, end))
-                    found.extend(words_returned_in(code, begin, end, returning.get(crate, {})))
+                    found.extend(words_returned_in(code, begin, end, returning[crate]))
                     start = code.find(call, start + len(call))
-            if crate not in helpers:
-                helpers[crate] = helper_table(by_crate[crate])
-                returning[crate] = returning_words(root, by_crate[crate])
             for name, indexes in helpers[crate].items():
                 pattern = re.compile(HELPER_CALL.format(name=re.escape(name)))
                 for hand in pattern.finditer(code):

@@ -527,6 +527,127 @@ class CopyLanguageTests(unittest.TestCase):
                 "one name two jobs (`line` here and `line` in another module) says "
                 "nothing about the word a call site hands it")
 
+    def test_the_words_a_function_keeps_are_copy_at_a_constructor_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn kind_label(kind: Kind) -> &'static str {",
+                "    match kind {",
+                '        Kind::Login => "Login",',
+                '        Kind::Wifi => "Wi-Fi network",',
+                "    }",
+                "}",
+                "fn basis(pages: usize) -> String {",
+                '    format!("{} pages scanned", pages)',
+                "}",
+                "fn detail(kind: Kind) -> Box<dyn Widget> {",
+                "    Box::new(Text::new(kind_label(kind)))",
+                "}",
+                "fn hint(kind: Kind, pages: usize) -> Node {",
+                "    Node::new(Role::Panel)",
+                "        .with_name(kind_label(kind))",
+                "        .with_description(basis(pages))",
+                "}",
+                "fn heading() -> &'static str {",
+                '    "Last backup"',
+                "}",
+                "fn section() -> Section {",
+                "    Section::titled(heading(), rows())",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Login", "Wi-Fi network", "{} pages scanned", "Last backup"],
+                "a function that keeps the words it hands back paints them at "
+                "every constructor its value reaches, not only at a helper or "
+                "a resource title")
+
+    def test_a_function_that_answers_with_a_machine_name_is_not_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn name() -> &'static str {",
+                '    match self.kind { Camera => "CameraApp", Files => "file-explorer" }',
+                "}",
+                "fn target() -> &'static str {",
+                '    match self.what { Thing => "demo.thing", Other => "utf-8" }',
+                "}",
+                "fn key(&self) -> &'static str {",
+                '    match self.page { Page => "AC", Clear => "esc" }',
+                "}",
+                "fn row(&self) -> Box<dyn Widget> {",
+                "    Box::new(Text::new(name()))",
+                "}",
+                "fn pane(&self) -> Node {",
+                "    Node::new(Role::Panel)",
+                "        .with_name(target())",
+                "        .with_description(key())",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)], [],
+                "the model's own names and a key's name are not words a person "
+                "reads, so a function that answers with one says nothing")
+
+    def test_a_painted_function_word_can_be_allowed_and_the_entry_shrinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn cap() -> &'static str {",
+                '    "Backspace"',
+                "}",
+                "fn key(&self) -> Box<dyn Widget> {",
+                "    Box::new(Text::new(cap()))",
+                "}",
+            ]) + "\n")
+            glossary = root / "glossary.toml"
+            glossary.write_text(GLOSSARY)
+            baseline = root / "baseline"
+            baseline.mkdir()
+            save = root / "save.toml"
+            save.write_text("")
+            exceptions = root / "literals.toml"
+            exceptions.write_text("")
+            errors = copy.check(root, glossary, baseline, save, exceptions)
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn("apps/demo/src/lib.rs:2", errors[0])
+            self.assertIn("[uncatalogued]", errors[0])
+
+            exceptions.write_text(
+                '[[allow]]\nfile = "apps/demo/src/lib.rs"\ntext = "Backspace"\n'
+                'reason = "A key'"'"'s name, as the keyboard prints it."\n')
+            self.assertEqual(copy.check(root, glossary, baseline, save, exceptions), [])
+
+            (source / "lib.rs").write_text("\n".join([
+                "fn cap() -> &'static str {",
+                '    match self.kind { Key => "Delete", Other => "Erase" }',
+                "}",
+                "fn key(&self) -> Box<dyn Widget> {",
+                "    Box::new(Text::new(cap()))",
+                "}",
+            ]) + "\n")
+            errors = copy.check(root, glossary, baseline, save, exceptions)
+            self.assertEqual(len(errors), 3, errors)
+            self.assertTrue(any("no longer matches" in error for error in errors), errors)
+
     def test_a_copy_field_bound_to_a_painted_local_is_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
