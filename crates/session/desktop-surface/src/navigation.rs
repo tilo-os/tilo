@@ -557,6 +557,9 @@ pub enum ChromeEffect {
         /// What to call it.
         #[param("What to call the workspace")]
         name: Option<String>,
+        /// Put it on the desk without going there: the person stays in the workspace they are in.
+        #[param("Put it on the desk without going there")]
+        background: Option<bool>,
     },
 
     /// Branch a workspace
