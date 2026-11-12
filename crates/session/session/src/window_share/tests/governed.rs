@@ -401,10 +401,11 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
         |viewer| on_desk(&viewer.session, workspace_id, &share) == 4,
     );
     let host = hex::encode(second.device_public_key);
+    let named = tab.to_string();
     let asked = |viewer: &Member| {
         rows(&shares(&viewer.session), "watching")
             .iter()
-            .any(|watched| watched["tab"] == tab.to_string() && watched["host"] == host.as_str())
+            .any(|watched| watched["tab"] == named.as_str() && watched["host"] == host.as_str())
     };
     let admitted = first_engine.roster_devices(&workspace);
     alone(
