@@ -376,8 +376,10 @@ pub struct NotesApp {
     /// The note title and sidebar state the bar's slots were last declared
     /// with.
     declared_bar: Option<DeclaredBar>,
-    /// Whether the headers offer New note: the person may make one.
-    offers_new_note: bool,
+    /// Whether the page tree's header holds New note, pressing the notebook's
+    /// own action: the person may make one, and the notebook's actions have
+    /// arrived (the shell is built before them).
+    tree_offers_new_note: bool,
     /// Cached taffy node IDs. Filled in `build_layout`, used by
     /// `apply_layout` and `handle_event`. The columns' nodes exist only while
     /// the shell shows them (a closed drawer shows no page tree).
@@ -796,7 +798,7 @@ impl NotesApp {
             header,
             header_in_bar: false,
             declared_bar: None,
-            offers_new_note: true,
+            tree_offers_new_note: false,
             shell_node: None,
             sidebar_node: None,
             sidebar_column_node: None,
@@ -1833,11 +1835,8 @@ impl NotesApp {
         self.live = Some(live);
         // The page tree's header holds New note, which presses the action the
         // notebook just came with: the shell was built before the notebook was
-        // here, so declare the button now.
+        // here, so the header is declared again on the next sync.
         self.notebook_actions = Some(actions);
-        let tree = Self::page_tree_header_actions(self.notebook_actions.as_ref());
-        self.shell
-            .set_sidebar_header(CATALOG.t("notes-title"), tree);
     }
 
     /// What opens a note the framework names by its item: a search hit, an
