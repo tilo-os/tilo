@@ -94,7 +94,7 @@ row view direct_summary for Direct
 row view category_summary for Category
 
 /// Adds a text channel to the sidebar.
-primary action new_channel(all: Conversations, name: Text = "new-channel") -> TextChannel (
+primary action new_channel(all: Conversations, name: Text = say("new-channel")) -> TextChannel (
     icon: .plus,
     label: "New channel",
 ) {
@@ -102,7 +102,7 @@ primary action new_channel(all: Conversations, name: Text = "new-channel") -> Te
 }
 
 /// Adds a category to the sidebar.
-action new_category(all: Conversations, name: Text = "New category") -> Category (
+action new_category(all: Conversations, name: Text = say("New category")) -> Category (
     icon: .folder_plus,
     label: "New category",
 ) {
@@ -110,7 +110,7 @@ action new_category(all: Conversations, name: Text = "New category") -> Category
 }
 
 /// Adds a text channel to a category.
-action add_channel(c: Category, name: Text = "new-channel") -> TextChannel (
+action add_channel(c: Category, name: Text = say("new-channel")) -> TextChannel (
     icon: .plus,
     label: "New channel",
 ) {

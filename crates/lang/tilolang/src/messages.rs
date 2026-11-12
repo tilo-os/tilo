@@ -259,6 +259,22 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
             attribute(&mut out, &word.key, &pattern(&word.text));
         }
     }
+    // The words a `fn` says (`say("...")`) are its attributes; a fn that says none is no word
+    // a person reads.
+    for function in &meta.fns {
+        let mut said = meta
+            .words
+            .iter()
+            .filter(|word| word.view == function.id)
+            .peekable();
+        if said.peek().is_none() {
+            continue;
+        }
+        message(&mut out, &function.id, &label(&function.name), "");
+        for word in said {
+            attribute(&mut out, &word.key, &pattern(&word.text));
+        }
+    }
     // A view's doc comment says how it draws, for its author; a person sees its label.
     // The words it shows as written are its attributes (i18n.md §2).
     // A view the compiler made of a loop body is a part of the view it stands in, not a

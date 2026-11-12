@@ -77,15 +77,19 @@ d-dif5k2ju = New view
 
 d-eejphgeg = Keep
     .doc = Keeps a view among the person's own.
+    .w-this-view-is-kept-already = This view is kept already
 
 d-gawp3qw5 = Delete view
     .doc = Throws a view away, and with it how a type showed through it.
 
 d-w2bt45l7 = Show this type with it
     .doc = Makes a view how the person shows its type on a kind of device.
+    .w-this-view-shows-no-one-type = This view shows no one type
 
 d-fwot2jcg = Add to my views
     .doc = Adds the view a message sent to the person's own.
+    .w-the-message-sends-no-view = The message sends no view
+    .w-who-sent-the-message-is-not = Who sent the message is not known
 
 d-ozj4btqo = Send
     .doc = Sends a view to a channel: anyone there can add it to their own views.

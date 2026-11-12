@@ -135,6 +135,10 @@ struct FnState {
     result: Ty,
     facts: Facts,
     view_id: String,
+    /// The declaration whose message the words this code shows are attributes of, where it is
+    /// not [`Self::view_id`]: an action's, for its label read where a view applies it and for a
+    /// default an invocation computes.
+    words_of: Option<String>,
     /// The string literals a component shows as words (by span): each is a message.
     shown: std::collections::HashSet<Span>,
     /// Locals holding the key suffix of each enclosing UI loop, innermost last.
@@ -372,7 +376,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             continue;
         };
         c.at = Some(a.name.span.start);
-        funcs.push(c.run_present(&view, &a.opts, &action.params));
+        funcs.push(c.run_present(&view, &a.opts, action));
     }
     // The defaults of action parameters, in the order the resolver numbered them.
     for d in &env.defaults {
@@ -734,6 +738,8 @@ impl Checker<'_> {
         self.st.uses.clone_from(&c.uses);
         for r in guards {
             let cond = self.expr_as(&r.cond, &Ty::Bool);
+            // Why it cannot run is words the person reads where it is refused.
+            self.mark_shown(&r.reason);
             let reason = self.expr_as(&r.reason, &Ty::Text);
             let refuse = Stmt::Eval(Ex::host(Imp::Abort, vec![reason], Ty::Unit));
             self.emit(Stmt::If(cond, Vec::new(), vec![refuse]));
