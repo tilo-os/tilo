@@ -249,14 +249,14 @@ pub struct AgentFinished {
 
 /// What an agent's newest run did, as its finished notice says it: the run, as the history keeps
 /// it, so one run is told once however many sessions of the agent worked it; how many of its
-/// actions changed a record (a command it ran or a page it read changed none); the records it
-/// changed, by their titles, first changed first; and the workspace it worked in, when the history
-/// names it.
+/// actions changed a record (a command it ran or a page it read changed none); what it worked, in
+/// the words its card lists the run by ("Edited Launch notes", or the instruction as the person
+/// phrased it); and the workspace it worked in, when the history names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunSummary {
     pub run: String,
     pub changes: usize,
-    pub records: Vec<String>,
+    pub worked: String,
     pub workspace: Option<String>,
 }
 
@@ -275,27 +275,76 @@ impl AgentFinished {
             .iter()
             .filter(|run| ui::presence::agent_client(&run.agent.name) == client)
             .max_by_key(|run| run.last_ms)?;
-        let mut records: Vec<String> = Vec::new();
-        for action in &run.actions {
-            if !matches!(
-                action.view,
-                tilo_actions::remote::workspace_activity::ActionView::File { .. }
-                    | tilo_actions::remote::workspace_activity::ActionView::Record { .. }
-            ) {
-                continue;
-            }
-            let title = action.view.target().label.trim();
-            if !title.is_empty() && !records.iter().any(|known| known == title) {
-                records.push(title.to_owned());
-            }
-        }
         Some(RunSummary {
             run: run.id.clone(),
             changes: run.changes(),
-            records,
+            worked: run.instruction.trim().to_owned(),
             workspace: run.workspace.clone().filter(|name| !name.trim().is_empty()),
         })
     }
+}
+
+/// Console, where an agent's card is.
+const AGENTS_APP: &str = "so.tilo.console";
+/// The action key of a finished notice's choice that opens the card of the agent of the client
+/// after it.
+pub const AGENT_CARD_ACTION: &str = "agent-card:";
+
+/// The notice that `agent` finished: what its run changed and where, when `summary` says
+/// ("Claude Code finished: 4 changes in Storefront"), else that it finished; under it what the run
+/// worked, in the words its card lists it by ("Edited Launch notes"), never what the agent was
+/// doing (it is done); with its own face and its card one choice away.
+///
+/// `None` when there is nothing to tell: a run that changed nothing, or one `told` already says
+/// a notice told of, as another session of the same agent that worked it did.
+pub fn finished_notice(
+    agent: &AgentFinished,
+    summary: Option<&RunSummary>,
+    told: &mut std::collections::BTreeSet<String>,
+) -> Option<tilo_desktop_surface::notifications::Notification> {
+    use tilo_desktop_surface::i18n::{t, t_args};
+    if let Some(summary) = summary
+        && (summary.changes == 0 || !told.insert(summary.run.clone()))
+    {
+        return None;
+    }
+    let name = || agent.label.clone().into();
+    let title = match summary {
+        Some(RunSummary {
+            changes,
+            workspace: Some(workspace),
+            ..
+        }) => t_args(
+            "workspace-notice-agent-finished-in",
+            &[
+                ("agent", name()),
+                ("count", (*changes).into()),
+                ("workspace", workspace.clone().into()),
+            ],
+        ),
+        Some(RunSummary {
+            changes,
+            workspace: None,
+            ..
+        }) => t_args(
+            "workspace-notice-agent-finished-changes",
+            &[("agent", name()), ("count", (*changes).into())],
+        ),
+        None => t_args("workspace-notice-agent-finished", &[("agent", name())]),
+    };
+    let body = summary.map_or_else(String::new, |summary| summary.worked.clone());
+    let client = ui::presence::agent_client(&agent.label);
+    let mut notice = tilo_desktop_surface::notifications::Notification::new(title, body)
+        .with_agent_from(agent.label.clone(), agent.publisher.clone())
+        .with_app_id(AGENTS_APP)
+        // It is the agent's news, said in its name wherever notices are grouped by who sent them;
+        // the banner, which leads with the agent's face, shows no source line repeating it.
+        .with_app_name(agent.label.clone());
+    notice.actions = vec![(
+        format!("{AGENT_CARD_ACTION}{client}"),
+        t("workspace-notice-agent-card"),
+    )];
+    Some(notice)
 }
 
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
@@ -1425,11 +1474,11 @@ mod tests {
             Some(RunSummary {
                 run: "mcp:Claude Code #29".into(),
                 changes: 8,
-                records: vec!["Welcome".into()],
+                worked: String::new(),
                 workspace: Some("Storefront".into()),
             }),
             "its newest run, counting the two changes of each of its four record edits and not the \
-             command, naming the one record they changed once"
+             command"
         );
         let unknown = AgentFinished {
             label: "Cursor".into(),
@@ -2544,5 +2593,68 @@ mod tests {
             bot,
             u64::MAX
         ));
+    }
+
+    fn finished_agent(publisher: &str) -> AgentFinished {
+        AgentFinished {
+            publisher: publisher.into(),
+            label: "Claude Code".into(),
+        }
+    }
+
+    fn run_summary(run: &str, changes: usize, worked: &str) -> RunSummary {
+        RunSummary {
+            run: run.into(),
+            changes,
+            worked: worked.into(),
+            workspace: Some("Workspace".into()),
+        }
+    }
+
+    /// A finished notice wears the agent's own face, not a person's initials, and says what the run
+    /// worked under its title, in its card's words, never the live status it had while it worked.
+    #[test]
+    fn a_finished_notice_says_what_the_run_worked_with_the_agents_face() {
+        let mut told = std::collections::BTreeSet::new();
+        let notice = finished_notice(
+            &finished_agent("claude"),
+            Some(&run_summary("run-1", 8, "Edited Launch notes")),
+            &mut told,
+        )
+        .expect("a run that changed records is told");
+        assert_eq!(notice.title, "Claude Code finished: 8 changes in Workspace");
+        assert_eq!(notice.body, "Edited Launch notes");
+        let from = notice.from.expect("it is from the agent");
+        assert!(from.agent, "the agent's square face, in its client's tint");
+        assert_eq!(from.identity, "claude");
+    }
+
+    /// One run is one notice, however many of the agent's sessions worked it; a session whose run
+    /// changed nothing tells nothing.
+    #[test]
+    fn one_run_is_told_once_and_a_run_of_no_changes_not_at_all() {
+        let mut told = std::collections::BTreeSet::new();
+        let run = run_summary("run-1", 8, "Edited Launch notes");
+        assert!(finished_notice(&finished_agent("first"), Some(&run), &mut told).is_some());
+        assert!(
+            finished_notice(&finished_agent("second"), Some(&run), &mut told).is_none(),
+            "the second session of the same run"
+        );
+        assert!(
+            finished_notice(
+                &finished_agent("third"),
+                Some(&run_summary("run-2", 0, "")),
+                &mut told
+            )
+            .is_none(),
+            "a run that changed nothing"
+        );
+        let unknown = finished_notice(&finished_agent("fourth"), None, &mut told)
+            .expect("without the history, it still says the agent finished");
+        assert_eq!(unknown.title, "Claude Code finished");
+        assert!(
+            unknown.body.is_empty(),
+            "and claims no status it no longer has"
+        );
     }
 }
