@@ -114,9 +114,24 @@ pub struct HintFrame {
     /// ([`ui::PointerPrecision::Coarse`]), as it does after a touch on the screen. Hints then name
     /// what a finger does.
     pub touch: bool,
-    /// The cards standing over the desk (a conversation, a call, the music), as one rect each: a
-    /// hint points at a control they do not cover, and never stands over their content.
+    /// The cards standing over the desk (a conversation, a call, the music, an agent's activity over
+    /// a window), as one rect each: a hint points at a control they do not cover, stands beside
+    /// them, and never over their content.
     pub over: Vec<Rect>,
+}
+
+impl HintFrame {
+    /// The cards a hint keeps clear of, from what the strip's row knows: those standing over the
+    /// desk, and the corners a window's app stands its own activity cards in. An app's card and the
+    /// hint share one place rule, so neither covers the other.
+    #[must_use]
+    pub fn cards_over(row: &HintPlaces) -> Vec<Rect> {
+        row.over
+            .iter()
+            .chain(row.app_cards.iter())
+            .copied()
+            .collect()
+    }
 }
 
 /// What a host lends the desktop's control hints: the person's record as their settings hold it,
@@ -463,6 +478,7 @@ mod tests {
                 )),
                 asking: false,
                 over: Vec::new(),
+                app_cards: Vec::new(),
             },
             area: Rect::new(0.0, 40.0, 1440.0, 900.0),
             search_keys: vec!["Ctrl".into(), "K".into()],

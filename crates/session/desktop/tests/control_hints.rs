@@ -10,7 +10,7 @@
 use std::rc::Rc;
 
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
-use tilo_desktop::control_hints::{HINTS, HintsFeed};
+use tilo_desktop::control_hints::{ControlHints, HINTS, HintFrame, HintsFeed};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{
@@ -266,4 +266,65 @@ fn no_hint_points_at_a_card_nor_covers_one() {
             chrome.hints().card_rect()
         );
     });
+}
+
+/// The record of someone who has learned every hint but the one that teaches opening search.
+fn learning_search_only() -> Learned {
+    let mut learned = Learned::default();
+    for spec in HINTS.iter().filter(|spec| spec.id != "open-from-search") {
+        learned.learn(spec.id);
+    }
+    learned
+}
+
+/// A window's app stands an agent's activity cards in the top-right corner of its content: the
+/// search hint, which comes down at the middle of the desk, shares that one place rule, so it
+/// slides clear of the corner instead of hiding the agent's card.
+#[test]
+fn the_search_hint_never_covers_an_apps_activity_cards() {
+    let (_, handle) = chrome_over(&desk_tree(2), &HintsFeed::default());
+    let row = handle.hint_places();
+    let cards = HintFrame::cards_over(&row);
+    assert_eq!(cards.len(), 6, "two windows' corners: {cards:?}");
+    let area = row.viewport;
+    // The hints as the chrome drives them: the desk seen, search still to learn, a strip holding no
+    // window (so no other hint is owed), and the frames a strip's row reports.
+    let mut hints = ControlHints::new(learning_search_only());
+    let frame = HintFrame {
+        row,
+        over: cards.clone(),
+        area,
+        search_keys: vec!["Ctrl".to_owned(), "K".to_owned()],
+        avatar: None,
+        colour: None,
+        quiet: None,
+        presented: true,
+        touch: false,
+    };
+    let start = ui::time::now();
+    hints.update(&frame, start);
+    hints.update(&frame, start + ui::time::Duration::from_secs(18));
+    let mut scene = ui::vello::Scene::new();
+    let mut text = ui::TextRenderer::default();
+    hints.draw(
+        &frame,
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &ui::Theme::dark(),
+        start + ui::time::Duration::from_secs(18),
+    );
+    let painted = hints
+        .card_rect()
+        .expect("search is taught once the desk is seen");
+    for card in &cards {
+        assert!(
+            !painted.overlaps(*card),
+            "the search hint {painted:?} stands over an app's card {card:?}"
+        );
+    }
+    assert!(
+        area.contains_rect(painted),
+        "the hint slides but stays on the desk: {painted:?} in {area:?}"
+    );
 }

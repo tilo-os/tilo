@@ -365,7 +365,7 @@ impl DesktopChrome {
             .unwrap_or_default();
         let avatar = self.bar.own_avatar_rect();
         let row = self.handle.hint_places();
-        let over = row.over.clone();
+        let over = HintFrame::cards_over(&row);
         HintFrame {
             row,
             over,

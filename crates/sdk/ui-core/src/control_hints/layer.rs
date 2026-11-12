@@ -37,9 +37,10 @@ pub struct HintPlace {
     /// screen rather than a pointer or a touchpad.
     pub touch: bool,
     /// The cards standing over the desk, as one rect each: another
-    /// surface's content, which the hint's card never stands over. Where
-    /// there is no side of its anchor clear of them, the hint has nowhere to
-    /// stand and does not show.
+    /// surface's content, which the hint's card never stands over. A hint
+    /// slides away from its anchor to stand clear of them, and where there is
+    /// no place on screen clear of them, it has nowhere to stand and does not
+    /// show.
     pub clear: Vec<Rect>,
 }
 
@@ -416,12 +417,15 @@ const LANDING: f64 = 24.0;
 const ANCHOR_GAP: f64 = 4.0;
 /// How far from the area's edges a card keeps.
 const AREA_MARGIN: f64 = 8.0;
+/// How far a card at a time slides away from its anchor when another card stands where it would.
+const SLIDE_STEP: f64 = 8.0;
 
 /// Where a card of `size` stands for `place` inside `area`: on its side of
 /// the anchor (the other side when there is no room), centred on it, kept
-/// inside the area; and where its notch points. `None` when neither side has
-/// room for it clear of the cards over the desk: a hint never stands over
-/// another surface's content, so one with nowhere to stand does not show.
+/// inside the area; and where its notch points. Where another card stands in
+/// that place, the card slides away from its anchor until it is clear of
+/// every card; one with nowhere to stand clear of them does not show: a hint
+/// never stands over another surface's content.
 fn place(
     place: &HintPlace,
     size: (f64, f64),
@@ -450,16 +454,38 @@ fn place(
         };
         Rect::new(x, y, x + w, y + h)
     };
-    let (side, rect) = [place.side, place.side.opposite()]
+    // A card another surface stands where this one would: it slides away from its anchor, a step at
+    // a time, for as long as it stays inside the area.
+    let slid = |side: PopoverSide, from: Rect| -> Option<Rect> {
+        let (dx, dy) = match side {
+            PopoverSide::Below => (0.0, SLIDE_STEP),
+            PopoverSide::Above => (0.0, -SLIDE_STEP),
+            PopoverSide::Right => (SLIDE_STEP, 0.0),
+            PopoverSide::Left => (-SLIDE_STEP, 0.0),
+        };
+        let mut rect = from;
+        loop {
+            rect = Rect::new(rect.x0 + dx, rect.y0 + dy, rect.x1 + dx, rect.y1 + dy);
+            if rect.x0 < room.x0 || rect.y0 < room.y0 || rect.x1 > room.x1 || rect.y1 > room.y1 {
+                return None;
+            }
+            if clear(rect) {
+                return Some(rect);
+            }
+        }
+    };
+    let sides = [place.side, place.side.opposite()];
+    let (side, rect) = sides
         .into_iter()
         .filter(|side| fits(*side))
         .map(|side| (side, on_side(side)))
         .find(|(_, rect)| clear(*rect))
         .or_else(|| {
-            // Nowhere beside its anchor fits: it stands on its own side, kept inside the area, as
-            // long as that covers no other surface either.
-            let rect = on_side(place.side);
-            clear(rect).then_some((place.side, rect))
+            // Nowhere beside its anchor is clear: it slides out from under the card standing in its
+            // place, as long as it stays on screen and clear.
+            sides
+                .into_iter()
+                .find_map(|side| slid(side, on_side(side)).map(|rect| (side, rect)))
         })?;
     // The notch is on the card's side facing the anchor.
     let notch = match side {
@@ -596,6 +622,29 @@ mod place_tests {
             .is_none(),
             "no place clear of both cards"
         );
+    }
+
+    /// A hint whose place another card stands in slides away from its anchor rather than going: a
+    /// card over the desk keeps its content, and the person still learns the gesture beside it.
+    #[test]
+    fn a_hint_slides_clear_of_a_card_standing_in_its_place() {
+        let area = Rect::new(0.0, 40.0, 1280.0, 800.0);
+        // A point anchor at the top of the desk, as search's is: its card stands below it.
+        let mut open = place_at(PopoverSide::Below, Vec::new());
+        open.anchor = Rect::from_points(Point::new(640.0, 64.0), Point::new(640.0, 64.0));
+        open.points = false;
+        let free = place(&open, (300.0, 56.0), area).expect("room below its anchor");
+        // A card standing where the hint would go: the hint slides below it, still on screen.
+        let card = free.0;
+        let mut kept = open;
+        kept.clear = vec![card];
+        let (rect, _) = place(&kept, (300.0, 56.0), area).expect("it slides clear of the card");
+        assert!(!rect.overlaps(card), "{rect:?} over the card {card:?}");
+        assert!(
+            rect.y0 >= card.y1,
+            "below the card, away from its anchor: {rect:?}"
+        );
+        assert!(area.contains_rect(rect), "still on the desk: {rect:?}");
     }
 
     /// A hint with no clear place beside its anchor is not drawn at all: nothing is taught where
