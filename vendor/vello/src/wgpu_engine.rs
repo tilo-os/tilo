@@ -2545,6 +2545,9 @@ impl WgpuEngine {
         Ok(consumed)
     }
 
+    /// [`Self::run_recording_with_post_render`] with nothing after the render: what
+    /// the tests encode a recording with.
+    #[cfg(test)]
     pub fn run_recording(
         &mut self,
         device: &Device,

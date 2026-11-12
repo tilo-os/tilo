@@ -167,7 +167,7 @@ use vello_encoding::Resolver;
 use wgpu_engine::{ExternalResource, WgpuEngine, default_enabled_from_env};
 
 #[cfg(feature = "wgpu")]
-use std::{borrow::Cow, num::NonZeroUsize, sync::atomic::AtomicBool};
+use std::{borrow::Cow, num::NonZeroUsize};
 #[cfg(feature = "wgpu")]
 use wgpu::{Device, Queue, TextureView};
 #[cfg(all(feature = "wgpu", feature = "wgpu-profiler"))]
@@ -1686,7 +1686,7 @@ impl Renderer {
         helpers: usize,
         open_device: &(dyn Fn() -> Option<(Device, Queue)> + Sync),
     ) {
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
         /// A dispatch this quick found its code compiled already.
         const COMPILED: std::time::Duration = std::time::Duration::from_millis(50);
