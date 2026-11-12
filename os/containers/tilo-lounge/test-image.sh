@@ -64,8 +64,9 @@ b run "$container" -- bash -c 'DISCORD_GUILD_ID=not-a-discord-id exec /usr/local
 [[ $worker == 1 ]] || fail "discord-worker does not start in the image (status $worker)"
 
 # And the image boots as its deployment runs it: the entrypoint, as uid 10001,
-# its state on the volume /run/tilo-rooms (here the image's writable /tmp,
-# which stands in for it until the container is mounted), answering the
+# its state and its secret store on the volume /run/tilo-rooms (here the
+# image's writable /tmp, which stands in for it until the container is
+# mounted), answering the
 # readiness probe its ingress asks, which reports the revision the image was
 # built from. A program that starts and a host that serves are two things: the
 # label and the environment can agree while the host dies on the state it is
@@ -77,8 +78,9 @@ b run "$container" -- bash -c '
   chmod 0444 /tmp/tilo-secrets/room-root-lounge' \
   || fail 'the image would not make its state and root files'
 port=18790
-b run "$container" \
+b run \
   -e TILO_ROOMS_STATE=/tmp/tilo-rooms \
+  -e TILO_SECRETS_DIR=/tmp/tilo-rooms/secrets \
   -e TILO_ROOMS_PERSISTENT=lounge \
   -e TILO_ROOMS_ROOT_FILE=/tmp/tilo-secrets/room-root-lounge \
   -e "TILO_ROOMS_RELAY_ORIGIN=https://127.0.0.1:$port" \
