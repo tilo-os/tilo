@@ -356,6 +356,10 @@ fn requests_of(
             });
             continue;
         };
+        // Pointing a request at a server this machine stands up is what only
+        // a build that serves fixtures can do: elsewhere `routes` is never
+        // handed a route, and the method is not there to call.
+        #[cfg(feature = "fixture-servers")]
         if let Some(routes) = routes {
             let Some((_, base)) = routes.iter().find(|(route, _)| *route == engine) else {
                 reports.push(EngineReport {
