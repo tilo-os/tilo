@@ -23,8 +23,10 @@ export const STEP_MS = Math.round(1000 * (Number(process.env.TILO_STEP_SECONDS) 
  * gets the desk's desktop layout (the narrow layouts begin below 720 px wide
  * and 600 px tall): 1024 by 640 draws a third fewer pixels than 1280 by 800.
  * `empty` is a point on the desk below the windows it opens, where a click
- * gives the page focus without pressing anything. */
-export const DESK = {width: 1024, height: 640, empty: {x: 512, y: 560}};
+ * gives the page focus without pressing anything: 100 px above the bottom
+ * edge, as it was in the larger window, since what the desk draws along that
+ * edge keeps its size in pixels whatever the window's. */
+export const DESK = {width: 1024, height: 640, empty: {x: 512, y: 540}};
 
 /** The device metrics that give a tab the desk's window. */
 export const deskMetrics = {width: DESK.width, height: DESK.height, deviceScaleFactor: 1, mobile: false};
@@ -104,10 +106,12 @@ export const settleSearch = (tab, {evaluate = tab.evaluate.bind(tab), ...rest} =
  * the CPU pressure (the share of the last ten seconds in which something
  * runnable waited for a core) of the machine and of this job's own cgroup,
  * and how much of this job's CPU time its cgroup throttled.
- * `starved` is true when the job's tasks waited for a core more than half of
- * the last ten seconds or there were more runnable tasks than cores: then a
- * frame or an answer that never came says the machine was too busy, not that
- * the product hung. */
+ * `starved` is true when this job's own tasks waited for a core a quarter of
+ * the last ten seconds or more (the machine's pressure where the job's own
+ * cannot be read): then a frame or an answer that never came may be the
+ * machine, not the product. The machine's load is shown but not judged: it
+ * counts every job on the node, and a job can get its cores while the node's
+ * load is several times its cores. */
 export function machine() {
   const read = path => { try { return readFileSync(path, 'utf8'); } catch { return ''; } };
   const avg10 = text => Number(text.match(/^some avg10=([\d.]+)/m)?.[1] ?? NaN);
@@ -119,7 +123,7 @@ export function machine() {
     .map(line => line.split(' ')).filter(pair => pair.length === 2).map(([k, v]) => [k, Number(v)]));
   const throttled = stat.throttled_usec ? `, throttled ${(stat.throttled_usec / 1e6).toFixed(1)} s in ${stat.nr_throttled} periods` : '';
   const pressure = Number.isFinite(jobPressure) ? jobPressure : hostPressure;
-  const starved = pressure > 50 || load1 > cores;
+  const starved = pressure >= 25;
   const given = process.env.OMP_NUM_THREADS ? `, this job given ${process.env.OMP_NUM_THREADS} threads` : '';
   const text = `${starved ? 'STARVED' : 'not starved'}: load ${load1?.toFixed(1)} on ${cores} cores${given}, `
     + `cpu pressure ${Number.isFinite(hostPressure) ? hostPressure : '?'}% (machine) `
