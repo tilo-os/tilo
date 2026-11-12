@@ -2324,6 +2324,7 @@ impl FrameHarness {
                 harness.root.layout_needs_measure(),
             )
         };
+        let locale = crate::i18n::I18nManager::revision();
         let (before, after, replaced, resting) = tilo_resource::profiling::unobserved(|| {
             standing_clock(|| {
                 // The History walks it skipped hold only while every surface
@@ -2369,7 +2370,10 @@ impl FrameHarness {
         // it had and the sync took up what came after, which the woken next frame answers for. Only
         // a difference nothing announced is a skipped sync.
         self.drain_component_wakes();
-        if self.wake_pending() {
+        if self.wake_pending() || crate::i18n::I18nManager::revision() != locale {
+            // Work a worker announced, or the language the window reads in
+            // moving while the check ran: what the check showed reflects what
+            // arrived during it, which the next frame takes up.
             self.request_layout();
             return;
         }

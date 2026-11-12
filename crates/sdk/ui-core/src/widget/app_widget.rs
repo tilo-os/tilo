@@ -519,8 +519,11 @@ mod component_adapter {
             };
             // Work off the frame that lands while the check's own pass runs
             // (a save the store finished) wakes the component for its next
-            // frame: what the pass shows of it was not owed yet.
+            // frame: what the pass shows of it was not owed yet. So does a
+            // language that moves while it runs: the witness the pass ends
+            // with is the language it read, so the next pass reads it again.
             let crossed = self.component.callback_binding().lifetime.crossed();
+            let locale = crate::i18n::I18nManager::revision();
             let ((before, after), reads) = tilo_resource::profiling::unobserved(|| {
                 let binding = self.component.callback_binding();
                 let before = shown(self);
@@ -530,8 +533,9 @@ mod component_adapter {
                 ((before, shown(self)), reads)
             });
             self.witness_pass(state, reads);
-            let consistent =
-                before == after || self.component.callback_binding().lifetime.crossed() != crossed;
+            let consistent = before == after
+                || self.component.callback_binding().lifetime.crossed() != crossed
+                || crate::i18n::I18nManager::revision() != locale;
             if consistent {
                 return;
             }
@@ -596,6 +600,10 @@ mod component_adapter {
                 Some(previous) => reads.carry(previous.reads),
                 None => reads,
             };
+            // The language the pass read in, not the one that stands now:
+            // words loading while it ran (another window's page) are read
+            // again by the next pass, which shows what they say.
+            let locale = reads.locale.unwrap_or(now.standing.locale);
             self.witness = match (now.revision, now.document) {
                 (Some(revision), Some(document)) => Some(crate::component_inputs::Witness {
                     revision,
@@ -613,7 +621,7 @@ mod component_adapter {
                                 .ok_or_else(String::new),
                             ..now.standing.owner
                         },
-                        ..now.standing
+                        locale,
                     },
                     reads,
                 }),
