@@ -116,8 +116,8 @@ runtime back before it prints the address, and fails naming what is missing.
 The stack keeps running until `cargo web down`. It needs the
 `wasm32-unknown-unknown` Rust target (`rustup target add
 wasm32-unknown-unknown`), the `wasm-bindgen` CLI at the version
-`crates/browser/tilo-browser-runtime/Cargo.toml` pins, `curl`, `bwrap` and
-`python3`; [testing tilo.sh](docs/testing-tilo-sh.md) covers the stack.
+`crates/browser/tilo-browser-runtime/Cargo.toml` pins, `curl`, `bwrap`,
+`openssl` and `python3`; [testing tilo.sh](docs/testing-tilo-sh.md) covers the stack.
 
 A single app in its own window needs none of these: `cargo run --locked -p
 notes` (on macOS too). For changes to the OS image, boot or devices, use a

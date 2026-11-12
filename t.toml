@@ -4667,6 +4667,8 @@ on = ["idle"]
 name = "run-web"
 run = "cargo run --locked -q -p tilo-local -- web --check --bundle /target/publish/web-desktop/bundle"
 needs = ["web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "cli-x86_64"]
+# openssl signs the stack's own releases, as the release key signs production's.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all" }
 env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64" }
 requires = ["arch=x86_64"]
 isolation = "nested"

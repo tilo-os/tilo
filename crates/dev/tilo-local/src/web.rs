@@ -39,7 +39,7 @@ Options:
 
 The compile runs on t (or the cargo drop-in TILO_SH_CARGO names, such as
 rcargo). Needs wasm-bindgen at the pinned version, the wasm32 target, curl,
-bwrap and python3; `stack.sh help` says more about the stack.
+bwrap, openssl and python3; `stack.sh help` says more about the stack.
 
 Examples:
   cargo web                 # then open the printed https://tilo.localhost:… address
