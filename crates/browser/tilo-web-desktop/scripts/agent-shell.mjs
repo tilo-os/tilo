@@ -1914,12 +1914,12 @@ try {
         const openCard = async () => {
           if (cardSays(await semantics(tab))) return;
           // The face's card may stand already (a face pressed again brings everyone here in its
-          // place): its Open card is pressed where it is. Otherwise the face opens it, and Open
-          // card is pressed once a frame drew the card, not where an earlier frame had it. While
+          // place): its "See its work" is pressed where it is. Otherwise the face opens it, and
+          // "See its work" is pressed once a frame drew the card, not where an earlier frame had it. While
           // the person follows the agent on a phone, the bar folds the banner into the agent's
           // face beside Stop: that face is the one the bar shows, pressed at its leading edge,
           // away from Stop.
-          if (!matching(await semantics(tab), /^open card$/i)) {
+          if (!matching(await semantics(tab), /^see its work$/i)) {
             const before = await presentedFrames(tab);
             const banner = matching(await semantics(tab), /^following claude code$/i);
             const face = await press(tab, /^claude code, agent$/i, {what: "the agent's face"});
@@ -1936,16 +1936,16 @@ try {
             const opened = await untilDrawn(tab, async () => {
               const nodes = await semantics(tab);
               const now = [personCardOf(nodes) ? 'card' : null, rosterOf(nodes) ? 'roster' : null,
-                matching(nodes, /^open card$/i) ? 'open card' : null].filter(Boolean).join('+') || 'nothing';
+                matching(nodes, /^see its work$/i) ? 'see its work' : null].filter(Boolean).join('+') || 'nothing';
               if (seen.at(-1) !== now) seen.push(now);
-              return ((await presentedFrames(tab)) ?? 0) > (before ?? 0) && matching(nodes, /^open card$/i);
+              return ((await presentedFrames(tab)) ?? 0) > (before ?? 0) && matching(nodes, /^see its work$/i);
             }, 3000, 200);
             const bar = (await semantics(tab)).filter(node => node.rect && node.rect.y1 <= 40)
               .map(node => `${node.role} "${node.name}" ${Math.round(node.rect.x0)}-${Math.round(node.rect.x1)}`);
             log(`after the agent's face: ${seen.join(' -> ')}${opened ? '' : `; the bar holds ${bar.join(', ')}`}`);
           }
-          if (!await press(tab, /^open card$/i, {what: "the agent's card"})) {
-            log(`the agent's card offers no Open card: ${names(await semantics(tab))}`);
+          if (!await press(tab, /^see its work$/i, {what: "the agent's card"})) {
+            log(`the agent's card offers no "See its work": ${names(await semantics(tab))}`);
           }
         };
         await openCard();
