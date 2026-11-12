@@ -9,6 +9,12 @@
 // of its `index.mjs`), else from a `playwright-core` or `playwright` this
 // script can import. A missing one says so, with what to install.
 //
+// Each engine opens on a throwaway profile of its own, a real browsing
+// session as a person's window is. `{session: 'private'}` opens a private one
+// instead (Playwright's `browser.newContext()`, an incognito context): a
+// browser hands a private window no file store, so a page there meets a state
+// a normal window never shows, and only a check about that state wants it.
+//
 // What a tab offers, and what each engine maps it to:
 //
 //   tab.navigate(url)                  goto, and wait for the load
@@ -29,6 +35,9 @@
 // A pointer press is never a click: an app that opens a menu where the pointer
 // is reads the move before it, and one that drags must see the press stay
 // down, so the tools move, press and release themselves.
+import {mkdtempSync, rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {launch as launchChromium, sleep} from '../chrome.mjs';
 
 const engines = new Set(['chromium', 'firefox', 'webkit']);
@@ -61,19 +70,20 @@ async function playwright() {
 const BUTTONS = {left: 0, middle: 1, right: 2};
 
 /** A tab of a Playwright browser: the same interface `chrome.mjs`'s tab has,
- * for the parts these tools use, with an input surface of its own. */
-function playwrightTab(page, context, browser) {
+ * for the parts these tools use, with an input surface of its own. `session`
+ * is the browser context the page lives in, whose `close()` also stops the
+ * browser it was launched with. */
+function playwrightTab(page, session) {
   const log = [];
   page.on('console', message => {
     if (message.type() === 'error') log.push(`ERROR ${message.text()}`);
   });
-  page.on('pageerror', error => log.push(`EXC ${error.message}`));
+  page.on('pageerror', error => log.push(`EXC ${String(error.stack ?? error.message).split('\n').slice(0, 6).join(' | ')}`));
   const state = {scale: 1};
   return {
     log,
     async close() {
-      await context.close().catch(() => {});
-      await browser.close().catch(() => {});
+      await session.close().catch(() => {});
     },
     async navigate(url) {
       await page.goto(url, {waitUntil: 'load', timeout: 120_000});
@@ -195,12 +205,17 @@ function chromiumTab(tab) {
 /**
  * A browser and one tab on it, as one of `chromium`, `firefox`, `webkit`.
  *
+ * `session: 'real'` (the default) is a throwaway profile of the browser's own,
+ * the way a person's window is; `'private'` is an incognito context, which
+ * Firefox and WebKit give no file store, as they give a private window none.
+ *
  * WebGPU is Chromium's here: the canvas renders in neither Firefox nor
  * WebKit's headless build, so those engines show the HTML renderer and are
  * compared with each other and with Chromium's HTML, not with a canvas.
  */
-export async function open({engine = 'chromium', width = 1280, height = 800, scale = 1, mobile = false, args = []} = {}) {
+export async function open({engine = 'chromium', width = 1280, height = 800, scale = 1, mobile = false, args = [], session = 'real'} = {}) {
   if (!engines.has(engine)) throw new Error(`no engine ${engine}: one of ${[...engines].join(', ')}`);
+  if (!['real', 'private'].includes(session)) throw new Error(`no session ${session}: real or private`);
   if (engine === 'chromium') {
     const browser = await launchChromium({args: [`--window-size=${width},${height}`, ...args]});
     const tab = chromiumTab(await browser.tab());
@@ -211,17 +226,34 @@ export async function open({engine = 'chromium', width = 1280, height = 800, sca
   }
   const {firefox, webkit} = await playwright();
   const type = engine === 'firefox' ? firefox : webkit;
-  const browser = await type.launch();
-  const context = await browser.newContext({
+  const user = {
     viewport: {width, height},
     deviceScaleFactor: scale,
     isMobile: mobile,
     hasTouch: mobile,
     colorScheme: 'light',
-  });
-  const page = await context.newPage();
-  return {name: engine, tab: playwrightTab(page, context, browser), cdp: false,
-    close: async () => { await context.close().catch(() => {}); await browser.close().catch(() => {}); }};
+  };
+  // A real session needs a profile on disk, which the browser reads and writes
+  // as it runs, so it is this tool's to throw away once the tab is closed.
+  const profile = session === 'private' ? null : mkdtempSync(join(tmpdir(), `tilo-${engine}-`));
+  let browser = null;
+  let browserContext = null;
+  if (profile === null) {
+    // A private context's browser outlives the context, so it is kept here.
+    browser = await type.launch();
+    browserContext = await browser.newContext(user);
+  } else {
+    browserContext = await type.launchPersistentContext(profile, user);
+  }
+  // A persistent context opens on the blank page it starts with.
+  const page = browserContext.pages()[0] ?? await browserContext.newPage();
+  const tab = playwrightTab(page, browserContext);
+  return {name: engine, tab, cdp: false,
+    close: async () => {
+      await tab.close().catch(() => {});
+      await browser?.close().catch(() => {});
+      if (profile !== null) rmSync(profile, {recursive: true, force: true});
+    }};
 }
 
 export {sleep};

@@ -429,11 +429,16 @@ What blocks it:
   The tools drive Firefox and WebKit too (`engines.mjs`, Playwright's own
   builds), and the page is the same in Firefox to within **0.11 – 0.13 %** of
   its pixels against Chromium's HTML for the canvas app, Chat and Sheets,
-  scenario steps included. Neither engine has the canvas here, so those runs
-  compare HTML with HTML. **WebKit does not mount the runtime at all**: its
-  Playwright build refuses the desktop's start module with "The operation
-  failed for an unknown transient reason (e.g. out of memory)", so nothing is
-  measured there yet.
+  scenario steps included. Neither engine has the canvas here (`navigator.gpu`
+  is Chromium's alone in these headless builds), so those runs compare HTML
+  with HTML. WebKit mounts the page too: what once read as "the operation
+  failed for an unknown transient reason" was the *session* rather than the
+  engine. Playwright's `browser.newContext()` is an incognito context, and
+  WebKit hands an incognito — a private — session no file store at all:
+  `navigator.storage.getDirectory()` rejects there, and the mount used to stop
+  on that rejection. A page now mounts without app files and says so, and the
+  tools open a throwaway profile instead of an incognito context, which is the
+  session a person has (`boot.sh` below checks both).
 
 ## Reproducing
 
@@ -454,9 +459,17 @@ tools/web/html-renderer/run-typing.sh [--keys N] [--trace] [--phone]
 tools/web/html-renderer/run-parity.sh [--scenarios] [--phone] [--apps id,id]
 tools/web/html-renderer/run-parity.sh --browser firefox --against <a Chromium run's directory>
 tools/web/html-renderer/engines.sh install   # Playwright's Firefox and WebKit, for the run above
+tools/web/html-renderer/boot.sh "$CARGO_TARGET_DIR/htmlrenderer/desktop" --browser webkit
 node tools/web/html-renderer/names.mjs "$CARGO_TARGET_DIR/htmlrenderer/desktop" so.tilo.notes --seed note
 node tools/web/html-renderer/names.mjs "$CARGO_TARGET_DIR/htmlrenderer/desktop" so.tilo.chat --unnamed
 ```
+
+`boot.sh` is the one check the parity runs cannot stand in for: it loads the
+bundle's page in that engine and says whether the desktop mounted, drew a
+frame and threw nothing — and whether a private window, which the browser
+gives no file store, still mounts and reports `files: 'unavailable'` rather
+than failing. Every visitor on a Mac or an iPhone arrives in WebKit, where a
+mount that only works in Chromium is a locked door.
 
 `run-typing.sh` is what one key costs: the frames it draws and what each
 spent, the toolkit's per-pass timings, the widget paths of what asked for
