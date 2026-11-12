@@ -200,7 +200,7 @@ fn serve(link: &SessionLink, service: &mut RecordService) {
         let arguments: Map<String, Json> = ask
             .arguments
             .iter()
-            .map(|(name, value)| (name.clone(), Json::String(value.clone())))
+            .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
         service
             .invoke(&ask.resource, &ask.action, &arguments)

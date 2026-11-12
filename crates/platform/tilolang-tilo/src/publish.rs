@@ -2430,23 +2430,17 @@ pub fn edit_action(
         (MergeKind::Register, value) => EditOp::Set {
             value: value.clone(),
         },
-        // A rich text comes as the runtime's encoding of it, or as that encoding's text where
-        // the door takes text: the edit is the one the package's own views write.
+        // A rich text comes as its words, a paragraph a line, or as the runtime's encoding of
+        // it where it carries more than words: the edit is the one the package's own views write.
         (MergeKind::RichText, value) => {
-            let parsed;
-            let encoded = match value {
-                Json::String(text) => {
-                    parsed = serde_json::from_str::<Json>(text)
-                        .map_err(|_| format!("the field `{field}` takes a rich text"))?;
-                    &parsed
-                }
-                other => other,
-            };
-            let tilolang_runtime::value::Value::Rich(rich) =
-                tilolang_runtime::value::from_json(encoded)
+            let rich = match value {
+                Json::String(text) => tilolang_runtime::rich::RichValue::from_text(text),
+                encoded => match tilolang_runtime::value::from_json(encoded)
                     .map_err(|why| format!("the field `{field}` takes a rich text: {why}"))?
-            else {
-                return Err(format!("the field `{field}` takes a rich text"));
+                {
+                    tilolang_runtime::value::Value::Rich(rich) => rich,
+                    _ => return Err(format!("the field `{field}` takes a rich text")),
+                },
             };
             crate::store::rich_edit(&rich).map_err(|error| error.to_string())?
         }

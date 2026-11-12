@@ -2111,32 +2111,15 @@ fn door_ask(
 ) -> Option<(String, String, String, tilo_actions::remote::InvokeArgument)> {
     use tilolang_tilo::runtime::Value;
     use tilolang_tilo::runtime::delegate::Invocation;
-    let json = |value: &Value| match value {
-        Value::Text(text) => serde_json::Value::String(text.clone()),
-        Value::Ref(r) => serde_json::Value::String(r.target.id_string()),
-        other => tilolang_tilo::runtime::value::to_json(other).unwrap_or_default(),
-    };
     match invocation {
         Invocation::Action {
             app,
             action,
-            args,
             subject: Some(subject),
             from,
             ..
         } => {
-            let subject_id = subject.id_string();
-            let mut arguments: serde_json::Map<String, serde_json::Value> = args
-                .iter()
-                .filter(|(_, value)| {
-                    !matches!(value, Value::Ref(r) if r.target.id_string() == subject_id)
-                        && !matches!(value, Value::Opt(None))
-                })
-                .map(|(name, value)| match value {
-                    Value::Opt(Some(inner)) => (name.clone(), json(inner)),
-                    value => (name.clone(), json(value)),
-                })
-                .collect();
+            let mut arguments = invocation.door_arguments();
             if let Some(from) = from {
                 arguments.insert(
                     tilo_actions::params::FROM_ARGUMENT.to_owned(),
@@ -2149,7 +2132,7 @@ fn door_ask(
             }
             Some((
                 app.clone(),
-                subject_id,
+                subject.id_string(),
                 action.clone(),
                 tilo_actions::remote::InvokeArgument::Json(arguments),
             ))
@@ -2166,12 +2149,11 @@ fn door_ask(
                 Value::Bool(_) => tilolang_tilo::action::EDIT_FLAG_ACTION,
                 _ => tilolang_tilo::action::EDIT_TEXT_ACTION,
             };
-            let mut arguments = serde_json::Map::new();
-            arguments.insert(
-                "field".to_owned(),
-                serde_json::Value::String(field_id.clone()),
-            );
-            arguments.insert("value".to_owned(), json(value));
+            let value = tilolang_tilo::runtime::value::to_argument(value).unwrap_or_default();
+            let arguments = serde_json::Map::from_iter([
+                ("field".to_owned(), field_id.clone().into()),
+                ("value".to_owned(), value),
+            ]);
             Some((
                 app.clone(),
                 target.id_string(),

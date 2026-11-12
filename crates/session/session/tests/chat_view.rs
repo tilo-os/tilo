@@ -5,7 +5,7 @@
 //! Chat declares `Channel` as a resource and `page` as its default view. The channel is placed
 //! through the arrangement's published `place`, as an agent or the person does; the shell's
 //! runtime draws the channel's reading through Chat's view. Typing in the composer and pressing
-//! send posts to the channel through Chat's own `post`; pressing an attachment places what it
+//! send sends to the channel through Chat's own `send`; pressing an attachment places what it
 //! holds. What stands on screen is read from what the shell lays out for assistive technology,
 //! never from pixels.
 
@@ -359,7 +359,7 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
     common::until(&mut session, "the typed draft", |session| {
         session.shell_says(TYPED)
     });
-    // Pressing send posts what was typed through Chat's own `post`: the channel's reading the
+    // Pressing send sends what was typed through Chat's own `send`: the channel's reading the
     // place draws then holds a message saying it, which is what the page shows again — the
     // page's own message, not the draft still standing in the field.
     let answer = common::control(

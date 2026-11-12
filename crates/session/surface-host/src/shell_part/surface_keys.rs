@@ -27,8 +27,8 @@ fn alt_tab_asks_for_the_switcher_from_rest() {
     assert_eq!(
         link.asked.borrow().front().map(|ask| ask.arguments.clone()),
         Some(std::collections::BTreeMap::from([
-            ("steps".to_owned(), "1".to_owned()),
-            ("scope".to_owned(), "workspace".to_owned()),
+            ("steps".to_owned(), 1.into()),
+            ("scope".to_owned(), "workspace".into()),
         ]))
     );
 }
@@ -40,8 +40,8 @@ fn alt_grave_asks_for_the_walk_over_this_apps_windows() {
     assert_eq!(
         link.asked.borrow().front().map(|ask| ask.arguments.clone()),
         Some(std::collections::BTreeMap::from([
-            ("steps".to_owned(), "1".to_owned()),
-            ("scope".to_owned(), "app".to_owned()),
+            ("steps".to_owned(), 1.into()),
+            ("scope".to_owned(), "app".into()),
         ])),
         "Alt and the grave key walk the app in front's windows"
     );
@@ -51,8 +51,8 @@ fn alt_grave_asks_for_the_walk_over_this_apps_windows() {
     assert_eq!(
         link.asked.borrow().front().map(|ask| ask.arguments.clone()),
         Some(std::collections::BTreeMap::from([
-            ("steps".to_owned(), "-1".to_owned()),
-            ("scope".to_owned(), "app".to_owned()),
+            ("steps".to_owned(), (-1).into()),
+            ("scope".to_owned(), "app".into()),
         ]))
     );
 }
@@ -88,7 +88,7 @@ fn escape_closes_the_surface_that_is_up() {
         link.asked.borrow().front().map(|ask| ask.arguments.clone()),
         Some(std::collections::BTreeMap::from([(
             "surface".to_owned(),
-            "overview".to_owned()
+            "overview".into()
         )]))
     );
 }

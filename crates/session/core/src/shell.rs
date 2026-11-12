@@ -331,12 +331,13 @@ impl DeskReading {
     }
 }
 
-/// What a shell asked of the session: an invocation on the door.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// What a shell asked of the session: an invocation on the door, its arguments as any caller's
+/// reach it (a list as a list, a map as an object).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ask {
     pub resource: String,
     pub action: String,
-    pub arguments: BTreeMap<String, String>,
+    pub arguments: BTreeMap<String, serde_json::Value>,
     /// The resource the invocation is made from, when it is made from one.
     pub from: Option<ui::tilo_actions::params::MadeFrom>,
 }

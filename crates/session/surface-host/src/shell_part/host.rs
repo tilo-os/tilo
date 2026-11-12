@@ -201,14 +201,17 @@ impl SurfaceHost for ShellPart {
         match action {
             SurfaceKey::Walk { back, app_scope } => {
                 // Holding Alt opens it; a further Tab walks it on (and back with Shift).
-                let steps = if back { "-1" } else { "1" };
+                let steps = if back { -1 } else { 1 };
                 let scope = if app_scope { "app" } else { "workspace" };
-                self.ask("walk-switcher", &[("steps", steps), ("scope", scope)]);
+                self.ask(
+                    "walk-switcher",
+                    &[("steps", steps.into()), ("scope", scope.into())],
+                );
             }
             SurfaceKey::Commit => self.ask("commit-switcher", &[]),
             SurfaceKey::Close => {
                 let up = self.origin.borrow().link.surface();
-                self.ask("close-surface", &[("surface", &up)]);
+                self.ask("close-surface", &[("surface", up.into())]);
             }
         }
     }

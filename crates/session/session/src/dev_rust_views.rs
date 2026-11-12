@@ -5,13 +5,14 @@
 //! workspace's `#design-crit` channel of Chat,
 //! each a resource of its app, published as the session publishes any app's resources, and the
 //! views `#[view]` declared in the crates registered with the shell's runtime, so a place that
-//! shows a channel draws that app's own `page` (one-app-model.md §2). Chat's channel posts: its
-//! `post` action writes into the demo workspace the same service keeps, so the composer a
-//! person types in adds a message the page draws. A person's session, and every production
+//! shows a channel draws that app's own `page` (one-app-model.md §2). Chat's channel takes Chat's
+//! own `send`, written into the demo workspace the same service keeps, so the composer a person
+//! types in adds a message the page draws. A person's session, and every production
 //! image, carries none of it.
 
 use serde_json::Value as Json;
 use tilo_actions::{DoorError, ResourceSpec};
+use tilo_resource::Effect as _;
 use tilo_service::{Service, Started};
 
 /// The chat channel the demo workspace opens: what a place showing it draws Chat's page over.
@@ -26,7 +27,7 @@ pub const CHAT_SHORT_CHANNEL: &str = "c_general";
 pub struct RustApps {
     model: tube::model::TubeModel,
     /// Chat's demo workspace, read and written as its window does: the channel's messages and
-    /// what its composer posts.
+    /// what its composer sends.
     chat: chat::demo::Workspace,
 }
 
@@ -155,8 +156,10 @@ impl Service for RustApps {
                     app: tilo_actions::Noun::new("Chat", "Chat"),
                     root: false,
                 });
-                // What the page's composer runs: the chat's own post.
-                chat = chat.with_action(post_action());
+                // What the page's composer runs: Chat's own `send`, as Chat declares it.
+                if let Some(send) = chat::effects::ChatEffect::spec(SEND) {
+                    chat = chat.with_action(send);
+                }
                 chat.app_id = Some("chat".to_owned());
                 chat
             })
@@ -196,24 +199,24 @@ impl Service for RustApps {
         action: &str,
         arguments: &serde_json::Map<String, Json>,
     ) -> Result<Started, DoorError> {
-        // The composer's send, as the chat's own verb writes it: a message from the person
-        // typing, in the channel it names.
-        if action == "post"
+        // The composer's send, read as Chat reads its own `send`: a message from the person
+        // typing, in each conversation it goes to.
+        if action == SEND
             && (resource.starts_with("chat.workspace/channels/")
                 || resource.starts_with("chat.workspace.channels:"))
         {
-            let channel = arguments
-                .get("channel")
-                .and_then(Json::as_str)
-                .unwrap_or_default();
-            let text = arguments
-                .get("text")
-                .and_then(Json::as_str)
-                .unwrap_or_default();
+            let chat::effects::ChatEffect::Send { to, text, .. } =
+                chat::effects::ChatEffect::decode(SEND, arguments)
+                    .map_err(|error| DoorError::Failed(format!("{error:?}")))?
+            else {
+                return Err(DoorError::Failed(format!("`{SEND}` is not a send")));
+            };
             if !text.trim().is_empty() {
-                self.chat
-                    .say(chat::model::ME, channel, text)
-                    .map_err(|error| DoorError::Failed(format!("{error:?}")))?;
+                for conversation in &to {
+                    self.chat
+                        .say(chat::model::ME, &conversation.id, &text)
+                        .map_err(|error| DoorError::Failed(format!("{error:?}")))?;
+                }
             }
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
@@ -221,23 +224,8 @@ impl Service for RustApps {
     }
 }
 
-/// The channel's `post`, as the fixture publishes it on a channel: a message from the person
-/// typing, in the channel it names. [`RustApps::invoke`] writes it to the demo's own chat, so the
-/// encoded action is inert.
-fn post_action() -> tilo_actions::ActionSpec {
-    use tilo_actions::{ActionArgs, EncodedAction, ExecutionLocus, ParamType};
-    tilo_actions::ActionSpec::typed(
-        "post",
-        "Post a message",
-        "a message",
-        ExecutionLocus::ClientLocal,
-        vec![
-            tilo_actions::ActionParam::required("channel", ParamType::Text, "The channel"),
-            tilo_actions::ActionParam::required("text", ParamType::Text, "What it says"),
-        ],
-        |_: &ActionArgs| EncodedAction::written("chat.post".to_owned(), Vec::new()),
-    )
-}
+/// Chat's own `send`: what its window, its agents and the desk's send-to box run.
+const SEND: &str = "send";
 
 #[cfg(test)]
 mod tests {

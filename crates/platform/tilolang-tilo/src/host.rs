@@ -551,24 +551,12 @@ pub fn argument_json(
                 )),
             }
         }
-        (Ty::Principal, Value::Principal(principal)) => {
-            Ok(match principal.0.strip_prefix("agent:") {
-                Some(agent) => serde_json::json!({ "agent": agent }),
-                None => serde_json::json!({ "person": principal.0 }),
-            })
-        }
-        (Ty::RichText, Value::Rich(rich)) => {
-            let text = rich.written_text();
-            if tilolang_runtime::rich::RichValue::from_text(&text) == *rich {
-                Ok(Json::String(text))
-            } else {
-                to_json(value)
-            }
-        }
         (Ty::Record(_) | Ty::Union(_), other) => Err(format!(
             "a resource is given by a reference to it, not {}",
             to_json(other).unwrap_or(Json::Null)
         )),
+        // A person and rich text as every caller gives them.
+        (_, Value::Principal(_) | Value::Rich(_)) => tilolang_runtime::value::to_argument(value),
         _ => to_json(value),
     }
 }

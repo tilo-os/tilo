@@ -148,7 +148,7 @@ pub struct Core {
     /// records needs, or only other apps'.
     pub delegates_own: std::cell::Cell<bool>,
     /// The verbs the host's resources publish that no loaded package declares, by resource and
-    /// verb ([`crate::published`]): what a view names on the resource it shows (`post` on a
+    /// verb ([`crate::published`]): what a view names on the resource it shows (`send` on a
     /// channel) and the runtime sends to the app that publishes it, as it sends any other app's
     /// action to that app's door. Empty until the host hands it in.
     pub published: RefCell<crate::published::Published>,

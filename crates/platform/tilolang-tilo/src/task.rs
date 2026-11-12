@@ -704,7 +704,7 @@ fn published_call(
             // A flag travels as the integer the guest boxed it as; the published action takes
             // it as the flag its parameter declares.
             Value::Int(n) if declared_flag(meta, action, name) => json!(*n != 0),
-            other => tilolang_runtime::value::to_json(other)
+            other => tilolang_runtime::value::to_argument(other)
                 .map_err(|error| format!("`{name}` does not send: {error}"))?,
         };
         arguments.insert(name.clone(), json);
