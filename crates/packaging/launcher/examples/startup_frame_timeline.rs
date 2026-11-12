@@ -16,7 +16,7 @@ fn repo(exe: &Path) -> PathBuf {
                 Path::new(env!("CARGO_MANIFEST_DIR"))
                     .ancestors()
                     .nth(3)
-                    .unwrap_or(Path::new("."))
+                    .unwrap_or_else(|| Path::new("."))
                     .to_path_buf()
             },
             Path::to_path_buf,
