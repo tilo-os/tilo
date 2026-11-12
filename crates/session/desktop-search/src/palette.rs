@@ -2331,7 +2331,9 @@ mod tests {
 
     /// Search over `base` with an app whose answer is still coming: what
     /// the app publishes, and the window the person searches it from.
-    pub(super) fn with_a_late_app(base: SearchData) -> (DesktopSearch, std::rc::Rc<std::cell::Cell<bool>>) {
+    pub(super) fn with_a_late_app(
+        base: SearchData,
+    ) -> (DesktopSearch, std::rc::Rc<std::cell::Cell<bool>>) {
         let arrived = std::rc::Rc::new(std::cell::Cell::new(false));
         let mut meeting = ResourceSpec::new("meeting", "notes.page", "Meeting");
         meeting
