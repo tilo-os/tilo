@@ -1,9 +1,17 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "tilo-desktop"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
 publish.workspace = true
+
+# One test binary for the crate's integration tests, whose files it includes as
+# modules: a file per binary linked the whole crate once each.
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [features]
 # This desktop presents another device's shared window, so the surface
