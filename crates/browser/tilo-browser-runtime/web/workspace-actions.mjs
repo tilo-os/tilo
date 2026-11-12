@@ -96,6 +96,7 @@ export function createWorkspaceActions({
   // gesture is a write the page may not make). One is made when the page
   // attaches, and another after each is handed over.
   let ready = null;
+  let making = null;
   const actions = () => [
     ...(ownHost(peer) || machines().length || keepsOwn(peer) ? [NEW_WORKSPACE] : []),
     ...(lettingIn ? [INVITE_LINK] : []),
@@ -137,22 +138,27 @@ export function createWorkspaceActions({
 
   /** Make the next link this page hands over, and keep it ready. A failure
    * is not the person's to read yet: pressing the action says it. */
-  const armInviteLink = async () => {
-    if (ready) return ready;
-    // The page says what its link is doing (`data-invite-link`), so a person
-    // who opens the search sees a link that is there, and a tool driving the
-    // page knows when a press will hand one over.
-    ui.said?.('invite-link', 'making');
-    try {
-      const text = await peer.createInvitation({role: 'editor'});
-      ready = {link: await inviteLink(text), madeAt: Date.now()};
-      ui.said?.('invite-link', 'ready');
-    } catch (refusal) {
-      ui.said?.('invite-link', 'failed');
-      onError(refusal);
-      return null;
-    }
-    return ready;
+  const armInviteLink = () => {
+    if (ready) return Promise.resolve(ready);
+    // A press while the link is being made waits for that one, rather than
+    // asking the workspace for a second.
+    making ??= (async () => {
+      // The page says what its link is doing (`data-invite-link`), so a person
+      // who opens the search sees a link that is there, and a tool driving the
+      // page knows when a press will hand one over.
+      ui.said?.('invite-link', 'making');
+      try {
+        const text = await peer.createInvitation({role: 'editor'});
+        ready = {link: await inviteLink(text), madeAt: Date.now()};
+        ui.said?.('invite-link', 'ready');
+      } catch (refusal) {
+        ui.said?.('invite-link', 'failed');
+        onError(refusal);
+        return null;
+      }
+      return ready;
+    })().finally(() => { making = null; });
+    return making;
   };
   /** Hand over a link in one press: the one kept ready when it is still
    * good, else one made now (which the share card shows, having no press to

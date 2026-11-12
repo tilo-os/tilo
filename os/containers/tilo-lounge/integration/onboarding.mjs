@@ -36,7 +36,8 @@
 //
 // Prints a JSON report and keeps every page's screenshot and console in WORK;
 // exits non-zero when a step did not happen.
-import {execFile, spawn} from 'node:child_process';
+import {execFile} from 'node:child_process';
+import {X509Certificate, createHash} from 'node:crypto';
 import {chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {connect} from 'node:tls';
 import {join} from 'node:path';
@@ -61,8 +62,13 @@ const hostOrigin = new URL(relay).origin;
 /** The site's own origin: what its storage belongs to. */
 const siteOrigin = new URL(site).origin;
 
+/** The SHA-256 of a certificate's public key, as Chrome pins one. */
+const pinOf = pem => createHash('sha256')
+  .update(new X509Certificate(pem).publicKey.export({type: 'spki', format: 'der'})).digest('base64');
+// The run's site and host have test certificates of their own: the browsers
+// take those two keys, and nothing else that would fail its check.
+const sitePin = pinOf(readFileSync(join(work, 'site.crt')));
 const browserArgs = [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
@@ -380,7 +386,7 @@ printf '{"mcpServers":{"%s":{"type":"stdio","command":"%s","args":[%s],"env":{}}
   "$name" "$command" "\${args%,}" > "$HOME/.claude.json"
 `);
 chmodSync(join(computer, 'bin', 'claude'), 0o755);
-const relayCertificate = () => new Promise((resolve, reject) => {
+function relayCertificate() { return new Promise((resolve, reject) => {
   const socket = connect({host: new URL(relay).hostname, port: Number(new URL(relay).port || 443), servername: new URL(relay).hostname,
     rejectUnauthorized: false}, () => {
     const body = (socket.getPeerCertificate().raw ?? Buffer.alloc(0)).toString('base64').match(/.{1,64}/g)?.join('\n') ?? '';
@@ -388,7 +394,7 @@ const relayCertificate = () => new Promise((resolve, reject) => {
     resolve(`-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----\n`);
   });
   socket.on('error', reject);
-});
+}); }
 const agentEnv = async () => ({
   PATH: `${join(computer, 'bin')}:${process.env.PATH}`,
   HOME: computer,
@@ -413,6 +419,7 @@ const commandOf = prompt => {
 };
 
 try {
+  browserArgs.unshift(`--ignore-certificate-errors-spki-list=${sitePin},${pinOf(await relayCertificate())}`);
   // -- 0. the operator is in the host, and the deployment closes its door -----
   const operator = await visit('operator', {setupDone: true});
   await arrive(operator, {expected: 'desktop'});
@@ -440,7 +447,10 @@ try {
   await arrive(stranger, {expected: 'refused'});
   await until(stranger.tab, `document.documentElement.dataset.door === 'wait-list'`, "the door showing its wait list", stepLimit(6));
   await until(stranger.tab, `document.documentElement.dataset.waitList === 'form'`, 'the wait list offering its field');
-  await until(stranger.tab, `!document.getElementById('first-run')`, 'the setup screen leaving the door');
+  // The setup screen stays in the document, hidden, for the person's card to
+  // open again: what leaves is the page saying it is showing it.
+  await until(stranger.tab, `!document.documentElement.hasAttribute('data-first-run') && !document.getElementById('first-run')?.checkVisibility?.()`,
+    'the setup screen leaving the door');
   report.waitList = await stranger.tab.evaluate(`({
     heading: document.getElementById('arrival-door-heading')?.textContent?.trim() ?? null,
     body: document.getElementById('arrival-door-body')?.textContent?.trim() ?? null,
@@ -484,6 +494,11 @@ try {
   await operator.tab.send('Page.bringToFront', {}).catch(() => {});
   await operator.tab.send('Emulation.setFocusEmulationEnabled', {enabled: true}).catch(() => {});
   report.clipboardFocused = await operator.tab.evaluate('document.hasFocus()').catch(() => null);
+  // The page makes its link before the press (`data-invite-link`), so the
+  // press is what copies it.
+  report.inviteLinkBefore = await poll(operator.tab, `(() => { const s = document.documentElement.dataset.inviteLink; return s === 'ready' || s === 'failed' ? s : ''; })()`, stepLimit(6))
+    || `still ${await operator.tab.evaluate('document.documentElement.dataset.inviteLink ?? "unset"')}`;
+  console.log(`the page's invite link before the press: ${report.inviteLinkBefore}`);
   const clipboardBefore = await operator.tab.evaluate(`navigator.clipboard.readText().catch(() => '')`).catch(() => '');
   await search(operator.tab, 'copy invite', 'Copy an invite link');
   const handed = await poll(operator.tab,

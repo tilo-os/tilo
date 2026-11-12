@@ -193,6 +193,24 @@ test('one press hands over an invite link: it was made before the press, and cop
   assert.equal(calls.filter(call => call[0] === 'invite').length, 2);
 });
 
+test('a press while the link is still being made hands over that link, not a second invitation', async () => {
+  const {peer, calls} = adasRoom({owner: false, letsIn: true});
+  const shared = [];
+  let shelve;
+  const shelved = new Promise(resolve => { shelve = resolve; });
+  const actions = createWorkspaceActions({peer, inviteLink: async text => { await shelved; return sealedLink(text); },
+    ui: {copy: async () => assert.fail('a link made after the press is not copied outside it'),
+      share: async offer => { shared.push(offer); }, fail: async text => assert.fail(text)}});
+  await actions.attach(desktop().mount);
+  const pressed = actions.perform(INVITE_LINK.id);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  shelve();
+  await pressed;
+  assert.equal(shared.length, 1, 'the card shows the link the press waited for');
+  assert.equal(shared[0].link, SEALED);
+  assert.equal(calls.filter(call => call[0] === 'invite').length, 2, 'that one, and the next made ready after it');
+});
+
 test('a press whose copy the browser refuses shows the link to copy by hand', async () => {
   const {peer} = adasRoom({owner: false, letsIn: true});
   const shared = [];

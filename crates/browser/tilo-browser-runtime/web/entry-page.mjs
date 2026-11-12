@@ -2085,7 +2085,7 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
   };
   firstRun.offerAgentSignIn(async () => {
     const made = await codes.create(null);
-    return {...made, saved: {...made.saved, person: identity.userPublicKey, host}, signIn};
+    return {...made, saved: {...made.saved, person: identity.userPublicKey, host: new URL(origin).origin}, signIn};
   }, saved => (ours(saved) ? {...codes.resume(saved), signIn} : null));
 }
 

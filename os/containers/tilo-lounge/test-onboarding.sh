@@ -14,13 +14,6 @@
 # turns the wait list on (the deployment's own steps: the same host, started
 # again on the volume it kept), which is what a launch's last step is.
 #
-# Known: the operator's invitation is the step this flow is meant to prove, and
-# an invitation the host issues after the workspace has started again on its
-# volume is not answered to the page that asked for it (the host logs
-# "workspace invitation issued"; the page waits for its reply). Until that is
-# fixed the flow stops there, which is why the e2e check runs it only when it
-# is named.
-#
 # usage: test-onboarding.sh BUNDLE WORK
 # BUNDLE is the web desktop bundle (tools/ci/publish/web-desktop-bundle.sh);
 # WORK keeps what it found: the screenshots and consoles of every page, the
@@ -47,6 +40,9 @@ trap 'stop_lounge; rm -rf "$work"' EXIT
 # This flow's own addresses, beside the other flows' and this machine's: the
 # Lounge's ports from LOUNGE_PORT_BASE, the mail sink after them.
 export LOUNGE_PORT_BASE=${LOUNGE_PORT_BASE:-19810}
+# The site by name, as tilo.sh is: the stranger keeps themselves with a
+# passkey, which belongs to a site's name and never to an address.
+export LOUNGE_SITE_NAME=localhost
 sink_port=$((LOUNGE_PORT_BASE + 10))
 export LOUNGE_CONTACT='hello@tilo.example'
 export LOUNGE_MAIL_FROM='Tilo <hello@tilo.example>'
