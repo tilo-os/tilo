@@ -885,3 +885,9 @@ scenario "a note with headings" -> Note {
         ),
     )
 }
+
+/// A notebook nobody has written in yet, as a first window opens on it: the window says what it
+/// holds none of, once, and the bar offers the way to start the first note.
+scenario "an empty notebook" -> Notebook {
+    notebook
+}

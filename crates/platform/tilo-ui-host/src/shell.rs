@@ -909,10 +909,9 @@ mod tests {
         assert_eq!(shown_title(&unnamed), None, "a blank heading names nothing");
     }
 
-    #[test]
-    fn a_window_with_nothing_at_all_to_list_shows_one_state_alone() {
-        // A chat with no channel and nobody else to talk to: its places say what it has none of,
-        // and the place a conversation would open says nothing is open.
+    /// A chat with no channel and nobody else to talk to: its places say what it has none of,
+    /// and the place a conversation would open says nothing is open.
+    fn empty_places() -> (UiNode, UiNode) {
         let empty = |key: &str, title: &str| {
             node(
                 "EmptyState",
@@ -927,12 +926,20 @@ mod tests {
                 ],
             )
         };
+        let places = empty("none", "No channels yet");
+        let unopened = empty("unopened", "No channel open");
+        (places, unopened)
+    }
+
+    #[test]
+    fn a_window_with_nothing_at_all_to_list_shows_one_state_alone() {
+        let (places, unopened) = empty_places();
         let bare = shell(
             "channels",
             vec![
                 ("actions", vec![button("new", "New channel")]),
-                ("sidebar", vec![empty("none", "No channels yet")]),
-                ("content", vec![empty("unopened", "No channel open")]),
+                ("sidebar", vec![places]),
+                ("content", vec![unopened]),
             ],
             &[("sidebar_title", Value::text("Channels"))],
         );
@@ -945,6 +952,10 @@ mod tests {
         assert!(
             slot_children(&composed, "sidebar").is_empty(),
             "the places draw no second state"
+        );
+        assert!(
+            find(&composed, "unopened").is_none(),
+            "nor what stood where a thing would"
         );
         let content = slot_children(&composed, "content");
         assert_eq!(
@@ -962,28 +973,30 @@ mod tests {
             Some(&Value::text("Channels are where your workspace talks.")),
             "with the line it says the thing is for"
         );
-        assert!(
-            find(&composed, "unopened").is_none(),
-            "no second state beside it"
-        );
         let actions: Vec<&str> = slot_children(&composed, "actions")
             .iter()
             .map(|node| node.key.as_str())
             .collect();
         assert_eq!(actions, ["new"], "the bar keeps the way to make the first");
+        // The window opens on that one state: no column keeps the front of one that is gone.
+        assert!(!composed.props.contains_key("pane"));
+    }
 
+    #[test]
+    fn a_window_that_lists_something_keeps_its_columns() {
+        let (places, unopened) = empty_places();
         // The places hold a place to choose: the window lists it, and what stands where a thing
         // would shows beside it.
-        let places = shell(
+        let listing = shell(
             "channels",
             vec![
                 ("actions", vec![button("new", "New channel")]),
                 ("sidebar", vec![node("NavList", "nav", &[])]),
-                ("content", vec![empty("unopened", "No channel open")]),
+                ("content", vec![unopened]),
             ],
             &[],
         );
-        let composed = compose(&places, None);
+        let composed = compose(&listing, None);
         assert!(!composed.props.contains_key("nothing_listed"));
         assert!(!slot_children(&composed, "sidebar").is_empty());
         assert_eq!(slot_children(&composed, "content").len(), 1);
@@ -993,7 +1006,7 @@ mod tests {
         let opened = shell(
             "channels",
             vec![
-                ("sidebar", vec![empty("none", "No channels yet")]),
+                ("sidebar", vec![places.clone()]),
                 (
                     "content",
                     vec![node("Text", "said", &[("text", Value::text("# design"))])],
@@ -1003,13 +1016,13 @@ mod tests {
         );
         assert!(!compose(&opened, None).props.contains_key("nothing_listed"));
 
-        // The window after the root's brings the something listed: both columns.
+        // The window after the root's brings something to show: both columns stand.
         let root = shell(
             "channels",
             vec![
                 ("actions", vec![button("new", "New channel")]),
-                ("sidebar", vec![empty("none", "No channels yet")]),
-                ("content", vec![empty("unopened", "No channel open")]),
+                ("sidebar", vec![places]),
+                ("content", vec![node("EmptyState", "unopened", &[])]),
             ],
             &[],
         );
