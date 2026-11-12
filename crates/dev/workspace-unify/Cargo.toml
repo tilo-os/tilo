@@ -460,9 +460,9 @@ doc = false
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
 "hexane-1_0_0-alpha_5" = { package = "hexane", version = "^1.0.0-alpha.5", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
-"hickory-net-0_26_1" = { package = "hickory-net", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
-"hickory-proto-0_26_2" = { package = "hickory-proto", version = "^0.26.2", default-features = false, features = ["access-control", "std"] }
-"hickory-resolver-0_26_1" = { package = "hickory-resolver", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
+"hickory-net-0_26_3" = { package = "hickory-net", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
+"hickory-proto-0_26_3" = { package = "hickory-proto", version = "^0.26.3", default-features = false, features = ["access-control", "std"] }
+"hickory-resolver-0_26_3" = { package = "hickory-resolver", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
 "hkdf-0_12_4" = { package = "hkdf", version = "^0.12.4", default-features = false, features = [] }
 "hkdf-0_13_0" = { package = "hkdf", version = "^0.13.0", default-features = false, features = [] }
 "hmac-0_12_1" = { package = "hmac", version = "^0.12.1", default-features = false, features = ["reset"] }
@@ -1919,9 +1919,9 @@ doc = false
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
 "hexane-1_0_0-alpha_5" = { package = "hexane", version = "^1.0.0-alpha.5", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
-"hickory-net-0_26_1" = { package = "hickory-net", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
-"hickory-proto-0_26_2" = { package = "hickory-proto", version = "^0.26.2", default-features = false, features = ["access-control", "std"] }
-"hickory-resolver-0_26_1" = { package = "hickory-resolver", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
+"hickory-net-0_26_3" = { package = "hickory-net", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
+"hickory-proto-0_26_3" = { package = "hickory-proto", version = "^0.26.3", default-features = false, features = ["access-control", "std"] }
+"hickory-resolver-0_26_3" = { package = "hickory-resolver", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
 "hkdf-0_12_4" = { package = "hkdf", version = "^0.12.4", default-features = false, features = [] }
 "hkdf-0_13_0" = { package = "hkdf", version = "^0.13.0", default-features = false, features = [] }
 "hmac-0_12_1" = { package = "hmac", version = "^0.12.1", default-features = false, features = ["reset"] }
@@ -3074,9 +3074,9 @@ doc = false
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
 "hexane-1_0_0-alpha_5" = { package = "hexane", version = "^1.0.0-alpha.5", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
-"hickory-net-0_26_1" = { package = "hickory-net", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
-"hickory-proto-0_26_2" = { package = "hickory-proto", version = "^0.26.2", default-features = false, features = ["access-control", "std"] }
-"hickory-resolver-0_26_1" = { package = "hickory-resolver", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
+"hickory-net-0_26_3" = { package = "hickory-net", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
+"hickory-proto-0_26_3" = { package = "hickory-proto", version = "^0.26.3", default-features = false, features = ["access-control", "std"] }
+"hickory-resolver-0_26_3" = { package = "hickory-resolver", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
 "hkdf-0_12_4" = { package = "hkdf", version = "^0.12.4", default-features = false, features = [] }
 "hkdf-0_13_0" = { package = "hkdf", version = "^0.13.0", default-features = false, features = [] }
 "hmac-0_12_1" = { package = "hmac", version = "^0.12.1", default-features = false, features = ["reset"] }
@@ -4532,9 +4532,9 @@ doc = false
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
 "hexane-1_0_0-alpha_5" = { package = "hexane", version = "^1.0.0-alpha.5", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
-"hickory-net-0_26_1" = { package = "hickory-net", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
-"hickory-proto-0_26_2" = { package = "hickory-proto", version = "^0.26.2", default-features = false, features = ["access-control", "std"] }
-"hickory-resolver-0_26_1" = { package = "hickory-resolver", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
+"hickory-net-0_26_3" = { package = "hickory-net", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
+"hickory-proto-0_26_3" = { package = "hickory-proto", version = "^0.26.3", default-features = false, features = ["access-control", "std"] }
+"hickory-resolver-0_26_3" = { package = "hickory-resolver", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
 "hkdf-0_12_4" = { package = "hkdf", version = "^0.12.4", default-features = false, features = [] }
 "hkdf-0_13_0" = { package = "hkdf", version = "^0.13.0", default-features = false, features = [] }
 "hmac-0_12_1" = { package = "hmac", version = "^0.12.1", default-features = false, features = ["reset"] }
