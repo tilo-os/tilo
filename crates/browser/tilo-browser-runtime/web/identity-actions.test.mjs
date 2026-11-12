@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {setupOrigin, 
+import {setupOrigin,
   ACTION_GAP_MS, ASK_AFTER_ACTIONS, CONNECT_AGENT, createIdentityActions, KEEP, LINKED_ID, NAME, PAIR, passkeysUsable, PHOTO,
   RECOVERY, RESET_PHOTO, REVOKE_DEVICE, SIGN_IN, syncProfile,
 } from './identity-actions.mjs';
