@@ -63,6 +63,46 @@ pub fn runs_in_host(app: &str) -> bool {
         .is_some_and(|runtime| launcher::run::tilolang_host::is_tilolang(&runtime))
 }
 
+/// An installed tilolang app as an agent task's programs reach it: its package, verified as a
+/// launch verifies it, and the id its records are kept under when it was renamed from an earlier
+/// one.
+pub struct TaskPackage {
+    pub app: String,
+    pub module: runtime_portal::tilolang_host::Module,
+    pub records_under: Option<String>,
+}
+
+/// Every installed tilolang app a task's programs name, each verified as a launch verifies it.
+/// The task's host runs in the session, so no host of the app's runtimes is started. A program names an app by what its package declares (its actions,
+/// its roots), which only the package itself holds: the surface it publishes names its actions
+/// by their stored ids.
+#[must_use]
+pub fn task_packages() -> Vec<TaskPackage> {
+    let apps = match app_catalogue::apps::read_from_env() {
+        Ok(apps) => apps,
+        Err(error) => {
+            tracing::warn!(%error, "a task names no tilolang app: the installed apps are not known");
+            return Vec::new();
+        }
+    };
+    let earlier = tilo_action_policy::earlier::held();
+    apps.iter()
+        .filter(|app| runs_in_host(&app.package_id))
+        .filter_map(|app| match verified_package(&app.package_id) {
+            Ok(verified) => Some(TaskPackage {
+                app: app.package_id.clone(),
+                module: verified.module,
+                records_under: Some(earlier.records_under(&app.package_id).to_owned())
+                    .filter(|under| *under != app.package_id),
+            }),
+            Err(error) => {
+                tracing::warn!(package_id = %app.package_id, %error, "a task leaves out an app it could not verify");
+                None
+            }
+        })
+        .collect()
+}
+
 /// The one origin (`imap`, `youtube`) the installed app `app` reaches an outside service through,
 /// when it declares one: its instance reaches that origin's connector.
 ///
@@ -548,18 +588,23 @@ impl Hosts {
     }
 }
 
-/// `app`, installed here, verified as a launch verifies it, on runtimes installed here.
-fn verified_installed(app: &str) -> Result<VerifiedInstance, String> {
+/// `app`, installed here, verified as a launch verifies it.
+fn verified_package(app: &str) -> Result<VerifiedInstance, String> {
     let installed = package_store::find_installed(app)
         .map_err(|error| format!("the package store cannot be read: {error}"))?
         .ok_or_else(|| format!("{app} is not installed"))?;
-    let verified = launcher::run::tilolang_host::verified_instance(
+    launcher::run::tilolang_host::verified_instance(
         &installed,
         &installed.manifest_path,
         &installed.payload_root,
         &installed.package_id_hex,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| error.to_string())
+}
+
+/// `app`, installed here, verified as a launch verifies it, on runtimes installed here.
+fn verified_installed(app: &str) -> Result<VerifiedInstance, String> {
+    let verified = verified_package(app)?;
     if !verified.runs_here() {
         return Err(format!(
             "{app} names runtimes not installed here ({}, {})",

@@ -1496,9 +1496,9 @@ enum DoorAsk {
         app: String,
         done: tilo_actions::remote::Completer<Option<tilo_service::Record>>,
     },
-    /// Every app a task's programs may name, which its host loads to run them against: the compiled
-    /// module of each package the session runs itself (its description embedded, the packages it
-    /// uses first), and the signed surface of each native app this device has.
+    /// The packages the session runs itself, which a task's host loads to run programs against:
+    /// each one's compiled module, its description embedded, the packages it uses first
+    /// ([`installed_apps`] adds every installed app).
     Apps(tilo_actions::remote::Completer<Vec<runtime_portal::tilolang_host::App>>),
     /// Run the change `change` of a record a service keeps for a package the session runs itself,
     /// as `actor` , on the pass: its answer as the door gives it, or `None` when no service keeps
@@ -1763,7 +1763,7 @@ impl SessionDoors {
                     done.complete(services.borrow().record(&app));
                 }
                 DoorAsk::Apps(done) => {
-                    done.complete(catalogue(services));
+                    done.complete(session_packages(services));
                 }
                 DoorAsk::Change {
                     actor,
@@ -2220,15 +2220,13 @@ impl Host {
     }
 }
 
-/// Every app a task's programs may name: the compiled module of each package the session runs
-/// itself, and the signed surface of each native app installed on this device.
-/// One catalogue, whoever reads it: `tilolang check` reads the same surfaces from the apps'
-/// directories, and both compile a program against the packages they read from them.
-fn catalogue(
+/// The packages the session runs itself (the shell), each its compiled module: what a task's
+/// programs read those records by, answered on the loop's pass, where the services are.
+fn session_packages(
     services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
 ) -> Vec<runtime_portal::tilolang_host::App> {
     use runtime_portal::tilolang_host::{App, Module};
-    let mut apps: Vec<App> = services
+    services
         .borrow()
         .records()
         .into_iter()
@@ -2240,7 +2238,34 @@ fn catalogue(
                 imports: Vec::new(),
             })
         })
-        .collect();
+        .collect()
+}
+
+/// Every installed app a task's programs may name, besides the packages the session runs itself
+/// (`kept`): each tilolang app's own package, verified as a launch verifies it, which declares
+/// the names a program calls its actions and roots by, and the signed surface of every other
+/// app. With them, the id each tilolang app keeps its records under when it was renamed.
+/// One catalogue, whoever reads it: `tilolang check` reads the same packages and surfaces from
+/// the apps' directories.
+fn installed_apps(
+    kept: &std::collections::BTreeSet<String>,
+) -> (
+    Vec<runtime_portal::tilolang_host::App>,
+    std::collections::BTreeMap<String, String>,
+) {
+    use runtime_portal::tilolang_host::App;
+    let mut apps = Vec::new();
+    let mut records_under = std::collections::BTreeMap::new();
+    let mut named: std::collections::BTreeSet<String> = kept.clone();
+    for package in tilo_app_launch::tilolang_hosts::task_packages() {
+        if !named.insert(package.app.clone()) {
+            continue;
+        }
+        if let Some(under) = package.records_under {
+            records_under.insert(package.app, under);
+        }
+        apps.push(App::Module(package.module));
+    }
     let installed = match app_catalogue::apps::signed_surfaces_from_env() {
         Ok(installed) => installed,
         Err(error) => {
@@ -2249,23 +2274,21 @@ fn catalogue(
         }
     };
     for (app, title, surface) in installed {
+        if named.contains(&app) {
+            continue;
+        }
         let Ok(surface) = String::from_utf8(surface) else {
             tracing::warn!(%app, "agent door: an app's surface is not text");
             continue;
         };
-        if apps.iter().any(|known| match known {
-            App::Surface { app: named, .. } => *named == app,
-            App::Module(_) => false,
-        }) {
-            continue;
-        }
+        named.insert(app.clone());
         apps.push(App::Surface {
             app,
             title,
             surface,
         });
     }
-    apps
+    (apps, records_under)
 }
 
 /// Where the session's door starts a connection's task host: a thread of the session's own running
@@ -2300,12 +2323,15 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
         // where the `let`s the agent's programs bound are.
         let (_person_ours, person_host) = UnixStream::pair()?;
         // The apps the task's programs are compiled against: every package the session runs itself
-        // (the shell), whose records a program reads by the app, every native app this device has,
-        // from its signed surface, and the platform's own (the device and its arrangement,
-        // Settings).
+        // (the shell), whose records a program reads by the app, every installed tilolang app by
+        // its package, every native app this device has, from its signed surface, and the
+        // platform's own (the device and its arrangement, Settings).
         let (done, whole) = tilo_actions::remote::pending();
         self.session.ask(DoorAsk::Apps(done));
-        let apps = whole.wait_timeout(WAIT).ok().flatten().unwrap_or_default();
+        let mut apps = whole.wait_timeout(WAIT).ok().flatten().unwrap_or_default();
+        let kept = self.session.kept.lock_recover().clone();
+        let (installed, records_under) = installed_apps(&kept);
+        apps.extend(installed);
         let encoded = runtime_portal::tilolang_host::encode_apps(&apps);
         let apps = tilo_render_protocol::shm::sealed_blob("tilolang-apps", &encoded)?;
         let request = runtime_portal::tilolang_host::TaskRequest {
@@ -2313,7 +2339,7 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
             room: workspace.to_owned(),
             person: self.person.lock_recover().clone(),
             apps_len: encoded.len() as u64,
-            records_under: std::collections::BTreeMap::new(),
+            records_under,
         };
         std::thread::Builder::new()
             .name("tilo-task-host".into())

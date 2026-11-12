@@ -586,12 +586,10 @@ def check_repl(session: Session, out: Path) -> dict:
     session publishes, which the desk draws.
 
     The record it reads is the notes app's notebook, and the actions it lists are the app's
-    own. What it changes is what it may: `session.overview` flips a surface of the desk, read
-    back from the state dump the desk publishes. A person's app action (a note, a task) is
-    not on this surface today: an installed app's package names its actions by their stored
-    ids (`notes.qymo5lg2`) and leaves its roots (`notes.notebook`) unnameable, so a program
-    cannot say `notes.new_note(notes.notebook)` as the app's own source and the records
-    service can."""
+    own. It writes a note there by the names the app declares (`notes.new_note(notes.notebook)`,
+    as the app's own source says it), and reads it back. It changes the desk as it may:
+    `session.overview` flips a surface of the desk, read back from the state dump the desk
+    publishes."""
     repl = Repl(session, out)
     try:
         # The REPL says what the door waits on before it is in: its admission is the person's,
@@ -604,6 +602,21 @@ def check_repl(session: Session, out: Path) -> dict:
         notebook = repl("ls notes")
         if "notes.Notebook" not in notebook or "#read" not in notebook:
             raise Failed(f"the notes app's record is not reachable: {notebook!r}")
+        # A note, written as the person by the names the notes app declares, and counted back
+        # in the notebook it went into.
+        def notes_held() -> int:
+            counted = repl("notes.notebook.notes.len()")
+            found = re.search(r"^\s*(\d+)\s*$", counted, re.M)
+            if not found:
+                raise Failed(f"the notebook's notes are not counted: {counted!r}")
+            return int(found.group(1))
+
+        before = notes_held()
+        written = repl("notes.new_note(notes.notebook)")
+        after = notes_held()
+        if after != before + 1:
+            raise Failed(f"notes.new_note(notes.notebook) wrote no note ({before} then {after}): "
+                         f"{written!r}")
         desk = repl("ls session")
         if "session" not in desk:
             raise Failed(f"the session's own actions are not listed: {desk[:600]!r}")
@@ -625,7 +638,7 @@ def check_repl(session: Session, out: Path) -> dict:
         if refused:
             raise Failed(f"the workspace refused {len(refused)} change(s) as carrying no claim: {refused[0]}")
         return {"asked": True, "notebook": notebook.strip().splitlines()[0],
-                "overview": "down and up again"}
+                "notes": [before, after], "overview": "down and up again"}
     finally:
         repl.close()
         (out / "repl-transcript.txt").write_text(repl.transcript)
