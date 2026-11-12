@@ -7,6 +7,7 @@
 //! takes the theme's media colours, and every control
 //! stands on a floating panel inked from the theme.
 
+use crate::CATALOG;
 use ui::TextRole;
 use ui::chrome::panel_ground;
 use ui::icons::Icon;
@@ -533,7 +534,7 @@ impl CameraApp {
         let duration = countdown.due.saturating_duration_since(ui::time::now());
         let remaining = (duration.as_secs() + u64::from(duration.subsec_nanos() != 0)).max(1);
         let count = remaining.to_string();
-        let hint = ui::i18n!("Tap the shutter to cancel");
+        let hint = CATALOG.t("Tap the shutter to cancel");
         let local = on_panel(theme);
         let m = HudMetrics::of(theme);
         let gap = f64::from(theme.tokens.spacing.s2);

@@ -1187,7 +1187,7 @@ fn right_clicking_a_favourite_opens_its_menu() {
     assert!(
         labels
             .iter()
-            .any(|l| l == &ui::i18n!("files-menu-remove-favourite")),
+            .any(|l| l == &crate::i18n::t("files-menu-remove-favourite")),
         "the favourite's own menu is shown: {labels:?}",
     );
     assert!(

@@ -66,8 +66,6 @@ pub struct SampleRepository {
     pub diffs: DiffMap,
 }
 
-ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
-
 /// Every `--scenario` the screenshot renderer stages.
 #[cfg(feature = "samples")]
 pub const SCENARIOS: &[&str] = &[
@@ -95,7 +93,7 @@ impl ResourceApp for GitClientShell {
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&crate::i18n::CATALOG)
     }
 
     fn commands() -> &'static [Command] {
@@ -1254,11 +1252,11 @@ mod tests {
     fn the_catalog_resolves_the_remote_messages() {
         GitClientShell::catalog().unwrap().ensure();
         for (key, value) in [
-            ("git-remote-running", ui::i18n!("git-remote-running")),
-            ("git-remote-busy", ui::i18n!("git-remote-busy")),
+            ("git-remote-running", crate::i18n::t("git-remote-running")),
+            ("git-remote-busy", crate::i18n::t("git-remote-busy")),
             (
                 "git-remote-worker-stopped",
-                ui::i18n!("git-remote-worker-stopped"),
+                crate::i18n::t("git-remote-worker-stopped"),
             ),
         ] {
             assert_ne!(key, value);

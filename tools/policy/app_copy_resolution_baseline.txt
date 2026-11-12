@@ -2,10 +2,3 @@
 # resolves on the thread's manager without loading the app's catalogue
 # (tools/policy/check_app_copy_resolution.py). Each file converts to
 # the crate's CATALOG.t / CATALOG.t_args; counts only shrink.
-1 apps/browser/src/browser_widget/engine_runtime.rs
-1 apps/camera/src/app/hud.rs
-2 apps/camera/src/app/scanner_view.rs
-3 apps/feeds/src/app.rs
-2 apps/git-client/src/app.rs
-1 apps/git-client/src/app/diff.rs
-3 apps/git-client/src/app/remote.rs
