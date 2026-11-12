@@ -79,10 +79,22 @@ fn share_copies_the_open_photographs_link() {
     );
 }
 
+/// A PNG of `width` by `height` pixels.
+fn photo_png(width: u32, height: u32) -> Vec<u8> {
+    let rgba = (0..width * height * 4)
+        .map(|index| u8::try_from(index % 251).expect("a byte"))
+        .collect();
+    pixels::encode_png(&pixels::Rgba::new(width, height, rgba).expect("an image")).expect("a PNG")
+}
+
 /// Making thumbnails is published as an offloadable transform of the
 /// thumbnails package, and its local run makes exactly what that package's
-/// entrypoint makes on another device: content named twice is one input,
-/// and an input that is not an image fails the whole batch.
+/// entrypoint makes on another device: content named twice is one input.
+///
+/// The library's photographs are sealed: the store holds ciphertext, and
+/// what names a picture is the reference that opens it. The run reads each
+/// one through that reference, so it thumbnails the picture — a run that
+/// read a plain address would read ciphertext.
 #[test]
 fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint() {
     let spec = <PhotosEffect as ui::tilo_resource::Effect>::specs()
@@ -103,21 +115,31 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
     );
     assert!(spec.params()[0].is_content_list());
 
-    let store = tilo_content::ContentStore::memory();
+    let store = tilo_content::ContentStore::memory().sealing();
     let photographs: Vec<Vec<u8>> = [(3, 2), (40, 17)]
         .into_iter()
-        .map(|(width, height)| {
-            let rgba = (0..width * height * 4)
-                .map(|index| u8::try_from(index % 251).expect("a byte"))
-                .collect();
-            pixels::encode_png(&pixels::Rgba::new(width, height, rgba).expect("an image"))
-                .expect("a PNG")
+        .map(|(width, height)| photo_png(width, height))
+        .collect();
+    let content: Vec<ui::tilo_resource::Bytes> = photographs
+        .iter()
+        .map(|bytes| {
+            let reference = store.put(bytes).expect("stage a photograph");
+            assert!(tilo_content::is_sealed(&reference), "{reference}");
+            ui::tilo_resource::Bytes::kept_as(bytes, &reference)
         })
         .collect();
-    let hashes: Vec<String> = photographs
-        .iter()
-        .map(|bytes| store.put(bytes).expect("stage a photograph"))
-        .collect();
+    assert!(
+        !store.has(&tilo_content::hash_bytes(&photographs[0])),
+        "the store keeps no plaintext photograph"
+    );
+    let address =
+        tilo_content::content_address(&content[0].reference().expect("a reference")).expect("one");
+    assert_ne!(
+        store.read(&address),
+        Some(photographs[0].clone()),
+        "a plain address answers with the ciphertext, never the picture"
+    );
+
     let app = PhotosApp::with_content(store.clone());
     let doc = crate::test_doc::new_doc();
     let library = crate::test_doc::library(&doc);
@@ -125,11 +147,7 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
         .state()
         .answer_effect(
             PhotosEffect::MakeThumbnails {
-                photos: vec![
-                    hashes[0].clone(),
-                    tilo_actions::content_resource(&hashes[1]).expect("an address"),
-                    hashes[0].clone(),
-                ],
+                photos: vec![content[0].clone(), content[1].clone(), content[0].clone()],
             },
             tilo_actions::InvocationId::new(),
             &library,
@@ -150,13 +168,29 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
         })
         .collect();
     assert_eq!(made, expected, "byte for byte the entrypoint's thumbnails");
+}
 
-    let broken = store.put(b"not a photograph").expect("stage bytes");
+/// A picture that is not an image makes no thumbnail of its own while the
+/// rest still do, and the failure names the picture's content; a path is
+/// never content.
+#[test]
+fn make_thumbnails_fails_only_the_picture_that_is_not_an_image() {
+    let store = tilo_content::ContentStore::memory().sealing();
+    let photograph = photo_png(3, 2);
+    let reference = store.put(&photograph).expect("stage a photograph");
+    let good = ui::tilo_resource::Bytes::kept_as(&photograph, &reference);
+    let broken_bytes = b"not a photograph";
+    let broken_reference = store.put(broken_bytes).expect("stage bytes");
+    let broken = ui::tilo_resource::Bytes::kept_as(broken_bytes, &broken_reference);
+
+    let app = PhotosApp::with_content(store);
+    let doc = crate::test_doc::new_doc();
+    let library = crate::test_doc::library(&doc);
     let partial = app
         .state()
         .answer_effect(
             PhotosEffect::MakeThumbnails {
-                photos: vec![hashes[0].clone(), broken.clone()],
+                photos: vec![good, broken],
             },
             tilo_actions::InvocationId::new(),
             &library,
@@ -171,20 +205,18 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
     assert_eq!(
         partial.value,
         Some(serde_json::json!({
-            "failed": [{"photo": broken, "reason": "is not an image"}]
+            "failed": [{
+                "photo": tilo_content::hash_bytes(broken_bytes),
+                "reason": "is not an image",
+            }]
         })),
-        "the failure names the picture the caller named, not an index"
+        "the failure names the picture's content, not an index"
     );
     assert!(
-        app.state()
-            .answer_effect(
-                PhotosEffect::MakeThumbnails {
-                    photos: vec!["/home/someone/photo.png".into()],
-                },
-                tilo_actions::InvocationId::new(),
-                &library,
-            )
-            .is_err(),
+        serde_json::from_value::<Vec<ui::tilo_resource::Bytes>>(serde_json::json!([
+            "/home/someone/photo.png"
+        ]))
+        .is_err(),
         "a path is never content"
     );
 }

@@ -839,14 +839,19 @@ impl OpenImage {
     /// (the reference it is kept under may differ).
     #[must_use]
     pub fn hash(&self) -> String {
-        self.content
-            .hash()
-            .iter()
-            .fold(String::with_capacity(CONTENT_HEX_LEN), |mut hex, byte| {
-                let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{byte:02x}"));
-                hex
-            })
+        content_hex(&self.content.hash())
     }
+}
+
+/// A content hash as the 64 hex digits every record, address and failure
+/// report spells it in.
+#[must_use]
+pub fn content_hex(hash: &[u8; 32]) -> String {
+    hash.iter()
+        .fold(String::with_capacity(CONTENT_HEX_LEN), |mut hex, byte| {
+            let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{byte:02x}"));
+            hex
+        })
 }
 
 /// The bytes of the picture `open` names, from this machine's content store.
