@@ -49,6 +49,7 @@
 //! acts on, fresh for every act.
 
 mod bounded;
+mod catch_up;
 mod content;
 mod feedback;
 mod keys;
@@ -71,6 +72,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tilo_session_client::engine::RecordReading;
 use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
@@ -78,6 +80,7 @@ use crate::host::CatalogueFactory;
 use crate::participant::actions::{Outcome, door_outcome, open_row, record_of, record_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_records::WorkspaceRecords;
+use catch_up::catch_up;
 use collab_types::DocumentMutation;
 use keys::{Keys, catalogue_keys};
 use ledger::Ledger;
@@ -657,11 +660,12 @@ impl HostActions {
 /// One record held on the service thread, in its own app worker.
 struct Mounted {
     app: ConfinedReplica,
-    /// The revision of its record merged into it last.
-    merged: Option<[u8; 32]>,
+    /// The heads of its record merged into it last: what the next merge
+    /// takes only the changes after.
+    merged: Option<Vec<[u8; 32]>>,
     /// The records held beside it (the parts of a chain its app keeps), by
-    /// route, with the revision of each merged last.
-    parts: HashMap<DocumentRoute, Option<[u8; 32]>>,
+    /// route, with the heads of each merged last.
+    parts: HashMap<DocumentRoute, Option<Vec<[u8; 32]>>>,
     used: u64,
 }
 
@@ -675,8 +679,12 @@ fn is_part(record: &str) -> bool {
 /// What running an action came to: its answer and where it left its actor.
 pub(super) type Performed = Result<(ActionOutput, Option<ActorPlace>), Outcome>;
 
-/// A record saved, and the revision it was saved at.
-type Saved = (Vec<u8>, [u8; 32]);
+/// A record saved, and the heads it was saved at, sorted.
+type Saved = (Vec<u8>, Vec<[u8; 32]>);
+
+/// What a replica merges of a record, and the heads the record stands at
+/// once it has.
+type Update = (DocumentMutation, Vec<[u8; 32]>);
 
 /// A workspace as the session's replica holds it when a request is served.
 struct WorkspaceState {
@@ -694,21 +702,46 @@ impl WorkspaceState {
         self.records.contains(route)
     }
 
-    /// The record at `route`, saved, with its revision, unless it is still at
-    /// `known`.
-    fn document_since(
+    /// What changed of the record at `route` since `held`, the heads a
+    /// replica merged last: only the changes after them where the record
+    /// holds them, the record whole where it does not (or where nothing was
+    /// merged yet), and nothing when it still stands there. With the heads
+    /// it stands at.
+    fn update(
         &self,
         route: &DocumentRoute,
-        known: Option<[u8; 32]>,
-    ) -> Result<Option<Saved>, String> {
-        self.engine
-            .record_since(&route.cluster_id, &route.app_id, &route.record, known)
+        held: Option<&[[u8; 32]]>,
+    ) -> Result<Option<Update>, String> {
+        Ok(
+            match self.engine.record_update(
+                &route.cluster_id,
+                &route.app_id,
+                &route.record,
+                held,
+            )? {
+                RecordReading::Captured { heads, bytes, .. } => {
+                    Some((DocumentMutation::Snapshot(bytes), heads))
+                }
+                RecordReading::Changes { heads, bytes, .. } => {
+                    Some((DocumentMutation::Incremental(bytes), heads))
+                }
+                RecordReading::Unchanged(_) | RecordReading::Pending => None,
+            },
+        )
     }
 
-    /// The record at `route`, saved, with its revision.
+    /// The record at `route`, saved, with its heads.
     fn document(&self, route: &DocumentRoute) -> Result<Saved, String> {
-        self.document_since(route, None)?
-            .ok_or_else(|| format!("the workspace has no record {} open here", route.record))
+        match self
+            .engine
+            .record_update(&route.cluster_id, &route.app_id, &route.record, None)?
+        {
+            RecordReading::Captured { heads, bytes, .. } => Ok((bytes, heads)),
+            _ => Err(format!(
+                "the workspace has no record {} open here",
+                route.record
+            )),
+        }
     }
 }
 
@@ -888,15 +921,24 @@ impl Workspace {
                     let engine = self.peer.engine();
                     // Undecided: the replica holds the record and cannot read it yet. Keys that
                     // arrived for a record it holds nothing of leave nothing undecided.
-                    let undecided =
-                        match engine.record(&route.cluster_id, &route.app_id, &route.record) {
-                            Ok(read) => read.is_none(),
-                            Err(_) => engine.records(&route.cluster_id).is_ok_and(|records| {
-                                records.iter().any(|(app, record)| {
-                                    *app == route.app_id && *record == route.record
-                                })
-                            }),
-                        };
+                    // Asked without reading the record out, as a write lands for every post;
+                    // this device's own writes not taken in yet leave only a read to decide.
+                    let reads = engine
+                        .record_revision(&route.cluster_id, &route.app_id, &route.record)
+                        .and_then(|revision| match revision {
+                            Some(_) => Ok(true),
+                            None => engine
+                                .record(&route.cluster_id, &route.app_id, &route.record)
+                                .map(|read| read.is_some()),
+                        });
+                    let undecided = match reads {
+                        Ok(reads) => !reads,
+                        Err(_) => engine.records(&route.cluster_id).is_ok_and(|records| {
+                            records.iter().any(|(app, record)| {
+                                *app == route.app_id && *record == route.record
+                            })
+                        }),
+                    };
                     if undecided {
                         self.undecided.insert(route.clone());
                     } else {
@@ -1134,36 +1176,6 @@ fn acts_for(caller: &Caller, person: &str) -> bool {
             delegating.principal() == &CallerPrincipal::Person(person.to_owned())
         }),
         CallerPrincipal::App(_) | CallerPrincipal::Bot(_) => false,
-    }
-}
-
-/// Merge into `mounted` what `state` holds of its record and its parts that
-/// changed since it merged them last.
-fn catch_up(route: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
-    match state.document_since(route, mounted.merged) {
-        Ok(Some((bytes, revision))) => {
-            if let Err(error) = mounted.app.apply(&DocumentMutation::Snapshot(bytes)) {
-                tracing::warn!(%error, "workspace actions: a change did not merge");
-            }
-            mounted.merged = Some(revision);
-        }
-        Ok(None) => {}
-        Err(error) => tracing::debug!(%error, "workspace actions: a record does not read"),
-    }
-    for (part, merged) in &mut mounted.parts {
-        let Ok(record) = reads::record_id(&part.record) else {
-            continue;
-        };
-        let Ok(Some((bytes, revision))) = state.document_since(part, *merged) else {
-            continue;
-        };
-        if let Err(error) = mounted
-            .app
-            .apply_record(&record, &DocumentMutation::Snapshot(bytes))
-        {
-            tracing::warn!(%error, "workspace actions: a change to a part did not merge");
-        }
-        *merged = Some(revision);
     }
 }
 
@@ -1678,7 +1690,7 @@ impl Worker {
             self.mount_own(&holder, state)?;
             return Ok(holder);
         }
-        let (bytes, revision) = state.document(route)?;
+        let (bytes, heads) = state.document(route)?;
         let record = reads::record_id(&route.record)?;
         let holders: Vec<DocumentRoute> = state
             .records
@@ -1704,7 +1716,7 @@ impl Worker {
                 .apply_record(&record, &DocumentMutation::Snapshot(bytes.clone()))
             {
                 Ok(()) => {
-                    mounted.parts.insert(route.clone(), Some(revision));
+                    mounted.parts.insert(route.clone(), Some(heads));
                     self.beside.insert(route.clone(), holder.clone());
                     return Ok(holder);
                 }
@@ -1724,7 +1736,7 @@ impl Worker {
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
         if !self.mounted.contains_key(route) {
-            let (bytes, revision) = state.document(route)?;
+            let (bytes, heads) = state.document(route)?;
             while self.mounted.len() >= MAX_MOUNTED {
                 let Some(oldest) = self
                     .mounted
@@ -1754,7 +1766,7 @@ impl Worker {
                 route.clone(),
                 Mounted {
                     app,
-                    merged: Some(revision),
+                    merged: Some(heads),
                     parts: HashMap::new(),
                     used: clock,
                 },

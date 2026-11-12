@@ -519,7 +519,7 @@ impl Worker {
                 };
                 self.bounded.remove(&oldest);
             }
-            let (bytes, revision) = state
+            let (bytes, heads) = state
                 .document(&holder)
                 .map_err(|_| ActionHostError::UnknownAction)?;
             let app = ConfinedReplica::open(
@@ -540,7 +540,7 @@ impl Worker {
                 BoundedReplica {
                     held: Mounted {
                         app,
-                        merged: Some(revision),
+                        merged: Some(heads),
                         parts: HashMap::new(),
                         used: clock,
                     },
@@ -556,7 +556,7 @@ impl Worker {
             .ok_or_else(|| unavailable("the record did not mount".into()))?;
         held.held.used = clock;
         if holder != *route && !held.held.parts.contains_key(route) {
-            let (part, revision) = state
+            let (part, heads) = state
                 .document(route)
                 .map_err(|_| ActionHostError::UnknownAction)?;
             held.held
@@ -566,7 +566,7 @@ impl Worker {
                     &DocumentMutation::Snapshot(part),
                 )
                 .map_err(|error| unavailable(error.to_string()))?;
-            held.held.parts.insert(route.clone(), Some(revision));
+            held.held.parts.insert(route.clone(), Some(heads));
         }
         Ok(key)
     }
