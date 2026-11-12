@@ -15,6 +15,13 @@ import type { Workspace } from "./workspace.ts";
 /** One step of a field path: a field's name, a map key, or `{item: id}`. */
 export type Step = string | Record<string, unknown>;
 
+/**
+ * A resource as a typed object: its fields, its actions and its edits.
+ *
+ * A field reads as an attribute (`page.title`) and assigning one edits it
+ * (`page.title = "Done"`); calling a method runs the resource's action of that
+ * name. `load()` reads it and `flush()` waits for the edits on their way.
+ */
 export interface Resource {
   readonly path: string;
   readonly kind: string;

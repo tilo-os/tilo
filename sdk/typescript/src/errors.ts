@@ -70,6 +70,7 @@ export class AskPending extends Error {
     return this;
   }
 
+  /** Follow the invocation until the person decides, then its answer. */
   async wait(): Promise<unknown> {
     if (this.#follow === null) {
       throw new ProtocolError("this ask cannot be waited on: its invocation has no session");

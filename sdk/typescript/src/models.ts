@@ -1,10 +1,12 @@
 /** The values the SDK answers: workspaces, keys, listings, hits and events. */
 
+/** A host workspaces can be created on. */
 export interface Host {
   name: string;
   default: boolean;
 }
 
+/** One of the person's workspaces, as the account lists them. */
 export interface WorkspaceInfo {
   id: string;
   name: string;
@@ -14,6 +16,7 @@ export interface WorkspaceInfo {
   role: string;
 }
 
+/** The account's workspaces and the hosts to create them on. */
 export class WorkspaceList {
   readonly workspaces: WorkspaceInfo[];
   readonly hosts: Host[];
@@ -48,6 +51,7 @@ export class WorkspaceList {
     return this.workspaces[Symbol.iterator]();
   }
 
+  /** How many workspaces it lists. */
   get length(): number {
     return this.workspaces.length;
   }
@@ -92,6 +96,7 @@ export function textOf(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+/** A key just minted: the token to use, and where it points. */
 export interface MintedKey {
   grant: string;
   token: string;
@@ -160,6 +165,7 @@ export function memberOf(raw: Record<string, unknown>): Member {
   };
 }
 
+/** One row of a listing: a resource, or an action of the resource listed. */
 export interface Row {
   path: string;
   name: string;
@@ -224,6 +230,7 @@ export class Listing {
   }
 }
 
+/** One search hit: a path the other calls take, and what it offers. */
 export interface Hit {
   path: string;
   kind: string;
@@ -240,6 +247,7 @@ export function hitOf(raw: Record<string, unknown>): Hit {
   };
 }
 
+/** Someone in the workspace: a person, or one of its agents. */
 export interface Person {
   who: string;
   name: string;

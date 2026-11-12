@@ -122,6 +122,38 @@ nav = "Errors"
 description = "Refused, RateLimited, AskPending and ProtocolError, the codes a host answers with, and keys that are turned away."
 
 [[page]]
+slug = "python-sdk"
+source = "sdk/python/src/tilo/__init__.py"
+generator = "tools/docs/reference/python_sdk.py"
+section = "Reference"
+nav = "Python SDK"
+description = "Every class, method and exception of the Python package, with signatures and docstrings, generated from its sources."
+
+[[page]]
+slug = "typescript-sdk"
+source = "sdk/typescript/src/index.ts"
+generator = "tools/docs/reference/typescript_sdk.ts"
+section = "Reference"
+nav = "TypeScript SDK"
+description = "Everything the JavaScript and TypeScript package exports, with signatures and TSDoc, generated from its sources."
+
+[[page]]
+slug = "cli"
+source = "crates/system/tilo-cli/src/main.rs"
+generator = "tools/docs/reference/cli.py"
+section = "Reference"
+nav = "Command line"
+description = "Every command of tilo, with its usage, arguments and options, generated from the command itself."
+
+[[page]]
+slug = "mcp-tools"
+source = "crates/runtime/tilo-runtime/src/mcp_agent.rs"
+generator = "tools/docs/reference/mcp_tools.py"
+section = "Reference"
+nav = "MCP tools"
+description = "The tools an agent gets in a workspace, what each one does and what it takes, generated from the server's own tool list."
+
+[[page]]
 slug = "own-host"
 source = "docs/tilo-sh/own-host.md"
 section = "Your own host"

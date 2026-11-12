@@ -110,7 +110,9 @@ pub enum WorkspacesCmd {
     Ls,
     /// Create a workspace; the host may refuse (quota, payment).
     Create {
+        /// What to call it, as your workspaces list will name it.
         name: String,
+        /// The host to create it on, by name; the default host without one.
         #[arg(long)]
         host: Option<String>,
     },
@@ -123,10 +125,14 @@ pub enum WorkspacesCmd {
 pub enum FilesCmd {
     /// Upload a file into a workspace: prints its reference, which actions
     /// take (`pdf-viewer#import-pdf-content content=tilo.content:…`).
-    Put { file: PathBuf },
+    Put {
+        /// The file to upload, by its path here.
+        file: PathBuf,
+    },
     /// Download a file of a workspace by its reference (an export's
     /// answer, `tilo.content:…`) into `--output`, or to standard output.
     Get {
+        /// The reference to fetch, as an action or an upload answered it.
         content: String,
         /// Where to write it; standard output when absent.
         #[arg(short, long)]

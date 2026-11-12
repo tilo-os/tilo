@@ -1300,20 +1300,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         value
     }
     fn tools(&self) -> Vec<Value> {
-        let mut tools = match self.surface {
-            Surface::Classic => tool_definitions().to_vec(),
-            Surface::Agent => agent::tool_definitions().to_vec(),
-        };
-        if self.host.content_puts().is_some() {
-            tools.extend(put::tool_definitions());
-        }
-        if self.host.content_gets().is_some() {
-            tools.extend(get::tool_definitions());
-        }
-        if self.devices.is_some() {
-            tools.push(crate::remote_door::tool_definition());
-        }
-        tools
+        definitions(
+            self.surface,
+            self.host.content_puts().is_some(),
+            self.host.content_gets().is_some(),
+            self.devices.is_some(),
+        )
     }
     /// Attribute every invocation of this connection to one agent run, so
     /// history, undo and activity tell concurrent agents apart. Provenance
@@ -3412,6 +3404,40 @@ fn row_json(row: &CatalogueRow) -> Value {
 fn tool_definitions() -> &'static [Value] {
     static TOOLS: std::sync::LazyLock<Vec<Value>> = std::sync::LazyLock::new(tilo_tools);
     &TOOLS
+}
+
+/// Every tool a session offers: its surface's, then the ones its host and its
+/// door add.
+fn definitions(
+    surface: Surface,
+    content_puts: bool,
+    content_gets: bool,
+    devices: bool,
+) -> Vec<Value> {
+    let mut tools = match surface {
+        Surface::Classic => tool_definitions().to_vec(),
+        Surface::Agent => agent::tool_definitions().to_vec(),
+    };
+    if content_puts {
+        tools.extend(put::tool_definitions());
+    }
+    if content_gets {
+        tools.extend(get::tool_definitions());
+    }
+    if devices {
+        tools.push(crate::remote_door::tool_definition());
+    }
+    tools
+}
+
+/// The `tools/list` answer of an agent in a hosted workspace, which is what the
+/// developer documentation's tool reference is written from: a workspace stores
+/// and reads content, and its door reaches the person's other devices. No
+/// session and no host are needed to name the tools, so a page can be written on
+/// a machine with neither.
+#[must_use]
+pub fn tools_json() -> Value {
+    json!({"tools": definitions(Surface::Agent, true, true, true)})
 }
 /// The advertised tools. Descriptions are read on every model turn, so they
 /// say what an agent needs and no more; tuning knobs a model never needs

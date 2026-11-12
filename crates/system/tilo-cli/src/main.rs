@@ -42,6 +42,7 @@ mod agent;
 mod aliases;
 mod cleanup;
 mod desktop;
+mod docs;
 mod health;
 mod hosted;
 mod login;
@@ -242,6 +243,7 @@ enum Cmd {
     /// Run a tilolang program in a hosted workspace, as one undoable step.
     #[command(after_help = "Example:\n  tilo run visa.tl -w jane-doe")]
     Run {
+        /// The program to run, by its path here.
         file: std::path::PathBuf,
         /// The answer as JSON, typed as the SDK gets it.
         #[arg(long)]
@@ -270,6 +272,9 @@ enum Cmd {
         #[command(subcommand)]
         cmd: DeviceCmd,
     },
+    /// Every command as a page of documentation, for tilo.sh/docs.
+    #[command(hide = true)]
+    HelpMarkdown,
     /// Log this computer in as one of your devices, with the code your Tilo
     /// tab shows.
     #[command(after_help = "Example:\n  tilo login K7Q-MX2P\n\n\
@@ -909,6 +914,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
         )),
         Cmd::Completions { shell } => completions(shell),
         Cmd::Device { cmd } => run_system_command(cmd),
+        Cmd::HelpMarkdown => {
+            print!("{}", docs::markdown().map_err(anyhow::Error::msg)?);
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Agent { cmd } => agent::run(cmd),
         Cmd::Login { code, agent, site } => login::login(&code, agent.as_deref(), site.as_deref()),
         Cmd::Mcp => mcp::serve(),

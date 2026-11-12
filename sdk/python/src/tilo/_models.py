@@ -162,6 +162,7 @@ class Usage:
 
     @property
     def vm_seconds(self) -> int:
+        """The VM seconds every workspace ran this billing period."""
         return sum(workspace.vm_seconds for workspace in self.workspaces)
 
     @property
@@ -394,46 +395,57 @@ class Event:
 
     @property
     def path(self) -> str | None:
+        """The resource or action the event is about, when it names one."""
         return _text(self.raw.get("path"))
 
     @property
     def change(self) -> str | None:
+        """The change's own id in the app's history."""
         return _text(self.raw.get("change"))
 
     @property
     def sentence(self) -> str | None:
+        """What changed, in the app's own words, as its history shows it."""
         return _text(self.raw.get("sentence"))
 
     @property
     def by(self) -> str | None:
+        """Who made the change: a person's name, or the run's title when a run did."""
         return _text(self.raw.get("by"))
 
     @property
     def run(self) -> str | None:
+        """The agent run the change was a step of, by its title, when it was one."""
         return _text(self.raw.get("run"))
 
     @property
     def run_id(self) -> str | None:
+        """The agent run's id: the one its client opened it under."""
         return _text(self.raw.get("run_id"))
 
     @property
     def phase(self) -> str | None:
+        """How a run stands: `started`, `succeeded`, `failed` or `cancelled`."""
         return _text(self.raw.get("phase"))
 
     @property
     def invocation_id(self) -> str | None:
+        """The invocation a run event follows."""
         return _text(self.raw.get("invocation_id"))
 
     @property
     def undone(self) -> bool:
+        """Whether the change has been taken back."""
         return bool(self.raw.get("undone"))
 
     @property
     def time_ms(self) -> int | None:
+        """When it happened (Unix milliseconds)."""
         return _int(self.raw.get("time_ms"))
 
     @property
     def here(self) -> Sequence[Person]:
+        """Who is in the workspace, as presence last told it."""
         return [
             Person.of(person)
             for person in self.raw.get("here") or []

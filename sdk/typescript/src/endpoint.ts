@@ -36,6 +36,7 @@ export class RunGroup {
     this.id = id;
   }
 
+  /** @internal */
   note(answer: Answer): void {
     const invocationId = answer.invocation_id;
     if (typeof invocationId === "string" && invocationId !== "") {
@@ -83,10 +84,12 @@ export class Endpoint {
     this.workspace = workspace;
   }
 
+  /** @internal */
   get session() {
     return this.transport.session(this.workspace);
   }
 
+  /** @internal */
   runMeta(): Record<string, unknown> | null {
     const group = storage.getStore();
     return group === undefined ? null : { id: group.id, title: group.title };
@@ -116,6 +119,7 @@ export class Endpoint {
     return this.follow(await this.call("tilo_do", { path, args }), path);
   }
 
+  /** @internal */
   follow(answer: Answer, path: string | null = null): unknown {
     if (answer.status === "pending") {
       return new Run(this, String(answer.invocation_id ?? ""), path);

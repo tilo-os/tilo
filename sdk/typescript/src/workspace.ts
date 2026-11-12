@@ -206,6 +206,7 @@ export class Workspace {
     return `Workspace(${this.#info?.name ?? this.ref})`;
   }
 
+  /** The workspace as the account lists it: its id, name, host and your role. */
   async info(): Promise<WorkspaceInfo> {
     if (this.#info === null) {
       this.#info = await this.client.workspaceInfo(this.ref);
@@ -213,10 +214,12 @@ export class Workspace {
     return this.#info;
   }
 
+  /** Its id. */
   async id(): Promise<string> {
     return (await this.info()).id;
   }
 
+  /** @internal */
   get endpoint(): Endpoint {
     if (this.#info === null) {
       throw new ProtocolError(

@@ -449,6 +449,31 @@ name = "codemap"
 run = "python3 -I tools/docs/codemap.py --check"
 fix = "python3 -I tools/docs/codemap.py"
 
+# The developer documentation's reference pages are written from what they
+# document (tools/docs/reference), never copied: a generator reads the Python
+# SDK, the `tilo` command or the runtime's own tool list and writes one page,
+# and stops when a public item has no doc text. So a reference cannot describe
+# something the tree no longer has, and the pages are complete or this is red.
+# The site publishes what these write.
+[[check]]
+name = "docs-reference"
+run = "bash tools/ci/docs-reference.sh"
+outputs = [
+  "/target/docs/generated/python-sdk.md",
+  "/target/docs/generated/cli.md",
+  "/target/docs/generated/mcp-tools.md",
+]
+
+# The same for the TypeScript SDK, whose page is read with the TypeScript
+# compiler API: it needs bun and the SDK's locked packages, which the ci-sdk
+# image carries (sdk-typescript's image).
+[[check]]
+name = "docs-reference-sdk"
+run = "bash tools/ci/docs-reference-sdk.sh"
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+requires = ["arch=x86_64"]
+outputs = ["/target/docs/generated/typescript-sdk.md"]
+
 [[check]]
 name = "fmt"
 run = "cargo fmt --check"

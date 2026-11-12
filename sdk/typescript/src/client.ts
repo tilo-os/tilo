@@ -15,6 +15,7 @@ import { Workspace } from "./workspace.ts";
 
 const ACCOUNT = "account";
 
+/** How a client is made: its key, its door, how it fetches, and how long it retries. */
 export interface TiloOptions {
   key?: string | null;
   door?: string | null;
@@ -248,10 +249,12 @@ export class Tilo {
     return this.transport.close();
   }
 
+  /** @internal */
   endpoint(): Endpoint {
     return new Endpoint(this.transport, null);
   }
 
+  /** @internal */
   async workspaceList(): Promise<WorkspaceList> {
     const result = await this.endpoint().outcome(`${ACCOUNT}/workspaces#list`, {});
     this.catalog = new WorkspaceList(
@@ -260,6 +263,7 @@ export class Tilo {
     return this.catalog;
   }
 
+  /** @internal */
   async workspaceInfo(ref: string): Promise<WorkspaceInfo> {
     let listing: WorkspaceList;
     try {
@@ -294,6 +298,7 @@ export class Tilo {
     return workspace.id();
   }
 
+  /** @internal */
   async createWorkspace(name: string, host: string | null): Promise<WorkspaceInfo> {
     const args: Record<string, unknown> = { name };
     if (host !== null) {
@@ -314,6 +319,7 @@ export class Tilo {
     };
   }
 
+  /** @internal */
   async deleteWorkspace(workspace: string | Workspace): Promise<unknown> {
     const result = await this.endpoint().outcome(`${ACCOUNT}/workspaces#delete`, {
       workspace: await this.workspaceId(workspace),
@@ -322,6 +328,7 @@ export class Tilo {
     return result;
   }
 
+  /** @internal */
   async keysList(): Promise<Key[]> {
     const result = await this.endpoint().outcome(`${ACCOUNT}/keys#list`, {});
     const keys = (result as Record<string, unknown> | null)?.keys;
@@ -330,6 +337,7 @@ export class Tilo {
       : [];
   }
 
+  /** @internal */
   async mintKey(
     workspace: string | Workspace,
     name: string | null,
@@ -349,10 +357,12 @@ export class Tilo {
     return mintedKeyOf(result as Record<string, unknown>);
   }
 
+  /** @internal */
   async revokeKey(grant: string): Promise<unknown> {
     return this.endpoint().outcome(`${ACCOUNT}/keys#revoke`, { grant });
   }
 
+  /** @internal */
   async keyCreate(
     name: string,
     workspace: string | Workspace | null,

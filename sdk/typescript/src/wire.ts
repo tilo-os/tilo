@@ -9,22 +9,30 @@
 
 import { AskPending, ProtocolError, RATE_LIMITED, RateLimited, Refused, keyRefusal } from "./errors.ts";
 
+/** The door a client reaches when none is named (`TILO_DOOR` names another). */
 export const DEFAULT_DOOR = "https://mcp.tilo.sh";
 /** How long a call keeps asking again while the host is busy, in ms. */
 export const RETRY_DEADLINE_MS = 60_000;
+/** The MCP extension the SDK asks for typed answers through. */
 export const SURFACE = "so.tilo.mcp";
+/** The header an MCP session's id travels in. */
 export const SESSION_HEADER = "mcp-session-id";
+/** The SDK's version. */
 export const VERSION = "0.1.0";
 const PROTOCOL_VERSION = "2025-06-18";
 
+/** The one function a client needs to reach the door: `fetch`, unless you bring your own. */
 export type FetchLike = typeof fetch;
+/** A typed answer, as the door's MCP tools return it. */
 export type Answer = Record<string, unknown>;
 
+/** The door a call goes to: the one named, else `TILO_DOOR`, else the default. */
 export function doorFrom(door?: string | null): string {
   const chosen = door ?? process.env.TILO_API_URL ?? DEFAULT_DOOR;
   return chosen.replace(/\/+$/, "");
 }
 
+/** The key a call goes with: the one named, else `TILO_API_KEY`. */
 export function keyFrom(key?: string | null): string | null {
   return key ?? process.env.TILO_API_KEY ?? null;
 }
@@ -257,12 +265,14 @@ export class Transport {
     return session;
   }
 
+  /** @internal */
   async close(): Promise<void> {
     for (const session of [...this.#sessions.values()]) {
       await session.close();
     }
   }
 
+  /** @internal */
   surface(run: Record<string, unknown> | null): Record<string, unknown> {
     const surface: Record<string, unknown> = { structured: true };
     if (run !== null) {
@@ -291,6 +301,7 @@ export class Transport {
     return new ProtocolError(await this.refusal(response), response.status);
   }
 
+  /** @internal */
   async refusal(response: Response): Promise<string> {
     const text = (await response.text()).trim() || response.statusText;
     if (response.status === 401 || response.status === 403) {
@@ -321,6 +332,7 @@ export class Transport {
     );
   }
 
+  /** @internal */
   async request(
     method: string,
     path: string,

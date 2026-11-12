@@ -117,14 +117,17 @@ class Resource:
 
     @property
     def kind(self) -> str:
+        """The resource's kind, as its app names it."""
         return str((self._answer or {}).get("kind") or "")
 
     @property
     def raw(self) -> Mapping[str, Any]:
+        """The whole answer the last read got, as the door sent it."""
         return self._answer or {}
 
     @property
     def fields(self) -> Mapping[str, Any]:
+        """The read fields, each wrapped so assigning to one edits it."""
         fields = (self._answer or {}).get("fields")
         if not isinstance(fields, Mapping):
             return {}
@@ -134,10 +137,12 @@ class Resource:
 
     @property
     def children(self) -> Sequence[Mapping[str, Any]]:
+        """The child resources the last read listed."""
         return self._children
 
     @property
     def cursor(self) -> str | None:
+        """The cursor the last read stopped at, when it stopped before the end."""
         cursor = (self._answer or {}).get("cursor")
         return cursor if isinstance(cursor, str) else None
 

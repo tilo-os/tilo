@@ -53,4 +53,5 @@ export {
   type FetchLike,
 } from "./wire.ts";
 
+/** The SDK's version. */
 export const VERSION = "0.1.0";

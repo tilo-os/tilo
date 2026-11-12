@@ -187,6 +187,7 @@ class Workspace:
         return self._info
 
     def info(self) -> Any:
+        """The workspace as the account lists it: its id, name, host and your role."""
         return self.client.handoff(self._resolve())
 
     def _endpoint(self) -> Endpoint:
