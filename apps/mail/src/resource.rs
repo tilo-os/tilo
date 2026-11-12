@@ -696,23 +696,28 @@ impl Mail {
 }
 
 /// Stage the content an attachment names where it is attached: read it from
-/// this device's content store and keep it under the draft's attachment
-/// identity, with its size and type, so every replica applies the same
-/// attachment and the bytes are verified before the draft names them.
+/// this device's content store, keep it sealed unless it is already, with
+/// its size and type, so every replica applies the same attachment and the
+/// bytes are verified before the draft names them.
 fn prepare_attachment(params: &mut mailbox::Attach) -> Result<(), String> {
-    let address = params.content.trim();
-    let hash = ui::tilo_actions::content_hash(address)
-        .or_else(|| address.strip_prefix(crate::attachment_store::PREFIX))
-        .unwrap_or(address);
-    if !tilo_content::valid_hash(hash) {
+    let given = params.content.trim();
+    let reference = ui::tilo_actions::content_hash(given)
+        .or_else(|| given.strip_prefix(crate::attachment_store::PREFIX))
+        .unwrap_or(given);
+    if !tilo_content::valid_reference(reference) {
         return Err(format!(
-            "{address:?} is not a content address: attach what another step handed over"
+            "{given:?} is not a content reference: attach what another step handed over"
         ));
     }
-    let bytes = tilo_resource::content::read_hash(hash).map_err(|refusal| refusal.to_string())?;
-    let store = tilo_resource::content::current()
-        .ok_or("this window has no content store to attach from")?;
-    let staged = crate::attachment_store::stage_bytes(&store, &bytes, &params.name)?;
+    let bytes =
+        tilo_resource::content::read_hash(reference).map_err(|refusal| refusal.to_string())?;
+    let staged = if tilo_content::is_sealed(reference) {
+        crate::attachment_store::kept_as(reference, &bytes, &params.name)?
+    } else {
+        let store = tilo_resource::content::current()
+            .ok_or("this window has no content store to attach from")?;
+        crate::attachment_store::stage_bytes(&store, &bytes, &params.name)?
+    };
     params.content = staged.content_id;
     params.name = staged.filename;
     params.size = Some(staged.size);
@@ -1862,10 +1867,18 @@ mod tests {
             crate::attachment_store::materialize(&app.content(), &attachments[0]).unwrap(),
             b"quarterly numbers"
         );
+        let reference = attachments[0]
+            .content_id
+            .strip_prefix(crate::attachment_store::PREFIX)
+            .unwrap();
+        assert!(tilo_content::is_sealed(reference), "{reference}");
         assert!(
             app.call(
                 "attach",
-                serde_json::json!({"content": hash, "name": "again.csv"}),
+                serde_json::json!({
+                    "content": ui::tilo_actions::content_resource(reference),
+                    "name": "again.csv",
+                }),
             )
             .is_err(),
             "the same file is attached once"
@@ -1888,6 +1901,70 @@ mod tests {
         );
         assert!(app.undo());
         assert!(app.state().draft.attachments.is_empty());
+    }
+
+    /// A file is attached sealed: the draft names it by a reference that
+    /// carries the key, the store holds ciphertext alone under its address,
+    /// and a member reading the draft, and one who joins later, open it
+    /// from that ciphertext.
+    #[test]
+    fn an_attachment_is_ciphertext_in_the_store_and_opens_for_every_member() {
+        use ui::framework::testing::TestApp;
+        let file: Vec<u8> = (0..400)
+            .flat_map(|row| format!("row {row}: {}\n", row * 7919).into_bytes())
+            .collect();
+        let mut alice = TestApp::<MailShell>::new().unwrap();
+        let mut joined =
+            automerge::AutoCommit::load(&alice.record_document(&alice.record().clone()).unwrap())
+                .unwrap();
+        let mut bob = TestApp::<MailShell>::with_workspace_record(&mut joined).unwrap();
+        let handed = alice.content().put(&file).unwrap();
+        alice
+            .call(
+                "attach",
+                serde_json::json!({
+                    "content": ui::tilo_actions::content_resource(&handed),
+                    "name": "numbers.txt",
+                }),
+            )
+            .unwrap();
+        let attachment = alice.state().draft.attachments[0].clone();
+        let reference = attachment
+            .content_id
+            .strip_prefix(crate::attachment_store::PREFIX)
+            .unwrap()
+            .to_owned();
+        assert!(tilo_content::is_sealed(&reference), "{reference}");
+        let address = tilo_content::content_address(&reference).unwrap();
+        let ciphertext = alice.content().read(&address).unwrap();
+        assert!(
+            !ciphertext.windows(32).any(|window| window == &file[..32]),
+            "the store holds ciphertext"
+        );
+
+        assert!(alice.deliver_changes_to(&mut bob).unwrap());
+        let shared = bob.state().draft.attachments[0].clone();
+        assert_eq!(shared, attachment);
+        assert!(crate::attachment_store::materialize(&bob.content(), &shared).is_err());
+        bob.content().put_public(&ciphertext).unwrap();
+        assert_eq!(
+            crate::attachment_store::materialize(&bob.content(), &shared).unwrap(),
+            file
+        );
+
+        let mut later =
+            automerge::AutoCommit::load(&alice.record_document(&alice.record().clone()).unwrap())
+                .unwrap();
+        let carol = TestApp::<MailShell>::with_workspace_record(&mut later).unwrap();
+        carol.content().put_public(&ciphertext).unwrap();
+        assert_eq!(
+            crate::attachment_store::materialize(
+                &carol.content(),
+                &carol.state().draft.attachments[0]
+            )
+            .unwrap(),
+            file
+        );
     }
 
     /// The saved draft shows as the same Drafts message however often the

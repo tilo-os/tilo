@@ -110,7 +110,12 @@ fn a_document_kept_as_content_imports_into_an_empty_one_only() {
     assert!(bytes.starts_with(b"PK"), "a Word file is a zip package");
 
     let mut target = app();
-    target.content().put(&bytes).unwrap();
+    // What reaches the other device is the sealed content, as it was kept.
+    let sealed = source
+        .content()
+        .read(&tilo_content::content_address(&hash).unwrap())
+        .unwrap();
+    target.content().put_public(&sealed).unwrap();
     let answer = target
         .call(
             "import-docx-content",
@@ -145,10 +150,14 @@ fn an_import_takes_the_format_its_content_holds() {
         .unwrap();
     let address = output.resources.first().cloned().unwrap();
     let hash = address.strip_prefix("tilo.content:").unwrap().to_owned();
-    let docx = source.content().read(&hash).unwrap();
 
     let mut target = app();
-    target.content().put(&docx).unwrap();
+    // What reaches the other device is the sealed content, as it was kept.
+    let sealed = source
+        .content()
+        .read(&tilo_content::content_address(&hash).unwrap())
+        .unwrap();
+    target.content().put_public(&sealed).unwrap();
     target
         .call(
             "import-docx-content",

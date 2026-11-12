@@ -18,10 +18,11 @@ pub enum DocError {
     IdNamespaceExhausted(#[from] IdGenError),
 }
 
+// `Ord` is derived so materialization can canonicalise mark order *including the value*, so
+// replicas that merged concurrent valued marks in different internal orders converge to a
+// byte-identical span list.
 /// The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`;
-/// valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so
-/// materialization can canonicalise mark order *including the value*, so replicas that merged
-/// concurrent valued marks in different internal orders converge to a byte-identical span list.
+/// valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`.
 #[derive(
     Debug,
     Clone,

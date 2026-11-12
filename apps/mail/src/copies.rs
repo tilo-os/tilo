@@ -5,8 +5,8 @@
 //! record of Mail's in the workspace it is open in, which syncs to their
 //! devices and no other member's. The record
 //! names each message and where its server holds it; the bytes travel on
-//! the record's own route, from whichever of the person's devices keeps
-//! them, verified against the address the record names.
+//! the record's own route, sealed, from whichever of the person's devices
+//! keeps them, and open with the reference the record names.
 //!
 //! Another of the person's devices that lacks a message the record names
 //! takes it from there, newest first, without asking any server: a device
@@ -50,7 +50,8 @@ pub struct MailCopies {
 pub struct KeptCopy {
     /// The account it was fetched through
     pub account: String,
-    /// The message as its server sent it, by content address
+    /// The message as its server sent it, by the reference its content is
+    /// kept under
     pub content: String,
     /// When it arrived, in minutes since the Unix epoch
     pub minutes: i64,
@@ -67,8 +68,10 @@ impl KeptCopy {
         if self.account.trim().is_empty() || self.account.chars().count() > MAX_ACCOUNT_CHARS {
             return Err(Refusal::new("a kept message names its account"));
         }
-        if !tilo_content::valid_hash(&self.content) {
-            return Err(Refusal::new("a kept message names its content by address"));
+        if !tilo_content::valid_reference(&self.content) {
+            return Err(Refusal::new(
+                "a kept message names its content by reference",
+            ));
         }
         if self.folder == Folder::Starred {
             return Err(Refusal::new(
@@ -112,7 +115,8 @@ pub struct NewCopy {
     pub id: String,
     /// The account it was fetched through
     pub account: String,
-    /// The message as its server sent it, by content address
+    /// The message as its server sent it, by the reference its content is
+    /// kept under
     pub content: String,
     /// When it arrived, in minutes since the Unix epoch
     pub minutes: i64,
@@ -143,7 +147,7 @@ impl MailCopies {
             }
             let kept = KeptCopy {
                 account: copy.account,
-                content: copy.content.to_ascii_lowercase(),
+                content: copy.content,
                 minutes: copy.minutes,
                 folder: copy.folder,
                 uid: copy.uid,
@@ -196,7 +200,7 @@ pub(crate) struct Copies {
     /// and carried on its route.
     content: ContentStore,
     /// Messages asked of the person's other devices and not here yet, by
-    /// the address of their content.
+    /// the reference their content is kept under.
     asked: BTreeMap<String, (MessageId, KeptCopy)>,
     /// Messages taken, or that cannot arrive, in this window: not asked
     /// for again.
@@ -246,20 +250,22 @@ impl Copies {
             {
                 continue;
             }
-            let content = tilo_content::hash_bytes(original);
+            // A server's message at one UID of one numbering never changes.
             let known = held.copies.get(&Id::from_raw(id.to_string()));
             if known.is_some_and(|known| {
-                known.content == content
-                    && known.folder == at.folder
+                known.folder == at.folder
                     && known.uid == at.uid
                     && known.uid_validity == at.uid_validity
             }) {
                 continue;
             }
-            if let Err(error) = self.content.put(original) {
-                tracing::warn!(%error, "mail: a message could not be kept for the person's devices");
-                continue;
-            }
+            let content = match self.content.put(original) {
+                Ok(reference) => reference,
+                Err(error) => {
+                    tracing::warn!(%error, "mail: a message could not be kept for the person's devices");
+                    continue;
+                }
+            };
             copies.push(NewCopy {
                 id: id.to_string(),
                 account: account.to_owned(),
@@ -323,16 +329,16 @@ impl Copies {
     ) -> Vec<Message> {
         self.looked = Some(self.now());
         let mut taken = Vec::new();
-        for (address, (id, copy)) in std::mem::take(&mut self.asked) {
+        for (reference, (id, copy)) in std::mem::take(&mut self.asked) {
             if held(id) {
                 self.settled.insert(id);
                 continue;
             }
-            match self.read(&address, id, &copy) {
+            match self.read(&reference, id, &copy) {
                 Read::Here(message) => taken.extend(message.map(|message| *message)),
                 Read::Gone => {}
                 Read::Asked => {
-                    self.asked.insert(address, (id, copy));
+                    self.asked.insert(reference, (id, copy));
                 }
             }
         }
@@ -371,8 +377,8 @@ impl Copies {
 
     /// Read `copy` from the record's content, asking the person's other
     /// devices for it when it is not here.
-    fn read(&mut self, address: &str, id: MessageId, copy: &KeptCopy) -> Read {
-        if let Some(bytes) = self.content.read(address) {
+    fn read(&mut self, reference: &str, id: MessageId, copy: &KeptCopy) -> Read {
+        if let Some(bytes) = self.content.read(reference) {
             self.settled.insert(id);
             let message = copy.message(id, &bytes);
             if message.is_none() {
@@ -380,7 +386,7 @@ impl Copies {
             }
             return Read::Here(message.map(Box::new));
         }
-        if self.content.state(address) == ContentState::Unavailable {
+        if self.content.state(reference) == ContentState::Unavailable {
             self.settled.insert(id);
             return Read::Gone;
         }

@@ -135,17 +135,20 @@ impl Document {
         &mut self,
         #[param("The whole new body as Markdown")] markdown: String,
     ) -> Result<(), Refusal> {
-        let (action, inputs) = tilo_document::action::stage_import(
-            tilo_document::action::ImportFormat::Markdown,
-            markdown.as_bytes(),
-        )
-        .map_err(Refusal::new)?;
-        if !inputs.is_empty() {
+        let format = tilo_document::action::ImportFormat::Markdown;
+        let staged = tilo_document::action::stage_import(format, markdown.as_bytes())
+            .map_err(Refusal::new)?;
+        if !staged.inputs().is_empty() {
             return Err(Refusal::new(
                 "a picture is not written into the Markdown: place it with place-image",
             ));
         }
-        self.body.perform(action);
+        // Read again where it applies, as this runs on every replica: the
+        // blocks it writes take this action's ids there.
+        self.body.perform(RichTextAction::ReplaceFormatted {
+            format,
+            bytes: markdown.into_bytes(),
+        });
         Ok(())
     }
 

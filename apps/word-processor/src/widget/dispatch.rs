@@ -1363,7 +1363,7 @@ impl Editor {
 
     /// Replace the body of this document, while it is empty, with the file
     /// `name` (Word when it has none) kept as `content`, a
-    /// `tilo.content:<hash>` address. A document with words, pictures or
+    /// `tilo.content:<reference>` address. A document with words, pictures or
     /// tables in it is someone's writing, which an import never replaces.
     fn import_content(
         &mut self,
@@ -1372,14 +1372,14 @@ impl Editor {
         name: Option<&str>,
     ) -> ui::framework::EffectAnswer {
         let hash = ui::tilo_actions::content_hash(content.trim())
-            // A plan that carried the content gives its bare hash.
-            .or_else(|| {
-                let bare = content.trim();
-                (bare.len() == 64 && bare.bytes().all(|byte| byte.is_ascii_hexdigit()))
-                    .then_some(bare)
-            })
-            .ok_or_else(|| format!("`{content}` names no content: give `tilo.content:<hash>`"))?
-            .to_ascii_lowercase();
+            // A plan that carried the content gives its bare reference.
+            .unwrap_or_else(|| content.trim())
+            .to_owned();
+        if !tilo_content::valid_reference(&hash) {
+            return Err(format!(
+                "`{content}` names no content: give `tilo.content:<reference>`"
+            ));
+        }
         let doc = cx.document().ok_or("the document is not at hand")?.clone();
         let containers = crate::model::open(&doc)?;
         let written =

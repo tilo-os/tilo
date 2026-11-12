@@ -237,8 +237,9 @@ impl WpFormat {
 
 /// The action that replaces a document's body with `bytes` read as
 /// `format`: the import a launch on a file takes, and Open in place. The
-/// images the file embeds are kept in `content` first, since the document
-/// only names them.
+/// file is read here, once; the images it embeds are kept in `content`
+/// first (sealed, in a store that seals), and the action names each by the
+/// reference it is kept under.
 ///
 /// # Errors
 ///
@@ -252,11 +253,11 @@ pub fn import_action(
     let import = format
         .import_format()
         .ok_or_else(|| format!("{format:?} documents cannot be opened"))?;
-    let (action, inputs) = tilo_document::action::stage_import(import, bytes)?;
-    content
-        .put_inputs(&inputs)
+    let staged = tilo_document::action::stage_import(import, bytes)?;
+    let kept = content
+        .put_inputs(staged.inputs())
         .map_err(|error| format!("could not keep the file's images: {error}"))?;
-    Ok(action)
+    Ok(staged.action(kept))
 }
 
 /// A bundled starter document. The content is embedded at compile time

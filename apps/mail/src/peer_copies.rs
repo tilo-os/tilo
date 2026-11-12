@@ -206,10 +206,9 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             has_older: Some(false),
             ..Default::default()
         };
-        let newer_address = tilo_content::hash_bytes(&newer_raw);
         synced.receive(vec![
             (old.clone(), old_raw.clone()),
-            (newer.clone(), newer_raw),
+            (newer.clone(), newer_raw.clone()),
         ]);
         first_events
             .send(EngineEvent::Fetched {
@@ -230,26 +229,44 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             &automerge::ROOT,
         );
 
-        // The person's record names both, by the address of what the server
-        // sent; the bytes went to the first device's host, which keeps them
-        // with the record, and the window let go of its own copy.
-        let old_address = tilo_content::hash_bytes(&old_raw);
+        // The person's record names both, by a sealed reference to what the
+        // server sent; the ciphertext went to the first device's host, which
+        // keeps it with the record, and the window let go of its own copy.
         let kept = first_record.get();
-        let named = kept
-            .copies
-            .get(&ui::tilo_resource::Id::from_raw(old.id.to_string()))
-            .expect("the old message is kept for the person's devices");
-        assert_eq!(named.content, old_address);
+        let named = |message: &Message| {
+            kept.copies
+                .get(&ui::tilo_resource::Id::from_raw(message.id.to_string()))
+                .expect("the message is kept for the person's devices")
+                .clone()
+        };
+        let old_reference = named(&old).content;
+        assert!(tilo_content::is_sealed(&old_reference), "{old_reference}");
         assert_eq!(
-            (named.folder, named.uid, named.uid_validity),
+            (
+                named(&old).folder,
+                named(&old).uid,
+                named(&old).uid_validity
+            ),
             (Folder::Inbox, 41, 7)
         );
         assert_eq!(kept.copies.len(), 2);
+        let old_address = tilo_content::content_address(&old_reference).unwrap();
+        let newer_address = tilo_content::content_address(&named(&newer).content).unwrap();
         let mut first_host_keeps: HashMap<String, Vec<u8>> =
             first_lane.take_requests().offers.into_iter().collect();
-        assert_eq!(first_host_keeps.get(&old_address), Some(&old_raw));
+        for (raw, address) in [(&old_raw, &old_address), (&newer_raw, &newer_address)] {
+            let held = first_host_keeps.get(address).expect("the host keeps it");
+            assert!(
+                !held.windows(24).any(|window| window == &raw[..24]),
+                "the host keeps ciphertext"
+            );
+        }
         assert!(
-            !first.copies.as_ref().unwrap().holds_for_test(&old_address),
+            !first
+                .copies
+                .as_ref()
+                .unwrap()
+                .holds_for_test(&old_reference),
             "the window holds no second copy of what its host keeps"
         );
 
@@ -292,7 +309,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         assert_eq!(
             wanted,
             [newer_address, old_address],
-            "both messages are asked for, newest first"
+            "both messages are asked for by address, newest first"
         );
         for address in wanted {
             let bytes = first_host_keeps.remove(&address).unwrap();

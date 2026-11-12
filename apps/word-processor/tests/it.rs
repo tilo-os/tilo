@@ -35,5 +35,8 @@ mod framework_undo;
 
 mod scroll_cost;
 
+#[path = "sealed_images.rs"]
+mod sealed_images;
+
 #[path = "writer_benchmark.rs"]
 mod writer_benchmark;
