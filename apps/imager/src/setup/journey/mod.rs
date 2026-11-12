@@ -686,6 +686,8 @@ pub struct InstallerPreview {
     composed: Option<Box<dyn Widget>>,
     // Native handoffs replace the tree before layout, independently of page composition.
     composition_replaced: bool,
+    /// The page composes again at its next layout: what it shows changed
+    /// shape. Paint alone never sets it; children report their own redraw.
     dirty: bool,
     rect: Rect,
     /// The last pointer position in logical coordinates. A page rebuilt
@@ -3561,7 +3563,6 @@ impl InstallerPreview {
     /// category stays the stored authority; this only stops the parent checkbox
     /// and its children from telling different stories.
     fn sync_files_category(&mut self) -> bool {
-        self.dirty = true;
         if self.belongings.windows.is_some() || !self.belongings.source_selection.ready() {
             return false;
         }
@@ -3570,6 +3571,7 @@ impl InstallerPreview {
             return false;
         }
         self.journey.categories[0] = any;
+        self.dirty = true;
         true
     }
 
@@ -5549,7 +5551,6 @@ impl Widget for InstallerPreview {
         Some(self)
     }
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.dirty = true;
         self.follow_document();
         let staged = self.published.borrow_mut().take_staged();
         if let Some(crate::window_view::Staged(scenario)) = staged {
@@ -5743,7 +5744,6 @@ impl Widget for InstallerPreview {
         self.last_frame = Some(current);
     }
     fn handle_event(&mut self, event: &WindowEvent, cx: &mut ui::widget::EventCtx<'_>) {
-        self.dirty = true;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = cx.logical(position);
         }
@@ -5782,7 +5782,6 @@ impl Widget for InstallerPreview {
         ui::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
-        self.dirty = false;
         ui::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
