@@ -47,8 +47,8 @@ class CiImagePins(unittest.TestCase):
             resolver = load_resolver()
         repository = registry['namespace'] + '/' + registry['builder']
         self.assertEqual(resolver.IMAGE, registry['host'] + '/' + repository)
-        self.assertEqual(resolver.MANIFEST_URL,
-                         'https://' + registry['host'] + '/v2/' + repository + '/manifests/latest')
+        self.assertEqual(resolver.manifest_url('inputs-' + '0' * 32),
+                         'https://' + registry['host'] + '/v2/' + repository + '/manifests/inputs-' + '0' * 32)
         self.assertEqual(resolver.TOKEN_REALM, registry['token_realm'])
         self.assertEqual(resolver.PULL_SCOPE, 'repository:' + repository + ':pull')
 
@@ -58,7 +58,8 @@ class CiImagePins(unittest.TestCase):
         with patch.dict(os.environ, environ):
             resolver = load_resolver()
         self.assertEqual(resolver.IMAGE, 'ghcr.io/example/tilo-builder')
-        self.assertEqual(resolver.MANIFEST_URL, 'https://ghcr.io/v2/example/tilo-builder/manifests/latest')
+        self.assertEqual(resolver.manifest_url('inputs-' + '0' * 32),
+                         'https://ghcr.io/v2/example/tilo-builder/manifests/inputs-' + '0' * 32)
         self.assertEqual(resolver.TOKEN_REALM, 'https://ghcr.io/token')
         self.assertEqual(resolver.resolve('ghcr.io/example/tilo-builder@sha256:' + 'a' * 64),
                          'ghcr.io/example/tilo-builder@sha256:' + 'a' * 64)

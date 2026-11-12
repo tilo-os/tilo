@@ -1,9 +1,10 @@
 # CI build environment: everything `cargo check`/`test`/`nextest` needs for the
 # workspace, so jobs do not `dnf install` ~30 packages on every run.
 #
-# Rebuilt weekly by .forgejo/workflows/build-builder-image.yml. Fedora rather
-# than the runner's default Ubuntu image: the OS is Fedora-based, so the build
-# deps and their versions match what the image build uses.
+# Published by .forgejo/workflows/build-ci-builder.yml whenever what it is built
+# from changes. Fedora rather than the runner's default Ubuntu image: the OS is
+# Fedora-based, so the build deps and their versions match what the image build
+# uses.
 FROM scratch AS external-assets
 COPY --from=github-assets / /
 FROM scratch AS font-artifacts
@@ -286,3 +287,10 @@ RUN --mount=type=bind,from=font-artifacts,source=/,target=/tmp/font-seed,ro \
     && python3 -I /tmp/fonts/tools/font-catalog.py seed /tmp/fonts/crates/sdk/ui-core/assets/fonts \
          /usr/share/tilo/font-artifacts --offline \
     && chmod -R a-w /usr/share/tilo/font-artifacts
+
+# The ordinary user tests run as. Jobs start as root, which passes every
+# permission check: a test of a sandbox, a Landlock rule or a refusal to run as
+# root proves nothing there. tools/as-test-user.sh starts each test binary as
+# this user instead.
+RUN useradd --uid 1000 --user-group --create-home tilo
+ENV TILO_TEST_USER=tilo
