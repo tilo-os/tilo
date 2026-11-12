@@ -299,10 +299,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     vec![mapped(&mut minter), elsewhere()],
                     share,
                 );
-                assert!(
-                    open_menu(&mut frame, &row),
-                    "the window's menu offers “{row}”"
-                );
+                if !open_menu(&mut frame, &row) {
+                    return Err(format!("the window's menu does not offer “{row}”").into());
+                }
                 let path = output.join(format!("{locale}-{theme_name}-{state}.png"));
                 frame.render_png(&path);
                 println!("{}", path.display());
