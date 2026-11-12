@@ -164,43 +164,70 @@ const dump = async (tab, name) => {
 // Wait until `condition` (evaluated in the page) holds, or say what the page
 // showed instead. A page that never shows something is the failure, not a
 // timeout to stretch.
+//
+// The page does the waiting, not the driver: one round trip that resolves when
+// the condition holds, instead of a round trip every 250 ms. Each of those
+// costs the page's main thread — the same thread that is drawing its frames —
+// a turn between frames, so a wait of forty polls was adding forty turns of
+// work to the very page it waited for.
 const until = async (tab, expression, what, timeout = 90_000) => {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    const value = await tab.evaluate(expression).catch(() => false);
-    if (value) return value;
-    if (Date.now() > deadline) {
-      // Where the page stopped, in the failure line itself: the step it was
-      // in says more than the wait that ran out.
-      const shown = await tab.evaluate(`JSON.stringify({
-        arrival: document.documentElement.dataset.arrival ?? null,
-        door: document.documentElement.dataset.door ?? null,
-        phase: document.documentElement.dataset.phase ?? null,
-        progress: document.documentElement.dataset.arrivalProgress ?? null,
-        status: document.getElementById('status')?.textContent ?? null,
-      })`).catch(() => 'unreadable');
-      await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-      await failed(`${what} never appeared: ${shown}`, tab);
-    }
-    await sleep(250);
-  }
+  const value = await tab.evaluate(`globalThis.__tiloWait?.(() => (${expression}), ${timeout}) ?? false`)
+    .catch(() => false);
+  if (value) return value;
+  // Where the page stopped, in the failure line itself: the step it was in
+  // says more than the wait that ran out.
+  const shown = await tab.evaluate(`JSON.stringify({
+    arrival: document.documentElement.dataset.arrival ?? null,
+    door: document.documentElement.dataset.door ?? null,
+    phase: document.documentElement.dataset.phase ?? null,
+    progress: document.documentElement.dataset.arrivalProgress ?? null,
+    status: document.getElementById('status')?.textContent ?? null,
+    waited: ${JSON.stringify(what)},
+  })`).catch(() => 'unreadable');
+  await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+  await failed(`${what} never appeared: ${shown}`, tab);
 };
+// The page's own wait, in every page this file opens: `ask` until it answers
+// something true, or `ms` has passed, resolved as it answers.
+const waitSource = `(() => {
+  if (globalThis.__tiloWait) return;
+  globalThis.__tiloWait = (ask, ms) => new Promise(resolve => {
+    const deadline = performance.now() + ms;
+    const turn = () => {
+      let value = false;
+      try { value = ask(); } catch (error) { value = false; }
+      if (value) return resolve(value);
+      if (performance.now() > deadline) return resolve(false);
+      setTimeout(turn, 50);
+    };
+    turn();
+  });
+})();`;
 
 // Keys as the desktop's search reads them (its own scripts drive it this
 // way): the chord, the query, Enter.
+//
+// The events of one gesture go out together, not one acknowledged frame at a
+// time. Chromium answers a dispatched key or press when the page has taken it,
+// and this page's main thread is inside a frame for seconds under the gate: a
+// driver that waited for each key in turn typed a five-letter query in eight
+// frames, where a person types it in a tenth of a second and the desk reads
+// the whole query on the frame it draws next.
+const event = (tab, params) => tab.send('Input.dispatchKeyEvent', params);
 const key = async (tab, name, modifiers = 0) => {
   const named = {Enter: 13, Escape: 27, ArrowDown: 40, ArrowUp: 38};
   const code = name.length === 1 ? `Key${name.toUpperCase()}` : name;
-  const event = {key: name, code, windowsVirtualKeyCode: named[name] ?? name.toUpperCase().charCodeAt(0), modifiers};
-  await tab.send('Input.dispatchKeyEvent', {type: 'rawKeyDown', ...event, ...(name === 'Enter' ? {text: '\r'} : {})});
-  await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', ...event});
-  await sleep(300);
+  const pressed = {key: name, code, windowsVirtualKeyCode: named[name] ?? name.toUpperCase().charCodeAt(0), modifiers};
+  await Promise.all([
+    event(tab, {type: 'rawKeyDown', ...pressed, ...(name === 'Enter' ? {text: '\r'} : {})}),
+    event(tab, {type: 'keyUp', ...pressed}),
+  ]);
 };
 const type = async (tab, text) => {
-  for (const ch of text) {
-    await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key: ch, text: ch});
-    await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key: ch});
-  }
+  await Promise.all([...text].flatMap(ch => [
+    event(tab, {type: 'keyDown', key: ch, text: ch}),
+    event(tab, {type: 'keyUp', key: ch}),
+  ]));
   await sleep(600);
 };
 // The names the command palette shows, in order, as the desktop publishes
@@ -240,55 +267,78 @@ const settle = (tab, by = 2, owed = () => true) => waits.settle({
   onTimeout: ({from, by}) => until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
     `the desk stepping ${by} more frame(s)`, 1),
 });
-// Whether the open search still owes rows: the desk's own answer, which a
-// settled frame would not carry, as a settled desk presents none.
-const searching = tab => waits.searching(tab);
+// Seconds from `from` to now, and the frames the desk has presented: what the
+// timing lines below print.
+const took = from => ((Date.now() - from) / 1000).toFixed(1);
+const presented = tab => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0').catch(() => 0);
 // A person's search: the chord, the query, and Enter on the row the palette
-// offers for it. The host answers a query a moment after the last key, and the
-// rows it shows before that answer are the previous query's: they are read
-// until two reads agree and the row asked for is the one Enter acts on — the
-// first result under the palette's heading, which is what the highlight sits
-// on. Reading only for the row's presence raced that answer and sent Enter to
-// a row left over from the query before.
+// offers for it.
+//
+// Every wait here is on what the desk says, never on how many frames it drew.
+// A frame of this page costs seconds under the gate — a megapixel through a
+// software rasteriser, with the app opened last still compiling its module on
+// the same thread — so a wait that counted frames paid seconds for an answer
+// the desk had already given.
+//
+// The palette's card is that answer (`searchCard`): the query the desk's field
+// holds and the rows it will act on, in the order Enter walks them. The desk
+// says it still owes rows (`searchSearching`) while a source has yet to answer
+// or the rows are not cut to the card's room, and the rows it shows before that
+// answer are the previous query's. So Enter waits for the desk to have answered
+// *this* query, and for the row asked for to be the first one under the
+// palette's heading, which is where the highlight sits.
 const search = async (tab, command, query, row, opens = null) => {
+  const began = Date.now();
+  const framesFrom = await presented(tab);
   // The desk keeps the search up until what it opened has arrived, and the
   // chord toggles it: it is opened only when it is down.
   if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen')) {
     await click(tab, 640, 700);
     await key(tab, 'k', command);
   }
-  // A desk presenting a megapixel through software draws a few frames a
-  // second: waits here are counted in frames, so they are sized for a page
-  // that is slow rather than quiet.
+  const chorded = Date.now();
   await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, 120_000);
   await type(tab, query);
-  const first = rows => (rows ? rows[rows.indexOf('Results') + 1] ?? null : null);
-  let chosen = null;
+  const typed = Date.now();
+  const asked = JSON.stringify(query);
+  // The card as the desk answers it for this query, once it owes no row:
+  // nothing before that is its answer to the text in its field.
+  const answered = `(() => {
+    const s = globalThis.tiloMount?.state?.() ?? null;
+    const card = s?.searchCard ?? null;
+    return card && s.searchSearching === false && card.query === ${asked} ? JSON.stringify(card) : '';
+  })()`;
+  let card = null;
+  let last = null;
   const deadline = Date.now() + 120_000;
-  // The text is in before its answer is: two reads a frame apart, agreeing,
-  // are the palette's answer to this query and not a frame of the one before.
-  // A settled desk presents no frame, so the wait between the two reads is
-  // the desk's search saying it owes no more rows as much as a frame.
-  await settle(tab, 2, () => searching(tab));
   for (;;) {
-    const rows = await paletteRows(tab);
-    await settle(tab, 1, () => searching(tab));
-    const again = await paletteRows(tab);
-    if (first(rows) === row && JSON.stringify(rows) === JSON.stringify(again)) {
-      // Enter is what opens the app: the watch is in the page before the press,
-      // so the frame it closes search and the frame the app's window arrives on
-      // are told apart on the page's own clock.
-      if (opens) await armOpen(tab, opens);
-      await key(tab, 'Enter');
-      chosen = rows;
-      break;
-    }
-    if (Date.now() > deadline) {
+    const read = await until(tab, answered, `the desk answering "${query}"`, 120_000);
+    card = JSON.parse(read);
+    if (card.rows[0]?.title === row) break;
+    // The same settled answer twice is the desk's answer, not a frame of one
+    // still coming: a palette that offers something else first is the failure.
+    if (read === last || Date.now() > deadline) {
+      const rows = await paletteRows(tab);
       await dump(tab, `timeout-rows-for-${query}`);
-      failed(`the palette offers no ${row} first for "${query}": ${JSON.stringify(again)}`);
+      failed(`the palette offers no ${row} first for "${query}": ${JSON.stringify(card.rows?.map(entry => entry.title) ?? rows)}`);
     }
+    last = read;
   }
+  const chosen = card.rows;
+  // Enter is what opens the app: the watch is in the page before the press, so
+  // the frame it closes search and the frame the app's window arrives on are
+  // told apart on the page's own clock.
+  if (opens) await armOpen(tab, opens);
+  await key(tab, 'Enter');
+  const pressed = Date.now();
   await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, 180_000);
+  // Where a search's time went, in the parts a person's search has: the chord,
+  // the text typed, the desk answering the query, the rows it offers, Enter,
+  // and what the search waited for after it (the app's window, arriving), with
+  // the frames the desk presented meanwhile.
+  console.log(`TIMING search=${asked} chord=${took(began)} type=${took(chorded)}` +
+    ` answer=${took(typed)} rows=${card.rows.length} open=${took(pressed)}` +
+    ` frames=${await presented(tab) - framesFrom}`);
   return chosen;
 };
 // A page-side clock around the person's Enter. What a person waits for is the
@@ -382,10 +432,14 @@ const canvasTopLeft = tab => tab.evaluate(`(() => {
   return JSON.stringify(rect ? {x: rect.left, y: rect.top, width: rect.width, height: rect.height} : null);
 })()`);
 const click = async (tab, x, y) => {
-  await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
-  for (const type of ['mousePressed', 'mouseReleased']) {
-    await tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', clickCount: 1});
-  }
+  // One gesture's three events, sent together: a press acknowledged one frame
+  // at a time is three of this page's frames for a click a person makes in
+  // milliseconds.
+  await Promise.all([
+    tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y}),
+    ...['mousePressed', 'mouseReleased'].map(type =>
+      tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', clickCount: 1})),
+  ]);
   await sleep(600);
 };
 // The centre of the first semantic node named `name`, in page pixels.
@@ -516,6 +570,7 @@ const anotherBrowser = async () => {
   await tab.send('Emulation.setDeviceMetricsOverride',
     {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false}).catch(() => {});
   await returning(tab);
+  await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: waitSource});
   await recordLoading(launched, tab);
   return tab;
 };
@@ -642,7 +697,7 @@ const browserArgs = [
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ];
 const browsers = [];
-const mark = clock('start');
+const mark = clock();
 try {
   if (earlier) {
     // A person arriving now: the chat window and the composer are the app's,
@@ -996,20 +1051,36 @@ try {
   await dump(a.tab, '6-a-call');
   await dump(b.tab, '6-b-call');
 
-  // A hangs up: A's card goes, and B's call has A no longer in it.
-  await pressWhen(a.tab, 'Leave call', "A's hang-up control");
-  await noCard(a, "A's call card after hanging up");
-  await untilNotLive(a, 'A hanging up');
+  // A hangs up: A's card goes, and B's call has A no longer in it. Each wait
+  // says what it took, so a hang-up that costs minutes names the part that
+  // did: the press, the card leaving the desk's own tree, and the call the
+  // page says is over, with the frames spent waiting.
+  const hangup = async (person, who) => {
+    const began = Date.now();
+    const framesFrom = await presented(person.tab);
+    await pressWhen(person.tab, 'Leave call', `${who}'s hang-up control`);
+    const pressed = Date.now();
+    await noCard(person, `${who}'s call card after hanging up`);
+    const gone = Date.now();
+    await untilNotLive(person, `${who} hanging up`);
+    const over = Date.now();
+    console.log(`TIMING hangup who=${who} press=${took(began)} card=${took(pressed)} live=${took(gone)}` +
+      ` done=${took(over)} frames=${await presented(person.tab) - framesFrom}`);
+  };
+  await hangup(a, 'A');
+  // What the other page showed of it: A's card gone is A's own desk, and B
+  // naming itself alone again is the call ending reaching it, which is the
+  // other half and is timed on its own.
+  const peerFrom = Date.now();
   await untilCard(b, 'Just you', "B's call card after A hung up");
+  console.log(`TIMING hangup who=A peer=${took(peerFrom)}`);
   console.log('ok: A hung up, and B is alone in the call');
   mark('A hung up, B alone in the call');
   await dump(a.tab, '7-a-hung-up');
 
   // B hangs up too: the call is over on both desks, and no one is in the
   // channel's call any more.
-  await pressWhen(b.tab, 'Leave call', "B's hang-up control");
-  await noCard(b, "B's call card after hanging up");
-  await untilNotLive(b, 'B hanging up');
+  await hangup(b, 'B');
   await untilChannelEmpty(a, 'voice', "A's voice channel after the call");
   await untilChannelEmpty(b, 'voice', "B's voice channel after the call");
   console.log('ok: hanging up ended the call for both');
@@ -1173,15 +1244,11 @@ try {
     // frame reaches the page when the GPU has room for it, which on a busy
     // software rasteriser is seconds later: the open is measured on that
     // frame, so it is waited for, and one that never comes is said below.
-    for (const deadline = Date.now() + 60_000; Date.now() < deadline;) {
-      const drawn = await a.tab.evaluate(`(() => {
-        const watch = globalThis.__tiloOpen;
-        watch?.read?.();
-        return !watch || watch.shownAt !== null;
-      })()`).catch(() => false);
-      if (drawn) break;
-      await sleep(250);
-    }
+    await a.tab.evaluate(`globalThis.__tiloWait?.(() => {
+      const watch = globalThis.__tiloOpen;
+      watch?.read?.();
+      return !watch || watch.shownAt !== null;
+    }, 60_000) ?? false`).catch(() => false);
     const marks = await openMarks(a.tab);
     // An open the page's own clock never saw begun or never saw end is not a
     // fast one: it is no reading, and the gate says so instead of counting a
@@ -1544,8 +1611,7 @@ try {
   if (brief) await reportProblem();
 
   // Nothing failed in either page.
-  const both = [...a.tab.log, ...b.tab.log, ...(invited?.tab.log ?? [])];
-  const errors = both.filter(line => /^EXC/.test(line) || /panic/i.test(line));
+  const both = [...a.tab.log, ...b.tab.log, ...(invited?.tab.log ?? [])];  const errors = both.filter(line => /^EXC/.test(line) || /panic/i.test(line));
   report.logs = {a: a.tab.log.slice(-10), b: b.tab.log.slice(-10), c: invited?.tab.log.slice(-10) ?? null};
   if (errors.length) failed(`pages reported errors: ${errors.slice(0, 5).join('; ')}`);
 
