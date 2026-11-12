@@ -287,6 +287,37 @@ impl std::fmt::Debug for Engine {
     }
 }
 
+/// This device's channel keys, as its owner compacts the sealed histories of its records with
+/// them wherever it writes, linked or not
+/// ([`NativeWorkspaceOwner::keep_sealed_histories`]).
+pub struct HistoryKeys(pub ChannelKeyProvider);
+
+impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
+    fn open(
+        &self,
+        workspace: WorkspaceId,
+        write: &collab_types::SignedOp,
+    ) -> Result<Vec<u8>, String> {
+        self.0
+            .get()
+            .ok_or("this device's channel service is not running")?
+            .open_history_write(workspace, write)
+    }
+
+    fn seal_checkpoint(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        record: &str,
+        snapshot: &[u8],
+    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
+        self.0
+            .get()
+            .ok_or("this device's channel service is not running")?
+            .seal_checkpoint(workspace, app, record, snapshot)
+    }
+}
+
 impl Engine {
     /// This device's workspaces as `owner` holds them, with the identity they are held under: what
     /// a host supplies whichever file, store or record it keeps them in.
@@ -297,11 +328,13 @@ impl Engine {
         identity: HostIdentity,
         custody: Arc<dyn Custody>,
     ) -> Self {
+        let keys = ChannelKeyProvider::default();
+        owner.keep_sealed_histories(Arc::new(HistoryKeys(keys.clone())));
         Self {
             owner,
             slots,
             identity,
-            keys: ChannelKeyProvider::default(),
+            keys,
             custody,
             link: std::sync::Mutex::new(None),
             unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),

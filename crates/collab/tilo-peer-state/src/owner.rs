@@ -59,7 +59,7 @@ pub use history_content::HistoryContent;
 pub use join_service::OwnerJoinWorkspaces;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use publication::{
-    CUSTODY_FULL, HostAnswer, NativeOutgoing, NativeOutgoingEntry, RecordWrites,
+    CUSTODY_FULL, HostAnswer, NativeOutgoing, NativeOutgoingEntry, RecordWrites, SealedHistoryKeys,
     validate_file_layout,
 };
 pub use record::{
@@ -182,6 +182,12 @@ struct SharedOwner {
     /// Who hands on what this device commits to a workspace it hosts itself
     /// ([`NativeWorkspaceOwner::observe_kept_here`]).
     kept_here: Mutex<Vec<Weak<dyn NativeKeptHereObserver>>>,
+    /// The channel keys that keep this device's sealed record histories within
+    /// their bound ([`NativeWorkspaceOwner::keep_sealed_histories`]).
+    history_keys: Mutex<Option<Arc<dyn SealedHistoryKeys>>>,
+    /// How many more passes each workspace takes before a compaction that
+    /// drafted nothing is tried again.
+    compaction_wait: Mutex<BTreeMap<WorkspaceId, usize>>,
 }
 #[derive(Default)]
 struct Current {
@@ -541,6 +547,8 @@ impl NativeWorkspaceOwner {
             current: RwLock::new(Current::default()),
             listeners: Mutex::new(Vec::new()),
             kept_here: Mutex::new(Vec::new()),
+            history_keys: Mutex::new(None),
+            compaction_wait: Mutex::new(BTreeMap::new()),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -582,6 +590,8 @@ impl NativeWorkspaceOwner {
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
             kept_here: Mutex::new(Vec::new()),
+            history_keys: Mutex::new(None),
+            compaction_wait: Mutex::new(BTreeMap::new()),
         })))
     }
     #[must_use]

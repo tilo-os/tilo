@@ -8,6 +8,7 @@ use neighbour_wire::NeighbourMsg;
 use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use web_time::SystemTime;
 
 pub(crate) const MAX_ENTRIES: usize = 64;
@@ -16,6 +17,34 @@ pub(crate) const MAX_ENTRIES: usize = 64;
 pub const CUSTODY_FULL: &str = "native outgoing capacity exceeded; existing edits retained";
 pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES + 1;
+/// Passes (writes, and asks of the workspace's holder) before a compaction that
+/// drafted nothing is tried again ([`NativeWorkspaceOwner::compact_outgoing`]).
+const COMPACTION_RETRY: usize = 256;
+
+/// The channel keys a device holds for the sealed records of its workspaces:
+/// what its owner compacts their histories with
+/// ([`NativeWorkspaceOwner::keep_sealed_histories`]).
+pub trait SealedHistoryKeys: collab_types::signer::MaybeSendSync {
+    /// Open `write`, an admitted write of a sealed record's history of
+    /// `workspace` (a compaction included), under any epoch whose key this
+    /// device holds.
+    ///
+    /// # Errors
+    /// This device holds no key that opens it.
+    fn open(&self, workspace: WorkspaceId, write: &SignedOp) -> Result<Vec<u8>, String>;
+    /// Seal `snapshot`, the merged history of `app`'s `record`, as that
+    /// record's checkpoint under its channel's current epoch.
+    ///
+    /// # Errors
+    /// This device holds no current key of the record's channel.
+    fn seal_checkpoint(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        record: &str,
+        snapshot: &[u8],
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String>;
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredPublication {
     version: u32,
@@ -1309,16 +1338,28 @@ impl NativeWorkspaceOwner {
             .map(drop)
     }
 
+    /// Keep every sealed record history this owner holds within its bound
+    /// with `keys`, the channel keys this device holds: before each of this
+    /// device's writes, and whenever its holder asks
+    /// ([`Self::compact_outgoing`]). Compaction does not wait for a link, so a
+    /// device alone or offline goes on writing however long a record's
+    /// history grows.
+    pub fn keep_sealed_histories(&self, keys: Arc<dyn SealedHistoryKeys>) {
+        *self.0.history_keys.lock() = Some(keys);
+    }
+
     /// Compact every sealed record history of `workspace` that has used most of
     /// its bound into one sealed checkpoint, and commit the compactions
     /// into this device's outgoing custody, where they publish as the
-    /// checkpoints they are. `open` opens any write of a history this
-    /// device can read, and `seal` seals a record's merged snapshot under
-    /// its channel's current epoch, both from the channel keys this device
-    /// holds as a writer of the record
+    /// checkpoints they are, after the writes they cover. The keys
+    /// [`Self::keep_sealed_histories`] gave open any write of a history this
+    /// device can read and seal a record's merged snapshot under its channel's
+    /// current epoch
     /// ([`PeerPublication::draft_sealed_compaction`](crate::PeerPublication::draft_sealed_compaction)).
-    /// A record whose keys are not here, or whose history does not merge yet, waits for a later
-    /// call.
+    /// A record whose keys are not here, or whose history does not merge yet,
+    /// waits: a workspace none of whose due histories compacted is tried again
+    /// only after [`COMPACTION_RETRY`] more passes, as merging a whole history
+    /// on every keystroke would cost more than the write.
     ///
     /// Answers how many histories were compacted. Every device taking part
     /// maintains its own copy this way; no host compacts for it.
@@ -1329,10 +1370,11 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         signer: &dyn collab_types::signer::DeviceSigner,
-        mut open: impl FnMut(&SignedOp) -> Result<Vec<u8>, String>,
-        mut seal: impl FnMut(&str, &str, &[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String>,
         now: SystemTime,
     ) -> Result<usize, String> {
+        let Some(keys) = self.0.history_keys.lock().clone() else {
+            return Ok(0);
+        };
         if self.with_current(workspace, |view| {
             Ok(view
                 .peer
@@ -1342,13 +1384,21 @@ impl NativeWorkspaceOwner {
         })? {
             return Ok(0);
         }
+        if let Some(wait) = self.0.compaction_wait.lock().get_mut(&workspace)
+            && *wait > 0
+        {
+            *wait = wait.saturating_sub(1);
+            return Ok(0);
+        }
         let draft = |view: &NativeCommittedView| {
             let device = view.device().device_public_key;
             let due = view.peer.publication().sealed_records_to_compact();
+            let mut open = |write: &SignedOp| keys.open(workspace, write);
             Ok(due
                 .into_iter()
                 .filter_map(|(app, record)| {
-                    let mut seal = |snapshot: &[u8]| seal(&app, &record, snapshot);
+                    let mut seal =
+                        |snapshot: &[u8]| keys.seal_checkpoint(workspace, &app, &record, snapshot);
                     let route = (app.as_str(), record.as_str());
                     let drafted = view.peer.publication().draft_sealed_compaction(
                         route, None, &mut open, &mut seal, device, now,
@@ -1366,8 +1416,18 @@ impl NativeWorkspaceOwner {
             live.publication_mut()
                 .admit_sealed_compaction(&app, &record, op, now)
         };
-        self.commit_outgoing(workspace, signer, now, draft, admit)
-            .await
+        let compacted = self
+            .commit_outgoing(workspace, signer, now, draft, admit)
+            .await?;
+        if compacted == 0 {
+            self.0
+                .compaction_wait
+                .lock()
+                .insert(workspace, COMPACTION_RETRY);
+        } else {
+            self.0.compaction_wait.lock().remove(&workspace);
+        }
+        Ok(compacted)
     }
 
     /// Commit the writes `draft` drafts of `workspace`, each with the custody entry it replaces,

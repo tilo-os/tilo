@@ -26,6 +26,8 @@ mod busy_workspace;
 mod changes_read;
 #[path = "create_tests.rs"]
 mod create;
+#[path = "sealed_history_tests.rs"]
+mod sealed_history;
 #[path = "vouched_tests.rs"]
 mod vouched;
 
@@ -40,10 +42,16 @@ struct Enrolled {
 
 /// Enroll through the file store and admit the governor's history.
 fn enrolled() -> Enrolled {
+    enrolled_with(raw_fixture())
+}
+
+/// [`enrolled`] into the workspace `fixture` holds.
+fn enrolled_with(
+    (intent, bootstrap, messages, governor, now): crate::owner::testing::RawFixture,
+) -> Enrolled {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let path = directory.path().join("joined-workspaces.json");
     let owner = open_file(&path).unwrap();
-    let (intent, bootstrap, messages, governor, now) = raw_fixture();
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
     let enrollment = crate::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
@@ -922,26 +930,19 @@ async fn a_member_with_no_sealed_history_past_its_bound_compacts_nothing() {
     let joined = enrolled();
     let (keys, _) = rotated_channel();
     commit_sealed(&joined, &keys);
-    let (mut opened, mut sealed) = (0, 0);
+    joined
+        .owner
+        .keep_sealed_histories(Arc::new(sealed_history::Held(keys)));
     let compacted = joined
         .owner
         .compact_outgoing(
             joined.workspace,
             &crate::owner::testing::member_key(),
-            |_| {
-                opened += 1;
-                Err("no history is due".to_owned())
-            },
-            |_, _, _| {
-                sealed += 1;
-                Err("no history is due".to_owned())
-            },
             joined.now,
         )
         .await
         .unwrap();
     assert_eq!(compacted, 0);
-    assert_eq!((opened, sealed), (0, 0), "nothing is opened or sealed");
     assert_eq!(sent(&joined.owner, joined.workspace, joined.now).len(), 1);
 }
 

@@ -135,6 +135,10 @@ impl Joined {
         let owner = tilo_peer_state::owner::open_file(&profile.join(JOINED_WORKSPACES))
             .map_err(io::Error::other)?;
         let executions = super::execution::ExecutionPins::new(&owner);
+        let keys = ChannelKeyProvider::default();
+        owner.keep_sealed_histories(Arc::new(tilo_session_client::engine::HistoryKeys(
+            keys.clone(),
+        )));
         let joined = Arc::new_cyclic(|this| Self {
             executions,
             owner,
@@ -147,7 +151,7 @@ impl Joined {
             content: std::sync::OnceLock::new(),
             governance: Mutex::new(Vec::new()),
             governance_wake: Arc::default(),
-            keys: ChannelKeyProvider::default(),
+            keys,
             own_host: std::sync::OnceLock::new(),
             this: this.clone(),
         });
@@ -653,8 +657,8 @@ impl Joined {
         if let Err(error) = self.owner.retire_outgoing(workspace) {
             tracing::warn!(%error, "joined workspace publication retirement not committed");
         }
-        if let (Ok(()), Some(keys)) = (scope.current(&self.custody), self.keys.get()) {
-            self.fold_and_renew(workspace, &keys).await;
+        if scope.current(&self.custody).is_ok() {
+            self.fold_and_renew(workspace).await;
         }
         let sent = scope.current(&self.custody).and_then(|()| {
             sending.drive(
@@ -674,24 +678,15 @@ impl Joined {
         }
     }
 
-    /// A sealed record's history this device can read is this device's to
-    /// fold: it writes its own checkpoint where the workspace's host used to.
-    /// Then its sealed writes that expired in custody are sealed again.
-    async fn fold_and_renew(
-        &self,
-        workspace: WorkspaceId,
-        keys: &tilo_action_broker::channel_encryption::ChannelKeyAccess,
-    ) {
+    /// What the link brought into a sealed record's history is this device's
+    /// to fold, as its own writes are before each of them
+    /// ([`NativeWorkspaceOwner::compact_outgoing`]). Then its sealed writes
+    /// that expired in custody are sealed again.
+    async fn fold_and_renew(&self, workspace: WorkspaceId) {
         let signer = self.custody.signer.as_ref();
         match self
             .owner
-            .compact_outgoing(
-                workspace,
-                signer,
-                |write| keys.open_history_write(workspace, write),
-                |app, record, snapshot| keys.seal_checkpoint(workspace, app, record, snapshot),
-                SystemTime::now(),
-            )
+            .compact_outgoing(workspace, signer, SystemTime::now())
             .await
         {
             Ok(0) => {}
@@ -700,6 +695,9 @@ impl Joined {
                 tracing::debug!(%error, "joined workspace sealed history stays uncompacted");
             }
         }
+        let Some(keys) = self.keys.get() else {
+            return;
+        };
         if let Err(error) = self
             .owner
             .renew_outgoing(

@@ -283,8 +283,13 @@ type SealedHistory = Vec<(Route, Vec<SignedOp>)>;
 
 /// Most sealed writes, and their bytes, one record keeps for a key holder.
 /// Past them a key holder compacts the history
-/// ([`PeerPublication::draft_sealed_compaction`]).
+/// ([`PeerPublication::draft_sealed_compaction`]). This crate's tests keep
+/// fewer, so a test crosses the bound many times over in the writes it can
+/// afford: each of an owner's commits writes its whole replica.
+#[cfg(not(test))]
 const MAX_SEALED_OPS: usize = 4096;
+#[cfg(test)]
+const MAX_SEALED_OPS: usize = 256;
 const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone)]

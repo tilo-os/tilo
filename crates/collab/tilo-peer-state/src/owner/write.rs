@@ -175,6 +175,9 @@ impl NativeWorkspaceOwner {
     /// signed between the turn's runs ([`crate::StatePeer::sequenced_local_document`]). Commits
     /// as many as the workspace's outgoing custody takes; the rest wait until its host answered
     /// some of what it holds. `whole` commits all of them or, when custody cannot take all, none.
+    /// A sealed history that used most of its bound is compacted first
+    /// ([`Self::compact_outgoing`]), so a write is never refused for how long its record's
+    /// history grew.
     ///
     /// # Errors
     /// The workspace is not held here, `prepare` refused, signing failed, or a write is not this
@@ -187,6 +190,9 @@ impl NativeWorkspaceOwner {
         whole: bool,
         now: SystemTime,
     ) -> Result<Vec<Committed>, String> {
+        if let Err(error) = self.compact_outgoing(workspace, signer, now).await {
+            tracing::warn!(%error, "sealed histories stay uncompacted before a write");
+        }
         let mut prepare = Some(prepare);
         let mut drafted = None;
         signed_turn(signer, |signed| {
