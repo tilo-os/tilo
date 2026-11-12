@@ -334,7 +334,7 @@ const SCENARIOS = {
     {shot: 'chooser'},
     {key: 'Escape'},
     {shot: 'chooser-closed'},
-    {click: 'Compact', role: 'RadioButton'},
+    {click: 'Compact', role: 'radio'},
     {shot: 'density'},
     {click: 'Accessibility', role: 'TreeItem'},
     {shot: 'pane'},

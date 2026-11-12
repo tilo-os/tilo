@@ -381,14 +381,19 @@ What blocks it:
   over it), Sheets (a value typed into a cell, a range dragged over cells, a
   formula started from the bar, a sheet added), Settings (a chooser opened, a
   density picked, another pane), Photos (a library side, the album sheet) and
-  Calendar (the month picker, a day dragged onto another, the event dialog).
-  Every step agrees with the canvas within glyph edges but one: the canvas
-  app's "New artwork…" differed in 47 % of its pixels, and that was the
-  scrim, now fixed (below). The **event dialog** Calendar raises still does
-  not: as HTML the whole window comes out blank behind a white sheet, and the
-  same frame draws on the canvas. It is not the scrim — the frame carries no
-  blend and no dialog content at all, so something covers what the frame did
-  draw — and it is the one known case where an app's dialog is not shown.
+  Calendar (the month picker, a day pressed and let go on another, the event
+  dialog). Every step agrees with the canvas within glyph edges but three, and
+  each is a real difference rather than a step that did nothing:
+  - the canvas app's "New artwork…" differed in 47 % of its pixels, and that
+    was the scrim, now fixed (below);
+  - **Calendar's event dialog** still does not: as HTML the whole window comes
+    out blank behind a white sheet where the canvas draws the dialog over a
+    dimmed month. It is not the scrim — the frame carries no blend and no
+    dialog content at all, so something covers what the frame did draw — and
+    it is the one known case where an app's dialog is not shown;
+  - **Settings' Accessibility pane** differs in 16 % of its pixels: HTML
+    paints large near-black areas where the canvas paints the pane, so some
+    control there is drawn at the wrong size or in the wrong colour.
 - **A scrim was painted as black.** A modal's dim is two fills: a soft-light
   tone stage and a wash. The encoder handed the page the layer's opacity and
   dropped its blend mode, so the page painted the tone stage as plain black:
