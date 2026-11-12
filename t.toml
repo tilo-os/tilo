@@ -4821,11 +4821,7 @@ default = false
 name = "e2e"
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e"
 needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle"]
-# A step of the page drivers is 15 s here, not the 5 s a machine that draws WebGPU on a GPU needs:
-# every page on this node draws in software beside a full node's other jobs, where answers measured
-# 10-50 s and a window reaching another person's strip 122 s. A step that hangs still fails within
-# its few steps and names itself.
-env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_STEP_SECONDS = "15", E2E_FLOW_SECONDS = "420" }
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo" }
 requires = ["arch=x86_64"]
 # What it found, not what it ran: each flow's pages, reports and consoles and each part's log; the
 # site it served is the bundle again.

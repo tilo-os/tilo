@@ -53,7 +53,7 @@
 # WORK/<flow>.log. FLOW names the flows to run (default: all; E2E_FLOWS, space
 # separated, too); `restart` brings people-call with it. Needs node, chromium,
 # curl, TILO_RELAY_BIN, TILO_CRYPTO_BIN, TILO_FONTS_DIR and TILO_CLI_BIN.
-# E2E_FLOW_SECONDS bounds each flow (default 300).
+# E2E_FLOW_SECONDS bounds each flow (default 480).
 set -euo pipefail
 usage='usage: test-e2e.sh BUNDLE WORK [FLOW…]'
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -123,7 +123,14 @@ tilo_bin=${TILO_CLI_BIN:-}
 if wants agent-setup || wants setup-resume; then
   [[ -x $tilo_bin ]] || { echo 'TILO_CLI_BIN names no tilo command (agent-setup and setup-resume run it)' >&2; exit 2; }
 fi
-limit=${E2E_FLOW_SECONDS:-300}
+# How this run paces itself, for a node that draws every page's WebGPU in
+# software beside a full node's other jobs (t's): a step of the page drivers
+# is 20 s there, not the 5 s a machine with a GPU needs (answers measured 10-50
+# s, a window reaching another person's strip 122 s, a search opening 45 s and
+# more), each flow has 480 s, and four run at once. A step that hangs still
+# fails within its few steps and names itself; each is set by its variable.
+export TILO_STEP_SECONDS=${TILO_STEP_SECONDS:-20}
+limit=${E2E_FLOW_SECONDS:-480}
 
 rm -rf "$work"
 mkdir -p "$work"
@@ -200,7 +207,7 @@ await_flow() {
 
 parallel=()
 for flow in "${asked[@]}"; do [[ $flow == restart ]] || parallel+=("$flow"); done
-# At most E2E_PARALLEL flows at once (default 5), the longest first, the next
+# At most E2E_PARALLEL flows at once (default 4), the longest first, the next
 # starting as one ends. Every page here draws in software, and a node gives a
 # run so many cores: past that, more pages at once make every step of every
 # flow slower rather than the run shorter (measured: with nine flows and four
@@ -209,7 +216,7 @@ for flow in "${asked[@]}"; do [[ $flow == restart ]] || parallel+=("$flow"); don
 order=(setup-resume people-call people-invite people-desk people-menus boot wait-list share-link agent-setup directory)
 queue=()
 for flow in "${order[@]}"; do [[ " ${parallel[*]} " == *" $flow "* ]] && queue+=("$flow"); done
-at_once=${E2E_PARALLEL:-5}
+at_once=${E2E_PARALLEL:-4}
 for flow in "${queue[@]}"; do
   ((${#running[@]} < at_once)) || await_flow
   run_flow "$flow"

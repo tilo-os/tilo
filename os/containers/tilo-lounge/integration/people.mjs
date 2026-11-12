@@ -785,7 +785,7 @@ try {
   };
   let listed;
   let lounge;
-  for (const deadline = Date.now() + stepLimit(2); ;) {
+  for (const deadline = Date.now() + stepLimit(4); ;) {
     listed = await directory();
     lounge = listed.workspaces?.find(workspace => workspace.room === keptA.room);
     if ((lounge && counted(lounge)) || Date.now() > deadline) break;

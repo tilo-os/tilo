@@ -143,8 +143,9 @@ It needs node, a headless Chrome (`CHROME`, else Playwright's cache), curl,
 and `TILO_RELAY_BIN`, `TILO_CRYPTO_BIN`, `TILO_FONTS_DIR` and `TILO_CLI_BIN`
 naming built programs (the `lounge-gate-binaries`, `lounge-gate-tools`,
 `lounge-fonts` and `cli-x86_64` outputs). Every wait in the page drivers is a
-number of steps of `TILO_STEP_SECONDS` (5 s by default), so a hang fails in
-seconds and names its step. That every app the page offers opens from the
+number of steps of `TILO_STEP_SECONDS` (5 s by default; `test-e2e.sh` sets
+20 s for a node that draws every page in software), so a hang fails within its
+few steps and names its step. That every app the page offers opens from the
 search on the next frame is an in-process test of the desk's search
 (`crates/session/desktop-surface/tests/every_web_app_opens_from_search.rs`),
 not a browser's walk.
