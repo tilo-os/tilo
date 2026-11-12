@@ -703,8 +703,6 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path,
     if provision.returncode != 0:
         sys.exit(f"[bench] could not provision disposable identity:\n{provision.stdout}")
     process_started = time.monotonic()
-    if args.refresh_hz:
-        env["TILO_REFRESH_HZ"] = str(args.refresh_hz)
     env["RUST_BACKTRACE"] = "1"
     if args.rust_log:
         env["RUST_LOG"] = args.rust_log
@@ -1007,9 +1005,9 @@ def main() -> None:
     p.add_argument(
         "--refresh-hz",
         type=float,
-        help="force the compositor's presentation rate via TILO_REFRESH_HZ, "
-        "and score the run against it. The only way to measure a non-60 Hz "
-        "cadence on a machine whose backend reports no display rate.",
+        help="the display rate to score the run against (microseconds per frame "
+        "for --target-us and the gate), when the backend reports no display rate "
+        "of its own; it changes the scoring target, never the session's pacing",
     )
     p.add_argument("--label", help="name for the output files")
     p.add_argument("--out", default="target/frame-bench", help="output directory")

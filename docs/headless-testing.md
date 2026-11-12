@@ -68,7 +68,7 @@ The session's own flags, as `tilo-session --help`'s header documents them: `--ba
 
 `--test-control` and `--seed-apps` are honoured by development builds only; a release build serves the control socket only when built with `--features dev-overrides`, which the dev image's session carries. Every harness here is a development build, and says so when it is not.
 
-Headless lays frames out and answers clients' frame callbacks but does not rasterize them: nobody is looking. `{"op":"snapshot"}` renders on demand. A viewer that streams frames attaches with `{"op":"watch","watching":true}` (`tilo-control watch on`), or starts the session with `TILO_HEADLESS_WATCH=1`.
+Headless lays frames out and answers clients' frame callbacks but does not rasterize them: nobody is looking. `{"op":"snapshot"}` renders on demand. A viewer that streams frames attaches with `{"op":"watch","watching":true}` (`tilo-control watch on`).
 
 A headless session owns no seat. It starts no power service: no lid or power-key delegation, no suspend on idle, and neither offers nor admits Suspend, Restart or Shut down from the power menu, the palette or `session.*` actions. Lock stays, because it locks the session's own scene. Test idle suspend through `SessionManager` and `TILO_IDLE_SUSPEND_SECS`, which drive the state machine without an actuator.
 
