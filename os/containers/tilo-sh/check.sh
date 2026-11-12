@@ -27,7 +27,11 @@
 #      port, the one destination besides the internet a VM is given;
 #   9. the guest this stack's VM host boots carries the Browser there: the
 #      headless session and the image's unprivileged browser user;
-#  10. a key opens Browser in a hosted workspace, timed to a live window;
+#  9b. the host warms the template that size's VMs start from, whose first boot
+#      is cold by necessity;
+#  10. a key opens Browser in a hosted workspace, timed to a live window, in a
+#      VM that woke as a clone of that template (the host's own measure of the
+#      wake is printed), never a cold boot of the guest image;
 #  11. the VM it runs in: every renderer sandboxed, the session running as the
 #      image's browser user, its device key, and what the page costs in memory
 #      (integration/vm-proofs.py);
@@ -211,6 +215,25 @@ if [[ $hosted == 1 ]]; then
       fail "the workspace guest this stack boots carries no hosted Browser: a VM needs /usr/libexec/tilo/browser-session (the headless session a first browser action starts) and the image's unprivileged tilo-browser user, and this guest has $(grep -qx 'has-session' <<<"$guest_says" || echo no) session and $(grep -qx 'has-user' <<<"$guest_says" || echo no) user. The Browser of a hosted workspace runs in the workspace's own VM, so this check can go no further until the guest that carries it is in this tree (os/Containerfile.hosted-guest)."
     fi
     echo "ok: the guest carries the headless Browser session and its user"
+  fi
+
+  # A workspace's VM starts as a clone of the host's warm template, which the
+  # host makes for a size once a VM of that size has run (step 9's). Its own
+  # first boot is cold by necessity, and a machine without the room behind it
+  # makes none at all, which the host's log says.
+  if runs_any 10 11 12; then
+    step '9b. the host warms the template a workspace VM starts from'
+    warmed=$SECONDS
+    template=
+    deadline=$((SECONDS + 180))
+    while ((SECONDS < deadline)); do
+      template=$(sudo -n podman logs tilo-sh-vm-host-0 2>&1 | sed -n 's/.*template is ready$/ready/p' | head -1)
+      [[ -z $template ]] || break
+      sleep 1
+    done
+    [[ -n $template ]] \
+      || fail "the VM host made no warm template in 180 s, so every workspace's VM boots cold: what it said is in sudo -n podman logs tilo-sh-vm-host-0 (a template is counted at the size's whole memory, and TILO_SH_VM_HOST_MEMORY_MIB is the room the host may use)"
+    echo "ok: the template was ready in $((SECONDS - warmed))s"
   fi
 
   hosted_workspace= hosted_seconds=0
