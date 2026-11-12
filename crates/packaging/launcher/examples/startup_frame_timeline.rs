@@ -19,7 +19,11 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         std::fs::write(payload.join("probe.pid"), std::process::id().to_string())?;
         let runtime = std::env::var_os("XDG_RUNTIME_DIR").ok_or("missing private runtime")?;
         let runtime = Path::new(&runtime);
-        let display = std::fs::read_to_string(runtime.join("tilo-session/wayland-display"))?;
+        let session = tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))
+            .ok_or("the runtime directory names no session")?;
+        // The display the session published for this login, as any program it starts reads it.
+        let display =
+            std::fs::read_to_string(session.join(tilo_paths::login::WAYLAND_DISPLAY_FILE))?;
         let log = std::fs::File::create(payload.join("probe.log"))?;
         let status = Command::new(binaries.join("tilo-launcher"))
             .args(["run", "--manifest"])

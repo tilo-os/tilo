@@ -34,6 +34,12 @@ pub const TEST_CONTROL_SOCKET_FILE: &str = "test-control.sock";
 /// `tilo-app dev`) joins, as an app the shell starts joins the room it names
 /// with the launcher's `--workspace-id`.
 pub const WORKSPACE_ID_FILE: &str = "workspace-id";
+/// File in [`SESSION_DIR`] holding the bare name of the running session's
+/// Wayland socket, so `WAYLAND_DISPLAY=$(cat …)` is exactly right. The
+/// session that bound the socket publishes it for the programs this login
+/// starts and the tools beside it, which find the display without reading
+/// the compositor's log.
+pub const WAYLAND_DISPLAY_FILE: &str = "wayland-display";
 /// Prefix of the socket in [`SESSION_DIR`] on which this session says whether
 /// its first use is over: the installed folder importer asks before it
 /// continues a saved import, so nothing it carries lands under an identity

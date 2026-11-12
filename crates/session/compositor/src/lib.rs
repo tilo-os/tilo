@@ -209,6 +209,98 @@ fn io(error: impl std::fmt::Display) -> Error {
     Error::Io(std::io::Error::other(error.to_string()))
 }
 
+/// A display name this session published for the login, which goes when the session does.
+struct PublishedDisplay {
+    file: PathBuf,
+    name: String,
+}
+
+impl Drop for PublishedDisplay {
+    fn drop(&mut self) {
+        // Only the name this session published: a session that took the file over in the meantime
+        // is the one the login's programs reach now.
+        if std::fs::read(&self.file).is_ok_and(|published| published == self.name.as_bytes()) {
+            let _ = std::fs::remove_file(&self.file);
+        }
+    }
+}
+
+/// Where [`publish_display`] writes, given `$XDG_RUNTIME_DIR`. `None` when the variable is unset
+/// or not absolute: guessing `/tmp` would put a session-scoped file somewhere world-writable.
+fn display_file(runtime_dir: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    Some(tilo_paths::login::session_dir(runtime_dir)?.join(tilo_paths::login::WAYLAND_DISPLAY_FILE))
+}
+
+/// Publish the socket `name` to the login's own file for it, so a program the session starts, and
+/// a tool beside the session, finds the display without reading the compositor's log. Never fatal
+/// on failure: the session runs either way.
+fn publish_display(name: &str) -> Option<PublishedDisplay> {
+    publish_at(&display_file(std::env::var_os("XDG_RUNTIME_DIR"))?, name)
+}
+
+/// [`publish_display`] at `path`: left alone when it names another session that is running still,
+/// and replaced otherwise, so a session after a crash is found at the same place.
+fn publish_at(path: &Path, name: &str) -> Option<PublishedDisplay> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+
+    if another_live_session_published(path, name) {
+        tracing::info!(
+            file = %path.display(),
+            "the file names another running session; leaving it to that one"
+        );
+        return None;
+    }
+    // 0700 when created: the session's other sockets share this directory.
+    if let Some(dir) = path.parent()
+        && let Err(error) = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+    {
+        tracing::warn!(%error, file = %path.display(), "the session's display is not published");
+        return None;
+    }
+    // 0600: not a secret, but nothing else should write it. Written beside and renamed into
+    // place, so a reader never sees a half-written name.
+    let beside = path.with_extension(format!("{}.tmp", std::process::id()));
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&beside)
+        .and_then(|mut file| file.write_all(name.as_bytes()))
+        .and_then(|()| std::fs::rename(&beside, path));
+    match written {
+        Ok(()) => Some(PublishedDisplay {
+            file: path.to_owned(),
+            name: name.to_owned(),
+        }),
+        Err(error) => {
+            let _ = std::fs::remove_file(&beside);
+            tracing::warn!(%error, file = %path.display(), "the session's display is not published");
+            None
+        }
+    }
+}
+
+/// Whether the display file at `path` names another session's socket that a compositor still
+/// answers on, beside this one in the runtime directory.
+fn another_live_session_published(path: &Path, ours: &str) -> bool {
+    use std::os::unix::ffi::OsStrExt as _;
+    let Ok(named) = std::fs::read(path) else {
+        return false;
+    };
+    let named = std::ffi::OsStr::from_bytes(&named);
+    let bare = Path::new(named).file_name() == Some(named);
+    if named == ours || !bare {
+        return false;
+    }
+    path.parent()
+        .and_then(Path::parent)
+        .is_some_and(|runtime| UnixStream::connect(runtime.join(named)).is_ok())
+}
+
 /// The instant a risky display change's wait for the person is measured from, and against: the
 /// clock a test holds, so the wait ends on the person's answer rather than on how long the machine
 /// took to ask.
@@ -322,6 +414,9 @@ pub struct Compositor {
     recorder: tilo_frame_metrics::FrameRecorder,
     /// A turn is open: [`Compositor::begin_tick`] ran and [`Compositor::end_tick`] has not.
     ticking: bool,
+    /// The display name this session published for the login while it runs
+    /// ([`Compositor::listen`]): the file goes with the compositor.
+    published_display: Option<PublishedDisplay>,
 }
 
 impl Compositor {
@@ -361,6 +456,7 @@ impl Compositor {
             keys: AccessKeys::default(),
             recorder: tilo_frame_metrics::FrameRecorder::from_env(),
             ticking: false,
+            published_display: None,
         };
         compositor.publish_displays();
         Ok(compositor)
@@ -784,7 +880,8 @@ impl Compositor {
     }
 
     /// Listen for clients on a fresh `wayland-N` socket in `$XDG_RUNTIME_DIR` and return its name
-    /// (for `WAYLAND_DISPLAY` ).
+    /// (for `WAYLAND_DISPLAY` ). The name is published to the login that starts programs beside
+    /// this session ([`tilo_paths::login::WAYLAND_DISPLAY_FILE`]) until the compositor ends.
     pub fn listen(&mut self) -> Result<String, Error> {
         let source = ListeningSocketSource::new_auto().map_err(io)?;
         let name = source.socket_name().to_string_lossy().into_owned();
@@ -799,6 +896,7 @@ impl Compositor {
                 }
             })
             .map_err(io)?;
+        self.published_display = publish_display(&name);
         Ok(name)
     }
 
@@ -2479,5 +2577,60 @@ impl std::os::fd::AsFd for Compositor {
     /// another loop.
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         self.event_loop.as_fd()
+    }
+}
+
+#[cfg(test)]
+mod display_publication_tests {
+    use super::{another_live_session_published, display_file, publish_at};
+
+    /// A runtime directory of this test's own.
+    fn runtime() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("tilo-runtime-")
+            .tempdir()
+            .expect("a runtime directory")
+    }
+
+    #[test]
+    fn the_display_lives_in_the_logins_session_directory() {
+        assert_eq!(
+            display_file(Some("/run/user/1000".into())),
+            Some(std::path::PathBuf::from(
+                "/run/user/1000/tilo-session/wayland-display"
+            ))
+        );
+        assert_eq!(display_file(None), None);
+        assert_eq!(display_file(Some("relative/run".into())), None);
+    }
+
+    #[test]
+    fn the_socket_name_is_published_bare_and_goes_with_the_session() {
+        let runtime = runtime();
+        let path = runtime.path().join("tilo-session/wayland-display");
+        let published = publish_at(&path, "wayland-3").expect("the display is published");
+        // `WAYLAND_DISPLAY=$(cat …)` is exactly the client's environment.
+        assert_eq!(std::fs::read(&path).unwrap(), b"wayland-3");
+        drop(published);
+        assert!(!path.exists(), "the file goes when the session does");
+    }
+
+    #[test]
+    fn a_stale_file_is_replaced_and_a_running_sessions_is_left_alone() {
+        let runtime = runtime();
+        let path = runtime.path().join("tilo-session/wayland-display");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // A session that ended left its name behind: nothing answers there.
+        std::fs::write(&path, "wayland-0").unwrap();
+        let published = publish_at(&path, "wayland-4").expect("the stale name is replaced");
+        assert_eq!(std::fs::read(&path).unwrap(), b"wayland-4");
+
+        // A session still running there keeps the file that names it.
+        let _listening = std::os::unix::net::UnixListener::bind(runtime.path().join("wayland-4"))
+            .expect("a socket beside the session's own");
+        assert!(another_live_session_published(&path, "wayland-5"));
+        assert!(publish_at(&path, "wayland-5").is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), b"wayland-4");
+        drop(published);
     }
 }

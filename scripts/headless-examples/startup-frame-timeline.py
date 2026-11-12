@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import pathlib
-import re
 import shutil
 import signal
 import subprocess
@@ -26,6 +25,28 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 SESSION_LAUNCHER = REPO / "dist" / "dev" / "nested-session.sh"
 APP = "io.tilo.startup-frame-probe"
 POLL_SECONDS = 0.02
+
+
+def display_name(runtime: pathlib.Path) -> str:
+    """The Wayland socket name the session on `runtime` published for the login, as every
+    program it starts reads it (`$XDG_RUNTIME_DIR/tilo-session/wayland-display`)."""
+    published = runtime / "tilo-session" / "wayland-display"
+    try:
+        name = published.read_text().strip()
+    except FileNotFoundError:
+        raise RuntimeError(f"the session published no Wayland display at {published}") from None
+    if not name:
+        raise RuntimeError(f"the session's published display {published} names no socket")
+    return name
+
+
+def opens_probe(row: dict) -> bool:
+    """Whether `row` is the desk's one launch of the probe: the applications provider's, under
+    this machine's own app id (`host:<desktop id>`) or the desktop file's."""
+    if row.get("provider") != "applications":
+        return False
+    desktop_id = str(row.get("id", ""))
+    return desktop_id.removeprefix("host:") in (APP, APP + ".desktop")
 
 
 def runtime_directory(state: pathlib.Path) -> pathlib.Path:
@@ -343,17 +364,14 @@ def main() -> None:
             watch = call(str(sock), {"op": "watch", "watching": True})
             if "err" in watch:
                 raise RuntimeError(f"headless watch refused: {watch['err']}")
-            banner = re.search(r"^WAYLAND_DISPLAY=(\S+)$", (out / "compositor.log").read_text(), re.MULTILINE)
-            if not banner:
-                raise RuntimeError("the session printed no Wayland endpoint")
-            wayland = runtime / banner.group(1)
+            wayland = runtime / display_name(runtime)
             if not wayland.is_socket():
-                raise RuntimeError("announced production Wayland endpoint is not a socket")
+                raise RuntimeError("the published production Wayland endpoint is not a socket")
             deadline = time.monotonic() + args.timeout
             while True:
                 catalog = call(str(sock), {"op": "actions_enumerate", "query": "Startup frame probe"})
                 actions = catalog.get("answer", {}).get("actions", [])
-                launch = [a for a in actions if a.get("provider") == "applications" and a.get("id") in (APP, APP + ".desktop")]
+                launch = [a for a in actions if opens_probe(a)]
                 if len(launch) == 1:
                     break
                 if time.monotonic() >= deadline:
