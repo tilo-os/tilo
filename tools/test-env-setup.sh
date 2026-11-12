@@ -18,7 +18,8 @@
 #          recorded with, and so TILO_REQUIRE_GPU=1; TILO_REQUIRE_MEDIA=1, as
 #          the image carries the codecs; TILO_PDFIUM_LIB when the image
 #          installed PDFium; and TILO_TEST_CACHE_DIR (default
-#          ${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env), so fixtures a test
+#          ${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env, the test user's
+#          where tests run as one, tools/as-test-user.sh), so fixtures a test
 #          generates itself (the media decode clip) are made once and shared
 #          by every test process instead of once per process in its fresh HOME;
 #          and TILO_REQUIRE_* of every capability .config/nextest-capabilities.toml
@@ -44,15 +45,23 @@
 #          An existing TILO_NTFS_FIXTURES is kept. nextest runs this step only
 #          when the run selects a tilo-ntfs-helper test, as only those read
 #          the images, which take minutes to build.
+# root     TILO_TEST_AS_ROOT=1: the few tests that need root say so with this
+#          step, and keep it where the others run as the test user
+#          (tools/as-test-user.sh).
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
-    echo "usage: $0 runtime|audio|ntfs ..." >&2
+    echo "usage: $0 runtime|audio|ntfs|root ..." >&2
     exit 2
 fi
 env_file=${NEXTEST_ENV:?test-env-setup.sh writes the environment to the file NEXTEST_ENV names}
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-cache_dir="${TILO_TEST_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env}"
+home=$(bash "$repo/tools/as-test-user.sh" --home)
+if [[ $home == "$HOME" ]]; then
+    cache_dir="${TILO_TEST_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env}"
+else
+    cache_dir="${TILO_TEST_CACHE_DIR:-$home/.cache/tilo/test-env}"
+fi
 
 provide() { # KEY VALUE: the variable, for the tests and for the later steps
     printf '%s=%s\n' "$1" "$2" >>"$env_file"
@@ -84,7 +93,7 @@ runtime() {
     elif [[ -r /usr/lib64/libpdfium.so ]]; then
         provide TILO_PDFIUM_LIB /usr/lib64/libpdfium.so
     fi
-    mkdir -p "$cache_dir"
+    bash "$repo/tools/as-test-user.sh" mkdir -p "$cache_dir"
     provide TILO_TEST_CACHE_DIR "$cache_dir"
     # The pinned font catalog every frame is set in. A build prepares its own into the cargo
     # output directory of the crate that owns it, and that is not what a build directory carries
@@ -190,9 +199,13 @@ ntfs() {
     provide TILO_NTFS_FIXTURES "$dir"
 }
 
+root() {
+    provide TILO_TEST_AS_ROOT 1
+}
+
 for step; do
     case $step in
-        runtime | audio | ntfs) "$step" ;;
+        runtime | audio | ntfs | root) "$step" ;;
         *) echo "unknown test environment step: $step" >&2; exit 2 ;;
     esac
 done

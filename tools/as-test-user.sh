@@ -8,6 +8,7 @@
 #   tools/as-test-user.sh COMMAND [ARG ...]   run COMMAND as the test user
 #   tools/as-test-user.sh --own PATH ...      give PATHs (not their contents)
 #                                             to the test user
+#   tools/as-test-user.sh --home              the home of whoever tests run as
 #
 # A test that needs root says so with TILO_TEST_AS_ROOT=1 (a nextest setup
 # script, .config/nextest.toml).
@@ -19,6 +20,10 @@ fi
 user=
 if [ "$(id -u)" = 0 ] && [ -n "${TILO_TEST_USER:-}" ] && [ "${TILO_TEST_AS_ROOT:-0}" != 1 ]; then
     user=$TILO_TEST_USER
+fi
+if [ "$1" = --home ]; then
+    if [ -n "$user" ]; then getent passwd "$user" | cut -d: -f6; else printf '%s\n' "$HOME"; fi
+    exit 0
 fi
 if [ "$1" = --own ]; then
     shift
