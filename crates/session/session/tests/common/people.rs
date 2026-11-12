@@ -575,9 +575,11 @@ impl std::fmt::Display for Watched<'_> {
         for device in self.devices {
             writeln!(
                 formatter,
-                "{} shows {:?}\n{}",
+                "{} shows {:?}, with {:?} in front of {:?}\n{}",
                 device.label,
                 titles_on(device, self.site),
+                device.showing(),
+                device.on_desk(),
                 device.diagnostic()
             )?;
         }
@@ -1479,6 +1481,30 @@ impl Device {
             .iter()
             .find(|workspace| workspace["id"].as_u64() == Some(active))
             .and_then(|workspace| workspace["room"].as_str().map(str::to_owned))
+    }
+
+    /// The workspaces on this device's desk, by id, in the desk's order: the ones it made, the ones
+    /// it joined and the ones the person's list brought from their other devices.
+    pub fn on_desk(&self) -> Vec<String> {
+        self.state()["state"]["workspace_tree"]["workspaces"]
+            .as_array()
+            .map(|workspaces| {
+                workspaces
+                    .iter()
+                    .filter_map(|workspace| workspace["room"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// What this device's session logged of the workspaces it joined and entered, oldest first:
+    /// which of them arrived on its desk, and when.
+    pub fn join_flow(&self) -> String {
+        self.log()
+            .lines()
+            .filter(|line| line.contains(tilo_startup_metrics::JOIN_FLOW_TARGET))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// The publisher this device's session goes by at its own seat: what every other device in a
