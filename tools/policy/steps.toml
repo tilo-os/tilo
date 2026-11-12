@@ -92,7 +92,7 @@ run = "python3 tools/policy/check_copy_language.py"
 
 [[step]]
 name = "catalogue-coverage"
-label = "Every translation says every word of its source catalogue"
+label = "Every translation says every word of its source catalogue, and each generated registry names its messages"
 run = "python3 tools/policy/check_catalogue_coverage.py"
 
 [[step]]
@@ -182,7 +182,7 @@ run = "python3 tools/policy/check_kernel_dev_build.py"
 
 [[step]]
 name = "dev-overrides-contract"
-label = "Dev-override features stay out of production images"
+label = "Dev overrides stay out of production images, and every documented control is read"
 run = "python3 tools/policy/check_dev_overrides_contract.py"
 
 [[step]]
