@@ -5340,6 +5340,10 @@ async fn forward_action_catalogues(
     if !admitted && source.restart().await.is_err() {
         return;
     }
+    // The whole catalogue was asked for above; a snapshot that does not apply
+    // to what is held cannot be fixed by asking again, so it ends the stream
+    // rather than looping on the broker.
+    let mut asked = !admitted;
     loop {
         let Ok(turn) = turns.clone().acquire_owned().await else {
             break;
@@ -5349,26 +5353,39 @@ async fn forward_action_catalogues(
         };
         let decoded = match serde_json::from_str::<CatalogueChange>(&text) {
             Ok(decoded) => decoded,
+            Err(error) if asked => {
+                tracing::error!(%error, "collab: the whole action catalogue does not decode");
+                break;
+            }
             Err(error) => {
-                tracing::error!(
+                tracing::warn!(
                     %error,
                     "collab: invalid broker action catalogue change; asking for the whole catalogue"
                 );
                 if source.restart().await.is_err() {
                     break;
                 }
+                asked = true;
                 continue;
             }
         };
-        if let Err(error) = held.apply(&decoded) {
-            tracing::warn!(
-                %error,
-                "collab: the broker's action catalogue change does not apply; asking for the whole catalogue"
-            );
-            if source.restart().await.is_err() {
+        match held.apply(&decoded) {
+            Ok(()) => asked = false,
+            Err(error) if asked => {
+                tracing::error!(%error, "collab: the whole action catalogue does not apply");
                 break;
             }
-            continue;
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "collab: the broker's action catalogue change does not apply; asking for the whole catalogue"
+                );
+                if source.restart().await.is_err() {
+                    break;
+                }
+                asked = true;
+                continue;
+            }
         }
         if !tx
             .send_durable_turn(
@@ -12672,6 +12689,62 @@ mod tests {
                 );
             }
             assert_eq!(restarts.get(), 2, "a gap and a corrupt change are re-asked");
+            assert!(state.is_healthy());
+        });
+    }
+
+    /// A whole catalogue that does not apply to what is held is a fault on
+    /// the wire, not a follower that fell behind: it ends the stream instead
+    /// of asking for the whole catalogue again and again.
+    #[test]
+    fn a_whole_catalogue_that_does_not_apply_ends_the_stream() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
+        let state = BridgeState::new();
+        let inbound = InboundBridge::new(tx, state.clone());
+        let initial = notebook_action_catalogue_fixture(Uuid::nil(), 1, 1, "notebook");
+        let mut gap: CatalogueChange = serde_json::from_str(&initial).unwrap();
+        gap.reset = false;
+        gap.since = 5;
+        let mut broken: CatalogueChange = serde_json::from_str(&notebook_action_catalogue_fixture(
+            Uuid::nil(),
+            1,
+            2,
+            "notebook",
+        ))
+        .unwrap();
+        broken.templates.clear();
+        let restarts = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let counted = restarts.clone();
+        let source = ScriptedCatalogue {
+            changes: std::collections::VecDeque::from([Ok(serde_json::to_string(&gap).unwrap())]),
+            snapshots: std::collections::VecDeque::from([serde_json::to_string(&broken).unwrap()]),
+            restarts: counted,
+        };
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&runtime, async move {
+            let forwarder = inbound.clone();
+            let asked = restarts.clone();
+            tokio::task::spawn_local(async move {
+                forward_action_catalogues(
+                    source,
+                    initial,
+                    &forwarder,
+                    Arc::new(tokio::sync::Semaphore::new(1)),
+                )
+                .await;
+            });
+            for _ in 0..64 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(asked.get(), 1, "the whole catalogue is asked for once");
+            assert!(
+                rx.try_recv().is_err(),
+                "nothing that cannot be applied is forwarded"
+            );
             assert!(state.is_healthy());
         });
     }
