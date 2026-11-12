@@ -201,6 +201,7 @@ start_image() {
     TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
     TILO_ROOMS_FETCH_PROXY=0 \
     TILO_ROOMS_CHAT_CHANNELS=general \
+    TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
     TILO_ROOMS_PERSON_STORAGE_GB=10 \
     /usr/local/bin/tilo-lounge >> "$log" 2>&1 &
   image_pid=$!
@@ -272,7 +273,9 @@ verify_directory() {
 
 # The web entry, served over TLS with the entry configuration this deployment
 # writes: its home is the Lounge, joined through the door the relay lists the
-# workspace `$1` names at, and its directory is the relay's.
+# workspace `$1` names at, with problem reports sent to the channel the Lounge
+# keeps for them (`TILO_ROOMS_FEEDBACK_CHANNEL`), and its directory is the
+# relay's.
 # Who the host is comes from the image's own `tilo-relay page-host`, as the
 # operator sets the web entry's TILO_WEB_HOME_HOST_INFO, so the pages dial the
 # host as named instead of asking it first.
@@ -284,7 +287,7 @@ start_site() {
   info=$(b run "$container" -- /usr/local/bin/tilo-relay page-host "http://127.0.0.1:$plain_port") \
     || fail 'the relay did not say who it is (tilo-relay page-host)'
   node "$here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
-    "$relay_origin" Lounge "$relay_origin/peer/v1/directory/$1/" "$site_port" "$info" \
+    "$relay_origin" Lounge "$relay_origin/peer/v1/directory/$1/" "$site_port" "$info" c_feedback \
     >> "$work/site.log" 2>&1 &
   site_pid=$!
   for _ in $(seq 300); do
