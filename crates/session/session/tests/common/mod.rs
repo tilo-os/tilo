@@ -569,7 +569,7 @@ pub fn app_store() -> &'static Path {
         let installed = dev_apps::install(&root, &root.join("build"));
         assert_eq!(
             installed.len(),
-            7,
+            6,
             "every app of the development session is installed, the shell among them: {installed:?}"
         );
         // The store the environment names is the one the session's launcher reads, and the one its
@@ -610,7 +610,7 @@ pub fn install_apps_in(store: &Path, scratch: &Path) {
     let installed = dev_apps::install(store, scratch);
     assert_eq!(
         installed.len(),
-        7,
+        6,
         "every app of the development session is installed, the shell among them: {installed:?}"
     );
 }

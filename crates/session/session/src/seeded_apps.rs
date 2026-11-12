@@ -27,9 +27,10 @@ use crate::platform::notice::Toolkit;
 pub const SEEDED_BY_THIS_BUILD: bool = cfg!(debug_assertions);
 
 /// The tilolang apps a development session installs and seeds, in the order a session reads
-/// them: the packages they use meet each other as [`seeded`] loads them.
-pub const APPS: [&str; 6] = [
-    "so.tilo.lang.discussion",
+/// them: the packages they use meet each other as [`seeded`] loads them. Discussion is no app
+/// here: Tasks and Notes are made with it, so the comments on a task or a note are kept in that
+/// app's own record, as a package an app uses that is not installed keeps its records in it.
+pub const APPS: [&str; 5] = [
     "so.tilo.lang.notes",
     "so.tilo.lang.tasks",
     "so.tilo.lang.chat",

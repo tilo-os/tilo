@@ -56,6 +56,50 @@ fn every_dev_session_app_is_an_installed_package() {
     }
 }
 
+/// A development session installs the apps a person opens, and not the parts they are made
+/// with: Discussion is a package Tasks and Notes are built with, so it rides in their payloads
+/// and the comments on a task or a note are kept in that app's own record, as a package an app
+/// uses that is not installed keeps its records in it. Installed as an app of its own it would
+/// be a second record the threads are read from, and an app a person could open.
+#[test]
+fn a_dev_session_installs_the_apps_and_not_the_parts_they_are_made_with() {
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let store = home.data().join("tilo-apps");
+    let runtime = home.state().join("tilolang");
+    std::fs::create_dir_all(&runtime).expect("a directory for the build");
+    let installed = common::dev_apps::install(&store, &runtime);
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+    let catalog = package_store::Catalog::at(&store, None);
+    let apps: Vec<String> = app_catalogue::apps::read(&catalog)
+        .expect("the store's apps read")
+        .into_iter()
+        .map(|app| app.package_id)
+        .collect();
+    for app in &installed {
+        assert!(apps.contains(app), "{app} is installed: {apps:?}");
+    }
+    assert!(
+        !apps.contains(&"so.tilo.lang.discussion".to_owned()),
+        "Discussion is no app of the session's: {apps:?}"
+    );
+    // The part itself rides in the apps made with it.
+    for app in ["so.tilo.lang.tasks", "so.tilo.lang.notes"] {
+        let found = app_catalogue::apps::read_one_from_env(app)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("{app} is installed"));
+        assert!(
+            found
+                .payload_root
+                .join(tilolang_tilo::bundle::IMPORTS_DIR)
+                .join("so.tilo.lang.discussion.wasm")
+                .is_file(),
+            "{app} carries the package it is made with: {}",
+            found.payload_root.display()
+        );
+    }
+}
+
 /// The session plans each app's connector from its installed manifest: the `YouTube` client's
 /// `youtube` connector and Mail's `imap` one are the apps' own declarations, and their launch is
 /// the app's own with the origin named (`--tilolang-connector <origin>`) and nothing a window
