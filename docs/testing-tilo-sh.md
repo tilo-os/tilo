@@ -197,7 +197,13 @@ The check brings the stack up and uses it as people and backends do:
 7. Three fresh visitors enter the Lounge, timed.
 
 The report (`report.json` in the work directory) holds the bring-up time,
-the visa run's duration and each visitor's entry time.
+the visa run's duration and each visitor's entry time, and each step prints
+its own seconds as the next one begins, so a run says where its time went.
+
+To chase one step, name it: `TILO_SH_ONLY=7 stack.sh check --images` brings
+the stack up and times the visitors, `TILO_SH_ONLY=2-6` runs only the visa
+run (with the startup's key, which it needs), and `TILO_SH_ONLY=10` only a
+key opening Browser in a workspace's VM. Naming none runs every step.
 
 ### The Browser of a hosted workspace
 

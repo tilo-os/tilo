@@ -52,6 +52,9 @@
 # startup person are answered by TILO_SH_TILO_APPROVE (tilo-approve, built by
 # the t check beside tilo-enroll), from the root of theirs kept in
 # WORK/startup/root, through the relay address the VM host names.
+# TILO_SH_ONLY names the steps to run (`1`, `2-6`, `7`, `10`, comma separated)
+# to chase one of them without the rest; the stack is brought up either way and
+# each step's own seconds are printed beside it.
 # Needs what stack.sh needs, node, a headless Chromium (CHROME or
 # Playwright's), and uv (or python3 with httpx) for the Python SDK. With
 # TILO_SH_VM_HOST=1 it also needs /dev/kvm and root through sudo, and the
@@ -68,8 +71,32 @@ site=https://127.0.0.1:$((base + 20))
 relay=https://127.0.0.1:$base
 door=http://localhost:$((base + 10))
 began=$SECONDS
-step() { printf '\n== %s (%ss)\n' "$*" $((SECONDS - began)); }
+at=$SECONDS
+step() {
+  printf '\n== %s (%ss, %ss in)\n' "$*" $((SECONDS - at)) $((SECONDS - began))
+  at=$SECONDS
+}
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# TILO_SH_ONLY names the steps to run, comma separated (`1`, `2-6`, `7`): what
+# a step that failed is chased with, instead of the whole check around it.
+# Naming none runs them all. A step that reads what an earlier one made is run
+# with that one: the visa run (2-6) and the hosted Browser (8-12) read the key
+# and the person the startup made in 1, so naming either runs 1 as well. The
+# stack is brought up either way.
+only=${TILO_SH_ONLY:-}
+runs_step() {
+  [[ -z $only ]] && return 0
+  local named number
+  for named in ${only//,/ }; do
+    if [[ $named == *-* ]]; then
+      for number in $(seq "${named%-*}" "${named#*-}"); do [[ $1 == "$number" ]] && return 0; done
+    else
+      [[ $1 == "$named" ]] && return 0
+    fi
+  done
+  return 1
+}
+runs_any() { local number; for number in "$@"; do runs_step "$number" && return 0; done; return 1; }
 report=$work/report.json
 pids=()
 trap 'for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done' EXIT
@@ -88,26 +115,31 @@ bring_up=$(cat "$state/bring-up-seconds")
 tilo=$(find_tilo)
 echo "the tilo command: $tilo"
 
-step '1. a fresh startup identity approves a server key on the local site'
-node "$here/integration/person.mjs" "$site" "$relay" "$work/startup" \
-  --key 'Visa backend' --tilo "$tilo" --door "$door" --no-pages \
-  --root "$work/startup/person.json" > "$work/startup.json" \
-  || fail "the startup's key was not approved (see $work/startup)"
-key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$work/startup.json")
-# The key they did not let operate web pages, made on the door's grants page:
-# what the last step holds to being asked about each page action.
-plain_key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["noPagesKey"])' "$work/startup.json")
-[[ -n $plain_key ]] || fail 'the startup made no key without the Browser scope (see $work/startup)'
-echo "ok: the startup holds its server key, and one that may not operate web pages"
+key= plain_key= reviewer_port=
+if runs_any 1 2 3 4 5 6 8 9 10 11 12; then
+  step '1. a fresh startup identity approves a server key on the local site'
+  node "$here/integration/person.mjs" "$site" "$relay" "$work/startup" \
+    --key 'Visa backend' --tilo "$tilo" --door "$door" --no-pages \
+    --root "$work/startup/person.json" > "$work/startup.json" \
+    || fail "the startup's key was not approved (see $work/startup)"
+  key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$work/startup.json")
+  # The key they did not let operate web pages, made on the door's grants page:
+  # what the last step holds to being asked about each page action.
+  plain_key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["noPagesKey"])' "$work/startup.json")
+  [[ -n $plain_key ]] || fail 'the startup made no key without the Browser scope (see $work/startup)'
+  echo "ok: the startup holds its server key, and one that may not operate web pages"
+fi
 
 # The reviewer's helper, up for every run that invites someone: each
 # invitation posted to it is another person in their own headless Chromium.
-reviewer_port=$((base + 50))
-sdk_python "$here/integration/reviewer.py" \
-  "$reviewer_port" "$site" "$relay" "$door" "$tilo" "$work" > "$work/reviewer.out" 2> "$work/reviewer.log" &
-pids+=($!)
-for _ in $(seq 100); do grep -q invitee "$work/reviewer.out" 2>/dev/null && break; sleep 0.2; done
-grep -q invitee "$work/reviewer.out" || fail "the reviewer did not start: $(cat "$work/reviewer.log")"
+if runs_any 2 3 4 5 6 12; then
+  reviewer_port=$((base + 50))
+  sdk_python "$here/integration/reviewer.py" \
+    "$reviewer_port" "$site" "$relay" "$door" "$tilo" "$work" > "$work/reviewer.out" 2> "$work/reviewer.log" &
+  pids+=($!)
+  for _ in $(seq 100); do grep -q invitee "$work/reviewer.out" 2>/dev/null && break; sleep 0.2; done
+  grep -q invitee "$work/reviewer.out" || fail "the reviewer did not start: $(cat "$work/reviewer.log")"
+fi
 
 # The hosted Browser's checks (8-11) run here, on that key: the visa run below
 # ends by revoking it.
@@ -141,41 +173,45 @@ if [[ $hosted == 1 ]]; then
     || fail "the startup person could not be held from the recovery key their page made (see $work/startup)"
   [[ -n $relay_address ]] || fail 'the VM host names no relay address for Browser sessions'
 
-  step '8. the visa test page, where a VM may reach it'
-  form_dir=$work/form
-  mkdir -p "$form_dir"
-  cp "$repo/apps/browser/test-pages/visa-form.html" "$form_dir/visa-form.html"
-  # A VM reaches the public internet and one address of this machine: the
-  # relay's own endpoint, as the VM dials it (10.0.2.4, which pasta maps to
-  # this machine's loopback). The relay's endpoint is UDP; its port's TCP side
-  # is the stack's to serve, and this is the page it serves.
-  form_port=$iroh_port
-  python3 -m http.server --bind 127.0.0.1 --directory "$form_dir" "$form_port" \
-    > "$work/form.log" 2>&1 &
-  pids+=($!)
-  form_url=http://10.0.2.4:$form_port/visa-form.html
-  for _ in $(seq 100); do
-    curl -fsS --max-time 1 "http://127.0.0.1:$form_port/visa-form.html" >/dev/null 2>&1 && break
-    sleep 0.1
-  done
-  curl -fsS --max-time 2 "http://127.0.0.1:$form_port/visa-form.html" >/dev/null \
-    || fail "the page server did not answer on 127.0.0.1:$form_port (see $work/form.log); a VM reaches it at 10.0.2.4:$form_port"
-  echo "ok: the test page is at $form_url, the one address besides the internet a VM reaches"
-
-  step '9. does the guest this stack boots carry the Browser?'
-  guest_says=$(sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 \
-      --init-groups --inh-caps=-all tilo-legacy hosted run --run /run/tilo-hosted \
-      --workspace ws-browser-guest --account "$vm_run_account" -- /bin/sh -c \
-      'if [ -x /usr/libexec/tilo/browser-session ]; then echo has-session; else echo no-session; fi
-       if getent passwd tilo-browser >/dev/null; then echo has-user; else echo no-user; fi' 2>&1) \
-    || fail "the workspace VM did not run the guest's own check: $guest_says"
-  echo "$guest_says"
-  if ! grep -qx 'has-session' <<<"$guest_says" || ! grep -qx 'has-user' <<<"$guest_says"; then
-    fail "the workspace guest this stack boots carries no hosted Browser: a VM needs /usr/libexec/tilo/browser-session (the headless session a first browser action starts) and the image's unprivileged tilo-browser user, and this guest has $(grep -qx 'has-session' <<<"$guest_says" || echo no) session and $(grep -qx 'has-user' <<<"$guest_says" || echo no) user. The Browser of a hosted workspace runs in the workspace's own VM, so this check can go no further until the guest that carries it is in this tree (os/Containerfile.hosted-guest)."
+  if runs_any 8 10 12; then
+    step '8. the visa test page, where a VM may reach it'
+    form_dir=$work/form
+    mkdir -p "$form_dir"
+    cp "$repo/apps/browser/test-pages/visa-form.html" "$form_dir/visa-form.html"
+    # A VM reaches the public internet and one address of this machine: the
+    # relay's own endpoint, as the VM dials it (10.0.2.4, which pasta maps to
+    # this machine's loopback). The relay's endpoint is UDP; its port's TCP side
+    # is the stack's to serve, and this is the page it serves.
+    form_port=$iroh_port
+    python3 -m http.server --bind 127.0.0.1 --directory "$form_dir" "$form_port" \
+      > "$work/form.log" 2>&1 &
+    pids+=($!)
+    form_url=http://10.0.2.4:$form_port/visa-form.html
+    for _ in $(seq 100); do
+      curl -fsS --max-time 1 "http://127.0.0.1:$form_port/visa-form.html" >/dev/null 2>&1 && break
+      sleep 0.1
+    done
+    curl -fsS --max-time 2 "http://127.0.0.1:$form_port/visa-form.html" >/dev/null \
+      || fail "the page server did not answer on 127.0.0.1:$form_port (see $work/form.log); a VM reaches it at 10.0.2.4:$form_port"
+    echo "ok: the test page is at $form_url, the one address besides the internet a VM reaches"
   fi
-  echo "ok: the guest carries the headless Browser session and its user"
 
-  step '10. a key opens Browser in a hosted workspace, in its VM'
+  if runs_step 9; then
+    step '9. does the guest this stack boots carry the Browser?'
+    guest_says=$(sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 \
+        --init-groups --inh-caps=-all tilo-legacy hosted run --run /run/tilo-hosted \
+        --workspace ws-browser-guest --account "$vm_run_account" -- /bin/sh -c \
+        'if [ -x /usr/libexec/tilo/browser-session ]; then echo has-session; else echo no-session; fi
+         if getent passwd tilo-browser >/dev/null; then echo has-user; else echo no-user; fi' 2>&1) \
+      || fail "the workspace VM did not run the guest's own check: $guest_says"
+    echo "$guest_says"
+    if ! grep -qx 'has-session' <<<"$guest_says" || ! grep -qx 'has-user' <<<"$guest_says"; then
+      fail "the workspace guest this stack boots carries no hosted Browser: a VM needs /usr/libexec/tilo/browser-session (the headless session a first browser action starts) and the image's unprivileged tilo-browser user, and this guest has $(grep -qx 'has-session' <<<"$guest_says" || echo no) session and $(grep -qx 'has-user' <<<"$guest_says" || echo no) user. The Browser of a hosted workspace runs in the workspace's own VM, so this check can go no further until the guest that carries it is in this tree (os/Containerfile.hosted-guest)."
+    fi
+    echo "ok: the guest carries the headless Browser session and its user"
+  fi
+
+  hosted_workspace= hosted_seconds=0
   hosted_run() { # PHASE
     TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
       HOSTED_VISA_PLANS=$plans HOSTED_VISA_ACCOUNT=$vm_account \
@@ -184,62 +220,74 @@ if [[ $hosted == 1 ]]; then
       sdk_python "$here/integration/hosted-visa.py" "$door" "$key" "$work/hosted" "$form_url" "$1"
   }
   launch=$SECONDS
-  set +e
-  hosted_run --open 2>&1 | tee "$work/hosted-open.log"
-  hosted_status=${PIPESTATUS[0]}
-  set -e
-  hosted_seconds=$((SECONDS - launch))
-  if [[ $hosted_status != 0 ]]; then
-    echo '--- the VM host said:' >&2
-    sudo -n podman logs --tail 80 tilo-sh-vm-host-0 >&2 2>/dev/null || true
-    fail "Browser did not open in the workspace's VM (see $work/hosted-open.log)"
+  if runs_step 10; then
+    step '10. a key opens Browser in a hosted workspace, in its VM'
+    set +e
+    hosted_run --open 2>&1 | tee "$work/hosted-open.log"
+    hosted_status=${PIPESTATUS[0]}
+    set -e
+    hosted_seconds=$((SECONDS - launch))
+    if [[ $hosted_status != 0 ]]; then
+      echo '--- the VM host said:' >&2
+      sudo -n podman logs --tail 80 tilo-sh-vm-host-0 >&2 2>/dev/null || true
+      fail "Browser did not open in the workspace's VM (see $work/hosted-open.log)"
+    fi
+    hosted_workspace=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workspace"])' "$hosted_report")
   fi
-  hosted_workspace=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workspace"])' "$hosted_report")
 
-  step '11. the VM the Browser ran in: its sandbox, its user, its memory'
-  VM_HOST_RUN="sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all tilo-legacy" \
-    VM_HOST_CONTAINER=tilo-sh-vm-host-0 \
-    python3 "$here/integration/vm-proofs.py" "$hosted_workspace" "$vm_run_account" "$work/vm" \
-    || fail 'the VM is not what a hosted Browser needs (see above, and vm-proofs.json)'
+  if runs_any 11 12; then
+    step '11. the VM the Browser ran in: its sandbox, its user, its memory'
+    VM_HOST_RUN="sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all tilo-legacy" \
+      VM_HOST_CONTAINER=tilo-sh-vm-host-0 \
+      python3 "$here/integration/vm-proofs.py" "$hosted_workspace" "$vm_run_account" "$work/vm" \
+      || fail 'the VM is not what a hosted Browser needs (see above, and vm-proofs.json)'
+  fi
 
-  step '12. the agent fills, submits and is held in the hosted Browser'
-  set +e
-  hosted_run --fill 2>&1 | tee "$work/hosted-fill.log"
-  fill_status=${PIPESTATUS[0]}
-  set -e
-  [[ $fill_status == 0 ]] || fail "the hosted Browser flow failed (see $work/hosted-fill.log)"
-  echo "ok: the hosted Browser ran in $((SECONDS - launch))s, its open taking ${hosted_seconds}s"
+  if runs_step 12; then
+    step '12. the agent fills, submits and is held in the hosted Browser'
+    set +e
+    hosted_run --fill 2>&1 | tee "$work/hosted-fill.log"
+    fill_status=${PIPESTATUS[0]}
+    set -e
+    [[ $fill_status == 0 ]] || fail "the hosted Browser flow failed (see $work/hosted-fill.log)"
+    echo "ok: the hosted Browser ran in $((SECONDS - launch))s, its open taking ${hosted_seconds}s"
+  fi
 fi
 
-step '2-6. the visa run against the local door'
-visa_began=$SECONDS
-set +e
-TILO_DOOR=$door TILO_API_KEY=$key TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
-  VISA_APPLICANTS=${VISA_APPLICANTS:-25} VISA_REVOKE_SERVER_KEY=1 \
-  sdk_python "$repo/sdk/python/examples/visa_proof.py" \
-  2>&1 | tee "$work/visa.log"
-visa_status=${PIPESTATUS[0]}
-set -e
-visa_seconds=$((SECONDS - visa_began))
-if [[ $visa_status != 0 ]]; then
-  echo '--- the reviewer said:' >&2
-  tail -60 "$work/reviewer.log" >&2
-  # A failing check keeps no outputs: what the reviewer's page said goes
-  # into the log.
-  for said in "$work"/reviewer-*/console.log; do
-    [[ -f $said ]] && { echo "--- $said:" >&2; tail -40 "$said" >&2; }
-  done
-  fail "the visa run failed (see $work/visa.log)"
-fi
-
-step '7. a fresh visitor enters the Lounge, timed'
-visits=${TILO_SH_ENTRY_VISITS:-3}
+visa_seconds=0
 entries=()
-for visit in $(seq "$visits"); do
-  node "$here/integration/person.mjs" "$site" "$relay" "$work/visitor-$visit" > "$work/visitor-$visit.json" \
-    || fail "visitor $visit did not get in (see $work/visitor-$visit)"
-  entries+=("$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["joinedMs"])' "$work/visitor-$visit.json")")
-done
+if runs_any 2 3 4 5 6; then
+  step '2-6. the visa run against the local door'
+  visa_began=$SECONDS
+  set +e
+  TILO_DOOR=$door TILO_API_KEY=$key TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
+    VISA_APPLICANTS=${VISA_APPLICANTS:-25} VISA_REVOKE_SERVER_KEY=1 \
+    sdk_python "$repo/sdk/python/examples/visa_proof.py" \
+    2>&1 | tee "$work/visa.log"
+  visa_status=${PIPESTATUS[0]}
+  set -e
+  visa_seconds=$((SECONDS - visa_began))
+  if [[ $visa_status != 0 ]]; then
+    echo '--- the reviewer said:' >&2
+    tail -60 "$work/reviewer.log" >&2
+    # A failing check keeps no outputs: what the reviewer's page said goes
+    # into the log.
+    for said in "$work"/reviewer-*/console.log; do
+      [[ -f $said ]] && { echo "--- $said:" >&2; tail -40 "$said" >&2; }
+    done
+    fail "the visa run failed (see $work/visa.log)"
+  fi
+fi
+
+if runs_step 7; then
+  step '7. a fresh visitor enters the Lounge, timed'
+  visits=${TILO_SH_ENTRY_VISITS:-3}
+  for visit in $(seq "$visits"); do
+    node "$here/integration/person.mjs" "$site" "$relay" "$work/visitor-$visit" > "$work/visitor-$visit.json" \
+      || fail "visitor $visit did not get in (see $work/visitor-$visit)"
+    entries+=("$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["joinedMs"])' "$work/visitor-$visit.json")")
+  done
+fi
 
 python3 - "$report" "$bring_up" "$visa_seconds" "${TILO_SH_SEED:-0}" "${entries[@]}" <<'EOF'
 import json, os, statistics, sys
@@ -250,7 +298,7 @@ report = {
     "visa_run_seconds": int(visa),
     "lounge_seeded": seeded == "1",
     "entry_ms": entries,
-    "entry_ms_median": statistics.median(entries),
+    "entry_ms_median": statistics.median(entries) if entries else None,
 }
 work = os.path.dirname(path)
 # The hosted Browser's own numbers, when this stack ran with its VM host.
