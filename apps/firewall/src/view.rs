@@ -146,12 +146,12 @@ impl Tab {
         }
     }
 
-    fn label(self) -> &'static str {
-        match self {
-            Tab::Rules => "Rules",
-            Tab::Services => "Services",
-            Tab::Blocked => "Blocked",
-        }
+    fn label(self) -> String {
+        crate::locales::CATALOG.t(match self {
+            Tab::Rules => "firewall-a11y-rules",
+            Tab::Services => "firewall-a11y-services",
+            Tab::Blocked => "firewall-tab-blocked",
+        })
     }
 }
 
@@ -256,9 +256,9 @@ pub(crate) fn window_actions(
             FIREWALL_ON,
             Icon::Shield.name(),
             if enabled {
-                "Turn off the firewall"
+                crate::locales::CATALOG.t("firewall-stop-confirm")
             } else {
-                "Turn on the firewall"
+                crate::locales::CATALOG.t("firewall-turn-on")
             },
         )
         .on(enabled),
@@ -266,20 +266,28 @@ pub(crate) fn window_actions(
             APPLY,
             Icon::Upload.name(),
             if applying {
-                "Applying the rules to the system"
+                crate::locales::CATALOG.t("firewall-bar-applying")
             } else {
-                "Apply the rules to the system"
+                crate::locales::CATALOG.t("firewall-bar-apply")
             },
         )
         .enabled(!applying),
     ];
     if tab == Tab::Rules {
-        actions.push(ToolbarAction::new(ADD_RULE, Icon::Plus.name(), "Add rule"));
+        actions.push(ToolbarAction::new(
+            ADD_RULE,
+            Icon::Plus.name(),
+            crate::locales::CATALOG.t("firewall-add-rule"),
+        ));
     }
     actions.push(
-        ToolbarAction::new(PANIC_MODE, Icon::Ban.name(), "Panic mode")
-            .on(panic)
-            .in_menu(),
+        ToolbarAction::new(
+            PANIC_MODE,
+            Icon::Ban.name(),
+            crate::locales::CATALOG.t("firewall-panic-mode"),
+        )
+        .on(panic)
+        .in_menu(),
     );
     actions
 }
@@ -287,12 +295,12 @@ pub(crate) fn window_actions(
 /// The zone's two views, as the window bar's switcher.
 pub(crate) fn window_views(tab: Tab) -> ToolbarViews {
     ToolbarViews {
-        name: "View".to_owned(),
+        name: crate::locales::CATALOG.t("firewall-views"),
         choices: Tab::ALL
             .into_iter()
             .map(|tab| ToolbarView {
                 id: tab.view_id().to_owned(),
-                label: tab.label().to_owned(),
+                label: tab.label(),
             })
             .collect(),
         chosen: tab.view_id().to_owned(),

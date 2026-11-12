@@ -74,11 +74,11 @@ pub enum Tab {
 impl Tab {
     const ALL: [Self; 2] = [Self::Processes, Self::Resources];
 
-    fn label(self) -> &'static str {
-        match self {
-            Self::Processes => "Processes",
-            Self::Resources => "Resources",
-        }
+    fn label(self) -> String {
+        crate::resource::CATALOG.t(match self {
+            Self::Processes => "monitor-a11y-processes",
+            Self::Resources => "monitor-tab-resources",
+        })
     }
 }
 

@@ -1164,6 +1164,87 @@ class CopyLanguageTests(unittest.TestCase):
             "a refusal answers the code that asked, in the words that code "
             "shows; the sentence a function keeps is what a window paints")
 
+    def test_the_window_bars_label_fields_are_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "app.rs").write_text("\n".join([
+                "pub struct DemoApp {",
+                "    bar: ui::framework::BarCommands<Command>,",
+                "}",
+                "impl DemoApp {",
+                "    fn bar(&self) -> WindowToolbar {",
+                "        let entries = &self.bar;",
+                "        let (id, icon, name) = match self.more_open {",
+                '            true => (BAR_MORE, "download", "Importing…"),',
+                '            false => (BAR_MORE, "download", "Import contacts"),',
+                "        };",
+                "        WindowToolbar {",
+                "            actions: vec![",
+                '                self.bar.entry("plus", "New event", Command::New),',
+                '                entries.entry("trash", "Delete", Command::Delete),',
+                '                ToolbarAction::new("export", "upload", "Export"),',
+                "                ToolbarAction {",
+                '                    name: "Copy".to_owned(),',
+                "                    ..ToolbarAction::new(id, icon, name)",
+                "                },",
+                "            ],",
+                "            location: Some(ToolbarLocation {",
+                '                label: "Inbox".to_owned(),',
+                '                name: crate::i18n::t("demo-name"),',
+                '                value: "Library".to_owned(),',
+                "                choices: vec![LocationChoice {",
+                '                    label: "Your shell on this device".to_owned(),',
+                '                    value: "shell".to_owned(),',
+                "                    ..LocationChoice::default()",
+                "                }],",
+                "                segments: vec![LocationSegment {",
+                '                    label: "Library".to_owned(),',
+                '                    value: "/library".to_owned(),',
+                "                }],",
+                "                ..ToolbarLocation::default()",
+                "            }),",
+                "            views: Some(ToolbarViews {",
+                '                name: "View".to_owned(),',
+                "                choices: vec![ToolbarView {",
+                '                    id: "month".to_owned(),',
+                '                    label: "Month".to_owned(),',
+                "                }],",
+                '                chosen: "month".to_owned(),',
+                "            }),",
+                "            notice: Some(ToolbarNotice {",
+                '                text: "Page captured".to_owned(),',
+                "                ..ToolbarNotice::default()",
+                "            }),",
+                "            ..WindowToolbar::default()",
+                "        }",
+                "    }",
+                "}",
+                "struct Row {",
+                "    label: String,",
+                "}",
+                "fn rows() -> Vec<Row> {",
+                '    vec![Row { label: "Resolution".to_owned() }]',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Importing…", "Import contacts", "New event", "Delete", "Export",
+                 "Copy", "Inbox", "Your shell on this device", "Library", "View",
+                 "Month", "Page captured"],
+                "the window's bar draws what an app declares for it, so the "
+                "words in its own tables' label fields — an action's name, a "
+                "place's, a view's, a notice's — are painted where a person "
+                "reads them, whether the app writes them into the field or "
+                "makes the entry with them; a field of another type, a "
+                "location's value (the address a person typed) and a word "
+                "resolved through the catalogue are not copy")
+
     def test_the_tree_passes(self):
         self.assertEqual(
             copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS,

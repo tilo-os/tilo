@@ -47,3 +47,15 @@ monitor-memory-swap = Swap
 monitor-section-network = Network
 monitor-section-disk = Disk
 monitor-usage-unavailable-message = This computer's processor, memory, network and disk use couldn't be read.
+
+## The window bar's slots
+monitor-tab-resources = Resources
+monitor-views = View
+monitor-refresh = Refresh
+monitor-update-frequency = Update frequency: { $cadence }
+monitor-tree-view = Tree view
+monitor-include-children = Include children
+monitor-kernel-threads = Kernel threads
+monitor-cadence-paused = Paused
+monitor-cadence-second = Every second
+monitor-cadence-seconds = Every { $seconds } seconds

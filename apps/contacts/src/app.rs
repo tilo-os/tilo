@@ -1250,7 +1250,7 @@ impl ContactsApp {
                 .iter()
                 .all(|part| part.trim().is_empty());
             return if form.is_new && unnamed {
-                "New contact".to_owned()
+                crate::account_editor::CATALOG.t("contacts-new-contact-title")
             } else {
                 draft.display_name()
             };
@@ -1262,7 +1262,7 @@ impl ContactsApp {
             return contact.display_name();
         }
         self.destination_label()
-            .unwrap_or_else(|| "All contacts".to_owned())
+            .unwrap_or_else(|| crate::account_editor::CATALOG.t("contacts-all-contacts"))
     }
 
     /// The window bar's slots ([`ui::window_toolbar`]): the shell's own,
@@ -1278,11 +1278,23 @@ impl ContactsApp {
         });
         let mut actions = Vec::new();
         if self.mode == Mode::Edit && self.form.is_some() {
-            actions.push(ToolbarAction::new(BAR_SAVE, "check", "Save"));
+            actions.push(ToolbarAction::new(
+                BAR_SAVE,
+                "check",
+                crate::account_editor::CATALOG.t("contacts-save"),
+            ));
             // Not the window's own ✕: Cancel leaves the form, not the window.
-            actions.push(ToolbarAction::new(BAR_CANCEL, "undo-2", "Cancel"));
+            actions.push(ToolbarAction::new(
+                BAR_CANCEL,
+                "undo-2",
+                crate::account_editor::CATALOG.t("contacts-account-cancel"),
+            ));
         } else {
-            actions.push(ToolbarAction::new(BAR_NEW, "plus", "New contact"));
+            actions.push(ToolbarAction::new(
+                BAR_NEW,
+                "plus",
+                crate::account_editor::CATALOG.t("contacts-new-contact-title"),
+            ));
             if let Some(contact) = self
                 .selected
                 .and_then(|id| self.store.contact(id))
@@ -1293,29 +1305,68 @@ impl ContactsApp {
                 // `sms:` and `mailto:`. A verb with nothing to act on is not
                 // drawn, rather than drawn and dead.
                 if crate::detail::primary_phone(contact).is_some() {
-                    actions.push(ToolbarAction::new(BAR_CALL, "phone", "Call"));
-                    actions.push(ToolbarAction::new(BAR_MESSAGE, "message-square", "Text"));
+                    actions.push(ToolbarAction::new(
+                        BAR_CALL,
+                        "phone",
+                        crate::account_editor::CATALOG.t("contacts-call"),
+                    ));
+                    actions.push(ToolbarAction::new(
+                        BAR_MESSAGE,
+                        "message-square",
+                        crate::account_editor::CATALOG.t("contacts-text"),
+                    ));
                 }
                 if crate::detail::primary_email(contact).is_some() {
-                    actions.push(ToolbarAction::new(BAR_EMAIL, "mail", "Email"));
+                    actions.push(ToolbarAction::new(
+                        BAR_EMAIL,
+                        "mail",
+                        crate::account_editor::CATALOG.t("contacts-email"),
+                    ));
                 }
                 actions.push(
-                    ToolbarAction::new(BAR_FAVORITE, "star", "Favorite").on(contact.favorite),
+                    ToolbarAction::new(
+                        BAR_FAVORITE,
+                        "star",
+                        crate::account_editor::CATALOG.t("contacts-a11y-favorite"),
+                    )
+                    .on(contact.favorite),
                 );
                 // Named for the whole contact: each field's pencil edits
                 // only that field.
-                actions.push(ToolbarAction::new(BAR_EDIT, "pencil", "Edit contact"));
-                actions.push(ToolbarAction::new(BAR_DELETE, "trash-2", "Delete contact"));
+                actions.push(ToolbarAction::new(
+                    BAR_EDIT,
+                    "pencil",
+                    crate::account_editor::CATALOG.t("contacts-edit-contact"),
+                ));
+                actions.push(ToolbarAction::new(
+                    BAR_DELETE,
+                    "trash-2",
+                    crate::account_editor::CATALOG.t("contacts-remove-contact"),
+                ));
             }
         }
         for (action, enabled) in self.more_rows() {
             let (id, icon, name) = match action {
-                MoreAction::Import if !enabled => (BAR_IMPORT, "download", "Importing…"),
-                MoreAction::Import => (BAR_IMPORT, "download", "Import contacts"),
-                MoreAction::Export => (BAR_EXPORT, "upload", "Export contacts"),
-                MoreAction::ReviewDuplicate => {
-                    (BAR_REVIEW_DUPLICATE, "users", "Review possible duplicate")
-                }
+                MoreAction::Import if !enabled => (
+                    BAR_IMPORT,
+                    "download",
+                    crate::account_editor::CATALOG.t("contacts-bar-importing"),
+                ),
+                MoreAction::Import => (
+                    BAR_IMPORT,
+                    "download",
+                    crate::account_editor::CATALOG.t("contacts-import"),
+                ),
+                MoreAction::Export => (
+                    BAR_EXPORT,
+                    "upload",
+                    crate::account_editor::CATALOG.t("contacts-export"),
+                ),
+                MoreAction::ReviewDuplicate => (
+                    BAR_REVIEW_DUPLICATE,
+                    "users",
+                    crate::account_editor::CATALOG.t("contacts-review-duplicate"),
+                ),
             };
             actions.push(
                 ToolbarAction::new(id, icon, name)

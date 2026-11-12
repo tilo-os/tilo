@@ -1057,7 +1057,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         present(app, doc, &automerge::ROOT);
         assert_eq!(
             h.app.notes_editor.editor().empty_hint(),
-            NOTES_PLACEHOLDER,
+            crate::resource::t("calendar-notes-placeholder"),
             "the notes editor shows a calendar-specific placeholder hint"
         );
         assert!(
@@ -1084,7 +1084,10 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
             h.app.title_input.is_focused(),
             "the title is focused so typing names the event"
         );
-        assert_eq!(h.app.title_input.placeholder(), TITLE_PLACEHOLDER);
+        assert_eq!(
+            h.app.title_input.placeholder(),
+            crate::model::untitled_event()
+        );
         // Blurring the empty field reveals the placeholder hint (never literal body text).
         h.app.title_input.set_focus(false);
         assert!(

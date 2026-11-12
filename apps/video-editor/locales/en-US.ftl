@@ -297,3 +297,13 @@ video-editor-export-title = Export video
 video-editor-start-export = Export
 video-editor-close-export = Close
 video-editor-cancel-export = Cancel
+
+## The window bar's slots
+video-editor-hide-inspector = Hide inspector
+video-editor-show-inspector = Show inspector
+video-editor-open-project-file = Open project file…
+video-editor-export-project-file = Export project file…
+video-editor-choose-media = Choose media…
+
+## A project nobody has named yet
+video-editor-untitled = Untitled

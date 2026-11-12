@@ -61,8 +61,7 @@ fn the_sidebar_and_the_sheet_read_out_in_the_person_s_language() {
         .model
         .event(event)
         .expect("the open event")
-        .display_title()
-        .to_string();
+        .display_title();
     let project = h.app.model.projects.iter().next().expect("a project");
     let account = &h.app.accounts.accounts[0];
     let calendar = &account.calendars[0];

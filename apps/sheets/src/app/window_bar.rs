@@ -28,23 +28,46 @@ impl SheetsApp {
         let format = menu(self.format_menu_rows(), "type");
         let formulas = self.grid.formula_view();
         let formulas_name = if formulas {
-            "Show calculated results"
+            crate::resource::CATALOG.t("sheets-show-results")
         } else {
-            "Show formulas"
+            crate::resource::CATALOG.t("sheets-show-formulas")
         };
         // AutoSum, the formula view and the settings are occasional: the
         // menu's.
         let actions = vec![
-            ToolbarAction::new("file", "file", "File").with_items(file),
-            ToolbarAction::new("format", "type", "Format").with_items(format),
-            bar.entry("bold", "Bold", MenuItem::ToggleBold)
-                .on(self.active_cell_bold),
-            bar.entry("plus", "AutoSum", MenuItem::AutoSum).in_menu(),
+            ToolbarAction::new(
+                "file",
+                "file",
+                crate::resource::CATALOG.t("sheets-file-menu"),
+            )
+            .with_items(file),
+            ToolbarAction::new(
+                "format",
+                "type",
+                crate::resource::CATALOG.t("sheets-format-menu"),
+            )
+            .with_items(format),
+            bar.entry(
+                "bold",
+                crate::resource::CATALOG.t("sheets-bold"),
+                MenuItem::ToggleBold,
+            )
+            .on(self.active_cell_bold),
+            bar.entry(
+                "plus",
+                crate::resource::CATALOG.t("sheets-autosum"),
+                MenuItem::AutoSum,
+            )
+            .in_menu(),
             bar.entry("code", formulas_name, MenuItem::ToggleFormulaView)
                 .on(formulas)
                 .in_menu(),
-            bar.entry("settings", "Document settings", MenuItem::OpenDocSettings)
-                .in_menu(),
+            bar.entry(
+                "settings",
+                crate::resource::CATALOG.t("sheets-document-settings"),
+                MenuItem::OpenDocSettings,
+            )
+            .in_menu(),
         ];
         // A workbook with a name of its own stands first; one never named
         // is called by the sheet in view, as the model names it.

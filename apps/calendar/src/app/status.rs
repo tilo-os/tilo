@@ -120,10 +120,16 @@ pub(super) struct StatusActions {
 impl StatusAction {
     fn button(self) -> ToolbarAction {
         match self {
-            Self::SyncAgain => ToolbarAction::new(SYNC_AGAIN_ACTION, "refresh", "Sync again"),
-            Self::OpenSettings => {
-                ToolbarAction::new(OPEN_SETTINGS_ACTION, "settings", "Open Settings")
-            }
+            Self::SyncAgain => ToolbarAction::new(
+                SYNC_AGAIN_ACTION,
+                "refresh",
+                crate::resource::t("calendar-sync-again"),
+            ),
+            Self::OpenSettings => ToolbarAction::new(
+                OPEN_SETTINGS_ACTION,
+                "settings",
+                crate::resource::t("calendar-open-settings"),
+            ),
         }
     }
 }

@@ -34,7 +34,7 @@ impl Music {
         });
         let entries = &self.bar_entries;
         if self.nav.can_go_back() {
-            let back = entries.entry("arrow-left", "Back", BarCommand::Back);
+            let back = entries.entry("arrow-left", crate::i18n::t("music-back"), BarCommand::Back);
             toolbar.leading.push(back.navigating());
         }
         if self.view == View::Home {
@@ -47,7 +47,7 @@ impl Music {
             let new = BarCommand::Run(Action::BeginNewPlaylist);
             toolbar
                 .actions
-                .push(entries.entry("plus", "New playlist", new));
+                .push(entries.entry("plus", crate::i18n::t("music-new-playlist"), new));
         }
         toolbar
     }

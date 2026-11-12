@@ -1113,7 +1113,7 @@ mod interaction_tests {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
             h.app.core.borrow_mut().take_outbox(); // drain startup
-            h.press_bar("Refresh forecast");
+            h.press_bar(&crate::i18n::CATALOG.t("weather-refresh-forecast"));
             let queued = h
                 .app
                 .core
@@ -1267,7 +1267,7 @@ mod interaction_tests {
         {
             let mut h = Harness::new(1280.0, 720.0);
             assert!(!h.app.core.borrow().search_is_focused());
-            h.press_bar("Add place");
+            h.press_bar(&crate::i18n::CATALOG.t("weather-add-place"));
             assert!(
                 h.app.core.borrow().search_is_focused(),
                 "Add place shows and focuses the field"

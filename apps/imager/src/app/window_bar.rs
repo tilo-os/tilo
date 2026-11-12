@@ -15,9 +15,11 @@ impl ImagerApp {
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let mut toolbar = WindowToolbar::default();
         if self.step == Step::Drive && !self.prepared_delivery.needs_source_review() {
-            toolbar
-                .actions
-                .push(ToolbarAction::new(RESCAN, "refresh", "Rescan drives"));
+            toolbar.actions.push(ToolbarAction::new(
+                RESCAN,
+                "refresh",
+                crate::resource::CATALOG.t("imager-rescan-drives"),
+            ));
         }
         toolbar
     }

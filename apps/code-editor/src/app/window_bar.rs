@@ -25,9 +25,9 @@ impl CodeApp {
             ..ToolbarLocation::default()
         });
         let panel = if self.panel_visible {
-            "Hide panel"
+            crate::resource::CATALOG.t("code-editor-hide-panel")
         } else {
-            "Show panel"
+            crate::resource::CATALOG.t("code-editor-show-panel")
         };
         // A capture or a past version has no executor for the panel's
         // effect: the action shows, but cannot act.

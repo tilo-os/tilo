@@ -67,3 +67,6 @@ disks-format-loses-files = Alle Dateien darauf werden endgültig gelöscht.
 disks-format-loses-files-on = Alle Dateien auf „{ $label }“ werden endgültig gelöscht.
 disks-format-loses-used = Die { $size } an Dateien darauf werden endgültig gelöscht.
 disks-format-loses-used-on = Die { $size } an Dateien auf „{ $label }“ werden endgültig gelöscht.
+## Die Plätze der Fensterleiste
+disks-rescan-drives = Laufwerke erneut suchen
+disks-views = Ansicht

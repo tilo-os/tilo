@@ -30,7 +30,11 @@ fn bulk_items(bar: &BarCommands<Command>, state: &MailState) -> Vec<ToolbarActio
         BulkAction::Delete
     };
     vec![
-        bar.entry("check", "Done", Command::ToggleBulk),
+        bar.entry(
+            "check",
+            crate::i18n::t("mail-bulk-done"),
+            Command::ToggleBulk,
+        ),
         bar.entry(
             "archive",
             BulkAction::Archive.label(),
@@ -49,8 +53,12 @@ fn bulk_items(bar: &BarCommands<Command>, state: &MailState) -> Vec<ToolbarActio
             Command::Bulk(BulkAction::MarkUnread),
         )
         .in_menu(),
-        bar.entry("list-checks", "Select all", Command::SelectAllVisible)
-            .in_menu(),
+        bar.entry(
+            "list-checks",
+            crate::i18n::t("mail-select-all"),
+            Command::SelectAllVisible,
+        )
+        .in_menu(),
     ]
 }
 
@@ -61,27 +69,39 @@ fn message_items(bar: &BarCommands<Command>, state: &MailState) -> Vec<ToolbarAc
         return Vec::new();
     };
     let delete = if message.folder == Folder::Trash {
-        "Delete permanently"
+        crate::i18n::t("mail-delete-permanently")
     } else {
-        "Delete"
+        crate::i18n::t("mail-delete")
     };
     let mut items = vec![
-        bar.entry("reply", "Reply", Command::Message(CtxAction::Reply)),
-        bar.entry("archive", "Archive", Command::Message(CtxAction::Archive)),
+        bar.entry(
+            "reply",
+            crate::i18n::t("mail-reply"),
+            Command::Message(CtxAction::Reply),
+        ),
+        bar.entry(
+            "archive",
+            crate::i18n::t("mail-folder-archive"),
+            Command::Message(CtxAction::Archive),
+        ),
         bar.entry(
             "reply-all",
-            "Reply all",
+            crate::i18n::t("mail-reply-all"),
             Command::Message(CtxAction::ReplyAll),
         )
         .in_menu(),
-        bar.entry("forward", "Forward", Command::Message(CtxAction::Forward))
-            .in_menu(),
+        bar.entry(
+            "forward",
+            crate::i18n::t("mail-forward"),
+            Command::Message(CtxAction::Forward),
+        )
+        .in_menu(),
     ];
     if message.folder != Folder::Inbox && message.folder != Folder::Drafts {
         items.push(
             bar.entry(
                 "inbox",
-                "Move to Inbox",
+                crate::i18n::t("mail-move-to-inbox"),
                 Command::Message(CtxAction::MoveToInbox),
             )
             .in_menu(),
@@ -92,9 +112,13 @@ fn message_items(bar: &BarCommands<Command>, state: &MailState) -> Vec<ToolbarAc
             .in_menu(),
     );
     items.push(
-        bar.entry("star", "Star", Command::Message(CtxAction::ToggleStar))
-            .on(message.starred)
-            .in_menu(),
+        bar.entry(
+            "star",
+            crate::i18n::t("mail-star"),
+            Command::Message(CtxAction::ToggleStar),
+        )
+        .on(message.starred)
+        .in_menu(),
     );
     items.push(
         bar.entry(
@@ -119,15 +143,23 @@ pub(crate) fn bar_items(
     first_run: bool,
     composing: bool,
 ) -> Vec<ToolbarAction> {
-    let add_account = bar.entry("user-plus", "Add account", Command::AccountSettings);
+    let add_account = bar.entry(
+        "user-plus",
+        crate::i18n::t("mail-add-account"),
+        Command::AccountSettings,
+    );
     // The outbox: what waits to leave has one thing to be done with it here,
     // and New message beside it, since the person is plainly about to write.
     if state.outbox_open && !composing {
-        let mut items = vec![bar.entry("pencil", "New message", Command::Compose)];
+        let mut items = vec![bar.entry(
+            "pencil",
+            crate::i18n::t("mail-new-message"),
+            Command::Compose,
+        )];
         if let Some(queued) = state.open_queued() {
             items.push(bar.entry(
                 "rotate-ccw",
-                "Cancel sending",
+                crate::i18n::t("mail-cancel-sending"),
                 Command::CancelSend(queued.id.clone()),
             ));
         }
@@ -140,10 +172,14 @@ pub(crate) fn bar_items(
     // anything written in Drafts. Neither wears the window's own ✕.
     let writing: Vec<ToolbarAction> = if composing {
         vec![
-            bar.entry("trash-2", "Discard draft", Command::DiscardCompose),
+            bar.entry(
+                "trash-2",
+                crate::i18n::t("mail-bar-discard-draft"),
+                Command::DiscardCompose,
+            ),
             bar.entry(
                 "minimize-2",
-                "Close and keep in Drafts",
+                crate::i18n::t("mail-close-keep-draft"),
                 Command::CloseCompose,
             ),
         ]
@@ -161,13 +197,21 @@ pub(crate) fn bar_items(
     let mut items: Vec<ToolbarAction> = if composing {
         writing
     } else {
-        let mut items = vec![bar.entry("pencil", "New message", Command::Compose)];
+        let mut items = vec![bar.entry(
+            "pencil",
+            crate::i18n::t("mail-new-message"),
+            Command::Compose,
+        )];
         items.extend(message_items(bar, state));
         items
     };
     items.push(
-        bar.entry("square", "Select messages", Command::ToggleBulk)
-            .in_menu(),
+        bar.entry(
+            "square",
+            crate::i18n::t("mail-a11y-bulk-select"),
+            Command::ToggleBulk,
+        )
+        .in_menu(),
     );
     items.push(
         bar.entry(
@@ -229,7 +273,7 @@ pub(crate) fn toolbar(
 ) -> WindowToolbar {
     // Before any account there is nothing open: the window is Mail.
     let label = if first_run && composing.is_none() {
-        "Mail".to_owned()
+        crate::i18n::t("mail-title")
     } else {
         location(state, composing)
     };

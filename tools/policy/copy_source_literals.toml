@@ -284,16 +284,6 @@ text = "This window browses without your sign-ins. Open \\\n     the page in a B
 reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
 
 [[allow]]
-file = "apps/calendar/src/app.rs"
-text = "New event"
-reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
-
-[[allow]]
-file = "apps/calendar/src/app.rs"
-text = "Add notes"
-reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
-
-[[allow]]
 file = "apps/containers/src/app.rs"
 text = "Container engine actions are unavailable in demo mode"
 reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."

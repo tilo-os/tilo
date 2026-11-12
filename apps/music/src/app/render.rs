@@ -2401,19 +2401,19 @@ impl Music {
     /// playlist shown.
     pub(super) fn view_title(&self) -> String {
         match &self.view {
-            View::Home => "Home".into(),
+            View::Home => crate::i18n::t("music-view-home"),
             View::Recommendations => crate::i18n::t("music-recommendations-title"),
-            View::Songs => "Songs".into(),
-            View::Albums => "Albums".into(),
-            View::Artists => "Artists".into(),
-            View::Playlists => "Playlists".into(),
-            View::Downloads => "Downloads".into(),
-            View::Liked => "Liked songs".into(),
-            View::Browse => "Browse".into(),
-            View::Queue => "Queue".into(),
-            View::Lyrics => "Lyrics".into(),
-            View::NowPlaying => "Now playing".into(),
-            View::Search => "Search".into(),
+            View::Songs => crate::i18n::t("music-view-songs"),
+            View::Albums => crate::i18n::t("music-view-albums"),
+            View::Artists => crate::i18n::t("music-view-artists"),
+            View::Playlists => crate::i18n::t("music-view-playlists"),
+            View::Downloads => crate::i18n::t("music-view-downloads"),
+            View::Liked => crate::i18n::t("music-view-liked"),
+            View::Browse => crate::i18n::t("music-view-browse"),
+            View::Queue => crate::i18n::t("music-view-queue"),
+            View::Lyrics => crate::i18n::t("music-view-lyrics"),
+            View::NowPlaying => crate::i18n::t("music-view-now-playing"),
+            View::Search => crate::i18n::t("music-view-search"),
             View::Kept(id) => self
                 .kept_views()
                 .get(id)
@@ -2427,7 +2427,7 @@ impl Music {
                 .get(id)
                 .map(|p| p.name.clone())
                 .or_else(|| self.lib.artist(id).map(|a| a.name.clone()))
-                .unwrap_or_else(|| "Artist".to_string()),
+                .unwrap_or_else(|| crate::i18n::t("music-kind-artist")),
             View::Playlist(id) => self
                 .playlist_pages
                 .get(id)

@@ -1458,9 +1458,9 @@ impl BackupsWindow {
                 BACK_UP_NOW,
                 "upload",
                 if job == Some(JobKind::Backup) {
-                    "Backing up…"
+                    crate::i18n::t("backups-bar-backing-up")
                 } else {
-                    "Back up now"
+                    crate::i18n::t("backups-bar-back-up-now")
                 },
             )
             .enabled(repo.can_act() && job.is_none());
@@ -1469,7 +1469,7 @@ impl BackupsWindow {
             // Before anything is set up nothing is open: the window is
             // Backups.
             toolbar.location = Some(ui::window_toolbar::ToolbarLocation {
-                label: "Backups".to_owned(),
+                label: crate::i18n::t("backups-a11y-window"),
                 ..ui::window_toolbar::ToolbarLocation::default()
             });
         }

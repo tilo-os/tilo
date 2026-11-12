@@ -1829,3 +1829,5 @@ installer-status-install-start = Die Installation auf { $disk } für { $user } b
 installer-blocked-no-such-disk = Der Datenträger { $device } ist nicht aufgeführt; aktualisiere die Liste.
 installer-error-unknown-filesystem = Unbekanntes Dateisystem: { $filesystem }
 installer-keyboard-map-name = Tastaturbelegung { $layout }
+## „Laufwerke erneut suchen“ in der Fensterleiste
+imager-rescan-drives = Laufwerke erneut suchen

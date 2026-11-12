@@ -113,8 +113,10 @@ pub(super) enum NoticeAction {
 impl NoticeAction {
     fn button(self) -> ToolbarAction {
         let (icon, name) = match self {
-            Self::ScanAgain | Self::RecognizeAgain => ("rotate-cw", "Try again"),
-            Self::RefreshCameras => ("refresh", "Refresh"),
+            Self::ScanAgain | Self::RecognizeAgain => {
+                ("rotate-cw", crate::CATALOG.t("camera-try-again"))
+            }
+            Self::RefreshCameras => ("refresh", crate::CATALOG.t("camera-refresh")),
         };
         ToolbarAction::new(NOTICE_ACTION, icon, name)
     }

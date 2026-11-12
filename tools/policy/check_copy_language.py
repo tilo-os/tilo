@@ -116,6 +116,15 @@ to `.type_mut().label` counts too. The test is syntactic, on purpose: a
 sentence that travels through a chain of app helpers is a migration to do, not
 a checker to build.
 
+A window's bar draws what an app declares for it, so an app's slot words reach
+the bar through the bar's own tables rather than through a text constructor: an
+action's words are the `name` of a `ToolbarAction` (or of an entry the crate's
+`BarCommands` makes, `bar.entry(icon, name, command)`), a notice's are a
+`ToolbarNotice`'s `text`, and a place, a level of it or a view is a `label`. The
+check reads those fields by their type, so a `name` another type carries, a
+`ToolbarAction`'s `id` and a location's `value` (the address a person typed)
+stay out of it.
+
 A widget hands a reader many names at once, so it projects them as a tuple and
 names each node from one element of it (`let (target, name, role, state) =
 self.a11y_control(action)?`, then `.with_name(name)`). That element is words a
@@ -586,6 +595,11 @@ TEXT_CONSTRUCTORS = (
     (".set_empty_text(", 0),
     (".set_empty_hint(", 0),
     (".set_accessible_name(", 0),
+    # The window's bar draws what an app declares for it, so an action's words
+    # are its `name` and a notice's are its text: the calls that fill them are
+    # text constructors like any other, qualified by their type.
+    ("ToolbarAction::new(", 2),
+    ("ToolbarNotice::new(", 0),
     (".label(", 0),
     (".title(", 0),
     (".heading(", 0),
@@ -1497,6 +1511,106 @@ IMPL = re.compile(r"\bimpl(?:<[^>{]*>)?\s+(?:[^;{}\n]*?\bfor\s+)?([A-Z][A-Za-z0-
 # A struct literal: `HudItem {`, `Row::<T> {`.
 STRUCT_LITERAL = re.compile(r"(?<![\w:])([A-Z][A-Za-z0-9_]*)\s*(?:::\s*<[^<>]*>\s*)?\{")
 
+# The window's bar draws what an app declares for it, so an app's slot words
+# travel through the bar's own types and reach no text constructor at all: an
+# app names an action in a `ToolbarAction`'s `name`, says a notice in a
+# `ToolbarNotice`'s `text`, and names a place, a view or a level in a
+# `label`. Each is `(type, field)`, exactly: a `name` another type carries, a
+# `ToolbarAction`'s `id`, a location's `value` (the whole address a person
+# typed) or a page's `image` are not words.
+WINDOW_BAR_LABELS = (
+    ("ToolbarAction", "name"),
+    ("ToolbarNotice", "text"),
+    ("ToolbarLocation", "label"),
+    ("ToolbarLocation", "name"),
+    ("ToolbarLocation", "go_name"),
+    ("ToolbarLocation", "placeholder"),
+    ("LocationChoice", "label"),
+    ("LocationSegment", "label"),
+    ("ToolbarView", "label"),
+    ("ToolbarViews", "name"),
+)
+
+# The crate's window bar's commands, as a field or a parameter holds them
+# (`bar_entries: ui::framework::BarCommands<BarCommand>`,
+# `bar: &BarCommands<BarAction>`) and as a local is bound from one
+# (`let bar = &self.bar_entries;`). An entry of them —
+# `bar.entry(icon, name, command)` — is a `ToolbarAction` at the name's
+# position.
+BAR_COMMANDS_DECLARED = re.compile(
+    r"(?<![\w$])([a-z_][A-Za-z0-9_]*)\s*:\s*&?\s*"
+    r"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*BarCommands\s*<")
+BAR_COMMANDS_LOCAL = re.compile(
+    r"(?<![\w$])let\s+([a-z_][A-Za-z0-9_]*)\s*=\s*&\s*"
+    r"(?:(?:self)\s*\.\s*)?([a-z_][A-Za-z0-9_]*)\s*;")
+# Where an entry of them names its action: `bar.entry(icon, name, command)`,
+# the words at the second argument.
+BAR_ENTRY_CALL = r"(?<![\w$])(?:self\s*\.\s*)?{name}\s*\.\s*entry\s*\("
+
+# What tells a file that it declares or edits the window's bar: its types (an
+# app's import names the one it uses) and its commands' table.
+BAR_MARKERS = tuple(sorted({kind for kind, _ in WINDOW_BAR_LABELS} | {"BarCommands"}))
+
+# One of the bar's types built as a struct literal, by its own name however it
+# is pathed (`ToolbarLocation {`, `ui::window_toolbar::ToolbarLocation {`).
+BAR_STRUCT_LITERAL = re.compile(
+    r"(?<![\w])(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*("
+    + "|".join(kind for kind, _ in WINDOW_BAR_LABELS)
+    + r")\s*(?:::\s*<[^<>]*>\s*)?\{")
+
+
+def bar_command_names(paths: list[Path]) -> set[str]:
+    """The identifiers one crate's window-bar commands are held in: the
+    `BarCommands` a field or a parameter declares, and each local bound from
+    one. A receiver of any other type is not the bar's table, so its `entry`
+    (a map's, a menu's) says nothing about a word."""
+    declared: set[str] = set()
+    from_locals: list[tuple[str, str]] = []
+    for path in paths:
+        text = path.read_text(errors="replace")
+        code = rust_source.lex(text)[0]
+        declared.update(found.group(1) for found in BAR_COMMANDS_DECLARED.finditer(code))
+        from_locals.extend((found.group(1), found.group(2))
+                           for found in BAR_COMMANDS_LOCAL.finditer(code))
+    names = set(declared)
+    changed = True
+    while changed:
+        changed = False
+        for local, source in from_locals:
+            if source in names and local not in names:
+                names.add(local)
+                changed = True
+    return names
+
+
+def bar_label_ranges(code: str, names: set[str]) -> list[tuple[int, int]]:
+    """Where `code` puts words the window's bar draws: the value of a
+    `WINDOW_BAR_LABELS` field in a struct literal of that type, and the name
+    an entry of the crate's bar commands is made with."""
+    found = []
+    for literal in BAR_STRUCT_LITERAL.finditer(code):
+        open_brace = literal.end() - 1
+        close = rust_source.matching(code, open_brace) - 1
+        fields = {field for kind, field in WINDOW_BAR_LABELS if kind == literal.group(1)}
+        if not fields:
+            continue
+        for part_begin, part_end in top_level_parts(code, open_brace + 1, close):
+            piece = code[part_begin:part_end]
+            colon = piece.find(":")
+            if colon >= 0 and piece[:colon].strip() in fields:
+                found.append((part_begin + colon + 1, part_end))
+            elif piece.strip() in fields:
+                # The field written short (`ToolbarLocation { label, … }`): the
+                # words are in the local of that name.
+                found.append((part_begin, part_end))
+    for name in sorted(names):
+        pattern = re.compile(BAR_ENTRY_CALL.format(name=re.escape(name)))
+        for hand in pattern.finditer(code):
+            begin, end = argument(code, hand.end(), 1)
+            if begin < end:
+                found.append((begin, end))
+    return found
+
 
 def painted_fields(code: str) -> set[tuple[str, str]]:
     """`(type, field)` for each struct field a type's own method paints
@@ -1818,6 +1932,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
     fields: dict[str, set[tuple[str, str]]] = {}
     constants: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
     mappers: dict[str, re.Pattern[str] | None] = {}
+    bars: dict[str, set[str]] = {}
     found = []
     for path in sources:
         unit = path.relative_to(root).as_posix()
@@ -1831,7 +1946,8 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
         wire = tuple(b for b in WIRE_MESSAGE_BUILDERS if b in text) if builder_unit else ()
         labels = builder_unit and ACTION_LABEL.search(text) is not None
         if (not builders and not wire and not labels and "ButtonFace::" not in text
-                and not any(call in text for call, _ in TEXT_CONSTRUCTORS + SPEC_BUILDERS)):
+                and not any(call in text for call, _ in TEXT_CONSTRUCTORS + SPEC_BUILDERS)
+                and not (window and any(marker in text for marker in BAR_MARKERS))):
             continue
         code, literals = rust_source.lex(text)
         marked = list(code)
@@ -1932,6 +2048,12 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                     start = code.find(call, start + len(call))
             for words in naming[crate].values():
                 found.extend(words)
+            if crate not in bars:
+                bars[crate] = bar_command_names(by_crate[crate])
+            for begin, end in bar_label_ranges(code, bars[crate]):
+                sentences(begin, end, end, bindings)
+                ranges.append((begin, end))
+                found.extend(words_returned_in(code, begin, end, returning[crate]))
             for builder in ARG_BUILDERS:
                 start = code.find(builder)
                 while start >= 0:

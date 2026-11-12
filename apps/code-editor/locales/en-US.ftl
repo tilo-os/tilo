@@ -51,3 +51,7 @@ code-search-results = { $count } results in { $files } files
 code-search-still-running = { $head }, still searching…
 code-search-limit = { $head }, search limit reached after { $files } files; narrow the search
 code-search-scanned = { $head }, { $files } files scanned
+
+## The window bar's bottom-panel toggle
+code-editor-hide-panel = Hide panel
+code-editor-show-panel = Show panel

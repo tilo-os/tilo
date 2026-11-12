@@ -77,3 +77,12 @@ camera-scan-resolution = Auflösung
 camera-scan-color = Farbe
 camera-scan-paper-source = Papiereinzug
 camera-scan-text-language = Textsprache
+
+## Was die Fensterleiste sagt
+camera-document-page = Seite { $page } von { $pages }
+camera-capture-mode = Modus
+camera-open-photos = Fotos öffnen
+
+## Wie die Aktion eines Hinweises heißt
+camera-try-again = Erneut versuchen
+camera-refresh = Aktualisieren

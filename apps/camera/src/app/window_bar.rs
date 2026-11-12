@@ -82,10 +82,18 @@ impl CameraApp {
         let mut toolbar = WindowToolbar::default();
         if self.base_screen() == Screen::Document && !self.document_scan.pages.is_empty() {
             toolbar.location = Some(ToolbarLocation {
-                label: format!(
-                    "Page {} of {}",
-                    self.document_scan.selected + 1,
-                    self.document_scan.pages.len()
+                label: crate::CATALOG.t_args(
+                    "camera-document-page",
+                    &[
+                        (
+                            "page",
+                            ui::i18n::ArgValue::Number((self.document_scan.selected + 1) as f64),
+                        ),
+                        (
+                            "pages",
+                            ui::i18n::ArgValue::Number(self.document_scan.pages.len() as f64),
+                        ),
+                    ],
                 ),
                 ..ToolbarLocation::default()
             });
@@ -96,7 +104,7 @@ impl CameraApp {
         }
         if !self.is_recording() && !self.is_counting_down() {
             toolbar.views = Some(ToolbarViews {
-                name: String::from("Mode"),
+                name: crate::CATALOG.t("camera-capture-mode"),
                 choices: VIEWS
                     .iter()
                     .map(|(id, label)| ToolbarView {
@@ -110,11 +118,11 @@ impl CameraApp {
             });
         }
         toolbar.actions = self.page_actions();
-        toolbar.actions.push(
-            self.bar
-                .commands
-                .entry("image", "Open Photos", Command::OpenPhotos),
-        );
+        toolbar.actions.push(self.bar.commands.entry(
+            "image",
+            crate::CATALOG.t("camera-open-photos"),
+            Command::OpenPhotos,
+        ));
         if let Some(bar) = &self.bar.actions {
             toolbar.actions.push(ToolbarAction {
                 name: crate::CATALOG.t("camera-settings-title"),

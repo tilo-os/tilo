@@ -189,3 +189,7 @@ music-shuffle-off = Zufallswiedergabe ausschalten
 music-shuffle-on = Zufallswiedergabe einschalten
 music-show-in-sidebar = In der Seitenleiste anzeigen
 music-show-in-player = Im Player anzeigen
+
+## Die Plätze der Fensterleiste
+music-back = Zurück
+music-new-playlist = Neue Wiedergabeliste

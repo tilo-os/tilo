@@ -29,17 +29,25 @@ impl WeatherApp {
             .model
             .selected_location()
             .filter(|_| !places_in_front)
-            .map_or_else(|| "Places".to_owned(), |location| location.name.clone());
+            .map_or_else(
+                || crate::i18n::CATALOG.t("weather-places"),
+                |location| location.name.clone(),
+            );
         toolbar.location = Some(ToolbarLocation {
             label,
             ..ToolbarLocation::default()
         });
-        let mut actions = vec![self.bar.entry("plus", "Add place", Command::AddPlace)];
+        let mut actions = vec![self.bar.entry(
+            "plus",
+            crate::i18n::CATALOG.t("weather-add-place"),
+            Command::AddPlace,
+        )];
         if Self::shows_forecast(&core) {
-            actions.push(
-                self.bar
-                    .entry("refresh", "Refresh forecast", Command::Refresh),
-            );
+            actions.push(self.bar.entry(
+                "refresh",
+                crate::i18n::CATALOG.t("weather-refresh-forecast"),
+                Command::Refresh,
+            ));
         }
         NavShell::push_window_actions(&mut toolbar, actions);
         toolbar
@@ -115,7 +123,13 @@ mod tests {
                 .map(|location| location.label),
             place
         );
-        assert_eq!(action_names(&framed), ["Add place", "Refresh forecast"]);
+        assert_eq!(
+            action_names(&framed),
+            [
+                crate::i18n::CATALOG.t("weather-add-place"),
+                crate::i18n::CATALOG.t("weather-refresh-forecast"),
+            ]
+        );
         assert_eq!(
             ui::window_toolbar::declared(),
             Some(framed.window_toolbar())
@@ -132,14 +146,14 @@ mod tests {
                 .location
                 .map(|location| location.label)
                 .as_deref(),
-            Some("Places")
+            Some(crate::i18n::CATALOG.t("weather-places").as_str())
         );
 
         framed.nav.show(NavPane::Content);
         framed.nav.snap();
         Framed::harness_mut(&mut framed).relayout();
         Framed::harness_mut(&mut framed)
-            .press_window_action("Add place")
+            .press_window_action(&crate::i18n::CATALOG.t("weather-add-place"))
             .unwrap();
         assert_eq!(framed.nav.front_pane(), NavPane::Overview);
         assert!(

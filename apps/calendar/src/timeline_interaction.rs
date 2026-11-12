@@ -100,7 +100,7 @@ pub(super) struct TimelineSpan {
 pub(super) struct TimelineRenderEvent<'a> {
     pub id: Id,
     pub day: NaiveDate,
-    pub title: &'a str,
+    pub title: String,
     pub location: &'a str,
     pub color: Palette,
     pub start_min: i64,
@@ -719,7 +719,7 @@ impl TimelineInteraction {
             tinted.fill,
         );
         let width = strip.width() - 3.0 * s1;
-        let lines = wrap_lines(ctx, event.title, &ty.strip, width, density.chip_lines());
+        let lines = wrap_lines(ctx, &event.title, &ty.strip, width, density.chip_lines());
         let strip_h = line_height(ctx, &ty.strip);
         #[allow(clippy::cast_precision_loss, reason = "at most two lines")]
         let block_h = strip_h * lines.len() as f64;
@@ -873,7 +873,7 @@ impl TimelineInteraction {
                 let room = block.y1 - top - 2.0 * s1;
                 let max_lines = ((room / title_h).floor() as usize).max(1);
                 let mut y = top + s1;
-                for line in wrap_lines(ctx, event.title, &ty.title, text_w, max_lines) {
+                for line in wrap_lines(ctx, &event.title, &ty.title, text_w, max_lines) {
                     ctx.text(&line, &ty.title, tinted.ink, Point::new(text_x, y), None);
                     y += title_h;
                 }
@@ -1022,7 +1022,7 @@ impl TimelineInteraction {
                     column,
                     start_min,
                     start_min + dur_min,
-                    event.title,
+                    event.title.as_str(),
                     tinted.fill,
                     color,
                 )

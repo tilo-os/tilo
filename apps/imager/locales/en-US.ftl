@@ -2684,3 +2684,5 @@ installer-status-install-start = Starting the install to { $disk } for user { $u
 installer-blocked-no-such-disk = No disk { $device } is listed; refresh the list.
 installer-error-unknown-filesystem = Unknown filesystem: { $filesystem }
 installer-keyboard-map-name = { $layout } keyboard layout
+## The window bar's Rescan
+imager-rescan-drives = Rescan drives

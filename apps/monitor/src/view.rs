@@ -125,9 +125,12 @@ impl Cadence {
     /// The choice in words, as the menu lists it.
     pub(crate) fn label(self) -> String {
         match self {
-            Self::Paused => "Paused".to_owned(),
-            Self::Every(1000) => "Every second".to_owned(),
-            Self::Every(ms) => format!("Every {} seconds", seconds(ms)),
+            Self::Paused => crate::resource::CATALOG.t("monitor-cadence-paused"),
+            Self::Every(1000) => crate::resource::CATALOG.t("monitor-cadence-second"),
+            Self::Every(ms) => crate::resource::CATALOG.t_args(
+                "monitor-cadence-seconds",
+                &[("seconds", ui::i18n::ArgValue::Text(seconds(ms)))],
+            ),
         }
     }
 }

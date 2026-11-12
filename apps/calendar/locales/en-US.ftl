@@ -248,3 +248,13 @@ calendar-editor-repeat = Repeat
 calendar-editor-alert = Alert
 calendar-editor-time-zone = Time zone
 calendar-editor-priority = Priority
+
+## The window bar's slots
+calendar-views = View
+calendar-previous-month = Previous month
+calendar-next-month = Next month
+calendar-sync-again = Sync again
+calendar-open-settings = Open Settings
+
+## The event form's notes hint
+calendar-notes-placeholder = Add notes

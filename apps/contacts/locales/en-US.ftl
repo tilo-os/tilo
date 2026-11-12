@@ -132,3 +132,17 @@ contacts-field-postal-code = Address { $number } postal code
 contacts-field-country = Address { $number } country
 
 contacts-unnamed = Unnamed contact
+
+## The window bar's slots
+contacts-new-contact-title = New contact
+contacts-all-contacts = All contacts
+contacts-save = Save
+contacts-call = Call
+contacts-text = Text
+contacts-email = Email
+contacts-edit-contact = Edit contact
+contacts-remove-contact = Delete contact
+contacts-bar-importing = Importing…
+contacts-import = Import contacts
+contacts-export = Export contacts
+contacts-review-duplicate = Review possible duplicate

@@ -82,7 +82,7 @@ pub(crate) fn due(
             (at > now).then(|| Reminder {
                 tag: tag(shown.event, shown.original),
                 at,
-                title: shown.event.display_title().to_owned(),
+                title: shown.event.display_title(),
                 body: body(&shown),
                 activation: format!(
                     "{SCHEME}:open/{}",

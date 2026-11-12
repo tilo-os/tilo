@@ -257,3 +257,12 @@ ebook-add-font-title = Eine Systemschriftart hinzufügen
 
 ## Die Schaltflächen der Einstellungsblätter
 ebook-done = Fertig
+
+## Die Plätze der Fensterleiste
+ebook-sort-books = Bücher sortieren
+ebook-hide-finished = Gelesene Bücher ausblenden
+ebook-settings-title = Einstellungen
+ebook-bookmark-page = Lesezeichen für die Seite
+ebook-highlight-selection = Auswahl markieren
+ebook-opening = { $name } wird geöffnet
+ebook-try-again = Erneut versuchen

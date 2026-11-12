@@ -865,7 +865,7 @@ impl Calendar {
         let events = self.events.iter().map(|event| SearchEntry {
             within: Some(EVENTS_SCOPE.into()),
             anchor: Some(crate::actions::event_resource_id(event.id)),
-            title: event.display_title().to_owned(),
+            title: event.display_title(),
             text: format!("{} {}", event.location, self.notes_text(event.id))
                 .trim()
                 .to_owned(),
