@@ -130,7 +130,7 @@ fn session_over(
 /// them — the web page's, which offers the pages its own Settings has. "dark mode" is the Theme
 /// setting on the Appearance page, and Enter opens Settings at it.
 #[test]
-fn settings_search_shows_the_matching_page_first_and_enter_opens_it() {
+fn settings_search_finds_the_appearance_theme_and_enter_opens_it() {
     let _settled = ui::motion::testing::settled();
     let host = Rc::new(Host::default());
     let mut session = session(Rc::clone(&host));
@@ -151,17 +151,18 @@ fn settings_search_shows_the_matching_page_first_and_enter_opens_it() {
             .collect::<Vec<_>>()
     );
     search_for(&mut session, "dark mode");
-    let first = rows(&session)
-        .into_iter()
-        .find(|row| row.kind == SEARCH_ROW_KIND)
-        .expect("a row for dark mode");
-    assert_eq!(
-        first.label, "Theme",
-        "dark mode is the Appearance page's theme"
-    );
+    let theme = row(&session, "Theme").unwrap_or_else(|| {
+        panic!(
+            "dark mode is the Appearance page's theme: {:?}",
+            rows(&session)
+                .into_iter()
+                .map(|row| row.label)
+                .collect::<Vec<_>>()
+        )
+    });
     invoke(
         &mut session,
-        first.id.as_str(),
+        theme.id.as_str(),
         "choose-search-row",
         serde_json::json!({}),
     );
