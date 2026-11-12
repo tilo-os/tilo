@@ -121,9 +121,17 @@ fi
 # An agent's host answers video renders in the `tilo-video-render` helper, which no
 # package depends on; named explicitly, it is found also where an archive of
 # test binaries runs away from the build directory.
+# A run handed the program already (t builds it once in the family's build, t.toml's `starts`, and
+# names it to every shard as NEXTEST_BIN_EXE_<bin>) builds nothing: built here, every shard of the
+# package compiled its ~1,030 units again.
 if tests tilo-agent-participant; then
-    cargo build --locked -p tilo-video-render --bin tilo-video-render
-    export TILO_VIDEO_RENDER="${CARGO_TARGET_DIR:-$root/target}/debug/tilo-video-render"
+    handed=$(printenv NEXTEST_BIN_EXE_tilo-video-render || true)
+    if [[ -n $handed && -x $handed ]]; then
+        export TILO_VIDEO_RENDER=$handed
+    else
+        cargo build --locked -p tilo-video-render --bin tilo-video-render
+        export TILO_VIDEO_RENDER="${CARGO_TARGET_DIR:-$root/target}/debug/tilo-video-render"
+    fi
 fi
 
 # The shell's sandbox and desktop tests drive a Wayland client from its own
@@ -136,9 +144,11 @@ if (( nextest )) && tests shell; then
 fi
 
 # The app-cli and app-host trust tests execute the installer, which no package
-# depends on.
+# depends on. A run handed it already (t's `starts`, NEXTEST_BIN_EXE_tilo-install) has it where the
+# build left it, beside the tests' own build, and builds nothing.
 if tests app-cli app-host; then
-    cargo build --locked -p install --bin tilo-install
+    handed=$(printenv NEXTEST_BIN_EXE_tilo-install || true)
+    [[ -n $handed && -x $handed ]] || cargo build --locked -p install --bin tilo-install
 fi
 
 # The sign-in and rollback tests observe an emulated TPM, which the builder has
