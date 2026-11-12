@@ -890,6 +890,24 @@ fn press_enter(session: &mut Session) {
     }
 }
 
+/// What the composer's own field holds now, as assistive technology reads it: the field named
+/// by its prompt (`Message #channel`) says its value. `None` where the page shows no such field.
+/// This, not the presence of the prompt's words on screen, is what reads the draft: a field's
+/// accessible name stays its prompt while it holds text, so asking whether the prompt is gone
+/// asks nothing of the field's value.
+fn composer_text(session: &Session, placeholder: &str) -> Option<String> {
+    session.a11y_windows().into_iter().find_map(|(_, _, tree)| {
+        tree.nodes.into_iter().find_map(|(_, node)| {
+            (matches!(
+                node.role(),
+                ui::accesskit::Role::TextInput | ui::accesskit::Role::MultilineTextInput
+            ) && node.label() == Some(placeholder)
+                && node.bounds().is_some())
+            .then(|| node.value().unwrap_or_default().to_owned())
+        })
+    })
+}
+
 /// The reproduction of the live composer, as a person met it: a real session whose conversation
 /// was placed by the canvas's own ask (so the page is drawn from the session's `ChatViewService`
 /// over Chat's record, never the development fixture), real typed keys into the composer, and
@@ -998,22 +1016,19 @@ fn typing_in_the_ask_conversations_composer_posts_on_enter_and_draws_the_text_on
         session.read(&address),
         session.shell_refusals()
     );
-    // The field let go of the message it sent: it draws its prompt again, and what the person
-    // types next is a new message, never the sent words with more typed after them — the stale
-    // draft the live composer kept when its send was refused.
+    // The field let go of the message it sent: it holds nothing again, where the draft the live
+    // composer kept still held the sent words.
     common::until(&mut session, "the field empty after sending", |session| {
-        session.shell_text_bounds(&placeholder).is_some()
+        composer_text(session, &placeholder).is_some_and(|text| text.is_empty())
     });
     common::shot(&mut session, "ask-composer-posted.png");
     common::type_text(&mut session, "and then");
-    // The field shows its prompt no longer (the empty field's prompt is gone), and it says what
-    // was typed into it now: the draft is the person's new words alone.
+    // It takes the next typing at once, without a click to put the keyboard back in it: the
+    // field holds the person's new words alone, never the sent words with these typed after.
     common::until(
         &mut session,
         "the second draft is the new words",
-        |session| {
-            session.shell_text_bounds(&placeholder).is_none() && session.shell_says("and then")
-        },
+        |session| composer_text(session, &placeholder).as_deref() == Some("and then"),
     );
     press_enter(&mut session);
     let second = |session: &Session| {
@@ -1049,7 +1064,7 @@ fn typing_in_the_ask_conversations_composer_posts_on_enter_and_draws_the_text_on
     );
     // The field let go of the second message too.
     common::until(&mut session, "the field empty again", |session| {
-        session.shell_text_bounds(&placeholder).is_some()
+        composer_text(session, &placeholder).is_some_and(|text| text.is_empty())
     });
     common::shot(&mut session, "ask-composer-second.png");
 }
