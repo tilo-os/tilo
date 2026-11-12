@@ -174,18 +174,11 @@ impl Workspaces {
                 return 0;
             }
         };
-        let held: std::collections::HashSet<(tilo_peer_state::store::Lineage, u64)> = retained
-            .iter()
-            .filter_map(|retained| {
+        let answered =
+            super::session_carry::RelayHistory::of(retained.iter().filter_map(|retained| {
                 // ignored-failure: a retained body that does not decode is one recall reports, and holds no write the link could match
                 postcard::from_bytes::<NeighbourMsg>(&retained.body).ok()
-            })
-            .filter_map(|message| {
-                // ignored-failure: only sealed record writes are what the link keeps; anything else matches none of them
-                tilo_peer_state::store::Frame::of(&message).ok()
-            })
-            .map(|frame| (frame.lineage, frame.seq))
-            .collect();
+            }));
         let mut cursors = Vec::new();
         let mut carried = 0_usize;
         loop {
@@ -207,7 +200,7 @@ impl Workspaces {
                 ) else {
                     continue;
                 };
-                if held.contains(&(frame.lineage, frame.seq)) {
+                if answered.answers_for(&frame) {
                     continue;
                 }
                 self.carry_to_sessions(workspace.workspace(), author, message);
