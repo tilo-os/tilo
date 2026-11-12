@@ -347,6 +347,13 @@ fn requests_of(
             });
             continue;
         }
+        #[cfg_attr(
+            not(feature = "fixture-servers"),
+            expect(
+                unused_mut,
+                reason = "only a fixture build points the request elsewhere"
+            )
+        )]
         let Some(mut request) = engine.request(query, safe) else {
             reports.push(EngineReport {
                 engine,
@@ -372,6 +379,8 @@ fn requests_of(
             };
             request.point_at(base);
         }
+        #[cfg(not(feature = "fixture-servers"))]
+        let _ = routes;
         asked.push((engine, request));
     }
     (asked, reports)
