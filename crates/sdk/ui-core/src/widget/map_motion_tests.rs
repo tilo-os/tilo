@@ -58,7 +58,12 @@ fn a_pin_at_its_first_frame_rests_and_asks_for_no_frames() {
     // The first draw places it: a pin the map shows at its first frame rests.
     draw(&mut map);
     let now = crate::motion::frame_now();
-    assert!(map.placed.get("one").is_some_and(|p| !p.is_moving(now)));
+    assert!(
+        map.placed
+            .borrow()
+            .get("one")
+            .is_some_and(|p| !p.is_moving(now))
+    );
     assert!(!map.pins_moving(now));
     assert!(
         !Widget::needs_animation_frame(&map),
@@ -73,7 +78,7 @@ fn a_pin_moved_by_the_person_glides_to_its_new_place_and_then_rests() {
     let mut map = map_of(&[("one", 100.0)], viewport);
     draw(&mut map);
     let now = crate::motion::frame_now();
-    assert!(map.placed.contains_key("one"), "the pin is drawn");
+    assert!(map.placed.borrow().contains_key("one"), "the pin is drawn");
 
     // The person moves the pin: the map lays it out at its new point and draws again.
     crate::motion::note_source(crate::tokens::MotionSource::Pointer);
@@ -83,21 +88,26 @@ fn a_pin_moved_by_the_person_glides_to_its_new_place_and_then_rests() {
     draw(&mut map);
     assert!(
         map.placed
+            .borrow()
             .get("one")
             .is_some_and(|p| p.movement().is_moving(now)),
         "the pin's move began: {:?}",
-        map.placed.get("one").map(|p| p.movement().target())
+        map.placed
+            .borrow()
+            .get("one")
+            .map(|p| p.movement().target())
     );
     let start = map
         .placed
+        .borrow()
         .get("one")
         .map(|p| p.movement().sampled_after(crate::time::Duration::ZERO).0);
-    let mid = map.placed.get("one").map(|p| {
+    let mid = map.placed.borrow().get("one").map(|p| {
         p.movement()
             .sampled_after(crate::time::Duration::from_millis(80))
             .0
     });
-    let arrived = map.placed.get("one").map(|p| {
+    let arrived = map.placed.borrow().get("one").map(|p| {
         p.movement()
             .sampled_after(crate::time::Duration::from_secs(3))
             .0
@@ -123,7 +133,6 @@ fn a_pin_moved_by_the_person_glides_to_its_new_place_and_then_rests() {
 #[test]
 fn a_pin_shown_by_a_still_theme_lands_at_once() {
     let _frame = crate::motion::pin_frame();
-    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let still = crate::tokens::EffectiveMotion::new(
         crate::tokens::Motion {
             still: true,
@@ -131,12 +140,9 @@ fn a_pin_shown_by_a_still_theme_lands_at_once() {
         },
         false,
     );
-    let mut map = map_of(&[("one", 100.0)], viewport);
     let now = crate::motion::frame_now();
     // Show the pin at its place under a still theme: it lands at once and asks for nothing.
-    map.placed
-        .insert("one".to_owned(), crate::motion::Placed::closed());
-    let placed = map.placed.get_mut("one").expect("the pin");
+    let mut placed = crate::motion::Placed::closed();
     placed.follow(
         Rect::new(100.0, 0.0, 300.0, 120.0),
         true,
@@ -172,50 +178,15 @@ fn a_map_built_again_keeps_the_camera_and_the_places_where_they_were_drawn() {
     draw(&mut map);
     let now = crate::motion::frame_now();
     assert!(
-        map.placed.get("one").is_some_and(|p| !p.is_moving(now)),
+        map.placed
+            .borrow()
+            .get("one")
+            .is_some_and(|p| !p.is_moving(now)),
         "a place the map already held does not arrive again"
     );
     assert!(
         map.reveal.is_none(),
         "nothing arrived: the camera shows nothing new"
-    );
-}
-
-#[test]
-fn a_place_arriving_past_the_edge_pans_the_map_to_show_it() {
-    let _frame = crate::motion::pin_frame();
-    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-    let mut old = map_of(&[("one", 0.0)], viewport);
-    draw(&mut old);
-    // A second place arrives on the person's canvas past the viewport's trailing edge: 700 along,
-    // 200 across, so its trailing edge stands 100 past the viewport's.
-    let mut map = map_of(&[("one", 0.0), ("two", 700.0)], viewport);
-    draw(&mut map);
-    map.carry_from(&old);
-    // The camera pans once the layout says where the place stands, and the place stands at it on
-    // the layout after.
-    lay_out_again(&mut map, viewport);
-    lay_out_again(&mut map, viewport);
-    let camera = map.camera();
-    assert!(
-        (camera.origin.x - (100.0 + ARRIVAL_MARGIN)).abs() < 0.5,
-        "the least pan that shows the whole place, {ARRIVAL_MARGIN} from the edge: {}",
-        camera.origin.x
-    );
-    let laid = map.laid.borrow().clone();
-    let arrived = laid.get("two").copied().expect("the place that arrived");
-    assert!(
-        arrived.x0 >= viewport.x0 && arrived.x1 <= viewport.x1 - ARRIVAL_MARGIN + 0.5,
-        "it stands whole inside the viewport: {arrived:?}"
-    );
-    let places = map.canvas_places();
-    assert_eq!(
-        (
-            places.get("one").map(|p| p.x),
-            places.get("two").map(|p| p.x)
-        ),
-        (Some(0.0), Some(700.0)),
-        "no place on the canvas moved: only the lens did"
     );
 }
 
@@ -234,5 +205,73 @@ fn a_place_arriving_in_view_leaves_the_camera_where_the_person_left_it() {
         map.camera().same(MapCamera::default()),
         "a place already in view moves nothing: {:?}",
         map.camera().origin
+    );
+}
+
+#[test]
+fn the_camera_glides_to_a_place_arriving_past_the_edge_laying_every_place_out_on_its_way() {
+    let start = crate::time::now();
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let (mut old, mut map) = {
+        let _frame = crate::motion::pin_frame_at(start);
+        let mut old = map_of(&[("one", 0.0)], viewport);
+        draw(&mut old);
+        (old, map_of(&[("one", 0.0), ("two", 700.0)], viewport))
+    };
+    // The person opened it: the camera glides there, whoever's input came last.
+    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+    {
+        let _frame = crate::motion::pin_frame_at(start);
+        draw(&mut old);
+        map.carry_from(&old);
+        lay_out_again(&mut map, viewport);
+        draw(&mut map);
+    }
+    let doc = automerge::AutoCommit::new();
+    let mut along = Vec::new();
+    let mut frame = start;
+    for _ in 0..120 {
+        frame += crate::time::Duration::from_nanos(16_666_667);
+        let _frame = crate::motion::pin_frame_at(frame);
+        if !Widget::needs_animation_frame(&map) {
+            break;
+        }
+        // A frame: the motion steps in the update, and the layout lays the places out there.
+        Widget::update(&mut map, &doc, &automerge::ROOT);
+        lay_out_again(&mut map, viewport);
+        draw(&mut map);
+        let laid = map.laid.borrow().clone();
+        along.push((laid["one"].x0, laid["two"].x0));
+    }
+    assert!(
+        along
+            .iter()
+            .all(|(one, two)| (two - one - 700.0).abs() < 0.5),
+        "every place is laid out where the camera has carried it, each frame: {along:?}"
+    );
+    let (_, last) = *along.last().expect("the camera moved");
+    assert!(
+        (last - (800.0 - 200.0 - ARRIVAL_MARGIN)).abs() < 0.5,
+        "it arrives whole in view: {along:?}"
+    );
+    assert!(
+        along
+            .iter()
+            .any(|(_, two)| *two < 699.0 && *two > last + 1.0),
+        "on its way over the frames between: {along:?}"
+    );
+    assert!(
+        (map.camera().origin.x - (100.0 + ARRIVAL_MARGIN)).abs() < 0.5
+            && !Widget::needs_animation_frame(&map),
+        "the least pan that shows the whole place, and then it asks for no frames"
+    );
+    let places = map.canvas_places();
+    assert_eq!(
+        (
+            places.get("one").map(|p| p.x),
+            places.get("two").map(|p| p.x)
+        ),
+        (Some(0.0), Some(700.0)),
+        "no place on the canvas moved: only the lens did"
     );
 }
