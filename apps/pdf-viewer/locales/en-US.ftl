@@ -49,6 +49,9 @@ pdf-viewer-delete-signature = Removed a signature
 ## Status notes: what happened, and what to do next when there is something
 
 pdf-note-opening = Opening the PDF…
+pdf-open-failed = Could not open { $file }: { $error }
+pdf-error-worker-stopped = the PDF reader's own process could not be started
+pdf-file-chooser-failed = Couldn't open the file chooser: { $reason }
 pdf-note-open-failed = { $name } couldn't be opened. Check that it is a PDF and try again.
 pdf-note-document-not-opened = { $name } in this workspace didn't open. It may not be on this device yet; it opens once a device that has it is online.
 pdf-note-open-in-new-window = This window shows { $shown } and its markup. Open { $name } in a new PDF Viewer window.

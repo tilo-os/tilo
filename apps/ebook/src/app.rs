@@ -3168,7 +3168,15 @@ impl BooksApp {
             .or_else(|| self.fonts.first())
             .cloned()
             .or_else(|| default_fonts().first().cloned())
-            .unwrap_or_else(|| FontEntry::new("default", FontKind::Default, "Default", 1.0, true))
+            .unwrap_or_else(|| {
+                FontEntry::new(
+                    "default",
+                    FontKind::Default,
+                    &CATALOG.t("ebook-font-default"),
+                    1.0,
+                    true,
+                )
+            })
     }
 
     /// The fonts offered in the quick display-settings picker.
@@ -8375,12 +8383,9 @@ impl BooksApp {
             AnnoKind::Bookmark => ChipLead::None,
             _ => ChipLead::Dot(ReaderPalette::highlight_swatch(a.color)),
         };
-        ChipFace::new(layout.chip, a.kind.label()).lead(lead).paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-        );
+        ChipFace::new(layout.chip, &CATALOG.t(a.kind.message()))
+            .lead(lead)
+            .paint(ctx.scene, ctx.transform, ctx.text, theme);
         let caption = theme.text(TextRole::Caption);
         let locator = ctx.text.elide_to_width_style(
             &note.locator,
@@ -8434,7 +8439,7 @@ impl BooksApp {
 /// while it is being written), and where it is. The list sizes each card
 /// from the same measurement it paints.
 struct NoteCard {
-    kind: &'static str,
+    kind: String,
     /// The kind chip leads with the highlight's colour (not for bookmarks).
     dot: bool,
     excerpt: String,
@@ -8456,6 +8461,8 @@ struct NoteCardLayout {
 impl NoteCard {
     fn new(a: &Annotation, composing: Option<Uuid>) -> Self {
         let composing = composing == Some(a.id);
+        let chapter = f64::from(u32::try_from(a.chapter + 1).unwrap_or(u32::MAX));
+        let paragraph = f64::from(u32::try_from(a.block + 1).unwrap_or(u32::MAX));
         let excerpt = if a.excerpt.is_empty() {
             CATALOG.t("ebook-no-passage")
         } else {
@@ -8467,11 +8474,17 @@ impl NoteCard {
             a.note.clone()
         };
         Self {
-            kind: a.kind.label(),
+            kind: CATALOG.t(a.kind.message()),
             dot: a.kind != AnnoKind::Bookmark,
             excerpt,
             text,
-            locator: format!("Chapter {}, paragraph {}", a.chapter + 1, a.block + 1),
+            locator: CATALOG.t_args(
+                "ebook-annotation-locator",
+                &[
+                    ("chapter", ui::i18n::ArgValue::Number(chapter)),
+                    ("paragraph", ui::i18n::ArgValue::Number(paragraph)),
+                ],
+            ),
             composing,
         }
     }
@@ -8490,7 +8503,7 @@ impl NoteCard {
         } else {
             ChipLead::None
         };
-        let chip_w = ChipFace::intrinsic_width(self.kind, lead, false, ctx.text, theme);
+        let chip_w = ChipFace::intrinsic_width(&self.kind, lead, false, ctx.text, theme);
         let chip_h = ChipFace::height(theme);
         let chip = Rect::new(
             body.x0,

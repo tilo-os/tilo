@@ -460,7 +460,7 @@ impl ChatApp {
                 );
             }
             let name = ui::tilo_resource::NonBlank::parse("Voice")
-                .ok_or_else(|| "The voice channel could not be named".to_owned())?;
+                .ok_or_else(|| crate::i18n::t("chat-voice-channel-unnamed"))?;
             let Some(doc) = doc else {
                 if self.dispatch.is_none() {
                     return Err("Chat is open to view only".into());

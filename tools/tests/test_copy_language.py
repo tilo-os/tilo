@@ -889,8 +889,38 @@ class CopyLanguageTests(unittest.TestCase):
                 [text for _, _, text in copy.source_copy_literals(root)],
                 ["Done", "Open {}"],
                 "a widget names each of its nodes from one element of the tuple it "
-                "projects, so that element is what a German reader hears — in the "
+                "projects, so that element is what a German reader hears \u2014 in the "
                 "arms the tuple is written in as well as the value it returns")
+
+    def test_a_value_interpolated_into_a_message_is_copy_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn status(filesystem: &str, count: usize, who: &str) -> String {",
+                '    let state = "Unavailable";',
+                '    CATALOG.t_args("demo-state", &[("state", ArgValue::Text("Error".to_owned()))]);',
+                '    CATALOG.t_args("demo-state", &[("state", ArgValue::Text(state.into()))]);',
+                '    CATALOG.t_args("demo-state", &[("state", ArgValue::Text(format!("Mounted {}", filesystem)))]);',
+                '    CATALOG.t_args("demo-state", &[("state", "Idle".into())]);',
+                '    CATALOG.t_args("demo-shared", &[("who", ArgValue::Text(who.to_owned()))]);',
+                '    CATALOG.t_args("demo-count", &[("count", ArgValue::Number(count as f64))]);',
+                '    crate::i18n::t("demo-name")',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Unavailable", "Error", "Mounted {}", "Idle"],
+                "a message's variables are the person's data: an English word "
+                "interpolated into the sentence, directly or through the local "
+                "it is stored in, reads in English in every language, so it is "
+                "copy; a name the person gave, a count, or a word the app "
+                "resolved through its catalogue is not")
 
     def test_the_tree_passes(self):
         self.assertEqual(

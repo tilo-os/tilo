@@ -90,16 +90,18 @@ impl Category {
         }
     }
 
+    /// The catalogue message describing this category, shown under its name
+    /// in the settings rows.
     pub fn blurb(self) -> &'static str {
         match self {
-            Category::Sponsor => "Paid promotion, paid referrals and direct advertisements.",
-            Category::SelfPromo => "Unpaid/self promotion, merch, donations, charity.",
-            Category::Interaction => "\"Like and subscribe\" reminders without other content.",
-            Category::Intro => "An interval without actual content — pause, animation, intro.",
-            Category::Outro => "Credits or when the video is over — endcards and outros.",
-            Category::Preview => "Quick recap of previous episodes or a preview of what's coming.",
-            Category::MusicOfftopic => "Non-music sections in a music video — for music listening.",
-            Category::Filler => "Tangential scenes added only to lengthen the video.",
+            Category::Sponsor => "tube-category-sponsor-blurb",
+            Category::SelfPromo => "tube-category-self-promo-blurb",
+            Category::Interaction => "tube-category-interaction-blurb",
+            Category::Intro => "tube-category-intro-blurb",
+            Category::Outro => "tube-category-outro-blurb",
+            Category::Preview => "tube-category-preview-blurb",
+            Category::MusicOfftopic => "tube-category-music-offtopic-blurb",
+            Category::Filler => "tube-category-filler-blurb",
         }
     }
 

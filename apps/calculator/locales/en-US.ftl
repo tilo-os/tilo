@@ -63,6 +63,7 @@ calculator-next-unit = Change { $unit } to the next unit
 ## What the window shows
 calculator-result = Result { $value }
 calculator-invalid-expression = The expression is not valid: { $detail }
+calculator-error = Error
 calculator-graph-functions = Functions
 calculator-graph-surfaces = Surfaces
 

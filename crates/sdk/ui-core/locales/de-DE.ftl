@@ -554,6 +554,8 @@ format-day-heading-short = { $weekday }, { $day }. { $month }
 format-day-range-in-month = { $start }.–{ $end }. { $month }
 # Any span between two dates or times: "Jun 29 – Jul 5".
 format-range = { $start } – { $end }
+# Two already-formatted values in a list: "verschlüsselt, 134 GB frei".
+format-list-join = { $head }, { $tail }
 # The top of a month grid: "June 2026".
 format-month-heading = { $month } { $year }
 # The clock the language reads by default: 12 or 24 (here 24-hour).

@@ -105,6 +105,7 @@ imager-setup-error-desktop-install-unavailable = Desktop installation is not ava
 imager-setup-error-desktop-download-not-active = The Desktop package download is not active
 imager-setup-error-desktop-retry-unavailable = The Desktop host check cannot be retried in the current setup state
 imager-setup-error-download-start-unavailable = A Full Tilo download cannot start in its current state.
+imager-setup-error-download-unavailable = Full Tilo download is unavailable.
 imager-setup-error-download-review-only = Full Tilo downloads can start only from the Full Tilo review.
 imager-setup-error-download-pause-unavailable = The download is not currently active
 imager-setup-error-download-resume-unavailable = This saved download cannot be resumed yet
@@ -2392,6 +2393,17 @@ installer-operation-guided-plan = guided free-space partition plan
 installer-operation-tilo-format = Tilo boot and root format
 
 ## What the window shows while it writes and installs
+imager-filesystem-help = Btrfs is recommended for Tilo.
+imager-drive-empty = Empty disk
+imager-drive-partitions = { $count ->
+    [one] 1 partition
+   *[other] { $count } partitions
+}
+imager-drive-partitions-held = { $count ->
+    [one] 1 partition
+   *[other] { $count } partitions
+} ({ $filesystems })
+
 imager-write = Write
 imager-write-driving = Erase and write the selected drive
 imager-write-cancel = Cancel write

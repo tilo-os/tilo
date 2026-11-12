@@ -4020,7 +4020,10 @@ impl PdfApp {
             ContentsOutcome::Cancelled => self.finish_portal_action(false, None),
             ContentsOutcome::Failed(reason) => {
                 if !self.has_document {
-                    self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
+                    self.load_error = Some(crate::t_args(
+                        "pdf-file-chooser-failed",
+                        &[("reason", ui::i18n::ArgValue::Text(reason.clone()))],
+                    ));
                 }
                 self.dirty = true;
                 self.finish_portal_action(false, Some(reason));
@@ -4054,8 +4057,10 @@ impl PdfApp {
                     PortalOutcome::Cancelled => self.finish_portal_action(false, None),
                     PortalOutcome::Failed(reason) => {
                         if !self.has_document {
-                            self.load_error =
-                                Some(format!("Couldn't open the file chooser: {reason}"));
+                            self.load_error = Some(crate::t_args(
+                                "pdf-file-chooser-failed",
+                                &[("reason", ui::i18n::ArgValue::Text(reason.clone()))],
+                            ));
                         }
                         self.dirty = true;
                         self.finish_portal_action(false, Some(reason));
@@ -4192,7 +4197,7 @@ impl PdfApp {
     /// the reason.
     fn queue_worker_open(&mut self, path: &std::path::Path) {
         let Some(handle) = self.raster_handle.as_ref() else {
-            self.record_open_failure(path, "the PDF worker could not be started");
+            self.record_open_failure(path, &crate::t("pdf-error-worker-stopped"));
             return;
         };
         match handle.open_path(path) {
@@ -4205,7 +4210,7 @@ impl PdfApp {
     fn queue_worker_open_contents(&mut self, name: &str, bytes: Vec<u8>) {
         let path = std::path::Path::new(name);
         let Some(handle) = self.raster_handle.as_ref() else {
-            self.record_open_failure(path, "the PDF worker could not be started");
+            self.record_open_failure(path, &crate::t("pdf-error-worker-stopped"));
             return;
         };
         match handle.open_contents(name, bytes) {
@@ -4221,7 +4226,13 @@ impl PdfApp {
     }
 
     fn record_open_failure(&mut self, path: &std::path::Path, error: &str) {
-        let error = format!("Could not open {}: {error}", path.display());
+        let error = crate::t_args(
+            "pdf-open-failed",
+            &[
+                ("file", ui::i18n::ArgValue::Text(path.display().to_string())),
+                ("error", ui::i18n::ArgValue::Text(error.to_owned())),
+            ],
+        );
         if self.has_document {
             self.status_note.show(open_failed_note(path));
         } else {

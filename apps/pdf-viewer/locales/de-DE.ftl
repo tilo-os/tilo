@@ -49,6 +49,9 @@ pdf-viewer-delete-signature = Eine Unterschrift entfernt
 ## Statushinweise: was passiert ist und was als Nächstes zu tun ist
 
 pdf-note-opening = Das PDF wird geöffnet …
+pdf-open-failed = { $file } konnte nicht geöffnet werden: { $error }
+pdf-error-worker-stopped = der eigene Prozess des PDF-Lesers konnte nicht gestartet werden
+pdf-file-chooser-failed = Die Dateiauswahl konnte nicht geöffnet werden: { $reason }
 pdf-note-open-failed = { $name } konnte nicht geöffnet werden. Prüfe, ob es ein PDF ist, und versuche es erneut.
 pdf-note-document-not-opened = { $name } in diesem Arbeitsbereich wurde nicht geöffnet. Vielleicht ist es noch nicht auf diesem Gerät; es öffnet sich, sobald ein Gerät mit ihm online ist.
 pdf-note-open-in-new-window = Dieses Fenster zeigt { $shown } und seine Markierungen. Öffne { $name } in einem neuen PDF-Viewer-Fenster.

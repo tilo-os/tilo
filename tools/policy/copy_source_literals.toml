@@ -359,3 +359,13 @@ reason = "A label a capture scenario paints, which no one reads."
 file = "crates/sdk/tilo-app/src/framework/chain.rs"
 text = "What this holds as typed data: the items of its parts, the newest part first, a page at \\\n         a time with `cursor` passing on where a page ended; an item's own content when the read \\\n         is of that item."
 reason = "What the chain read tool answers an agent, never shown in a window."
+
+[[allow]]
+file = "apps/store/src/app.rs"
+text = "Terminal"
+reason = "A store app's own name, the same in every language; the sentence around it is the catalogue's."
+
+[[allow]]
+file = "apps/settings/src/panes/agent_models/hub.rs"
+text = "Hugging Face"
+reason = "A service's name, spelled the same in every language; the sentence around it is the catalogue's."

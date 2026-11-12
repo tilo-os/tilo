@@ -102,9 +102,14 @@ A sentence built around a value is copy as much as a plain one: a `format!`
 whose template reads as English and whose result reaches one of those calls —
 as an argument, or through the local it is stored in — fails, because a German
 window needs the catalogue's own sentence with the value in it (Fluent
-variables and plural branches). A word reaches a call the same way through a
-wrapper or a conversion (`Some("Move")`, `"Move".to_string()`, `"Move".into()`),
-through a default (`origin.unwrap_or("No secure page")`) and through a local
+variables and plural branches). A catalogued message's variables are the
+person's data — a name, a count, a filesystem's name — never a word the app
+wrote itself: a literal interpolated into a message (`ArgValue::Text("Error")`,
+`("state", "Shown".into())`) reads in English inside every language's sentence,
+so the app resolves that word from the catalogue first. A word reaches a call
+the same way through a wrapper or a conversion (`Some("Move")`,
+`"Move".to_string()`, `"Move".into()`), through a default
+(`origin.unwrap_or("No secure page")`) and through a local
 (`let label = "Waiting for the first screen update";`), and an action's own
 label is what its menu row and the action directory show, so a literal assigned
 to `.type_mut().label` counts too. The test is syntactic, on purpose: a
@@ -521,13 +526,16 @@ COPY_BUILDERS = (
 
 # What a surface paints its words through: the call or setter, and which of its
 # arguments carries them (0-based). `draw_text` and `draw_style` take the scene
-# first, so the words are the second argument.
+# first, so the words are the second argument. A value interpolated into a
+# catalogued message (`ArgValue::Text`) is painted inside the sentence around
+# it, so it is held to the same rule as a label.
 TEXT_CONSTRUCTORS = (
     ("Property::new(", 0),
     ("Section::titled(", 0),
     ("SectionHeader::heading(", 0),
     ("SectionHeader::group(", 0),
     ("Text::new(", 0),
+    ("ArgValue::Text(", 0),
     ("Notification::new(", 0),
     ("Button::new(", 1),
     ("Button::icon_only(", 2),
@@ -613,6 +621,13 @@ SPEC_BUILDERS = (
     ("ResourceSpec::new(", 2),
     (".unavailable(", 1),
 )
+
+# What resolves a catalogued message with named values: the pairs of
+# `("name", value)`, where the value is what the sentence reads out. It is the
+# person's data — their name, a count, a filesystem's own name — never a word
+# the app wrote itself, which would stand in English inside every language's
+# sentence.
+ARG_BUILDERS = ("t_args(", ".with_args(", "t_args_owned(")
 
 BINDING = re.compile(
     r"(?m)^\s*(?:let\s+(?:mut\s+)?([a-z_][a-z0-9_]*)|let\s+\(([^)]*)\)"
@@ -866,6 +881,32 @@ def top_level_find(code: str, begin: int, end: int, needle: str) -> int:
             return position
         position += 1
     return -1
+
+
+def argument_values(code: str, begin: int, end: int) -> list[tuple[int, int]]:
+    """The `value` ranges of the `("name", value)` pairs a builder hands a
+    catalogued message, inside its argument list `[begin, end)`."""
+    found = []
+    for part_begin, part_end in top_level_parts(code, begin, end):
+        position = part_begin
+        while position < part_end and (code[position].isspace() or code[position] == "&"):
+            position += 1
+        for prefix in ("vec!", "Vec::from", "Cow::Borrowed"):
+            if code.startswith(prefix, position):
+                position += len(prefix)
+                while position < part_end and code[position].isspace():
+                    position += 1
+        if position >= part_end:
+            continue
+        if code[position] == "[":
+            found.extend(argument_values(
+                code, position + 1, rust_source.matching(code, position) - 1))
+        elif code[position] == "(":
+            close = rust_source.matching(code, position)
+            comma = top_level_find(code, position + 1, close - 1, ",")
+            if comma >= 0:
+                found.append((comma + 1, close - 1))
+    return found
 
 
 def tuple_arms(code: str, begin: int, end: int,
@@ -1696,6 +1737,14 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                     start = code.find(call, start + len(call))
             for words in naming[crate].values():
                 found.extend(words)
+            for builder in ARG_BUILDERS:
+                start = code.find(builder)
+                while start >= 0:
+                    close = rust_source.matching(code, start + len(builder) - 1)
+                    for value_begin, value_end in argument_values(
+                            code, start + len(builder), close - 1):
+                        sentences(value_begin, value_end, value_end, bindings)
+                    start = code.find(builder, start + len(builder))
             for name, indexes in helpers[crate].items():
                 pattern = re.compile(HELPER_CALL.format(name=re.escape(name)))
                 for hand in pattern.finditer(code):

@@ -1550,7 +1550,9 @@ fn segment_settings(ui: Ui<'_>) -> FormSection {
         let about = stack()
             .with_gap(rhythm.tight)
             .push(Box::new(Row::new().no_wrap().push(Box::new(name))))
-            .push(Box::new(text(category.blurb(), TextRole::Caption).dimmed()));
+            .push(Box::new(
+                text(&t(category.blurb()), TextRole::Caption).dimmed(),
+            ));
         section = section.content(Box::new(
             Row::new()
                 .no_wrap()

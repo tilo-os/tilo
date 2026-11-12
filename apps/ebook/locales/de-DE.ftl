@@ -124,6 +124,23 @@ ebook-reading-theme = { $theme ->
 }
 ebook-use-scheme = Farbthema { $scheme } verwenden
 ebook-untitled = Ohne Titel
+ebook-annotation-bookmark = Lesezeichen
+ebook-annotation-highlight = Markierung
+ebook-annotation-note = Notiz
+ebook-annotation-comment = { $kind }-Kommentar
+ebook-annotation-unknown-book = Unbekanntes Buch
+ebook-annotation-locator = Kapitel { $chapter }, Absatz { $paragraph }
+ebook-search-title = Suche
+ebook-search-results = { $count ->
+    [one] 1 Treffer
+   *[other] { $count } Treffer
+}
+ebook-font-default = Standard
+ebook-font-mono = Mono
+ebook-scheme-light = Hell
+ebook-scheme-sepia = Sepia
+ebook-scheme-dark = Dunkel
+ebook-scheme-high-contrast = Hoher Kontrast
 
 ebook-get = Holen
 

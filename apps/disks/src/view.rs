@@ -576,7 +576,13 @@ fn filesystem(index: usize, part: &Partition, selected: bool, intents: &Intents)
         .selected(selected)
         .on_view(move || pick.push(Intent::SelectPartition(Some(index))));
     if let Some(used) = part.used {
-        row = row.meta(format!("{} free", size(part.size.saturating_sub(used))));
+        row = row.meta(CATALOG.t_args(
+            "disks-partition-free",
+            &[(
+                "room",
+                ui::i18n::ArgValue::Text(size(part.size.saturating_sub(used))),
+            )],
+        ));
     }
     match part.used_frac() {
         Some(used) if used >= FULL => row.error(),
@@ -744,57 +750,68 @@ fn severity_label(severity: AttrSeverity) -> String {
 }
 
 /// What a partition is for, in words, when it serves something the person
-/// knows by name.
-fn purpose(drive: &Drive, part: &Partition) -> Option<&'static str> {
+/// knows by name. Everything but a foreign system's own name comes from the
+/// catalogue.
+fn purpose(drive: &Drive, part: &Partition) -> Option<String> {
     use crate::model::PartRole;
     let windows = |name: &str| {
         let name = name.to_ascii_lowercase();
         name.contains("microsoft") || name.contains("windows")
     };
-    match part.role() {
-        PartRole::Root => Some("Running system"),
-        PartRole::Home => Some("Home folders"),
-        PartRole::Efi | PartRole::Boot if drive.is_system_drive() => Some("Starts this device"),
-        PartRole::Swap => Some("Swap space"),
+    let message = match part.role() {
+        PartRole::Root => "disks-purpose-root",
+        PartRole::Home => "disks-purpose-home",
+        PartRole::Efi | PartRole::Boot if drive.is_system_drive() => "disks-purpose-boot",
+        PartRole::Swap => "disks-swap",
         _ if part
             .fstype
             .as_deref()
             .is_some_and(|fs| fs.eq_ignore_ascii_case("ntfs"))
             || part.part_type_name.as_deref().is_some_and(windows) =>
         {
-            Some("Windows")
+            return Some("Windows".to_owned());
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    Some(crate::locales::CATALOG.t(message))
 }
 
 /// What a partition's row says under its name: what it is for, its state
-/// and its room, in words ("Home folders, encrypted, 134.2 GB free", "Not
-/// in use"). The facts
-/// behind it are on the partition's own page.
+/// and its room, in words ("Home folders, encrypted, 134 GB free", "Not in
+/// use"), joined the way this language writes a list. The facts behind it are
+/// on the partition's own page.
 fn partition_summary(drive: &Drive, part: &Partition) -> String {
-    let locked = part
-        .encryption
-        .as_ref()
-        .map(|encryption| encryption.unlocked_as.is_none());
+    let cat = &crate::locales::CATALOG;
+    let lock = part.encryption.as_ref().map(|encryption| {
+        if encryption.unlocked_as.is_none() {
+            "disks-partition-encrypted-locked"
+        } else {
+            "disks-partition-encrypted"
+        }
+    });
     // A purpose the name already says ("Windows" called "Windows") gives
     // way to the state.
     let purpose = purpose(drive, part)
         .filter(|purpose| !purpose.eq_ignore_ascii_case(part.display_label().trim()));
-    let mut summary = match purpose {
-        Some(purpose) => purpose.to_owned(),
-        None if part.mountpoint.is_some() => crate::locales::CATALOG.t("disks-in-use"),
-        None => crate::locales::CATALOG.t("disks-not-in-use"),
+    let state = match purpose {
+        Some(purpose) => purpose,
+        None if part.mountpoint.is_some() => cat.t("disks-in-use"),
+        None => cat.t("disks-not-in-use"),
     };
-    match locked {
-        Some(true) => summary.push_str(", encrypted and locked"),
-        Some(false) => summary.push_str(", encrypted"),
-        None => {}
+    let mut facts = vec![state];
+    if let Some(lock) = lock {
+        facts.push(cat.t(lock));
     }
     if let Some(used) = part.used {
-        summary = format!("{summary}, {} free", size(part.size.saturating_sub(used)));
+        facts.push(cat.t_args(
+            "disks-partition-free",
+            &[(
+                "room",
+                ui::i18n::ArgValue::Text(size(part.size.saturating_sub(used))),
+            )],
+        ));
     }
-    summary
+    ui::format::list(&facts)
 }
 
 /// The partition's facts: its device, size, type, filesystem, encryption,
@@ -812,16 +829,23 @@ fn partition_details(drive: &Drive, part: &Partition) -> Section {
         facts.push(Property::new(CATALOG.t("disks-filesystem"), fstype));
     }
     if let Some(encryption) = &part.encryption {
-        let state = match &encryption.unlocked_as {
-            Some(_) => format!("{}, unlocked", encryption.scheme),
-            None => format!("{}, locked", encryption.scheme),
+        let message = match &encryption.unlocked_as {
+            Some(_) => "disks-encryption-unlocked",
+            None => "disks-encryption-locked",
         };
+        let state = CATALOG.t_args(
+            message,
+            &[(
+                "scheme",
+                ui::i18n::ArgValue::Text(encryption.scheme.clone()),
+            )],
+        );
         facts.push(Property::new(CATALOG.t("disks-encryption"), state));
     }
     facts.push(Property::new(
         CATALOG.t("disks-mounted-at"),
         part.mount_display()
-            .unwrap_or_else(|| "Not mounted".to_owned()),
+            .unwrap_or_else(|| CATALOG.t("disks-not-mounted")),
     ));
     if let Some(used) = part.used {
         facts.push(Property::new(CATALOG.t("disks-used"), size(used)).with_kind(TextKind::Numeric));

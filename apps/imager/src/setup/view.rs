@@ -606,7 +606,7 @@ impl SetupApp {
                 let result = if on_full_os_review {
                     self.internal_download_flow
                         .as_mut()
-                        .ok_or_else(|| "Full Tilo download is unavailable.".to_string())
+                        .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-unavailable"))
                         .and_then(|flow| {
                             let key = flow
                                 .offered_selection()
@@ -622,7 +622,7 @@ impl SetupApp {
                 let result = self
                     .internal_download_flow
                     .as_mut()
-                    .ok_or_else(|| "Full Tilo download is unavailable.".to_string())
+                    .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-unavailable"))
                     .and_then(InternalDownloadFlow::pause);
                 self.apply_internal_command_result(result, "Pausing download…");
             }
@@ -638,7 +638,7 @@ impl SetupApp {
                 let result = self
                     .internal_download_flow
                     .as_mut()
-                    .ok_or_else(|| "Full Tilo download is unavailable.".to_string())
+                    .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-unavailable"))
                     .and_then(InternalDownloadFlow::cancel);
                 self.apply_internal_command_result(result, "Cancelling download…");
             }

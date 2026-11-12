@@ -224,11 +224,13 @@ pub enum AnnoKind {
 }
 
 impl AnnoKind {
-    pub fn label(self) -> &'static str {
+    /// The catalogue message naming this kind, wherever a window says what an
+    /// annotation is.
+    pub fn message(self) -> &'static str {
         match self {
-            AnnoKind::Bookmark => "Bookmark",
-            AnnoKind::Highlight => "Highlight",
-            AnnoKind::Note => "Note",
+            AnnoKind::Bookmark => "ebook-annotation-bookmark",
+            AnnoKind::Highlight => "ebook-annotation-highlight",
+            AnnoKind::Note => "ebook-annotation-note",
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -718,7 +720,13 @@ impl FontEntry {
 /// them.
 pub fn default_fonts() -> Vec<FontEntry> {
     let mut fonts = vec![
-        FontEntry::new("default", FontKind::Default, "Default", 1.0, true),
+        FontEntry::new(
+            "default",
+            FontKind::Default,
+            &crate::resource::CATALOG.t("ebook-font-default"),
+            1.0,
+            true,
+        ),
         FontEntry::new(
             "serif",
             FontKind::Serif,
@@ -742,7 +750,13 @@ pub fn default_fonts() -> Vec<FontEntry> {
                 )
             }),
     );
-    fonts.push(FontEntry::new("mono", FontKind::Mono, "Mono", 0.96, true));
+    fonts.push(FontEntry::new(
+        "mono",
+        FontKind::Mono,
+        &crate::resource::CATALOG.t("ebook-font-mono"),
+        0.96,
+        true,
+    ));
     fonts
 }
 
@@ -889,7 +903,7 @@ pub fn default_schemes() -> Vec<ColorScheme> {
     vec![
         ColorScheme {
             id: "light".into(),
-            name: "Light".into(),
+            name: crate::resource::CATALOG.t("ebook-scheme-light"),
             page: [0xFC, 0xFC, 0xFA],
             ink: [0x1B, 0x1B, 0x1F],
             accent: [0x3B, 0x82, 0xF6],
@@ -899,7 +913,7 @@ pub fn default_schemes() -> Vec<ColorScheme> {
         },
         ColorScheme {
             id: "sepia".into(),
-            name: "Sepia".into(),
+            name: crate::resource::CATALOG.t("ebook-scheme-sepia"),
             page: [0xF6, 0xEC, 0xD8],
             ink: [0x40, 0x33, 0x22],
             accent: [0xB4, 0x6A, 0x2E],
@@ -912,7 +926,7 @@ pub fn default_schemes() -> Vec<ColorScheme> {
             // reads as sepia/brown, but with a hair of warmth (R ≥ B) so it stays
             // comfortable for long reading rather than a clinical blue-black.
             id: "dark".into(),
-            name: "Dark".into(),
+            name: crate::resource::CATALOG.t("ebook-scheme-dark"),
             page: [0x1E, 0x1D, 0x1C],
             ink: [0xE7, 0xE5, 0xE1],
             accent: [0x8A, 0xB4, 0xF8],
@@ -925,7 +939,7 @@ pub fn default_schemes() -> Vec<ColorScheme> {
             // amber accent that stays unmistakable against the black. For
             // low-vision reading; its reading palette is fixed in `reader_theme`.
             id: "high-contrast".into(),
-            name: "High contrast".into(),
+            name: crate::resource::CATALOG.t("ebook-scheme-high-contrast"),
             page: [0x00, 0x00, 0x00],
             ink: [0xFF, 0xFF, 0xFF],
             accent: [0xFF, 0xD5, 0x2E],

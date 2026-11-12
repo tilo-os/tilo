@@ -42,6 +42,15 @@ disks-swap = Auslagerungsspeicher
 disks-filesystem-at = { $filesystem } unter { $path }
 disks-in-use = In Benutzung
 disks-not-in-use = Nicht in Benutzung
+disks-purpose-root = Laufendes System
+disks-purpose-home = Home-Ordner
+disks-purpose-boot = Startet dieses Gerät
+disks-partition-encrypted = verschlüsselt
+disks-partition-encrypted-locked = verschlüsselt und gesperrt
+disks-partition-free = { $room } frei
+disks-not-mounted = Nicht eingehängt
+disks-encryption-unlocked = { $scheme }, entsperrt
+disks-encryption-locked = { $scheme }, gesperrt
 
 disks-severity-warning = Warnung
 disks-severity-critical = Kritisch

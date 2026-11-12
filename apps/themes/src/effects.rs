@@ -143,12 +143,15 @@ pub(crate) fn install(
                         return Ok(Effected::done());
                     };
                     let text = String::from_utf8(file.bytes).map_err(|_| {
-                        let reason = format!("{} is not a theme document", file.name);
+                        let reason = crate::locales::CATALOG.t("themes-reason-not-a-document");
                         notice.set(refused_notice(&file.name, &reason));
                         reason
                     })?;
                     let document: ThemeDocument = serde_json::from_str(&text).map_err(|error| {
-                        let reason = format!("{} is not a theme document: {error}", file.name);
+                        let reason = crate::locales::CATALOG.t_args(
+                            "themes-reason-not-a-document-detail",
+                            &[("reason", ui::ArgValue::Text(error.to_string()))],
+                        );
                         notice.set(refused_notice(&file.name, &reason));
                         reason
                     })?;

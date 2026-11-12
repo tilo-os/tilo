@@ -310,8 +310,9 @@ impl VideoEditorApp {
             let editing = self.marker_rename.as_ref().map(|(r, _)| r.id) == Some(m.id);
             let renaming = editing && self.marker_field == MarkerField::Name;
             if !renaming {
+                let unnamed = crate::resource::CATALOG.t("video-editor-marker");
                 let name = if mk.name.trim().is_empty() {
-                    "Marker"
+                    unnamed.as_str()
                 } else {
                     mk.name.as_str()
                 };

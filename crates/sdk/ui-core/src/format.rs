@@ -527,6 +527,25 @@ pub fn range(start: &str, end: &str) -> String {
     )
 }
 
+/// Already-formatted values as this language writes a list: `Home folders,
+/// encrypted, 134 GB free`. The separator is the catalogue's, so a language
+/// that writes its lists another way gets its own; a single value is itself.
+#[must_use]
+pub fn list(values: &[String]) -> String {
+    let mut joined = String::new();
+    for value in values {
+        joined = if joined.is_empty() {
+            value.clone()
+        } else {
+            widget_format(
+                "format-list-join",
+                &[("head", joined.into()), ("tail", value.as_str().into())],
+            )
+        };
+    }
+    joined
+}
+
 /// A span of the calendar a view shows: one day, a run of days, or a
 /// month.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

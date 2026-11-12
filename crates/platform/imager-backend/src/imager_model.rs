@@ -426,26 +426,19 @@ impl TargetDrive {
             format!("/dev/{}", self.name)
         }
     }
-    /// Human description of what currently lives on the drive.
-    pub fn contents_summary(&self) -> String {
-        if self.partitions.is_empty() {
-            return "no partitions".into();
-        }
-        let labels: Vec<String> = self
-            .partitions
+    /// The names the drive's partitions go by: the label a person set, else
+    /// the filesystem it holds, for a surface to name in their language. A
+    /// partition with neither adds no name; the count still speaks for it.
+    pub fn partition_names(&self) -> Vec<&str> {
+        self.partitions
             .iter()
-            .map(|p| {
+            .filter_map(|p| {
                 p.label
-                    .clone()
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| p.fstype.clone())
-                    .unwrap_or_else(|| "data".into())
+                    .as_deref()
+                    .filter(|label| !label.is_empty())
+                    .or_else(|| p.fstype.as_deref().filter(|kind| !kind.is_empty()))
             })
-            .collect();
-        match self.partitions.len() {
-            1 => format!("1 partition ({})", labels.join(", ")),
-            count => format!("{count} partitions ({})", labels.join(", ")),
-        }
+            .collect()
     }
     /// Does the image fit? (Raw writes need `image_size` ≤ drive size.)
     pub fn fits(&self, image_size: u64) -> bool {
@@ -633,9 +626,11 @@ impl Filesystem {
             Self::Xfs => "xfs",
         }
     }
+    /// The filesystem's own name: the same in every language, the
+    /// recommendation a surface adds is the catalogue's.
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Btrfs => "Btrfs (recommended)",
+            Self::Btrfs => "Btrfs",
             Self::Ext4 => "Ext4",
             Self::Xfs => "XFS",
         }

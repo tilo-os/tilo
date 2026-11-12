@@ -430,7 +430,7 @@ fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings>) -> EffectAns
                 )),
                 Err(_) => Err(t_args(
                     "settings-appearance-unchanged",
-                    &[("error", "the portal went away".into())],
+                    &[("error", t("settings-error-portal-gone").into())],
                 )),
             }
         },

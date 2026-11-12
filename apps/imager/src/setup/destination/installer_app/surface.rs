@@ -549,7 +549,11 @@ impl InstallerApp {
                 label: disk.label(),
                 presentation: ResourcePresentation {
                     detail: Some(bounded(
-                        &format!("{}, {}", capacity(disk), disk.contents_summary()),
+                        &crate::contents::drive_line(
+                            &capacity(disk),
+                            disk.partitions.len(),
+                            &disk.partition_filesystems(),
+                        ),
                         160,
                     )),
                     badge: Some(badge.to_owned()),

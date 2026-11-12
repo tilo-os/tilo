@@ -42,6 +42,15 @@ disks-swap = Swap space
 disks-filesystem-at = { $filesystem } at { $path }
 disks-in-use = In use
 disks-not-in-use = Not in use
+disks-purpose-root = Running system
+disks-purpose-home = Home folders
+disks-purpose-boot = Starts this device
+disks-partition-encrypted = encrypted
+disks-partition-encrypted-locked = encrypted and locked
+disks-partition-free = { $room } free
+disks-not-mounted = Not mounted
+disks-encryption-unlocked = { $scheme }, unlocked
+disks-encryption-locked = { $scheme }, locked
 
 disks-severity-warning = Warning
 disks-severity-critical = Critical

@@ -1230,15 +1230,19 @@ impl ImagerApp {
                 let fits = required.is_some_and(|required| drive.fits(required));
                 // A drive that cannot be chosen says why, on its own row: a
                 // control that is off with no reason reads as a fault.
+                let contents = crate::contents::drive_contents(
+                    drive.partitions.len(),
+                    &drive.partition_names(),
+                );
                 let secondary = match required.filter(|required| !drive.fits(*required)) {
                     Some(required) => crate::setup::strings::t_args(
                         "installer-media-drive-too-small",
                         &[
-                            ("contents", drive.contents_summary().into()),
+                            ("contents", contents.into()),
                             ("required", fmt_size(required).into()),
                         ],
                     ),
-                    None => format!("{}, {}", drive.dev_path(), drive.contents_summary()),
+                    None => ui::format::list(&[drive.dev_path(), contents]),
                 };
                 let row = ListRow::new(format!("imager.drive.{}", drive.name), &drive.model)
                     .with_enabled(fits)

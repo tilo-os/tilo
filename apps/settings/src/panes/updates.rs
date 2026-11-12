@@ -2040,7 +2040,7 @@ impl UpdatesModel {
             Landed::Lost => {
                 self.firmware_refresh_events = None;
                 self.firmware_refresh_pending = false;
-                let error = "firmware refresh worker stopped".to_string();
+                let error = t("upd-error-firmware-worker-stopped");
                 self.firmware_updates = Err(error.clone());
                 self.firmware_history = Err(error.clone());
                 self.notice = Some(t_args(
