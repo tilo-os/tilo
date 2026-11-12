@@ -166,6 +166,17 @@ pub enum SealKeys {
     NoSecretStore,
 }
 
+/// Who hosts a workspace this device holds, as its record says ([`Engine::hosting`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hosting {
+    /// The host's name, as its person gave it; empty when the record names no host.
+    pub host: String,
+    /// The host is this device.
+    pub here: bool,
+    /// This device is the workspace's member: its host took it in.
+    pub admitted: bool,
+}
+
 /// This device's workspaces, and the identity they are held with.
 pub struct Engine {
     owner: NativeWorkspaceOwner,
@@ -446,20 +457,32 @@ impl Engine {
     /// hold.
     #[must_use]
     pub fn awaited_host(&self, workspace: WorkspaceId) -> Option<String> {
+        self.hosting(workspace)
+            .filter(|hosting| !hosting.admitted)
+            .map(|hosting| hosting.host)
+    }
+
+    /// Who hosts `workspace` as this device's record of it says, whether that is this device,
+    /// and whether this device is admitted to it yet ([`Self::awaited_host`]). `None` for a
+    /// workspace this device does not hold.
+    #[must_use]
+    pub fn hosting(&self, workspace: WorkspaceId) -> Option<Hosting> {
         if !self.holds(workspace) {
             return None;
         }
         let own = self.identity.device_public_key();
         self.owner
             .with_current(workspace, |view| {
-                Ok((view.device().device_public_key != own).then(|| {
-                    view.transport_hint()
+                let hint = view.transport_hint().ok();
+                Ok(Hosting {
+                    host: hint
                         .map(|hint| hint.host.device_label.clone())
-                        .unwrap_or_default()
-                }))
+                        .unwrap_or_default(),
+                    here: hint.is_some_and(|hint| hint.host.device_public_key == own),
+                    admitted: view.device().device_public_key == own,
+                })
             })
             .ok()
-            .flatten()
     }
 
     /// What the workspace `workspace` holds of the app `app`'s `record`: the document
