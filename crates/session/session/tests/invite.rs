@@ -487,7 +487,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
             .expect("the create button is pressed");
         app.settle();
         // The link is signed off the loop and shows once it landed.
-        common::until(&mut session, "the sheet shows the part's link", |session| {
+        crate::common::until(&mut session, "the sheet shows the part's link", |session| {
             session
                 .invite_sheet()
                 .and_then(|seat| seat.invite().created)

@@ -26,6 +26,13 @@ test = false
 name = "it"
 path = "tests/it.rs"
 
+# The automation tests keep a binary of their own: a shortcut a test shows on the
+# desk is cleared by the workspace's governance projection as soon as this binary
+# serves automerge workers, and the tests do not save through the engine yet.
+[[test]]
+name = "automation"
+path = "tests/automation.rs"
+
 # The session's loop walks no path after startup. The audit watches the
 # process's main thread, and `libtest` runs every test on a thread of its own,
 # so this target is the process's `main` driving the session itself.

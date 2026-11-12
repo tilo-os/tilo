@@ -17,6 +17,8 @@ mod browser_root;
 mod carriers;
 #[path = "channel_member.rs"]
 mod channel_member;
+#[path = "chat_landing_work.rs"]
+mod chat_landing_work;
 #[path = "checkpoint_race.rs"]
 mod checkpoint_race;
 #[path = "compaction.rs"]
