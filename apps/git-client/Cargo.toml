@@ -45,7 +45,7 @@ chrono = { workspace = true, features = ["clock", "std"] }
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2", "cred"] }
 reqwest = { workspace = true, features = ["blocking"] }
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
-russh = { version = "0.63.3", default-features = false, features = ["ring", "flate2"] }
+russh = { version = "0.65.1", default-features = false, features = ["ring", "flate2"] }
 ssh-agent-client = { path = "../../crates/system/ssh-agent-client" }
 tokio = { workspace = true, features = ["rt", "net", "time"] }
 url.workspace = true
