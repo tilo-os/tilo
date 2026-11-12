@@ -13,8 +13,8 @@ use ui::widget::{Field, Form, FormSection, TextInput, TextInputKind, Toggle};
 use crate::model::InstallProfile;
 use crate::resource::{Imager, ImagerEffect};
 
-/// What enrolling does, under its switch.
-const ENROLL_NOTE: &str = "Certifies the new device. The root secret stays on this computer.";
+/// The catalogue message under the enroll switch.
+const ENROLL_NOTE: &str = "imager-write-setup-enroll-note";
 
 /// One text field of the network and identity section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,13 +26,18 @@ pub enum SetupField {
 }
 
 impl SetupField {
-    fn label(self) -> &'static str {
+    /// The catalogue message naming this field in the window's language.
+    fn message(self) -> &'static str {
         match self {
-            Self::WifiSsid => "Wi-Fi network",
-            Self::WifiPsk => "Wi-Fi password",
-            Self::SshKey => "Owner SSH public key",
-            Self::DeviceLabel => "Device name",
+            Self::WifiSsid => "imager-write-setup-wifi-ssid",
+            Self::WifiPsk => "imager-write-setup-wifi-psk",
+            Self::SshKey => "imager-write-setup-ssh-key",
+            Self::DeviceLabel => "imager-write-setup-device-label",
         }
+    }
+
+    fn label(self) -> String {
+        crate::resource::CATALOG.t(self.message())
     }
 
     fn id(self) -> &'static str {
@@ -105,7 +110,7 @@ pub(crate) fn form(
         enroll = enroll.on_action(binding);
     }
     Form::new().section(
-        FormSection::new("Network and identity")
+        FormSection::new(crate::resource::CATALOG.t("imager-profile-section-network-identity"))
             .field(text_field(
                 SetupField::WifiSsid,
                 &profile.wifi_ssid,
@@ -134,7 +139,13 @@ pub(crate) fn form(
                 actions,
                 ssh_public_key,
             ))
-            .field(Field::new("Enroll as a new device", enroll).with_help(ENROLL_NOTE)),
+            .field(
+                Field::new(
+                    crate::resource::CATALOG.t("imager-write-setup-enroll"),
+                    enroll,
+                )
+                .with_help(&crate::resource::CATALOG.t(ENROLL_NOTE)),
+            ),
     )
 }
 

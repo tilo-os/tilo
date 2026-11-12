@@ -3975,6 +3975,56 @@ mod tests {
         );
     }
 
+    /// The customization form's sections, field names and the storage choice
+    /// read in the window's language, not the source one.
+    #[test]
+    fn the_customization_form_reads_in_the_windows_language() {
+        let catalog = &crate::resource::CATALOG;
+        let previous = catalog.current_locale();
+        catalog.set_locale("de-DE");
+        let mut host =
+            ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some("customize"))
+                .unwrap();
+        let labels: Vec<String> = host
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
+        catalog.set_locale(&previous);
+        for german in [
+            "Identität",
+            "Region",
+            "Speicher",
+            "Hostname",
+            "Vollständiger Name",
+            "Benutzername",
+            "Sprache und Region",
+            "Zeitzone",
+            "Tastaturbelegung",
+            "Dateisystem",
+        ] {
+            assert!(
+                labels.iter().any(|label| label == german),
+                "{german} is missing from {labels:?}"
+            );
+        }
+        assert!(
+            labels.iter().all(|label| !matches!(
+                label.as_str(),
+                "Identity"
+                    | "Storage"
+                    | "Full name"
+                    | "Username"
+                    | "Language and locale"
+                    | "Time zone"
+                    | "Keyboard layout"
+                    | "Filesystem"
+            )),
+            "the source language is left in the German window: {labels:?}"
+        );
+    }
+
     /// Accessible semantics, selection labels, live regions and tab order.
     #[test]
     #[allow(

@@ -83,16 +83,41 @@ pub enum CzField {
 }
 
 impl CzField {
-    pub(crate) fn label(self) -> &'static str {
+    /// The catalogue message naming this field, so the label beside its
+    /// control reads in the window's language.
+    fn message(self) -> &'static str {
         match self {
-            Self::Hostname => "Hostname",
-            Self::FullName => "Full name",
-            Self::Username => "Username",
-            Self::Locale => "Language and locale",
-            Self::Timezone => "Time zone",
-            Self::Keyboard => "Keyboard layout",
-            Self::Filesystem => "Filesystem",
+            Self::Hostname => "imager-profile-hostname",
+            Self::FullName => "imager-profile-full-name",
+            Self::Username => "imager-profile-username",
+            Self::Locale => "imager-profile-locale",
+            Self::Timezone => "imager-profile-timezone",
+            Self::Keyboard => "imager-profile-keyboard",
+            Self::Filesystem => "imager-profile-filesystem",
         }
+    }
+
+    /// The message for a required field left empty, naming the field the
+    /// person has to fill in.
+    fn required_message(self) -> &'static str {
+        match self {
+            Self::Hostname => "imager-profile-hostname-required",
+            Self::Username => "imager-profile-username-required",
+            _ => "imager-profile-required",
+        }
+    }
+
+    /// The refusal for a value none of this field's choices lists, naming the
+    /// field the person has to pick a listed value for.
+    fn choose_message(self) -> String {
+        CATALOG.t_args(
+            "imager-profile-choose-listed-field",
+            &[("field", ui::i18n::ArgValue::Text(self.label()))],
+        )
+    }
+
+    pub(crate) fn label(self) -> String {
+        CATALOG.t(self.message())
     }
 
     pub(crate) fn key(self) -> &'static str {
@@ -200,7 +225,7 @@ fn field_binding(
     let edit = move |shown: String| {
         profile_value(field, &shown)
             .and_then(|value| field_edit(field, value))
-            .ok_or_else(|| format!("Choose a listed {}", field.label()))
+            .ok_or_else(|| CATALOG.t(&field.choose_message()))
     };
     match text_path(field) {
         Some(path) => actions.edit_binding_with(path, move |_, shown: String| edit(shown)),
@@ -230,7 +255,7 @@ fn text_field(
     let required = matches!(field, CzField::Hostname | CzField::Username);
     let row = Field::new(field.label(), control);
     if required && shown_value(profile, field).trim().is_empty() {
-        row.with_error(format!("Enter a {}.", field.label().to_lowercase()))
+        row.with_error(CATALOG.t(field.required_message()))
     } else {
         row
     }
@@ -259,7 +284,7 @@ fn choice_field(
     if listed {
         row
     } else {
-        row.with_error("Choose a value from the list.")
+        row.with_error(CATALOG.t("imager-profile-choose-listed"))
     }
 }
 
@@ -283,13 +308,13 @@ pub(crate) fn form(
         .collect();
     Form::new()
         .section(
-            FormSection::new("Identity")
+            FormSection::new(CATALOG.t("imager-profile-section-identity"))
                 .field(text_field(profile, CzField::Hostname, actions))
                 .field(text_field(profile, CzField::FullName, actions))
                 .field(text_field(profile, CzField::Username, actions)),
         )
         .section(
-            FormSection::new("Region")
+            FormSection::new(CATALOG.t("imager-profile-section-region"))
                 .field(choice_field(
                     profile,
                     CzField::Timezone,
@@ -315,7 +340,7 @@ pub(crate) fn form(
         // Security, the storage target and destructive choices are completed
         // on the device; the filesystem is the one storage preference here.
         .section(
-            FormSection::new("Storage").field(
+            FormSection::new(CATALOG.t("imager-profile-section-storage")).field(
                 choice_field(profile, CzField::Filesystem, filesystems, actions, false)
                     .with_help(crate::setup::strings::t("imager-filesystem-help")),
             ),

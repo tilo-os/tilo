@@ -107,6 +107,18 @@ imager-setup-error-download-resume-unavailable = This saved download cannot be r
 imager-setup-error-download-cancel-unavailable = The download is not currently active
 imager-setup-error-download-discard-unavailable = Unfinished download data is not available to discard
 imager-setup-error-download-release-unavailable = The verified download is not available to keep for later
+imager-setup-error-download-no-folder = Tilo cannot find the folder it keeps downloads in on this computer.
+imager-setup-error-download-unreadable = The saved Tilo download cannot be read.
+imager-setup-error-download-unsupported = Full Tilo cannot be downloaded on this computer.
+imager-setup-error-download-changed = This download changed since you chose it. Review the current one before continuing.
+imager-setup-error-download-catalog-changed = This download changed since you chose it.
+imager-setup-error-download-selection-too-large = The saved download selection is larger than this computer keeps.
+imager-setup-error-download-selection-invalid = The saved download selection is not one Tilo can use.
+imager-setup-error-download-lost = The verified download is no longer on this computer.
+imager-setup-error-download-unsaved = The download selection could not be saved.
+imager-setup-error-staging-unavailable = Protected staging is unavailable.
+imager-setup-error-staging-not-built = Protected staging is not part of this build.
+imager-setup-error-staging-not-built-retained = Protected staging is not part of this build; the verified download was kept.
 
 imager-setup-resource-root = Guided Tilo setup
 imager-setup-badge-review = Review
@@ -2460,6 +2472,30 @@ installer-error-unknown-filesystem = Unknown filesystem: { $filesystem }
 installer-keyboard-map-name = { $layout } keyboard layout
 ## The window bar's Rescan
 imager-rescan-drives = Rescan drives
+
+## The customization form's sections and fields
+imager-profile-section-identity = Identity
+imager-profile-section-region = Region
+imager-profile-section-storage = Storage
+imager-profile-section-network-identity = Network and identity
+imager-profile-hostname = Hostname
+imager-profile-full-name = Full name
+imager-profile-username = Username
+imager-profile-locale = Language and locale
+imager-profile-timezone = Time zone
+imager-profile-keyboard = Keyboard layout
+imager-profile-filesystem = Filesystem
+imager-profile-hostname-required = Enter a hostname.
+imager-profile-username-required = Enter a username.
+imager-profile-required = Enter a value.
+imager-profile-choose-listed = Choose a value from the list.
+imager-profile-choose-listed-field = Choose a listed { $field }.
+imager-write-setup-wifi-ssid = Wi-Fi network
+imager-write-setup-wifi-psk = Wi-Fi password
+imager-write-setup-ssh-key = Owner SSH public key
+imager-write-setup-device-label = Device name
+imager-write-setup-enroll = Enroll as a new device
+imager-write-setup-enroll-note = Certifies the new device. The root secret stays on this computer.
 
 ## Where a release runs, and the filesystem it installs
 imager-release-target-arm64 = Generic ARM64

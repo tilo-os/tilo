@@ -101,6 +101,18 @@ imager-setup-error-download-resume-unavailable = Dieser gespeicherte Download ka
 imager-setup-error-download-cancel-unavailable = Der Download läuft gerade nicht
 imager-setup-error-download-discard-unavailable = Es gibt keine unvollständigen Downloaddaten zum Verwerfen
 imager-setup-error-download-release-unavailable = Es gibt keinen überprüften Download, der für später behalten werden kann
+imager-setup-error-download-no-folder = Tilo findet auf diesem Computer den Ordner für Downloads nicht.
+imager-setup-error-download-unreadable = Der gespeicherte Tilo-Download lässt sich nicht lesen.
+imager-setup-error-download-unsupported = Auf diesem Computer lässt sich das vollständige Tilo nicht herunterladen.
+imager-setup-error-download-changed = Dieser Download hat sich seit deiner Wahl geändert. Prüfe den aktuellen, bevor du fortfährst.
+imager-setup-error-download-catalog-changed = Dieser Download hat sich seit deiner Wahl geändert.
+imager-setup-error-download-selection-too-large = Die gespeicherte Download-Auswahl ist größer, als dieser Computer aufbewahrt.
+imager-setup-error-download-selection-invalid = Die gespeicherte Download-Auswahl kann Tilo nicht verwenden.
+imager-setup-error-download-lost = Der geprüfte Download liegt nicht mehr auf diesem Computer.
+imager-setup-error-download-unsaved = Die Download-Auswahl ließ sich nicht speichern.
+imager-setup-error-staging-unavailable = Die geschützte Bereitstellung ist nicht verfügbar.
+imager-setup-error-staging-not-built = Die geschützte Bereitstellung ist in diesem Build nicht enthalten.
+imager-setup-error-staging-not-built-retained = Die geschützte Bereitstellung ist in diesem Build nicht enthalten; der geprüfte Download wurde aufbewahrt.
 imager-setup-resource-root = Geführte Tilo-Einrichtung
 imager-setup-badge-review = Prüfung
 imager-import-resource-root = Ordnerimporte
@@ -1671,6 +1683,30 @@ installer-error-unknown-filesystem = Unbekanntes Dateisystem: { $filesystem }
 installer-keyboard-map-name = Tastaturbelegung { $layout }
 ## „Laufwerke erneut suchen“ in der Fensterleiste
 imager-rescan-drives = Laufwerke erneut suchen
+
+## The customization form's sections and fields
+imager-profile-section-identity = Identität
+imager-profile-section-region = Region
+imager-profile-section-storage = Speicher
+imager-profile-section-network-identity = Netzwerk und Identität
+imager-profile-hostname = Hostname
+imager-profile-full-name = Vollständiger Name
+imager-profile-username = Benutzername
+imager-profile-locale = Sprache und Region
+imager-profile-timezone = Zeitzone
+imager-profile-keyboard = Tastaturbelegung
+imager-profile-filesystem = Dateisystem
+imager-profile-hostname-required = Bitte einen Hostnamen eingeben.
+imager-profile-username-required = Bitte einen Benutzernamen eingeben.
+imager-profile-required = Bitte einen Wert eingeben.
+imager-profile-choose-listed = Bitte einen Wert aus der Liste wählen.
+imager-profile-choose-listed-field = Bitte { $field } aus der Liste wählen.
+imager-write-setup-wifi-ssid = WLAN-Netzwerk
+imager-write-setup-wifi-psk = WLAN-Passwort
+imager-write-setup-ssh-key = Öffentlicher SSH-Schlüssel der Eigentümerin
+imager-write-setup-device-label = Gerätename
+imager-write-setup-enroll = Als neues Gerät aufnehmen
+imager-write-setup-enroll-note = Zertifiziert das neue Gerät. Das Hauptgeheimnis bleibt auf diesem Computer.
 
 ## Where a release runs, and the filesystem it installs
 imager-release-target-arm64 = Generisch ARM64

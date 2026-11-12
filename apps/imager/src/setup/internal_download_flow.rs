@@ -148,9 +148,18 @@ pub(super) struct InternalDownloadFlow {
 
 impl InternalDownloadFlow {
     #[cfg(not(test))]
-    pub(super) fn new(capabilities: Capabilities, staging: StagingLink) -> Result<Self, String> {
-        let preference = SelectionPreference::live()?;
-        let saved = preference.load()?;
+    /// The flow reading this computer's saved download selection. A failure
+    /// names, as a catalogue message, what this computer cannot do, so the
+    /// card states it in the window's language instead of the source one.
+    pub(super) fn new(
+        capabilities: Capabilities,
+        staging: StagingLink,
+    ) -> Result<Self, &'static str> {
+        let preference =
+            SelectionPreference::live().map_err(|_| "imager-setup-error-download-no-folder")?;
+        let saved = preference
+            .load()
+            .map_err(|_| "imager-setup-error-download-unreadable")?;
         let mut flow = Self {
             capabilities,
             preference,

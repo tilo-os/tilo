@@ -1311,7 +1311,10 @@ impl InstallerPreview {
                 }
                 _ => {}
             }
-            if self.restart.blocks() && !matches!(effect, InstallerPreviewEffect::ReadPreview) {
+            // A stored preparation this window cannot open blocks what acts on
+            // it, never the page around it: the person still moves through the
+            // wizard while the check runs, or after it failed.
+            if self.restart.blocks() && !restart_controller::navigates(&effect) {
                 return Err("installer-restart-unavailable");
             }
         }
