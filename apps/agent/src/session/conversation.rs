@@ -68,6 +68,11 @@ pub(super) struct Record {
     steps: Vec<Value>,
     /// The words the run answers with, when it has any: the reply's text.
     answer: Option<String>,
+    /// Whether the run has already looked for the reply's `record-work`,
+    /// waiting for the conversation to publish it: that wait is for a
+    /// catalogue republished moments after the run started, so it is paid
+    /// once, never on every step of a long run.
+    looked_for_work: bool,
 }
 
 /// The turn `run` answers, checked against what a conversation gives and
@@ -113,6 +118,7 @@ impl Session {
             cause,
             steps: Vec::new(),
             answer: None,
+            looked_for_work: false,
         });
     }
 
@@ -301,10 +307,10 @@ impl Session {
     /// The chat action that records work on the reply to the turn's message,
     /// as the broker publishes it to this agent, once it does: an agent started
     /// for the turn may read the catalogue before Chat republished the message.
-    /// Absent when the catalogue still offers no `record-work` on that reply
-    /// after [`RECORD_WAIT`], which is what a workspace whose Chat is closed —
-    /// or whose agent was admitted without the chat app's actions — leaves,
-    /// and the reason the reply a person asked for never appears.
+    /// Absent when the workspace offers no `record-work` on that reply, which
+    /// is what a workspace whose Chat is closed — or whose agent was admitted
+    /// without the chat app's actions — leaves, and the reason the reply a
+    /// person asked for never appears.
     fn record_work_action(&mut self, arguments: &Map<String, Value>) -> Option<TaskAction> {
         let message = arguments.get("message").and_then(Value::as_str)?;
         let reply = format!("{MESSAGES}{message}");
@@ -319,7 +325,9 @@ impl Session {
                 })
                 .cloned()
         };
-        self.await_catalogue(RECORD_WAIT, |session| offer(session).is_some());
+        if self.waits_for_record_work() {
+            self.await_catalogue(RECORD_WAIT, |session| offer(session).is_some());
+        }
         let Some(offer) = offer(self) else {
             tracing::warn!(
                 reply = %reply,
@@ -336,6 +344,28 @@ impl Session {
                 None
             }
         }
+    }
+
+    /// Whether this run still waits for its reply's `record-work` to be
+    /// published, at most [`RECORD_WAIT`]: once per run, and only while the
+    /// workspace publishes `record-work` at all. What the wait covers is Chat
+    /// republishing the message the run answers moments after the run
+    /// started; a workspace whose Chat is not in the catalogue publishes none
+    /// and never will, and one that waited the bound out on every step would
+    /// spend it again on each of them.
+    fn waits_for_record_work(&mut self) -> bool {
+        let Some(record) = self
+            .record
+            .as_mut()
+            .filter(|record| !record.looked_for_work)
+        else {
+            return false;
+        };
+        record.looked_for_work = true;
+        self.task_catalogue()
+            .offers
+            .iter()
+            .any(|offer| offer.descriptor.address.action == RECORD_WORK)
     }
 }
 
