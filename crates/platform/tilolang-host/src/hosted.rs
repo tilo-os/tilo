@@ -98,6 +98,26 @@ pub struct Spec {
     pub installed: BTreeMap<String, String>,
 }
 
+impl Spec {
+    /// The instance `instance` of `app`, of the workspace `workspace`, with `person` at its
+    /// window: no other app is installed for it to read, so what it uses is its own.
+    #[must_use]
+    pub fn new(
+        app: impl Into<String>,
+        workspace: impl Into<String>,
+        instance: u64,
+        person: impl Into<String>,
+    ) -> Self {
+        Self {
+            app: app.into(),
+            workspace: workspace.into(),
+            instance,
+            person: person.into(),
+            installed: BTreeMap::new(),
+        }
+    }
+}
+
 /// What a [`Surface`]'s resources are built from: the published records' revision, the
 /// loaded packages, the updates that saw a change, and the resources the window shows (its
 /// rows, as published ids) — a change in what a person can reach publishes too.

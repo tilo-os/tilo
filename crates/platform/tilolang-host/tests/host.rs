@@ -307,13 +307,12 @@ fn running_on(
 
 /// What the instance `number` for `person` on `route` is.
 fn spec(number: u64, person: &str, route: &RouteSpec) -> Spec {
-    Spec {
-        app: route.app_id.clone(),
-        workspace: route.cluster_id.to_string(),
-        instance: number,
-        person: person.to_owned(),
-        installed: std::collections::BTreeMap::new(),
-    }
+    Spec::new(
+        route.app_id.clone(),
+        route.cluster_id.to_string(),
+        number,
+        person,
+    )
 }
 
 /// The instance `attributes` names, of `bundle`, in `host` on `route`, over `doc` as the workspace
@@ -432,13 +431,7 @@ fn opened_from_own_copy_in(
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
     let hosted = Hosted::with_record(
-        Spec {
-            app: APP.to_owned(),
-            workspace: route.cluster_id.to_string(),
-            instance: 1,
-            person: person.to_owned(),
-            installed: std::collections::BTreeMap::new(),
-        },
+        Spec::new(APP, route.cluster_id.to_string(), 1, person),
         record,
         Arc::new(counter()),
         &kept,
@@ -1122,13 +1115,7 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
     }));
     let (ours, theirs) = Channel::pair().unwrap();
     host.open(
-        Spec {
-            app: APP.to_owned(),
-            workspace: route.cluster_id.to_string(),
-            instance: 2,
-            person: "grace".to_owned(),
-            installed: std::collections::BTreeMap::new(),
-        },
+        Spec::new(APP, route.cluster_id.to_string(), 2, "grace"),
         Arc::new(counter()),
         manager,
         ours,
@@ -1921,13 +1908,7 @@ fn applier_of(
     let record = InstanceRecord::new(doc, manager, route.clone(), person);
     let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
     let applier = tilolang_host::hosted::Applier::open(
-        Spec {
-            app: app.to_owned(),
-            workspace: route.cluster_id.to_string(),
-            instance: 1 << 62,
-            person: person.to_owned(),
-            installed: std::collections::BTreeMap::new(),
-        },
+        Spec::new(app, route.cluster_id.to_string(), 1 << 62, person),
         record,
         bundle,
         &Rc::new(Phrases::new("en-US")),

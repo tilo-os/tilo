@@ -2566,6 +2566,10 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
                 "action untag(n: Note, t: Text)",
                 "action untag(n: Note, t: Int)",
             )
+            .replace(
+                "action file_note(nb: Notebook, title: Text, t: Text)",
+                "action file_note(nb: Notebook, title: Text, t: Int)",
+            )
             .replace("ui.Chip(t)", "ui.Chip(\"{t}\")");
         ["planning", "work", "q3"]
             .iter()

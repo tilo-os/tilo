@@ -125,13 +125,7 @@ fn open(
     let (ours, theirs) = Channel::pair().unwrap();
     let kept = host.kept(APP).unwrap();
     let hosted = Hosted::with_record(
-        Spec {
-            app: APP.to_owned(),
-            workspace: route.cluster_id.to_string(),
-            instance: index as u64,
-            person: "ada".to_owned(),
-            installed: std::collections::BTreeMap::new(),
-        },
+        Spec::new(APP, route.cluster_id.to_string(), index as u64, "ada"),
         record,
         Arc::clone(bundle),
         &kept,
