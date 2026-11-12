@@ -169,8 +169,8 @@ pub struct NewElement {
     /// A text box's words, a paragraph per line.
     #[serde(default)]
     pub text: Option<String>,
-    /// A picture's content id: `asset:blake3:<hash>`, or the
-    /// `tilo.content:<hash>` address another app or an import answered.
+    /// A picture's content id: `asset:blake3:<reference>`, or the
+    /// `tilo.content:<reference>` address another app or an import answered.
     #[serde(default)]
     pub src: Option<String>,
     /// Fill colour, and a text box's text colour: a palette role (accent,
@@ -257,17 +257,14 @@ impl NewElement {
 }
 
 /// The picture id a deck stores for `src`: content the workspace holds
-/// (`tilo.content:<hash>`) is the same bytes under the deck's own prefix, so
-/// a picture another app kept or an agent was handed goes straight onto a
-/// slide.
+/// (`tilo.content:<reference>`) is the same bytes under the deck's own
+/// prefix, so a picture another app kept or an agent was handed goes
+/// straight onto a slide. The reference's key is case-sensitive: it is kept
+/// as it is.
 fn picture_id(src: &str) -> String {
     let src = src.trim();
     match ui::tilo_actions::content_hash(src) {
-        Some(hash) => format!(
-            "{}{}",
-            crate::assets::ASSET_PREFIX,
-            hash.to_ascii_lowercase()
-        ),
+        Some(hash) => format!("{}{hash}", crate::assets::ASSET_PREFIX),
         None => src.to_owned(),
     }
 }

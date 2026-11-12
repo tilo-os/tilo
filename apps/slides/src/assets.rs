@@ -42,22 +42,24 @@ pub fn app_content() -> ContentStore {
     ContentStore::memory()
 }
 
-/// A deck carries this content identity, never a machine-local file path.
+/// A deck carries this content identity, never a machine-local file path:
+/// the reference the storing side got, which carries the key of content the
+/// workspace seals, so a later peer opens the bytes by it.
 pub fn is_asset_id(id: &str) -> bool {
     id.strip_prefix(ASSET_PREFIX)
-        .is_some_and(tilo_content::valid_hash)
+        .is_some_and(tilo_content::valid_reference)
 }
 
-/// Store supplied bytes in `content` by their BLAKE3 content hash and return
-/// the portable identifier that is safe to place in the collaborative deck. A
-/// later peer can request the bytes by this hash.
+/// Store supplied bytes in `content` and return the portable identifier that
+/// is safe to place in the collaborative deck: the reference the store
+/// answered, which a later peer requests the bytes by.
 pub fn store_asset(content: &ContentStore, bytes: &[u8]) -> Option<String> {
     if bytes.is_empty() || bytes.len() > MAX_IMAGE_FILE_BYTES {
         return None;
     }
     // Do not create a CRDT reference unless the store accepted the bytes.
     match content.put(bytes) {
-        Ok(hash) => Some(format!("{ASSET_PREFIX}{hash}")),
+        Ok(reference) => Some(format!("{ASSET_PREFIX}{reference}")),
         Err(error) => {
             eprintln!("slides: content store refused an image: {error}");
             None
@@ -66,15 +68,15 @@ pub fn store_asset(content: &ContentStore, bytes: &[u8]) -> Option<String> {
 }
 
 /// Resolve a deck asset only after checking both its bounded bytes and its
-/// declared hash (the store verifies every read).  A missing or corrupt blob
-/// is an ordinary unavailable asset, never an instruction to read an arbitrary
-/// peer-provided filesystem path.
+/// declared reference (the store verifies every read).  A missing or corrupt
+/// blob is an ordinary unavailable asset, never an instruction to read an
+/// arbitrary peer-provided filesystem path.
 pub fn read_asset(content: &ContentStore, id: &str) -> Option<Vec<u8>> {
     if !is_asset_id(id) {
         return None;
     }
-    let hash = id.strip_prefix(ASSET_PREFIX)?;
-    let bytes = content.read(hash)?;
+    let reference = id.strip_prefix(ASSET_PREFIX)?;
+    let bytes = content.read(reference)?;
     (bytes.len() <= MAX_IMAGE_FILE_BYTES).then_some(bytes)
 }
 
@@ -507,5 +509,40 @@ mod tests {
             assert!(matches!(store.get(&src), ImageState::Failed));
             assert!(matches!(store.get(&src), ImageState::Failed));
         }
+    }
+
+    /// A picture kept in a workspace that seals is ciphertext in the store,
+    /// and the deck's asset id is the reference that carries its key: a
+    /// member whose device holds only the ciphertext opens it by the id, and
+    /// a picture named by a plain hash, as decks wrote before content was
+    /// sealed, still reads.
+    #[test]
+    fn a_picture_is_kept_sealed_and_its_asset_id_opens_it_for_a_member() {
+        let png = ui::png::encode_rgba8(8, 6, &[230, 30, 20, 255].repeat(48)).expect("encodes");
+        let writer = ContentStore::memory_in_workspace().sealing();
+        let id = store_asset(&writer, &png).expect("the picture is kept");
+        let reference = id.strip_prefix(ASSET_PREFIX).expect("an asset id");
+        assert!(tilo_content::is_sealed(reference), "{id}");
+        assert!(
+            !writer.has(&tilo_content::hash_bytes(&png)),
+            "the store holds no plaintext"
+        );
+
+        // What a member's device receives of it is the ciphertext, under its
+        // address, and the id opens it there.
+        let address = tilo_content::content_address(reference).expect("a reference");
+        let carried = writer.read(&address).expect("the ciphertext");
+        assert_ne!(carried, png, "the ciphertext is not the picture");
+        let member = ContentStore::memory_in_workspace();
+        member.put_public(&carried).expect("kept as carried");
+        assert_eq!(read_asset(&member, &id), Some(png.clone()));
+
+        // A deck that names a plain hash, as one written before content was
+        // sealed does, reads the bytes the same device kept under it.
+        let plain = member.put(&png).expect("kept in the clear");
+        assert_eq!(
+            read_asset(&member, &format!("{ASSET_PREFIX}{plain}")),
+            Some(png)
+        );
     }
 }

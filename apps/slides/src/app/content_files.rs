@@ -11,22 +11,21 @@ use crate::actions;
 
 impl Store {
     /// Replace a new, untouched deck with the `.pptx` at `content` (a
-    /// `tilo.content:<hash>` address) and answer its outline. A deck someone
+    /// `tilo.content:<reference>` address) and answer its outline. A deck someone
     /// wrote is never replaced: the import is refused instead.
     pub(super) fn import_pptx_content(
         &mut self,
         content: &str,
         cx: &EffectCx<DeckRecord>,
     ) -> EffectAnswer {
-        let hash = ui::tilo_actions::content_hash(content.trim())
-            // A plan that carried the content gives its bare hash.
-            .or_else(|| {
-                let bare = content.trim();
-                (bare.len() == 64 && bare.bytes().all(|byte| byte.is_ascii_hexdigit()))
-                    .then_some(bare)
-            })
-            .ok_or_else(|| format!("`{content}` names no content: give `tilo.content:<hash>`"))?
-            .to_ascii_lowercase();
+        // What the caller named: the content's reference, as it is (its key
+        // is case-sensitive), or the bare reference a plan that carried the
+        // content gives.
+        let reference = ui::tilo_actions::content_hash(content.trim())
+            .or_else(|| tilo_content::valid_reference(content.trim()).then(|| content.trim()))
+            .ok_or_else(|| {
+                format!("`{content}` names no content: give `tilo.content:<reference>`")
+            })?;
         if !cx.live().get().is_untouched() {
             return Err(
                 "this deck has slides someone wrote, which an import would replace: open a new \
@@ -36,13 +35,13 @@ impl Store {
         }
         let bytes = self
             .content
-            .read(&hash)
-            .ok_or_else(|| format!("content `{hash}` is not on this device"))?;
+            .read(reference)
+            .ok_or_else(|| format!("content `{reference}` is not on this device"))?;
         if bytes.len() > MAX_PRESENTATION_FILE_BYTES {
             return Err("the presentation is larger than 64 MiB".into());
         }
         let deck = crate::pptx::read_pptx(&bytes, &self.content)
-            .map_err(|error| format!("content `{hash}` is not a PowerPoint deck: {error}"))?;
+            .map_err(|error| format!("content `{reference}` is not a PowerPoint deck: {error}"))?;
         cx.apply(&actions::replace_deck_action(&deck));
         self.ask(Ask::ShowOpenedDeck);
         Ok(Effected::value(crate::outline::of_deck(&deck)))
