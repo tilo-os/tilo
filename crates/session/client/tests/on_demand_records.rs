@@ -13,9 +13,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/participant.rs"]
-mod participant;
-
 use std::collections::BTreeMap;
 use tilo_session_client::{Cmd, Event, Link, Outbox};
 
@@ -123,7 +120,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     )
     .await;
     // Records are sealed: a participant admits each page to them.
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let peer = |device: crate::support::Device| {
         start_peer(
             host.iroh(),

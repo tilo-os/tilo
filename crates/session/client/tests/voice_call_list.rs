@@ -10,9 +10,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/call.rs"]
-mod call;
-
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_relay::RelayClient;
@@ -21,8 +18,8 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, CallSummary, Directions, Showing};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
+use crate::call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
 use crate::support::{Device, TestHost, enrol, start_workspace_host, wait_for};
-use call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
 
 /// `device`'s own session with the workspace, subscribed.
 async fn session(address: iroh::EndpointAddr, workspace_id: u64, device: &Device) -> RelayClient {

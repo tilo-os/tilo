@@ -1,8 +1,27 @@
 // One test binary instead of one per file; #[path] keeps the files in place.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::significant_drop_tightening,
+    clippy::too_many_lines,
+    clippy::unwrap_used,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 
 // A site admits its members' records through an Automerge worker: this binary
 // is that worker, as the relay host's own is.
 tilo_automerge_isolate::test_worker!();
+
+#[path = "support/participant.rs"]
+mod participant;
+
+#[path = "support/call.rs"]
+mod call;
 
 #[path = "support/mod.rs"]
 mod support;
@@ -19,6 +38,8 @@ mod carriers;
 mod channel_member;
 #[path = "chat_landing_work.rs"]
 mod chat_landing_work;
+#[path = "chat_restart.rs"]
+mod chat_restart;
 #[path = "checkpoint_race.rs"]
 mod checkpoint_race;
 #[path = "compaction.rs"]

@@ -13,9 +13,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/participant.rs"]
-mod participant;
-
 use automerge::AutoCommit;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_session_client::{Link, Outbox};
@@ -57,7 +54,7 @@ async fn https_and_iroh_commits_share_one_host_order() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
 
     let browser_peer = start_peer(
         host.iroh(),

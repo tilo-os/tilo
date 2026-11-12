@@ -33,8 +33,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod support;
-
 tilo_automerge_isolate::test_worker!();
 
 use std::collections::BTreeSet;
@@ -51,7 +49,9 @@ use tilo_session_client::engine::RecordReading;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
-use support::{TestHost, durable, enrol, enter_page, start_workspace_host_relaying, wait_keyed};
+use crate::support::{
+    TestHost, durable, enrol, enter_page, start_workspace_host_relaying, wait_keyed,
+};
 
 /// The chain the chat keeps its posts in.
 const CHAT_CHAIN: &str = "messages";
@@ -337,7 +337,7 @@ async fn round(seed: u64) {
         "lounge-host",
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
     let workspaces = host.relay.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();

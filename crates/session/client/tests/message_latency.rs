@@ -16,9 +16,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/participant.rs"]
-mod participant;
-
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
@@ -50,7 +47,7 @@ const MESSAGES: usize = 20;
 struct Pages {
     a: Link,
     b: Link,
-    _laptop: participant::Participant,
+    _laptop: crate::participant::Participant,
     host: crate::support::TestHost,
     _state: tempfile::TempDir,
     _host_device: crate::support::Device,
@@ -83,7 +80,7 @@ impl Pages {
         .await;
         // Ada's laptop takes part in the workspace's channels, as a member's own
         // device does: it creates their key scope and admits the devices that ask.
-        let laptop = participant::Participant::start(&host.relay, &ada_root).await;
+        let laptop = crate::participant::Participant::start(&host.relay, &ada_root).await;
         // Ada's page is a device of hers in her own workspace.
         let a = start_peer(
             host.iroh(),

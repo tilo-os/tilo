@@ -21,9 +21,6 @@
     reason = "in a test these are the assertion, not a hazard; each test is one pairing, in order"
 )]
 
-#[path = "support/participant.rs"]
-mod participant;
-
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Outbox};
 
@@ -153,7 +150,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let approver = MemberApprover::new(host.iroh());
     let page = host.iroh();
 

@@ -11,8 +11,6 @@
     reason = "test assertions and fixture setup fail loudly; the arithmetic and casts are counters \
               over bounded test sample buffers"
 )]
-#[path = "support/call.rs"]
-mod call;
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -210,7 +208,7 @@ struct Native {
 
 impl Native {
     async fn start(
-        governed: &call::GovernedCall,
+        governed: &crate::call::GovernedCall,
         page: [u8; 32],
         keys: &ChannelContentKeys,
     ) -> Self {
@@ -314,7 +312,7 @@ impl Native {
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
-    let governed = call::GovernedCall::start().await;
+    let governed = crate::call::GovernedCall::start().await;
     let (_, bob_device) = governed.invite("bob-browser").await;
     let page_device = bob_device.cert.device_public_key;
     let page = Arc::new(Page {
@@ -352,7 +350,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
             participation: None,
         })
         .unwrap();
-    let alice = call::native(&governed.owner, |event| match event {
+    let alice = crate::call::native(&governed.owner, |event| match event {
         Envelope::VoiceGranted { grant, .. } => Some(*grant),
         _ => None,
     })

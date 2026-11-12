@@ -13,9 +13,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/participant.rs"]
-mod participant;
-
 use tilo_session_client::{Cmd, Event, FailureSubject, LocalState, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -36,7 +33,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let peer = start_peer(
         host.iroh(),
         browser.cert.clone(),

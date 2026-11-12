@@ -15,9 +15,6 @@
     reason = "in a test these are the assertion, not a hazard; the test is one login, in order"
 )]
 
-#[path = "support/participant.rs"]
-mod participant;
-
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;

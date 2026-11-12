@@ -14,9 +14,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/call.rs"]
-mod call;
-
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -43,7 +40,7 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     let relay = &hosted.relay;
 
     let lounge = relay.workspaces().unwrap().create("Lounge").await.unwrap();
-    call::enter(relay, &alice_laptop.cert, &lounge.workspace).await;
+    crate::call::enter(relay, &alice_laptop.cert, &lounge.workspace).await;
     let lounge_id = tilo_relay::room_workspace_id(&lounge.workspace).unwrap();
     let welcome = DocumentRoute {
         app_id: "so.tilo.notes".into(),

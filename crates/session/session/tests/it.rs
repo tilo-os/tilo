@@ -3,13 +3,24 @@
 // keeps the files where they are; nextest runs each test in its own process, so
 // tests that touch process state keep the isolation separate binaries gave them.
 #![allow(
-    clippy::unwrap_used,
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     clippy::float_cmp,
+    clippy::indexing_slicing,
+    clippy::needless_pass_by_value,
+    clippy::panic,
+    clippy::significant_drop_tightening,
+    clippy::string_slice,
+    clippy::struct_excessive_bools,
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    clippy::unreachable,
+    clippy::unused_self,
+    clippy::unwrap_used,
+    clippy::used_underscore_binding,
     reason = "in a test these are the assertion, not a hazard"
 )]
 

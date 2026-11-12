@@ -1,4 +1,13 @@
 // One test binary instead of one per file; #[path] keeps the files in place.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 #[path = "upstream/mod.rs"]
 mod upstream;
 

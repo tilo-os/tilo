@@ -13,9 +13,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/participant.rs"]
-mod participant;
-
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Link, Outbox, TransportPhase};
 
@@ -52,7 +49,7 @@ async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let peer = start_peer(
         host.iroh(),
         browser.cert.clone(),
@@ -105,7 +102,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let mut laptop = participant::Participant::start(&host.relay, &root).await;
+    let mut laptop = crate::participant::Participant::start(&host.relay, &root).await;
 
     let store = Arc::new(MemoryPeerStore::default());
     let peer = tilo_session_client::start_session(

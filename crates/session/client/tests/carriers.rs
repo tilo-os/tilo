@@ -18,11 +18,6 @@
     reason = "in a test these are the assertion, not a hazard; the host lives until the test ends"
 )]
 
-#[path = "support/call.rs"]
-mod call;
-#[path = "support/participant.rs"]
-mod participant;
-
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Event, Link, Outbox, TransportPhase, VoiceEvent};
 
@@ -259,7 +254,7 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
 
 async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) {
     let ada = Ada::start().await;
-    let _channels = participant::Participant::start(&ada.host.relay, &ada.root).await;
+    let _channels = crate::participant::Participant::start(&ada.host.relay, &ada.root).await;
     let (key, cert, host_cert) = ada.certified(&ada.host.over(carrier)).await;
     let page = page(&ada.host, carrier, key, &cert, &host_cert);
     page.join_placed(WORKSPACE, "Workspace").unwrap();
@@ -410,7 +405,7 @@ async fn voice<T>(
 async fn the_device_takes_part_in_a_call(carrier: Carrier) {
     // Alice's governed workspace has a call; Bob, whom she invited, takes
     // part from his page's session.
-    let workspace = call::GovernedCall::start_relaying(true).await;
+    let workspace = crate::call::GovernedCall::start_relaying(true).await;
     let workspace_id = workspace.workspace_id;
     let (_bob, page) = workspace.invite("bob-browser").await;
     let peer = start_page(
@@ -454,7 +449,7 @@ async fn the_device_takes_part_in_a_call(carrier: Carrier) {
     })
     .await;
     assert!(bob.directions.publish && bob.directions.subscribe);
-    let alice = call::native(&workspace.owner, |envelope| match envelope {
+    let alice = crate::call::native(&workspace.owner, |envelope| match envelope {
         Envelope::VoiceGranted { grant, .. } if grant.participants.len() == 2 => Some(*grant),
         _ => None,
     })

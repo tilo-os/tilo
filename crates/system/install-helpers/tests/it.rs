@@ -1,4 +1,16 @@
 // One test binary instead of one per file; #[path] keeps the files in place.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::string_slice,
+    clippy::unwrap_used,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 #[path = "accounts_native.rs"]
 mod accounts_native;
 #[path = "backend_commands.rs"]

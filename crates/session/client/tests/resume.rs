@@ -11,9 +11,6 @@
     reason = "in a test these are the assertion, not a hazard; the host lives as long as the phase that uses it"
 )]
 
-#[path = "support/participant.rs"]
-mod participant;
-
 use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use tilo_relay_protocol::workspaces::WorkspacesRequest;
@@ -86,7 +83,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let mut laptop = participant::Participant::start(&host.relay, &root).await;
+    let mut laptop = crate::participant::Participant::start(&host.relay, &root).await;
 
     let author = start_peer(
         host.iroh(),

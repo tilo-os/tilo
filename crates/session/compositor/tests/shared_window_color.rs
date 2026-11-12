@@ -12,16 +12,9 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-#[path = "headless/harness.rs"]
-#[allow(
-    dead_code,
-    reason = "the harness is shared with the other headless tests; this one drives part of it"
-)]
-mod harness;
-
 use std::sync::Arc;
 
-use harness::{TestClient, headless, mapped_client, pump};
+use crate::harness::{TestClient, headless, mapped_client, pump};
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,

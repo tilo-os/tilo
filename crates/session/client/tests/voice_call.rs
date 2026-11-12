@@ -15,13 +15,10 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/call.rs"]
-mod call;
-
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, Directions};
 
-use call::{GovernedCall, browser, granted, native, operate};
+use crate::call::{GovernedCall, browser, granted, native, operate};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_invited_browser_and_the_owners_device_take_part_in_a_governed_call() {

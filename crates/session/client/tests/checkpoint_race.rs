@@ -15,9 +15,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/participant.rs"]
-mod participant;
-
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
@@ -58,7 +55,7 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let https = || host.iroh();
     let a = start_peer(https(), a.cert, host_device.cert.clone(), a.key);
     let b = start_peer(https(), b.cert, host_device.cert.clone(), b.key);

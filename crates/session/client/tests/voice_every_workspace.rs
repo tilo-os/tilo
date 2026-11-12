@@ -18,9 +18,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/call.rs"]
-mod call;
-
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_relay::RelayClient;
@@ -29,8 +26,8 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::CallOperation;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
+use crate::call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
 use crate::support::{Device, TestHost, enrol, start_workspace_host, wait_for};
-use call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
 
 /// The kinds of workspace a person can be in on a host.
 #[derive(Clone, Copy, Debug)]
