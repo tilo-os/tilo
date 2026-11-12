@@ -1849,6 +1849,30 @@ fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
     }
 }
 
+/// A stored preparation the window cannot open stops what acts on it, never
+/// the way out of the page it is on.
+#[test]
+fn a_blocked_preparation_still_lets_the_person_go_back() {
+    let mut app = TestApp::<ImagerShell>::capture(Some("installer-destination")).unwrap();
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        preview.live = true;
+        preview.direct.active = false;
+        // A preparation this window cannot open: it is not missing, so every
+        // effect that acts on it waits, as after a failed startup check.
+        preview.restart.mark_changed();
+        preview.dirty = true;
+    })
+    .unwrap();
+    if let Err(refused) = app.effect(&InstallerPreviewEffect::BackInPreview) {
+        // The page itself may have nowhere to go; the stored preparation may
+        // not be the reason the person cannot leave it.
+        assert!(
+            !format!("{refused:?}").contains("installer-restart-unavailable"),
+            "the stored preparation must not refuse Back: {refused:?}"
+        );
+    }
+}
+
 #[test]
 #[cfg(unix)]
 fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview() {

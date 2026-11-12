@@ -144,7 +144,7 @@ pub(crate) fn form(
                     crate::resource::CATALOG.t("imager-write-setup-enroll"),
                     enroll,
                 )
-                .with_help(&crate::resource::CATALOG.t(ENROLL_NOTE)),
+                .with_help(crate::resource::CATALOG.t(ENROLL_NOTE)),
             ),
     )
 }
