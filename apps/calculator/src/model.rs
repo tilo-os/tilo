@@ -18,22 +18,14 @@ pub enum Mode {
 }
 
 impl Mode {
-    pub fn label(self) -> &'static str {
-        match self {
-            Mode::Calc => "Calculator",
-            Mode::Convert => "Convert",
-            Mode::Graph2d => "Graph 2D",
-            Mode::Graph3d => "Graph 3D",
-        }
-    }
-    /// Condensed label for a narrow header where the full `label` won't fit.
-    pub fn short_label(self) -> &'static str {
-        match self {
-            Mode::Calc => "Calc",
-            Mode::Convert => "Conv",
-            Mode::Graph2d => "2D",
-            Mode::Graph3d => "3D",
-        }
+    pub fn label(self) -> String {
+        let message = match self {
+            Mode::Calc => "calculator-mode-calculator",
+            Mode::Convert => "calculator-mode-convert",
+            Mode::Graph2d => "calculator-mode-graph-2d",
+            Mode::Graph3d => "calculator-mode-graph-3d",
+        };
+        crate::resource::CATALOG.t(message)
     }
     pub fn all() -> [Mode; 4] {
         [Mode::Calc, Mode::Graph2d, Mode::Graph3d, Mode::Convert]

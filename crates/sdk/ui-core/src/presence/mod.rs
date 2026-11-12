@@ -28,7 +28,7 @@ pub use faces::{Face, FaceStack};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use interaction::{
     ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, InteractionCardPlacement, MarkerPlace,
-    TERMINAL_INTERACTION_DWELL,
+    TERMINAL_INTERACTION_DWELL, interaction_card_slots,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
 pub use labels::{ParticipantLabels, name_key};

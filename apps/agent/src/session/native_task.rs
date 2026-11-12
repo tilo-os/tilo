@@ -239,9 +239,7 @@ impl Session {
         }
         state.epoch = Some(control.run_epoch);
         if control.has_more {
-            anyhow::bail!(
-                "More than one page of task directions needs person review; none were acknowledged"
-            );
+            anyhow::bail!(crate::i18n::t("agent-fail-direction-pages"));
         }
         if !control.directions.is_empty() {
             state.pending = Some(control);
@@ -380,9 +378,9 @@ fn cancel_running(followed: &mut [Following]) {
         .iter_mut()
         .filter(|following| following.outcome.is_none())
     {
-        following.outcome = Some(Err(TaskActionStop::Cancelled(Some(
-            "Cancelled from Task Center".into(),
-        ))));
+        following.outcome = Some(Err(TaskActionStop::Cancelled(Some(crate::i18n::t(
+            "agent-cancel-task-center",
+        )))));
     }
 }
 
@@ -402,7 +400,7 @@ fn conclude_native(following: &mut Following) {
             Some(Err(TaskActionStop::Failed(error.message.clone())))
         }
         _ if ui::time::now() >= following.deadline => Some(Err(TaskActionStop::Failed(
-            "Native action outcome remains unknown; review history before retrying".into(),
+            crate::i18n::t("agent-fail-native-outcome"),
         ))),
         _ => None,
     };

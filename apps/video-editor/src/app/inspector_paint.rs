@@ -837,14 +837,14 @@ impl VideoEditorApp {
         // the *change*: a control labelled only "Unlink" leaves a reader
         // guessing whether it describes what is true or what will happen.
         if let (Some(rect), Some(offer)) = (l.link, self.link_affordance()) {
-            caption_above(scene, tr, tf, theme, offer.state(), x0, rect.y0);
+            caption_above(scene, tr, tf, theme, &offer.state(), x0, rect.y0);
             draw_button(
                 scene,
                 tf,
                 tr,
                 theme,
                 rect,
-                offer.label(),
+                &offer.label(),
                 ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
             );

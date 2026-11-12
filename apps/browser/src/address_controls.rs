@@ -242,7 +242,7 @@ impl AddressControls {
                         for field in &self.fields {
                             field.set(String::new());
                         }
-                        self.notice = "Address saved on this device.".into();
+                        self.notice = crate::CATALOG.t("browser-autofill-saved");
                     }
                 }
                 Action::Cancel => {
@@ -287,8 +287,9 @@ impl AddressControls {
     pub fn ask_delete(&mut self, profile: String) {
         self.act(Action::Delete(profile));
     }
-    fn button(&self, id: &str, label: &str, action: Action) -> Button {
-        Button::new(id, label).on_effect(self.command(action))
+    /// A button of this panel, its words from `key`, a catalogue message.
+    fn button(&self, id: &str, key: &str, action: Action) -> Button {
+        Button::new(id, &crate::CATALOG.t(key)).on_effect(self.command(action))
     }
     fn command(&self, action: Action) -> impl FnMut() + 'static {
         let pending = self.action.clone();
@@ -298,9 +299,7 @@ impl AddressControls {
     pub fn panel(&self, actions: Option<&ui::framework::Actions<Browser>>) -> Box<dyn Widget> {
         let mut column = Column::new().with_no_padding().with_intrinsic_height();
         if self.private {
-            return Box::new(column.push(line(
-                "Address autofill is unavailable here: this window browses without your sign-ins.",
-            )));
+            return Box::new(column.push(line(&crate::CATALOG.t("browser-autofill-offline"))));
         }
         if !self.notice.is_empty() {
             column = column.push(line(&self.notice));
@@ -310,9 +309,9 @@ impl AddressControls {
                 self.button(
                     "browser.address.enable",
                     if self.enabled {
-                        "Turn off address autofill"
+                        "browser-autofill-disable"
                     } else {
-                        "Turn on address autofill"
+                        "browser-autofill-enable"
                     },
                     Action::Enable(!self.enabled),
                 )
@@ -325,28 +324,29 @@ impl AddressControls {
         }
         column = self.profile_controls(column, actions);
         if let Some(id) = &self.delete {
-            let label = self
-                .profiles
-                .iter()
-                .find(|p| &p.id == id)
-                .map_or("the selected address", |p| p.label.as_str());
-            column = column
-                .push(line(&format!("Delete {label}?")))
-                .push(Box::new(
-                    Actions::new(
-                        self.button(
-                            "browser.address.delete.confirm",
-                            "Delete address",
-                            Action::ConfirmDelete,
-                        )
-                        .role(ButtonRole::Destructive),
+            let label = self.profiles.iter().find(|p| &p.id == id).map_or_else(
+                || crate::CATALOG.t("browser-autofill-selected-address"),
+                |p| p.label.clone(),
+            );
+            let question = crate::CATALOG.t_args(
+                "browser-autofill-delete-question",
+                &[("label", ui::i18n::ArgValue::Text(label))],
+            );
+            column = column.push(line(&question)).push(Box::new(
+                Actions::new(
+                    self.button(
+                        "browser.address.delete.confirm",
+                        "browser-autofill-delete",
+                        Action::ConfirmDelete,
                     )
-                    .secondary(self.button(
-                        "browser.address.delete.cancel",
-                        "Keep address",
-                        Action::CancelDelete,
-                    )),
-                ));
+                    .role(ButtonRole::Destructive),
+                )
+                .secondary(self.button(
+                    "browser.address.delete.cancel",
+                    "browser-autofill-keep",
+                    Action::CancelDelete,
+                )),
+            ));
         }
         Box::new(column)
     }
@@ -380,12 +380,16 @@ impl AddressControls {
             column = column.push(Box::new(
                 Form::new().section(section).with_actions(
                     Actions::new(
-                        self.button("browser.address.save", "Save address", Action::Save)
-                            .role(ButtonRole::Primary),
+                        self.button(
+                            "browser.address.save",
+                            "browser-autofill-save",
+                            Action::Save,
+                        )
+                        .role(ButtonRole::Primary),
                     )
                     .secondary(self.button(
                         "browser.address.cancel",
-                        "Discard edits",
+                        "browser-autofill-discard",
                         Action::Cancel,
                     )),
                 ),
@@ -423,7 +427,7 @@ impl AddressControls {
             if self.enabled {
                 column = column.push(Box::new(self.button(
                     "browser.address.new",
-                    "Add address",
+                    "browser-autofill-add",
                     Action::New,
                 )));
             }

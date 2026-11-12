@@ -589,7 +589,8 @@ impl Worker {
     }
 
     /// One page of what `who` is offered on the record at `route`, as
-    /// `query` lists it: [`Self::bounded_actions`] paged in their replica.
+    /// `query` lists it: [`Self::bounded_actions`] paged in their replica,
+    /// each row where it stands.
     pub(super) fn bounded_page(
         &mut self,
         workspace_id: u64,
@@ -597,7 +598,7 @@ impl Worker {
         (route, state): (&DocumentRoute, &WorkspaceState),
         query: &tilo_actions::remote::CatalogueQuery,
         window: (usize, usize),
-    ) -> Result<(usize, Vec<tilo_actions::ActionDescriptor>), ActionHostError> {
+    ) -> Result<(usize, Vec<tilo_actions::remote::CatalogueRow>), ActionHostError> {
         let key = self.bounded_replica(workspace_id, who, route, state)?;
         Ok(self
             .bounded

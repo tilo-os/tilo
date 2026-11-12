@@ -80,7 +80,7 @@ fn body_editor(dispatcher: Option<&Dispatcher<Mail>>, draft: Option<&str>) -> Bo
         BlockEditor::new()
             .with_wrap_lines(true)
             .with_compact_paragraph_spacing(true)
-            .with_empty_hint("Write your message"),
+            .with_empty_hint(&crate::i18n::t("mail-compose-placeholder-body")),
     )
 }
 

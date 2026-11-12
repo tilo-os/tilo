@@ -175,8 +175,8 @@ fn is_member(
 /// A workspace with three people: its owner's device answers the workspace's host, a
 /// second person's device holds it as a participant, and a third joins
 /// through that participant, which then removes them.
-#[test]
-fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
+#[tokio::test]
+async fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
     let directory = tempfile::tempdir().unwrap();
     let (_root_a, key_a, cert_a) = device(91, 92, "A's desktop");
     let (_root_b, key_b, cert_b) = device(73, 74, "B's desktop");
@@ -228,6 +228,7 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
         &key_a,
         now,
     )
+    .await
     .unwrap();
     for message in outgoing(&a, workspace, now) {
         governor
@@ -292,6 +293,7 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
             &key_b,
             now,
         )
+        .await
         .unwrap();
     let joined = JoinAnswer(OwnerJoinWorkspaces::new(b.clone(), key_b.clone()));
     let verified = join::decode_and_verify_invitation(
@@ -369,6 +371,7 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
         &key_b,
         now,
     )
+    .await
     .unwrap();
     assert!(
         !is_member(&b, workspace, &cert_c, now),
@@ -412,6 +415,7 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
             &key_c,
             now,
         )
+        .await
         .is_err(),
         "the removed device's writes are refused"
     );
@@ -420,8 +424,8 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
 /// An invitation is the issuer's own link: the person who made it lists it
 /// while it is redeemable and cancels it from their own device, after which
 /// the link admits nobody, and another person's device cancels nothing.
-#[test]
-fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
+#[tokio::test]
+async fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
     use tilo_peer_state::join::invitations::CancelInvitationRequest;
 
     let directory = tempfile::tempdir().unwrap();
@@ -492,6 +496,7 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
             &key_b,
             now,
         )
+        .await
         .unwrap();
     let pending = b.pending_invitations(workspace, now).unwrap();
     assert_eq!(pending.len(), 1, "B's one invitation is still open");
@@ -630,6 +635,7 @@ async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
         &key_a,
         now,
     )
+    .await
     .unwrap();
     let held = a
         .with_current(workspace, |view| Ok(view.peer().workspace_heads()))

@@ -35,6 +35,8 @@ impl Session {
         // Where this person is on this desk, so a page here draws their pointer, follows them to the
         // record they work in and shows a mini view of their screen.
         self.say_where_i_am(sync);
+        // The agents the person admitted at this device's door are here with them.
+        self.say_agents_here(sync);
         // What became of the invitations redeemed is the directory's to say, and the desk's to
         // show.
         self.shared.follow_enrollments();
@@ -84,6 +86,56 @@ impl Session {
         });
         sync.set_where(pointer, shell);
     }
+
+    /// Speak for the agents the person admitted at this device's door, each in the workspace it
+    /// works in: a member of its own there, listed beside everyone else for everyone there, in its
+    /// own colour, saying what it is doing and the window of the app it does it in.
+    fn say_agents_here(&self, sync: &crate::sync::Client) {
+        let seated = self.shared.seats.here();
+        let records = self.shared.notes.records();
+        let runs: Vec<(String, String, ShellPresence)> = self.shared.handle.read(|tree| {
+            seated
+                .into_iter()
+                .map(|seated| {
+                    let (line, app) = seated.doing.unwrap_or_else(|| {
+                        (tilo_session_client::narration::lines::waiting(), None)
+                    });
+                    let focus = app
+                        .as_deref()
+                        .and_then(|app| app_window(tree, &records, &seated.workspace, app));
+                    let (r, g, b) = collab_types::presence::agent_rgb(&seated.agent);
+                    let face = tilo_session_client::presence::view(
+                        0,
+                        ui::time::unix_now_ms(),
+                        &seated.name,
+                        [r, g, b],
+                        Some(line),
+                        focus.as_ref(),
+                        None,
+                    );
+                    (seated.workspace, seated.agent, face)
+                })
+                .collect()
+        });
+        sync.speak_for(&runs);
+    }
+}
+
+/// The record a window of `app` shows in `workspace`, by its id: where an agent at work in that app
+/// is placed.
+fn app_window(
+    tree: &tilo_desktop_model::DesktopTree,
+    records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
+    workspace: &str,
+    app: &str,
+) -> Option<tilo_relay_protocol::live::LiveRecord> {
+    let held = tree
+        .workspaces
+        .iter()
+        .find(|held| held.id().to_string() == workspace)?;
+    held.tabs()
+        .filter_map(|tab| live_record(tree, tab.id, records.get(&tab.id)?))
+        .find(|record| record.app == app)
 }
 
 /// What the shell says about the person and the screen it is of, beside the desk itself.

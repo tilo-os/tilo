@@ -1690,6 +1690,7 @@ impl RootModel for ResourceRoot {
         handlers.insert(super::person::HISTORY_TYPE.to_owned());
         handlers.insert(super::record::RECORD_ACTION_TYPE.to_owned());
         handlers.insert(super::chain::CHAIN_ACTION_TYPE.to_owned());
+        handlers.insert(super::chain::CHAIN_READ_TYPE.to_owned());
         handlers.insert(tilo_resource::share::SHARE_TYPE.to_owned());
         handlers.insert(tilo_resource::share::SHARE_INVITE_TYPE.to_owned());
         if self.stages.opens() {
@@ -1792,6 +1793,17 @@ impl RootModel for ResourceRoot {
                 doc,
                 request.payload,
             )?;
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
+        }
+        // A chain of parts kept beside the record reads from its parts: what
+        // it holds is not in the record's document, and a caller reading the
+        // chain by its address never meant the record.
+        if let Some(request) = op.unscoped()
+            && request.type_id == super::chain::CHAIN_READ_TYPE
+        {
+            let output = self.storage.chain_read(request.payload)?;
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));

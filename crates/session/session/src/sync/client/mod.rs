@@ -26,7 +26,6 @@ use tilo_desktop_surface::DesktopHandle;
 use tilo_live::live::Track;
 #[cfg(target_os = "linux")]
 use tilo_live::plane::Heard;
-use tilo_live::presence;
 #[cfg(target_os = "linux")]
 use tilo_session_client::client::Desk as GateDesk;
 use tilo_session_client::client::Host;
@@ -961,10 +960,7 @@ impl Roster {
 
     /// This session's own person, as everyone here reads them.
     fn own_member(client: &SessionClient) -> LiveMember {
-        LiveMember::of(&presence::own_shown(
-            &client.own_word_here(),
-            *client.publisher().as_bytes(),
-        ))
+        LiveMember::of(&client.own_here())
     }
 
     /// Take the waves at this person heard since the last call: the bar says who waved, for a

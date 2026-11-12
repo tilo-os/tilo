@@ -137,7 +137,7 @@ pub struct Meta {
     pub len: u64,
     /// The last modification; the Unix epoch where a backend keeps none
     /// (directories on the web).
-    pub modified: tilo_clock::SystemTime,
+    pub modified: tilo_clock::time::SystemTime,
     pub kind: Kind,
     /// Unix permission bits, where the backend has them.
     pub mode: Option<u32>,

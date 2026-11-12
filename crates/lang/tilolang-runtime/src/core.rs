@@ -413,10 +413,10 @@ impl Core {
             RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF,
             RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
             ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed, RichEmpty,
-            RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichTime, RunChanges, SeenBy,
-            SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers,
-            StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind,
-            StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit,
+            RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichTime, RowOpen, RunChanges,
+            SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI,
+            Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq,
+            StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit,
             StrStartsWith, StrToInt, StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock,
             TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke, TupleGetF,
             TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions,
@@ -477,9 +477,9 @@ impl Core {
             FileOfText | FileOfBytes | FileAt | FileZip => self.file_make(imp, a),
             JsonParse | JsonDecode | JsonEncode => self.json_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
-            | UiAnchor | SpaceI | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet
-            | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView | UiActions
-            | UiAction | ActChoose | ActSave => self.ui_import(imp, a),
+            | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt | ArgAt
+            | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
+            | UiActions | UiAction | ActChoose | ActSave => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
             | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
             | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),

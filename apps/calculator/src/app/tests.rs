@@ -1325,7 +1325,7 @@ fn the_conversion_page_answers_in_units_and_says_why_money_cannot() {
     );
     assert_eq!(
         app.with_widget(|page: &mut CalculatorApp| { page.convert_page().dimension().label() }),
-        Some("Length"),
+        Some("Length".to_string()),
         "the page opens on lengths"
     );
 

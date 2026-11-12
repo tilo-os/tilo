@@ -56,7 +56,9 @@ die() { printf 'shell-run: %s\n' "$*" >&2; exit 1; }
 # the package id of each is its `app` declaration's. The shell itself is one of them: the
 # session loads `so.tilo.shell` from the store as it loads any app, and this build's copy
 # stands in only where the store holds none (docs/designs/app-language/shell.md §6).
-tl_apps=(shell discussion notes tasks chat mail tube)
+# Discussion is no app of the session's: Tasks and Notes are made with it, it is built with
+# them, and installed as no app of its own, so their comments stay in their own records.
+tl_apps=(shell notes tasks chat mail tube)
 # The Rust apps it installs beside them, by the directory under `apps/`: Chat's record
 # (`so.tilo.chat`) is the one the session's agents answer in and the one the canvas's ask
 # conversation is a channel of (`docs/designs/app-language/shell.md` §8.1), so a session
@@ -273,14 +275,17 @@ install_apps() {
     mkdir -p "$out"
     for app in "${tl_apps[@]}"; do
         # A package is a directory of `.tl` files; the packages it uses are found beside it
-        # (`apps/tl`), and each is built and installed before the one that uses it.
+        # (`apps/tl`) and built with it, each a `.tapp` of its own in the same output.
         "$bin/tilolang" build "$repo_root/apps/tl/$app" \
             --search "$repo_root/apps/tl" --out "$out" --identity "$identity" \
             --tilo-runtime "$app_runtime" --version 0.1.0 >/dev/null
     done
-    local tapps=("$out"/*.tapp)
-    ((${#tapps[@]})) || die "the tilolang apps built no package"
-    for tapp in "${tapps[@]}"; do
+    # Only the apps are installed, not the packages they are made with: a package an app uses is
+    # a part of it (Discussion in Tasks and Notes), kept in the app's own record rather than
+    # installed as an app a person opens.
+    for app in "${tl_apps[@]}"; do
+        local tapp=$out/$app.tapp
+        [[ -f $tapp ]] || die "the build of $app left no $tapp"
         say "installing $(basename "$tapp")"
         install_tapp "$tapp"
     done

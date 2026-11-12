@@ -703,7 +703,10 @@ unsafe fn widget_name(
 
 /// Whether any widget under `root` composes from its allocation (see
 /// [`Widget::composition_follows_allocation`]): only then does a resize
-/// recompose the tree rather than re-solve it.
+/// recompose the tree rather than re-solve it. History is no such tree: its
+/// chrome rebuilds its own bar in place when the window crosses the width
+/// class it presents in (`set_width`), and the refresh that does it asks for
+/// the tree rebuilt around the controls it replaced.
 pub(crate) fn tree_composition_follows_allocation(root: &(impl Widget + ?Sized)) -> bool {
     root.composition_follows_allocation() || {
         let mut found = false;

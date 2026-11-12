@@ -24,7 +24,7 @@ use crate::mcp::ActedRecord;
 
 /// Longest the agent waits for the host to open a record it changed as a
 /// window before it goes on.
-const OPENING: tilo_clock::Duration = tilo_clock::Duration::from_secs(5);
+const OPENING: tilo_clock::time::Duration = tilo_clock::time::Duration::from_secs(5);
 
 /// The windows of the records an agent makes or changes, opened on the
 /// workspace's desk as it changes each.
@@ -78,9 +78,9 @@ impl AgentWindows {
             return;
         };
         if matches!(receipt.status, ReceiptStatus::Accepted) {
-            let until = tilo_clock::Instant::now()
+            let until = tilo_clock::now()
                 .checked_add(OPENING)
-                .unwrap_or_else(tilo_clock::Instant::now);
+                .unwrap_or_else(tilo_clock::time::Instant::now);
             let _ = settle_with(&self.actions, &self.caller, invocation, None, until).await;
         }
     }

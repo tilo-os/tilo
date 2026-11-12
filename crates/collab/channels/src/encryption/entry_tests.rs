@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use channel_crypto::VaultKey;
 use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
-use tilo_clock::Instant;
 use tilo_desktop_model::WorkspaceId;
 
 use crate::encryption::{
@@ -68,7 +67,7 @@ fn a_device_entering_opens_the_desktop_before_the_governance_that_decides_it() {
     let page_link = Endpoint::join(&workspace, workspace_id, 1);
 
     // The workspace's group exists, its host in it.
-    let mut now = Instant::now();
+    let mut now = tilo_clock::now();
     host.access(workspace_id, scope, now);
     host.peers.get_mut(&scope).unwrap().founding.answered = true;
     host.found(scope, now, 1_000);

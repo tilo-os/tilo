@@ -312,13 +312,8 @@ impl ResourceApp for App {
     type Resource = Console;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
-    /// The session's document host runs the record's model (`console-model`,
-    /// built as the `console.view` module), so the app's process opens no
-    /// record of its own: it joins no workspace of its own, reads the reading
-    /// the session publishes and submits its actions, and its asks of the
-    /// history and the agent door, over its one connection
-    /// (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
-    const ATTACHES_RUNTIME: bool = false;
+    /// The session's document host runs the record's model where the session serves it: a
+    /// launch it hosts opens no record and joins no workspace of its own.
     const HOSTED_BY_SESSION: bool = true;
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {

@@ -263,7 +263,7 @@ impl<M: ListModel> VirtualList<M> {
             return;
         }
         self.tail_title = title;
-        self.heads_nothing.set(None);
+        self.headings_changed();
     }
 
     /// The title of the view the list stands under, as its header reads it, and how many things
@@ -274,8 +274,14 @@ impl<M: ListModel> VirtualList<M> {
         }
         self.view_title = title;
         self.view_count = count;
-        self.heads_nothing.set(None);
+        self.headings_changed();
+    }
+
+    /// What heads the rows changed with the titles over them: each row is grouped anew, and
+    /// laid out again with the band it now takes or gives up.
+    fn headings_changed(&mut self) {
         self.regrouped();
+        self.visible_window_changed();
     }
 
     /// Stand the list under a titled view: one whose rows all fall in one group heads no group
@@ -325,17 +331,17 @@ impl<M: ListModel> VirtualList<M> {
 
     /// The row's group, as the model names it: asked of the model once per row, while its
     /// props stand as they were. A view whose title names the list's one group
-    /// ([`Self::heads_nothing`]) leaves its rows under no heading: the title says it.
+    /// ([`Self::heads_nothing`]) leaves its rows under no heading: the title says it, whatever
+    /// the model named them while it did not.
     pub(super) fn row_group(&mut self, index: usize) -> Option<Group> {
+        if self.heads_nothing() {
+            return None;
+        }
         let key = self.model.key_at(index)?;
         if let Some(group) = self.row_groups.get(&key) {
             return group.clone();
         }
-        let group = if self.heads_nothing() {
-            None
-        } else {
-            group_of(&self.model, index, self.tail_title.as_deref())
-        };
+        let group = group_of(&self.model, index, self.tail_title.as_deref());
         self.row_groups.insert(key, group.clone());
         group
     }

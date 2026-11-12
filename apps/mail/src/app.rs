@@ -1238,7 +1238,7 @@ impl MailApp {
                 account: outgoing.account.clone(),
                 to: recipient_line(&outgoing.draft),
                 subject: if outgoing.draft.subject.trim().is_empty() {
-                    "No subject".to_owned()
+                    crate::i18n::no_subject()
                 } else {
                     outgoing.draft.subject.clone()
                 },
@@ -2399,7 +2399,7 @@ irrelevant"
             to: crate::transport::parse_addr_list(&draft.to),
             cc: crate::transport::parse_addr_list(&draft.cc),
             subject: if draft.subject.trim().is_empty() {
-                "(no subject)".into()
+                crate::i18n::no_subject()
             } else {
                 draft.subject.clone()
             },
@@ -3639,7 +3639,7 @@ fn draft_from_message(m: &Message) -> Draft {
         to: join(&m.to),
         cc: join(&m.cc),
         bcc: String::new(),
-        subject: if m.subject == "(no subject)" {
+        subject: if m.subject.trim().is_empty() || m.subject == crate::i18n::no_subject() {
             String::new()
         } else {
             m.subject.clone()
@@ -5423,7 +5423,7 @@ impl Mailroom {
                 id,
                 "mail.thread",
                 if subject.is_empty() {
-                    "(no subject)".into()
+                    crate::i18n::no_subject()
                 } else {
                     subject
                 },

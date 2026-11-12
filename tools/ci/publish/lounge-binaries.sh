@@ -5,7 +5,7 @@
 # starts beside the relay. usage: lounge-binaries.sh OUT [PROFILE]
 #
 # `release` is what the image carries. A check that only runs these two
-# programs (page-boot, page-two-people, agent-setup) builds `lounge-gate`
+# programs (e2e, page-tour, the tilo.sh stack) builds `lounge-gate`
 # instead: the same code and the same opt-level without the whole-program link,
 # which is most of a run and buys nothing a check can see.
 set -euo pipefail

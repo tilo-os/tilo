@@ -229,6 +229,14 @@ impl Worker {
         };
         match request {
             Request::Survey => descriptors(&replica.survey()),
+            Request::SurveyRows => {
+                let held = replica.survey_rows();
+                let total = u64::try_from(held.len()).unwrap_or(u64::MAX);
+                match serde_json::to_string(&held) {
+                    Ok(rows) => Reply::Page { total, rows },
+                    Err(error) => Reply::Failed(error.to_string()),
+                }
+            }
             Request::SurveyPage {
                 query,
                 can_render,
@@ -243,9 +251,9 @@ impl Worker {
                     let surveyed = self.surveyed.get_or_insert_with(|| replica.survey_rows());
                     let (total, page) = Replica::page_of(surveyed, &query, (can_render, window));
                     match serde_json::to_string(&page) {
-                        Ok(descriptors) => Reply::Page {
+                        Ok(rows) => Reply::Page {
                             total: u64::try_from(total).unwrap_or(u64::MAX),
-                            descriptors,
+                            rows,
                         },
                         Err(error) => Reply::Failed(error.to_string()),
                     }

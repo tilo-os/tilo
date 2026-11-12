@@ -210,12 +210,12 @@ impl AgentParticipant {
                 record_id: route.record.clone(),
                 browsable: false,
             });
-            for descriptor in self.survey(&route) {
-                rows.push(CatalogueRow::for_action(
-                    provider.clone(),
-                    route.app_id.clone(),
-                    descriptor,
-                ));
+            for mut row in self.survey_rows(&route) {
+                // The rows keep the resource each stands under: a query
+                // naming one resource of the record lists its children.
+                row.provider.clone_from(&provider);
+                row.app_id.clone_from(&route.app_id);
+                rows.push(row);
             }
         }
         let provider = workspace_provider(&workspace);

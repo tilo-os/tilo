@@ -28,6 +28,7 @@ import {connect} from 'node:tls';
 import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
+import {stepLimit} from './waits.mjs';
 
 const [site, relay, tiloBin, siteCa, out] = process.argv.slice(2);
 if (!site || !relay || !tiloBin || !siteCa || !out) {
@@ -50,9 +51,14 @@ const browserArgs = [
 
 const finish = async (code, message) => {
   if (message) report.error = message;
+  // Said first: what follows reads every tab, and a tab that stopped answering
+  // must not keep the run from saying why it failed.
+  if (message) console.error(`FAIL: ${message}`);
   for (const {name, tab, browser} of tabs) {
     writeFileSync(join(out, `${name}.log`), (tab.log ?? []).join('\n'));
-    const shot = await tab.screenshot().catch(() => null);
+    // A capture waits for the tab's next frame, which a stopped tab never
+    // draws: a picture missing from the report, not a run that never ends.
+    const shot = await Promise.race([tab.screenshot().catch(() => null), sleep(stepLimit(2)).then(() => null)]);
     if (shot) writeFileSync(join(out, `${name}.png`), shot);
     report[`${name}Text`] = await pageText(tab);
     // Where the browser says the tab is, and whether the page answers at all:
@@ -86,7 +92,7 @@ const fail = message => finish(1, message);
 
 const pageText = tab => tab.evaluate(`(document.body.innerText || '').replace(/\\s+/g, ' ').trim()`).catch(() => '');
 // Wait until `expression` holds in the page, or fail naming what never came.
-const until = async (tab, expression, what, timeout = 120_000) => {
+const until = async (tab, expression, what, timeout = stepLimit(3)) => {
   const deadline = Date.now() + timeout;
   for (;;) {
     const value = await tab.evaluate(expression).catch(() => false);
@@ -244,7 +250,7 @@ const commandOf = prompt => {
 // never seen; and the list, hidden once the screen says the agent is in,
 // reads as one run-together line.
 const followSteps = async (tab, until) => {
-  const deadline = Date.now() + 180_000;
+  const deadline = Date.now() + stepLimit(4);
   await tab.evaluate(`(() => {
     const seen = globalThis.__gateSteps ??= [];
     const read = () => {
@@ -346,10 +352,10 @@ if (!/is in .*\.claude\.json/.test(checked.stdout) || !/tilo_ls/.test(checked.st
 }
 
 // The screen leaves for the person's own workspace.
-await until(first, `document.documentElement.dataset.firstRun === undefined`, 'the first screen leaving', 60_000);
+await until(first, `document.documentElement.dataset.firstRun === undefined`, 'the first screen leaving', stepLimit(2));
 // Titled after the person's own workspace once it says its name, never the Lounge's.
 const ownTitle = `/^Tilo · /.test(document.title) && !/lounge/i.test(document.title)`;
-for (const deadline = Date.now() + 30_000; !await first.evaluate(ownTitle).catch(() => false);) {
+for (const deadline = Date.now() + stepLimit(2); !await first.evaluate(ownTitle).catch(() => false);) {
   if (Date.now() > deadline) await fail(`the tab is titled "${await first.evaluate('document.title')}", not after the person's own workspace`);
   await sleep(250);
 }
@@ -374,7 +380,7 @@ for (const line of [
   {jsonrpc: '2.0', id: 2, method: 'tools/call', params: {name: 'tilo_ls', arguments: {}}},
 ]) server.stdin.write(`${JSON.stringify(line)}\n`);
 const beside = `(() => { const row = (globalThis.tiloMount?.people?.() ?? []).find(person => person.agent && /Claude Code/.test(person.label ?? '')); return !!row && JSON.stringify(row).includes(${JSON.stringify(doing)}); })()`;
-await until(first, beside, `Claude Code present, with "${doing}" beside its name`, 90_000);
+await until(first, beside, `Claude Code present, with "${doing}" beside its name`, stepLimit(3));
 report.mcp = answers.slice(0, 2000);
 const signedUp = await person(first);
 mark('the agent is present beside its name');
@@ -385,7 +391,7 @@ report.person = signedUp;
 // there.
 await first.reload();
 await until(first, `!!globalThis.tiloMount && JSON.stringify(globalThis.tiloMount.people?.() ?? null).includes('Claude Code')`,
-  'Claude Code present in the workspace after a reload', 60_000);
+  'Claude Code present in the workspace after a reload', stepLimit(2));
 server.stdin.end();
 const reloaded = await person(first);
 mark('the tab reloaded as the same person, with the agent still there');
@@ -415,7 +421,7 @@ const approved = await tilo(['login', signIn.code, '--site', signIn.site ?? site
 report.approve = approved;
 if (approved.code !== 0) await fail(`tilo login did not approve the tab (${approved.code}): ${approved.stderr}${approved.stdout}`);
 await until(second, `document.documentElement.dataset.firstRun === undefined && !!globalThis.tiloMount`,
-  'the returning tab signed in', 180_000);
+  'the returning tab signed in', stepLimit(4));
 const back = await person(second);
 report.returned = back;
 if (!signedUp.user || back.user !== signedUp.user) {
@@ -423,6 +429,6 @@ if (!signedUp.user || back.user !== signedUp.user) {
 }
 // Signed in, it opens the person's own workspace, as the first tab did.
 await until(second, `!/lounge/i.test(JSON.stringify({title: document.title, own: globalThis.tiloMount?.state?.()?.entry ?? null}))`,
-  'the returning tab in the person\'s own workspace, not the Lounge', 60_000);
+  'the returning tab in the person\'s own workspace, not the Lounge', stepLimit(2));
 mark('the returning tab signed in as the person, in their own workspace');
 await finish(0);

@@ -89,7 +89,6 @@ pub mod legacy_policy;
 /// A workspace's membership: the signed operations it is made of, and the
 /// membership every device derives from them.
 pub mod members;
-pub mod workspace_checkpoint;
 pub mod workspace_membership;
 
 mod admission;

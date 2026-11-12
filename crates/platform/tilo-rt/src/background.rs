@@ -31,7 +31,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 
-use tilo_clock::{Duration, Instant};
+use tilo_clock::time::{Duration, Instant};
 
 use crate::wake::WakeHandle;
 use tilo_lock::MutexRecover as _;

@@ -74,26 +74,26 @@ enum LinkFrame {
 }
 
 /// Ask the other device's store for the frames after `cursors`, round by round
-/// while it says more are left, handing each round to `take`, and return once
+/// while it says more are left, and answer them, each with its author, once
 /// it says no more are.
 async fn fetch_store(
     control: &mut Control,
     mut cursors: Vec<Cursor>,
-    mut take: impl FnMut(&[([u8; 32], NeighbourMsg)]) -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<Vec<([u8; 32], NeighbourMsg)>, String> {
+    let mut fetched = Vec::new();
     write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
     while let Some(frame) = read_link(&mut control.recv, MAX_FRAME_BYTES).await? {
         let LinkFrame::Frames { frames, more } = frame else {
             return Err("the device answered something else than retained frames".into());
         };
-        take(&frames)?;
         let messages = frames
-            .into_iter()
-            .map(|(_, message)| message)
+            .iter()
+            .map(|(_, message)| message.clone())
             .collect::<Vec<_>>();
         store::advance(&mut cursors, &messages);
+        fetched.extend(frames);
         if !more {
-            return Ok(());
+            return Ok(fetched);
         }
         write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
     }
@@ -229,7 +229,7 @@ impl Reader {
                 self.caught.insert(identity);
             }
             self.pending
-                .push_back(self.link.judge(author, message, true));
+                .push_back(self.link.judge(author, message, true).await);
         }
     }
 }
@@ -825,13 +825,13 @@ impl DirectSync {
         let live_theirs = host.0.outgoing.subscribe();
         // Each side's catch-up is history, however old what it carries: it is
         // judged as retained, never as a late live frame.
-        for authored in host.catch_up()? {
-            member.admit(authored.from, authored.message, true);
+        for authored in host.catch_up().await? {
+            member.admit(authored.from, authored.message, true).await;
         }
-        for authored in member.catch_up()? {
-            host.admit(authored.from, authored.message, true);
+        for authored in member.catch_up().await? {
+            host.admit(authored.from, authored.message, true).await;
         }
-        member.replay_from(host)?;
+        member.replay_from(host).await?;
         if member.0.store.is_none() {
             *member.0.other_store.lock_recover() = Some(OtherStore::Paired(host.clone()));
         }
@@ -845,16 +845,16 @@ impl DirectSync {
 
     /// Take in every frame `host` retains that this device's cursors do not
     /// cover, round by round.
-    fn replay_from(&self, host: &Self) -> Result<(), String> {
+    async fn replay_from(&self, host: &Self) -> Result<(), String> {
         let mut cursors = self.cursors();
         loop {
             let (frames, more) = host.replay(&cursors)?;
             for message in &frames {
                 let author = store::author_of(message)
                     .ok_or("the store replayed a message that is not a document frame")?;
-                if self.admit(author, message.clone(), true) {
-                    for state in host.answer_state_request() {
-                        self.admit(state.from, state.message, true);
+                if self.admit(author, message.clone(), true).await {
+                    for state in host.answer_state_request().await {
+                        self.admit(state.from, state.message, true).await;
                     }
                 }
             }
@@ -925,7 +925,7 @@ impl DirectSync {
         // is judged as history: on the live stream, what it carries that was
         // written more than the live window ago was refused as a late frame.
         let mut catch_up = if dialing {
-            self.catch_up()?
+            self.catch_up().await?
         } else {
             Vec::new()
         };
@@ -1027,13 +1027,10 @@ impl DirectSync {
     /// names as its author. A frame still waiting for history after that waits
     /// for what the other device lacks too: asking again would bring nothing.
     async fn ask_store(&self, control: &mut Control) -> Result<(), String> {
-        fetch_store(control, self.cursors(), |frames| {
-            for (author, message) in frames {
-                self.admit(*author, message.clone(), true);
-            }
-            Ok(())
-        })
-        .await
+        for (author, message) in fetch_store(control, self.cursors()).await? {
+            self.admit(author, message, true).await;
+        }
+        Ok(())
     }
 
     /// The frames the other device's store holds after `cursors`, read over
@@ -1043,13 +1040,8 @@ impl DirectSync {
         control: &mut Control,
         cursors: Vec<Cursor>,
     ) -> Result<Vec<NeighbourMsg>, String> {
-        let mut fetched = Vec::new();
-        fetch_store(control, cursors, |frames| {
-            fetched.extend(frames.iter().map(|(_, message)| message.clone()));
-            Ok(())
-        })
-        .await?;
-        Ok(fetched)
+        let fetched = fetch_store(control, cursors).await?;
+        Ok(fetched.into_iter().map(|(_, message)| message).collect())
     }
 
     /// Answer the dialling device's cursors from this device's store, for as
@@ -1086,6 +1078,7 @@ impl DirectSync {
             if opens_an_ask {
                 frames.extend(
                     self.answer_state_request()
+                        .await
                         .into_iter()
                         .map(|state| (state.from, state.message)),
                 );
@@ -1160,47 +1153,46 @@ impl DirectSync {
     /// owner, the governance and a checkpoint of every document. A member
     /// device of another person cannot sign checkpoints others' writes
     /// depend on; its own writes reach the other device live.
-    fn catch_up(&self) -> Result<Vec<Authored>, String> {
+    async fn catch_up(&self) -> Result<Vec<Authored>, String> {
         let device = self.0.key.verifying_key().to_bytes();
-        let mut replica = self.0.replica.lock();
-        let cert = replica
-            .certificates()
-            .into_iter()
-            .find(|certificate| certificate.device_public_key == device)
-            .ok_or("this device is not in the workspace roster")?;
-        let revocations = replica
-            .revocations()
-            .into_iter()
-            .filter(|entry| entry.user_public_key == cert.user_public_key)
-            .collect();
-        let mut messages = vec![NeighbourMsg::IdentityHello {
-            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-            cert: Box::new(cert),
-            revocations,
-        }];
-        if replica.has_governance() && replica.signed_by_owner(&device) {
-            match &self.0.admission {
-                // The snapshots take numbers of this device's own sequence:
-                // where its engine owns the workspace they are its commit,
-                // made through the owner, so its next write numbers after them.
-                Some(admission) => {
-                    drop(replica);
-                    messages.extend(admission.owner.commit_bootstrap(
-                        admission.workspace,
-                        &self.0.key,
-                        tilo_clock::wall(),
-                    )?);
-                }
-                None => {
-                    messages.extend(
-                        replica
-                            .publication_mut()
-                            .bootstrap_messages(&self.0.key, tilo_clock::wall())?,
-                    );
-                }
+        let (mut messages, owned) = {
+            let mut replica = self.0.replica.lock();
+            let cert = replica
+                .certificates()
+                .into_iter()
+                .find(|certificate| certificate.device_public_key == device)
+                .ok_or("this device is not in the workspace roster")?;
+            let revocations = replica
+                .revocations()
+                .into_iter()
+                .filter(|entry| entry.user_public_key == cert.user_public_key)
+                .collect();
+            let mut messages = vec![NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                cert: Box::new(cert),
+                revocations,
+            }];
+            let bootstraps = replica.has_governance() && replica.signed_by_owner(&device);
+            if bootstraps && self.0.admission.is_none() {
+                messages.extend(
+                    replica
+                        .publication_mut()
+                        .bootstrap_messages(&self.0.key, tilo_clock::wall())?,
+                );
             }
-        } else {
             drop(replica);
+            (messages, self.0.admission.as_ref().filter(|_| bootstraps))
+        };
+        // The snapshots take numbers of this device's own sequence: where its engine owns the
+        // workspace they are its commit, made through the owner, so its next write numbers after
+        // them.
+        if let Some(admission) = owned {
+            messages.extend(
+                admission
+                    .owner
+                    .commit_bootstrap(admission.workspace, &self.0.key, tilo_clock::wall())
+                    .await?,
+            );
         }
         Ok(messages
             .into_iter()
@@ -1240,7 +1232,7 @@ impl DirectSync {
                 }
                 continue;
             }
-            if self.admit(authored.from, authored.message, false) {
+            if self.admit(authored.from, authored.message, false).await {
                 let _ = link.send(OnlyHere::Ask);
             }
         }
@@ -1255,7 +1247,7 @@ impl DirectSync {
     /// device does not hold ([`crate::ReceiveOutcome::lacks_history`]): the
     /// device that sent it is asked for its state. What the workspace
     /// refuses of a frame is that frame's verdict, never the link's.
-    fn admit(&self, claimed: [u8; 32], message: NeighbourMsg, retained: bool) -> bool {
+    async fn admit(&self, claimed: [u8; 32], message: NeighbourMsg, retained: bool) -> bool {
         let author = store::author_of(&message).unwrap_or(claimed);
         if channel_governance(&message) {
             if self.fans_out() && !retained {
@@ -1264,7 +1256,7 @@ impl DirectSync {
             self.carry_governance(author, message, retained);
             return false;
         }
-        let mut heard = self.judge(author, message, retained);
+        let mut heard = self.judge(author, message, retained).await;
         let lacks_history = heard
             .report
             .as_ref()
@@ -1313,8 +1305,8 @@ impl DirectSync {
 
     /// Answer the other end of a link's ask for the state this device holds:
     /// what the link started with, again ([`Self::catch_up`]).
-    fn answer_state_request(&self) -> Vec<Authored> {
-        self.catch_up().unwrap_or_else(|error| {
+    async fn answer_state_request(&self) -> Vec<Authored> {
+        self.catch_up().await.unwrap_or_else(|error| {
             tracing::warn!(%error, "a device's ask for this device's state went unanswered");
             Vec::new()
         })
@@ -1322,9 +1314,9 @@ impl DirectSync {
 
     /// Admit `message`, `author`'s frame, into this device's workspace: what
     /// the workspace decided of it, as its engine hears it.
-    fn judge(&self, author: [u8; 32], message: NeighbourMsg, retained: bool) -> Heard {
+    async fn judge(&self, author: [u8; 32], message: NeighbourMsg, retained: bool) -> Heard {
         match &self.0.admission {
-            Some(admission) => self.admit_owned(admission, author, message, retained),
+            Some(admission) => self.admit_owned(admission, author, message, retained).await,
             None => self.admit_local(author, message, retained),
         }
     }
@@ -1367,7 +1359,7 @@ impl DirectSync {
 
     /// Take `message` into the workspace's own live replica, which the
     /// device's engine decides on: durable as it lands.
-    fn admit_owned(
+    async fn admit_owned(
         &self,
         admission: &Admission,
         author: [u8; 32],
@@ -1385,12 +1377,16 @@ impl DirectSync {
             .receive(admission.workspace, origin, message.clone(), now);
         // A refused write reaches its author: this device keeps its verdict on it in its own
         // slice of the workspace, which the next sync carries back.
-        if let Err(error) = admission.owner.keep_verdicts(
-            admission.workspace,
-            &[(&message, &report)],
-            &self.0.key,
-            now,
-        ) {
+        if let Err(error) = admission
+            .owner
+            .keep_verdicts(
+                admission.workspace,
+                &[(&message, &report)],
+                &self.0.key,
+                now,
+            )
+            .await
+        {
             tracing::warn!(%error, "a document write's verdict was not kept");
         }
         let (landed, report) = match report {
@@ -1833,11 +1829,14 @@ async fn forward(
         match live.recv().await {
             Ok(authored) if already_theirs(&authored, device.device(), sender.device()) => {}
             Ok(authored) => {
-                if device.admit(authored.from, authored.message, retained) {
-                    for state in sender.answer_state_request() {
+                if device
+                    .admit(authored.from, authored.message, retained)
+                    .await
+                {
+                    for state in sender.answer_state_request().await {
                         // What still waits after the answer waits for history
                         // the sender lacks too: asking again brings nothing.
-                        device.admit(state.from, state.message, true);
+                        device.admit(state.from, state.message, true).await;
                     }
                 }
             }
@@ -1977,7 +1976,7 @@ async fn send_authored(
                     }
                 }
                 if waiting.contains(&OnlyHere::Answer) {
-                    for state in link.answer_state_request() {
+                    for state in link.answer_state_request().await {
                         write_authored(&mut send, &state).await?;
                     }
                 }

@@ -184,3 +184,20 @@ fn the_app_process_opens_no_document() {
     );
     app.frame();
 }
+
+#[test]
+fn only_a_launch_the_session_hosts_stays_out_of_its_workspace() {
+    // The session names the record it keeps in the launch: that process opens none and joins no
+    // workspace. A launch it does not host keeps the record itself and joins its workspace, so the
+    // workspace's people and agents reach it as any app's.
+    let spec = tilo_app::framework::launch_spec::<HostedChannel>();
+    let args = tilo_app::launch::LaunchArgs::component();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.remove(ui_core::application::HOSTED_RESOURCE_ENV);
+    assert!(spec.attaches_runtime(&args));
+    env.set(
+        ui_core::application::HOSTED_RESOURCE_ENV,
+        "test.hosted-channel",
+    );
+    assert!(!spec.attaches_runtime(&args));
+}

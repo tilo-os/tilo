@@ -65,3 +65,28 @@ feeds-rename-caption = Wähle einen eigenen Namen für dieses Abo.
 feeds-rename-label = Name des Abos
 feeds-tags-caption = Trenne Schlagwörter durch Kommas.
 feeds-tags-label = Schlagwörter
+
+## What the overview, a refresh and the reading settings say
+feeds-status-refreshing = Aktualisiere { $done } von { $total } Feeds
+feeds-status-new = { $count ->
+    [one] 1 neuer Artikel
+   *[other] { $count } neue Artikel
+}
+feeds-status-failed = { $count ->
+    [one] 1 Feed konnte nicht aktualisiert werden
+   *[other] { $count } Feeds konnten nicht aktualisiert werden
+}
+feeds-status-up-to-date = Alle Feeds sind aktuell
+feeds-filter-all = Alle Artikel
+feeds-filter-unread = Ungelesen
+feeds-filter-starred = Markiert
+feeds-filter-folder = Ordner
+feeds-filter-feed = Feed
+feeds-filter-tag = Schlagwort
+feeds-theme-system = System
+feeds-theme-light = Hell
+feeds-theme-sepia = Sepia
+feeds-theme-dark = Dunkel
+feeds-font-sans = Ohne Serifen
+feeds-font-serif = Mit Serifen
+feeds-font-mono = Dicktengleich

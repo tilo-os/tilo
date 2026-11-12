@@ -433,7 +433,12 @@ impl Inner {
     /// changes made — nothing when the index already reflects them, which is how a workspace
     /// opens over the index an earlier run left. The chunks the store holds beside it are not
     /// read again: opening a workspace of many chunks costs what those chunks hold, once.
-    pub(super) fn attach_document(&mut self, chunk: ChunkNo, doc: &Doc) {
+    ///
+    /// Whether what a reader reads may have moved: a resource the store did not know, or a change
+    /// an index read from has yet to take in. A chunk the index already reflects — the one a
+    /// write to a collection's newest run lands in — changes nothing anyone read, so the views
+    /// of every row a window shows do not run again for it.
+    pub(super) fn attach_document(&mut self, chunk: ChunkNo, doc: &Doc) -> bool {
         self.stats.attaches = self.stats.attaches.saturating_add(1);
         // The chunk the store waited on is here: what reads the record covers it from now on.
         self.waited.remove(&chunk);
@@ -452,13 +457,19 @@ impl Inner {
         if chunk == chunk::FIRST {
             self.chunks.reread_placement();
         }
+        let resources = self.index.clone();
         self.scan_chunk(chunk, now, before);
         let apps: Vec<AppId> = self.apps.keys().cloned().collect();
+        let moved = self.index != resources
+            || apps.is_empty()
+            || !self.answers_all()
+            || apps.iter().any(|app| !self.unreflected(app).is_empty());
         for app in apps {
             self.bring_up(&app);
         }
         self.rebuild_overlay();
         self.changed();
+        moved
     }
 
     /// Have the index of `app` cover the chunks the store holds: the rest of the record derived

@@ -117,9 +117,10 @@ pub mod state;
 // host services.
 pub(crate) mod time {
     // The broker's tests stamp records with it.
+    pub use tilo_clock::now;
     #[cfg(all(test, feature = "broker-transport"))]
-    pub use tilo_clock::SystemTime;
-    pub use tilo_clock::{Duration, Instant, now};
+    pub use tilo_clock::time::SystemTime;
+    pub use tilo_clock::time::{Duration, Instant};
     // The broker stamps the documents it publishes with the wall clock.
     #[cfg(feature = "broker-transport")]
     pub use tilo_clock::wall;

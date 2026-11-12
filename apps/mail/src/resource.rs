@@ -1363,9 +1363,9 @@ impl Mail {
 pub(crate) fn draft_label(draft: &DraftState) -> String {
     let subject = draft.subject.trim();
     let subject = if subject.is_empty() {
-        "(no subject)"
+        crate::i18n::no_subject()
     } else {
-        subject
+        subject.to_owned()
     };
     let to = crate::transport::parse_addr_list(&draft.to)
         .iter()
@@ -1373,9 +1373,12 @@ pub(crate) fn draft_label(draft: &DraftState) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     if to.is_empty() {
-        format!("Draft: {subject}")
+        crate::i18n::CATALOG.t_args("mail-draft-subject", &[("subject", subject.into())])
     } else {
-        format!("Draft: {subject}, to {to}")
+        crate::i18n::CATALOG.t_args(
+            "mail-draft-subject-to",
+            &[("subject", subject.into()), ("to", to.into())],
+        )
     }
 }
 

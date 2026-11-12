@@ -21,7 +21,7 @@ fn main() {
     ));
     println!("show: {shown:?}");
     let at = tilo_clock::wall()
-        .checked_add(tilo_clock::Duration::from_secs(60))
+        .checked_add(tilo_clock::time::Duration::from_secs(60))
         .unwrap_or_else(tilo_clock::wall);
     let scheduled = notifier.schedule(
         &tilo_notify::Notification::new("later", "Tilo", "One minute later"),

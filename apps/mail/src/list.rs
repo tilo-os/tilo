@@ -205,7 +205,7 @@ impl<'a> RowText<'a> {
         );
         let subject = message.thread_subject();
         let subject = if subject.trim().is_empty() {
-            "No subject".to_owned()
+            crate::i18n::no_subject()
         } else {
             subject
         };

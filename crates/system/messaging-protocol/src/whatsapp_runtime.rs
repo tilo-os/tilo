@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use tilo_clock::Duration;
+use tilo_clock::time::Duration;
 use whatsapp_rust::Client;
 use whatsapp_rust::send::SendOptions;
 use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;

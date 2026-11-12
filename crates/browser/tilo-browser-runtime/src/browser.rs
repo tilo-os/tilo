@@ -2119,14 +2119,47 @@ impl Mount {
         }
     }
 
+    /// The canvas's extent in device pixels at `scale`: what winit reported, unless that is not the
+    /// canvas's CSS box at this scale. winit reports the extent only when the box changes, so
+    /// after a change of the device pixel ratio alone (browser zoom, another display, an emulated
+    /// scale) every later read is the old ratio's extent, which laid a 1280-wide box out 2560
+    /// wide. The box itself, at the ratio of the moment, is the extent then.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "canvas boxes are small positive pixel counts"
+    )]
+    fn extent_of_box(&self, reported: winit::dpi::PhysicalSize<u32>, scale: f64) -> (u32, u32) {
+        let css = |name: &str| {
+            js_sys::Reflect::get(&self.canvas, &name.into())
+                .ok()
+                .and_then(|value| value.as_f64())
+                .filter(|value| *value > 0.0)
+        };
+        let (Some(width), Some(height)) = (css("clientWidth"), css("clientHeight")) else {
+            return (reported.width, reported.height);
+        };
+        // The box is read in whole CSS pixels: a report within one of it is the browser's own,
+        // more exact, measure.
+        let near = |device: u32, box_px: f64| (f64::from(device) / scale - box_px).abs() <= 1.0;
+        if near(reported.width, width) && near(reported.height, height) {
+            return (reported.width, reported.height);
+        }
+        (
+            (width * scale).round().max(1.0) as u32,
+            (height * scale).round().max(1.0) as u32,
+        )
+    }
+
     // ResizeObserver/winit is the sole source of window reports. Reading the
     // pair again at redraw also covers scale/size event ordering and changes
     // that occurred while GPU initialization was pending.
     fn queue_resize(&mut self) -> bool {
+        let scale = self.window.scale_factor();
         let size = self.window.inner_size();
         let changed = self
             .viewport
-            .observe((size.width, size.height), self.window.scale_factor());
+            .observe(self.extent_of_box(size, scale), scale);
         self.pending |= changed;
         changed
     }

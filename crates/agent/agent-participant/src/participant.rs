@@ -2059,6 +2059,17 @@ impl AgentParticipant {
             .unwrap_or_default()
     }
 
+    /// [`Self::survey`] as the rows a catalogue lists it in, each operation in
+    /// the row of the resource holding it: what a caller naming one resource
+    /// of the record reads its children by.
+    #[must_use]
+    pub fn survey_rows(&self, route: &DocumentRoute) -> Vec<tilo_actions::remote::CatalogueRow> {
+        self.apps
+            .get(route)
+            .map(ConfinedReplica::survey_rows)
+            .unwrap_or_default()
+    }
+
     /// Invoke one action of the record at `route` as the agent, commit the
     /// change it made, and show the agent there.
     pub fn invoke(

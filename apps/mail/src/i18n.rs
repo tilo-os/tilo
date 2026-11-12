@@ -22,6 +22,11 @@ pub fn t(key: &str) -> String {
     CATALOG.t(key)
 }
 
+/// The subject a message with none is listed under.
+pub fn no_subject() -> String {
+    CATALOG.t("mail-no-subject")
+}
+
 /// Resolve a Mail string key that interpolates variables.
 ///
 /// The values are the app's own words — an operation's label, a participant's

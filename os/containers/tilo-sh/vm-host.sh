@@ -34,9 +34,11 @@
 #                                       machine with less room places smaller
 #   TILO_SH_VM_HOST_MEMORY_MIB          what the host holds awake at once: by
 #                                       default the size's own memory (8 GiB
-#                                       at `default`) beside the host's own,
-#                                       so the machine's room is what bounds
-#                                       it, not this stack's default
+#                                       at `default`), the reserve it keeps
+#                                       free (2 GiB) and room for a clone of
+#                                       the size's warm template (1 GiB), so
+#                                       the machine's room is what bounds it,
+#                                       not this stack's default
 #   TILO_SH_RELAY_SECRETS=<state>/secrets
 #                                       where the relay's secrets are on this
 #                                       machine: the hosts' member devices and

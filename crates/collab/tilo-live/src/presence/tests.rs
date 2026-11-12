@@ -528,8 +528,8 @@ fn a_member_only_the_roster_named_is_not_forgotten_for_silence() {
 
 /// The workspace's host speaks for the runs it executes: each is a member of
 /// its own, an agent named as the host says, spoken by the host. The same
-/// word from any other device is not heard, and the runs leave with the host
-/// or when the governance pins another host.
+/// word from a device that is neither the host nor here is not heard, and the
+/// runs leave with the host or when the governance pins another host.
 #[test]
 fn the_host_speaks_for_each_run_it_executes_and_nobody_else_does() {
     use collab_types::presence::{ShellPresence, stand_in};
@@ -562,7 +562,7 @@ fn the_host_speaks_for_each_run_it_executes_and_nobody_else_does() {
     board.certify(host, "aa".repeat(32), "home-server");
     assert!(
         !board.hear(member, &face, 2.0),
-        "a member does not speak for a run"
+        "a device that is not here speaks for no run"
     );
     assert!(board.hear(host, &face, 3.0));
     let shown = board
@@ -648,4 +648,90 @@ fn an_agents_line_never_rolls_back_to_the_step_before() {
     // The next step, in turn, is.
     assert!(board.hear(host, &saying(3, "Reading Notes"), 4.0));
     assert_eq!(line(&board).as_deref(), Some("Reading Notes"));
+}
+
+/// An agent its person admitted at this device's door is a member of its own
+/// here, spoken for by this device: listed beside everyone else, said on the
+/// track under its run, and taken down as it leaves. A board that hears the
+/// device lists the agent under that device alone.
+#[test]
+fn a_device_speaks_for_the_agents_it_admitted() {
+    use collab_types::presence::{ShellPresence, stand_in};
+    let own = [0xf0; 32];
+    let face = |line: &str| ShellPresence {
+        seq: 0,
+        sent_at_ms: 1,
+        label: "Helper".into(),
+        agent: true,
+        colour: "#81a8ff".into(),
+        activity: Some(line.into()),
+        place: None,
+        size: [0, 0],
+        windows: Vec::new(),
+        selection: None,
+        chat: None,
+        reaction: None,
+    };
+    let mut board = board();
+    board.say(&Own {
+        label: "Ada".into(),
+        device: "laptop".into(),
+        ..Own::default()
+    });
+    // Another member's board hears this device arrive.
+    let mut theirs = Board::new(WORKSPACE, [7; 32]);
+    for (_, frame) in board.flush(0.0) {
+        theirs.hear(own, &frame, 1.0);
+    }
+
+    assert!(board.speak_for(&[("helper".into(), face("Waiting"))]));
+    let agent = board
+        .member(stand_in(own, "helper"))
+        .expect("the agent is here");
+    assert!(agent.here && agent.agent());
+    assert_eq!(agent.spoken_by, Some(own));
+    assert_eq!(agent.device, "laptop", "it lists as this device");
+    assert!(
+        !board.speak_for(&[("helper".into(), face("Waiting"))]),
+        "the same face again is no news"
+    );
+    assert!(board.speak_for(&[("helper".into(), face("Editing Notes"))]));
+    let said = board.flush(10.0);
+    let for_run: Vec<&Presence> = said
+        .iter()
+        .map(|(_, frame)| frame)
+        .filter(|frame| frame.on_behalf.as_deref() == Some("helper"))
+        .collect();
+    assert!(
+        for_run
+            .iter()
+            .any(|frame| frame.payload == Payload::Arrived),
+        "a restatement says the agent is here: {for_run:?}"
+    );
+
+    // That board hears the agent, under this device.
+    for (_, frame) in &said {
+        theirs.hear(own, frame, 11.0);
+    }
+    let heard = theirs.member(stand_in(own, "helper")).expect("heard there");
+    assert!(heard.here && heard.agent());
+    assert_eq!(heard.spoken_by, Some(own));
+    assert_eq!(
+        super::shown(heard, 11.0).activity.as_deref(),
+        Some("Editing Notes")
+    );
+
+    // It leaves here, and there.
+    assert!(board.speak_for(&[]));
+    assert!(board.member(stand_in(own, "helper")).is_none());
+    let left = board.flush(20.0);
+    for (_, frame) in &left {
+        theirs.hear(own, frame, 21.0);
+    }
+    assert!(
+        !theirs
+            .member(stand_in(own, "helper"))
+            .is_some_and(|agent| agent.here),
+        "the agent left with its run"
+    );
 }

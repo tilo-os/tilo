@@ -21,7 +21,7 @@ impl NativeWorkspaceOwner {
     /// member publishes the changes it made, which every participant admits
     /// as it admits every member's. Exact retries converge; changed
     /// invocation reuse never changes policy.
-    pub fn commit_workspace_membership_command(
+    pub async fn commit_workspace_membership_command(
         &self,
         request: OwnerCommitRequest,
         signer: &dyn DeviceSigner,
@@ -123,6 +123,7 @@ impl NativeWorkspaceOwner {
             self.publish_record(workspace, &candidate, record, None)?;
             Ok(receipt)
         })
+        .await
     }
 }
 
@@ -188,14 +189,15 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn membership_commit_is_canonical_durable_and_exact_retry_is_idempotent() {
+    #[tokio::test]
+    async fn membership_commit_is_canonical_durable_and_exact_retry_is_idempotent() {
         let fixture = fixture();
         let request = request(&fixture, agent_grant());
         assert!(agent_caps(&fixture.owner, &fixture).is_empty());
         let receipt = fixture
             .owner
             .commit_workspace_membership_command(request.clone(), &fixture.key, fixture.now)
+            .await
             .unwrap();
         receipt.validate_for(&request).unwrap();
         let caps = agent_caps(&fixture.owner, &fixture);
@@ -211,6 +213,7 @@ mod tests {
         assert_eq!(agent_caps(&reopened, &fixture), caps);
         let retry = reopened
             .commit_workspace_membership_command(request.clone(), &fixture.key, fixture.now)
+            .await
             .unwrap();
         assert_eq!(retry.generation, receipt.generation);
         assert_eq!(retry.aggregate_hash, receipt.aggregate_hash);
@@ -224,13 +227,14 @@ mod tests {
         assert!(
             reopened
                 .commit_workspace_membership_command(changed, &fixture.key, fixture.now,)
+                .await
                 .is_err()
         );
         assert_eq!(agent_caps(&reopened, &fixture), caps);
     }
 
-    #[test]
-    fn revoke_takes_the_grant_back_and_a_wrong_signer_never_mutates() {
+    #[tokio::test]
+    async fn revoke_takes_the_grant_back_and_a_wrong_signer_never_mutates() {
         let fixture = fixture();
         fixture
             .owner
@@ -239,6 +243,7 @@ mod tests {
                 &fixture.key,
                 fixture.now,
             )
+            .await
             .unwrap();
         let before = agent_caps(&fixture.owner, &fixture);
         assert!(!before.is_empty());
@@ -256,12 +261,14 @@ mod tests {
                     &ed25519_dalek::SigningKey::from_bytes(&[240; 32]),
                     fixture.now,
                 )
+                .await
                 .is_err()
         );
         assert_eq!(agent_caps(&fixture.owner, &fixture), before);
         fixture
             .owner
             .commit_workspace_membership_command(removal, &fixture.key, fixture.now)
+            .await
             .unwrap();
         assert!(agent_caps(&fixture.owner, &fixture).is_empty());
         let reopened =
@@ -269,8 +276,8 @@ mod tests {
         assert!(agent_caps(&reopened, &fixture).is_empty());
     }
 
-    #[test]
-    fn changed_caller_certificate_cannot_borrow_governor_signing_custody() {
+    #[tokio::test]
+    async fn changed_caller_certificate_cannot_borrow_governor_signing_custody() {
         let fixture = fixture();
         let mut add = request(&fixture, agent_grant());
         if let CommitOperation::WorkspaceMembershipCommand { caller, .. } = &mut add.operation {
@@ -280,19 +287,21 @@ mod tests {
             fixture
                 .owner
                 .commit_workspace_membership_command(add, &fixture.key, fixture.now,)
+                .await
                 .is_err()
         );
         assert!(agent_caps(&fixture.owner, &fixture).is_empty());
     }
 
-    #[test]
-    fn durable_membership_retires_to_a_reopenable_governor_checkpoint() {
+    #[tokio::test]
+    async fn durable_membership_retires_to_a_reopenable_governor_checkpoint() {
         let mut fixture = fixture();
         let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
         let add = request(&fixture, agent_grant());
         fixture
             .owner
             .commit_workspace_membership_command(add, &fixture.key, fixture.now)
+            .await
             .unwrap();
         fixture.owner.retire_outgoing(workspace).unwrap();
 
@@ -323,8 +332,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_device_that_does_not_govern_publishes_its_own_changes_until_governance_carries_them() {
+    #[tokio::test]
+    async fn a_device_that_does_not_govern_publishes_its_own_changes_until_governance_carries_them()
+    {
         let mut fixture = crate::owner::fixture::member_device_fixture();
         let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
         let outgoing = |owner: &NativeWorkspaceOwner| {
@@ -341,6 +351,7 @@ mod tests {
         fixture
             .owner
             .commit_workspace_membership_command(add, &fixture.key, fixture.now)
+            .await
             .unwrap();
         let caps = agent_caps(&fixture.owner, &fixture);
         assert_eq!(caps.len(), 1, "written here at once");
@@ -389,8 +400,8 @@ mod tests {
         assert_eq!(agent_caps(&reopened, &fixture), caps);
     }
 
-    #[test]
-    fn failed_membership_publication_never_changes_the_committed_policy() {
+    #[tokio::test]
+    async fn failed_membership_publication_never_changes_the_committed_policy() {
         let fixture = fixture();
         let add = request(&fixture, agent_grant());
         let path = fixture.directory.path().join("owner.json");
@@ -405,6 +416,7 @@ mod tests {
             fixture
                 .owner
                 .commit_workspace_membership_command(add, &fixture.key, fixture.now,)
+                .await
                 .is_err()
         );
         assert!(agent_caps(&fixture.owner, &fixture).is_empty());

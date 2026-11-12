@@ -115,3 +115,12 @@ shortcuts-problems = { $count ->
     [one] { $count } problem to fix before saving
    *[other] { $count } problems to fix before saving
 }
+shortcuts-param-type-text = Text
+shortcuts-param-type-integer = Whole number
+shortcuts-param-type-number = Number
+shortcuts-param-type-boolean = Yes or no
+shortcuts-param-type-date-time = Date and time
+shortcuts-param-type-secret = Secret
+shortcuts-param-type-resource = Item from an app
+shortcuts-param-type-object = Group of values
+shortcuts-param-type-array = List

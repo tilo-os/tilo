@@ -47,7 +47,7 @@ fn an_engine_without_plugins_fails_every_open_instead_of_painting_a_pattern() {
         assert_eq!(engine.position_ms(), 0);
     }
     assert!(matches!(
-        engine.seek_and_wait(1_000, tilo_clock::Duration::from_secs(5)),
+        engine.seek_and_wait(1_000, tilo_clock::time::Duration::from_secs(5)),
         Err(SeekWaitError::Failed(reason)) if reason.contains("no playback element")
     ));
 }

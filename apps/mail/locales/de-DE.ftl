@@ -213,3 +213,4 @@ mail-bulk-read = Ausgewählte Nachrichten als gelesen markieren
 mail-bulk-unread = Ausgewählte Nachrichten als ungelesen markieren
 mail-bulk-purge = Ausgewählte gelöschte Nachrichten endgültig löschen
 mail-bulk-delete = Ausgewählte Nachrichten in den Papierkorb legen
+mail-draft-subject-to = Entwurf: { $subject }, an { $to }

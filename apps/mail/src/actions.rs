@@ -505,11 +505,10 @@ impl IngestBaseline {
 
 /// A message as people tell it apart: its subject, who sent it and when.
 pub fn message_label_of(message: &crate::model::Message) -> String {
-    let subject = message.subject.trim();
-    let subject = if subject.is_empty() {
-        "(no subject)"
+    let subject = if message.subject.trim().is_empty() {
+        crate::i18n::no_subject()
     } else {
-        subject
+        message.subject.trim().to_owned()
     };
     let date = mail_parser::DateTime::from_timestamp(message.timestamp_min.saturating_mul(60));
     format!(

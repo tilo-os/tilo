@@ -74,6 +74,18 @@ use super::record::RecordDoor;
 /// the host applies the action to the part of the chain it names.
 pub(crate) const CHAIN_ACTION_TYPE: &str = "tilo.app.chain-action";
 
+/// The operation type the read a chain publishes is answered under: what the
+/// chain holds, from the parts this device holds, rather than the record the
+/// parts are kept beside.
+pub(crate) const CHAIN_READ_TYPE: &str = "tilo.app.chain-read";
+
+/// The items one page of a chain's read answers with, when the caller names
+/// no size.
+const READ_PAGE: usize = 50;
+
+/// The most one page of a chain's read answers with.
+const READ_PAGE_MAX: usize = 200;
+
 /// Where an earlier part a window asked for ([`Chain::hold`]) stands until
 /// what the workspace has of it is read here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1226,6 +1238,19 @@ impl<P: Chained> ChainState<P> {
             );
         }
         let mut published = route(resource, &self.id);
+        // What the chain holds, read newest part first and paged, and each
+        // item read from the part keeping it ([`Self::read`]): a device holds
+        // a chat's head, and what a caller wants of a chat is its messages,
+        // not the part they were written into.
+        published.actions.push(read_spec::<P>(&self.id, None));
+        for child in &mut published.children {
+            let item = child.id.as_str().to_owned();
+            if tilo_resource::items::item_of_resource::<P>(&item).is_some()
+                && !child.actions.iter().any(|spec| spec.id == "read")
+            {
+                child.actions.push(read_spec::<P>(&self.id, Some(&item)));
+            }
+        }
         let own: std::collections::HashSet<String> = published
             .actions
             .iter()
@@ -1240,6 +1265,234 @@ impl<P: Chained> ChainState<P> {
         *self.published.borrow_mut() = Some((revision, published.clone()));
         published
     }
+
+    /// Answer the read the chain publishes ([`read_spec`]) from the parts this
+    /// device holds: the items of the newest part first, a page at a time,
+    /// each named by the id a read of it takes; or one item's content, from
+    /// the part keeping it. A page that reached the oldest part this device
+    /// holds asks for the part before it and says so (`earlier`), so a caller
+    /// reading on walks back through the chat a part at a time.
+    pub(crate) fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
+        let read = ChainRead::of(payload)?;
+        let table = P::RECORD_TABLE.ok_or_else(|| format!("{} answer no reads", P::LABEL))?;
+        if let Some(item) = read.item.as_deref() {
+            return self.read_item(table, item);
+        }
+        let parts = self.parts();
+        let Some(&(newest, _)) = parts.last() else {
+            return Ok(serde_json::json!({ "kind": P::KIND }));
+        };
+        let (mut at, mut skip) = match read.cursor.as_deref() {
+            Some(cursor) => parse_read_cursor(cursor)
+                .ok_or_else(|| "cursor is not one a read of this chain issued".to_owned())?,
+            None => (newest, 0),
+        };
+        if !parts.iter().any(|(index, _)| *index == at) {
+            // A part asked for before, and not here yet: the page is what the
+            // answer before it said, and the same cursor reads on once it
+            // arrives.
+            return Ok(serde_json::json!({
+                "kind": P::KIND,
+                "earlier": true,
+                "nextCursor": read_cursor(at, skip),
+            }));
+        }
+        let mut lists: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+        let mut taken = 0usize;
+        let mut next: Option<String> = None;
+        // Where the page ran out of parts, rather than out of room.
+        let mut ended = None;
+        for (index, state) in parts.iter().rev() {
+            if *index > at {
+                continue;
+            }
+            if *index < at {
+                // The part the cursor names is no longer held: the page goes
+                // on from the next part this device has.
+                at = *index;
+                skip = 0;
+            }
+            let items = tilo_resource::table::record_items(table, &**state);
+            // What the part holds now, newest first: a cursor counted against
+            // the part as it was reads from its end where items went since.
+            let newest_first: Vec<(&str, tilo_resource::Id, String)> = items
+                .into_iter()
+                .flat_map(|(field, found)| {
+                    found
+                        .into_iter()
+                        .rev()
+                        .map(move |(id, label)| (field, id, label))
+                })
+                .collect();
+            let skip_here = skip.min(newest_first.len());
+            let mut room = true;
+            for (field, id, label) in newest_first.iter().skip(skip_here) {
+                if taken >= read.page_size {
+                    next = Some(read_cursor(*index, skip));
+                    room = false;
+                    break;
+                }
+                let item = tilo_resource::items::item_resource_id_in(P::KIND, field, id);
+                lists
+                    .entry((*field).to_owned())
+                    .or_default()
+                    .push(serde_json::json!({ "item": item, "name": label }));
+                taken = taken.saturating_add(1);
+                skip = skip.saturating_add(1);
+            }
+            if !room {
+                break;
+            }
+            ended = Some((*index, skip.min(newest_first.len())));
+        }
+        let mut answer = serde_json::Map::new();
+        answer.insert("kind".into(), serde_json::json!(P::KIND));
+        for (field, list) in lists {
+            answer.insert(field, serde_json::Value::Array(list));
+        }
+        // The part before the oldest this device holds holds more than this
+        // answer: it is asked for, and the page after this one reads it.
+        if next.is_none()
+            && let Some((index, answered)) = ended
+            && index > 0
+        {
+            next = Some(read_cursor(index, answered));
+            let _ = self.hold(index.saturating_sub(1));
+        }
+        let stopped_in = next
+            .as_deref()
+            .and_then(parse_read_cursor)
+            .map(|(part, _)| part);
+        if let Some(next) = next.filter(|_| taken > 0) {
+            answer.insert("nextCursor".into(), serde_json::json!(next));
+        }
+        if stopped_in.is_some_and(|part| part > 0) {
+            answer.insert("earlier".into(), serde_json::json!(true));
+        }
+        Ok(serde_json::Value::Object(answer))
+    }
+
+    /// One item of a part this device holds, as the read of it answers.
+    fn read_item(
+        &self,
+        table: &'static tilo_resource::table::ModelTable,
+        item: &str,
+    ) -> Result<serde_json::Value, String> {
+        for (_, state) in self.parts().iter().rev() {
+            if let Ok(value) = tilo_resource::table::item_json(table, &**state, P::KIND, item) {
+                return Ok(value);
+            }
+        }
+        Err(format!(
+            "{item} is in a part of these {} this device does not hold",
+            P::LABEL.to_lowercase()
+        ))
+    }
+}
+
+/// The read `P`'s chain publishes: on the chain, what it holds, newest part
+/// first and paged; on an item of a part, that item's content. `item` is the
+/// item's resource id, bound here rather than passed, as the record's own
+/// read binds the item it is offered on.
+fn read_spec<P: Chained>(chain: &str, item: Option<&str>) -> tilo_actions::ActionSpec {
+    let (chain, item) = (chain.to_owned(), item.map(str::to_owned));
+    let label = format!("Read the {}", P::LABEL.to_lowercase());
+    let mut spec = tilo_actions::ActionSpec::typed_operation(
+        "read",
+        label.clone(),
+        label,
+        OperationKind::View,
+        CHAIN_READ_TYPE,
+        vec![
+            tilo_actions::ActionParam::optional(
+                "cursor",
+                tilo_actions::ParamType::Text,
+                "Where the page read before ended, as its `nextCursor` said (default: the newest part)",
+            )
+            .nullable(),
+            tilo_actions::ActionParam::optional(
+                "pageSize",
+                tilo_actions::ParamType::Integer,
+                "How many items to answer with at most",
+            )
+            .with_schema(serde_json::json!({
+                "type": "integer",
+                "minimum": 1,
+                "maximum": READ_PAGE_MAX,
+            })),
+        ],
+        move |args| {
+            let payload = serde_json::json!({
+                "chain": chain,
+                "item": item,
+                "cursor": args.text("cursor"),
+                "pageSize": args.integer("pageSize"),
+            });
+            tilo_actions::EncodedAction::encode_operation(CHAIN_READ_TYPE, &payload)
+                .unwrap_or_else(|_| tilo_actions::EncodedAction {
+                    type_id: CHAIN_READ_TYPE.into(),
+                    payload: Vec::new(),
+                })
+        },
+    )
+    .of_kind(tilo_actions::ActionKind::Read)
+    .with_description(
+        "What this holds as typed data: the items of its parts, the newest part first, a page at \
+         a time with `cursor` passing on where a page ended; an item's own content when the read \
+         is of that item.",
+    )
+    // Typed data for a program to reason about; a person reads what the
+    // app shows.
+    .for_audience(tilo_actions::Audience::Agents);
+    spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
+        schema: serde_json::json!({"type": "object"}),
+    };
+    spec.reads_document()
+}
+
+/// What one read of a chain asks for, as its published action carries it.
+struct ChainRead {
+    item: Option<String>,
+    cursor: Option<String>,
+    page_size: usize,
+}
+
+impl ChainRead {
+    fn of(payload: &[u8]) -> Result<Self, String> {
+        let args: serde_json::Value = if payload.is_empty() {
+            serde_json::Value::Null
+        } else {
+            tilo_actions::decode_json(payload).map_err(|error| error.to_string())?
+        };
+        let text = |key: &str| {
+            args.get(key)
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        };
+        let page_size = args
+            .get("pageSize")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|size| usize::try_from(size).ok())
+            .unwrap_or(READ_PAGE)
+            .clamp(1, READ_PAGE_MAX);
+        Ok(Self {
+            item: text("item"),
+            cursor: text("cursor"),
+            page_size,
+        })
+    }
+}
+
+/// Where a page of a chain's read ended: the part it was reading and how many
+/// of that part's items, newest first, it has answered with.
+fn read_cursor(part: u64, taken: usize) -> String {
+    format!("{part}:{taken}")
+}
+
+fn parse_read_cursor(cursor: &str) -> Option<(u64, usize)> {
+    let (part, taken) = cursor.split_once(':')?;
+    Some((part.parse().ok()?, taken.parse().ok()?))
 }
 
 /// `resource`'s document actions, and those of its children, carried out on
@@ -1293,6 +1546,10 @@ impl<P: Chained> RecordDoor for ChainState<P> {
 
     fn publish(&self) -> tilo_actions::ResourceSpec {
         ChainState::publish(self)
+    }
+
+    fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
+        ChainState::read(self, payload)
     }
 
     fn apply_encoded(
@@ -1941,5 +2198,18 @@ impl Chains {
             .or_else(|| me.map(ActionInvoker::actor))
             .ok_or("nobody changes a past version")?;
         door.apply_in(&request.action, &invoker, live)
+    }
+
+    /// Answer a read of the chain `chain` ([`CHAIN_READ_TYPE`]) from the
+    /// parts this device holds.
+    pub(crate) fn read(&self, chain: &str, payload: &[u8]) -> Result<serde_json::Value, String> {
+        let door = self
+            .doors
+            .borrow()
+            .iter()
+            .find(|door| door.id() == chain)
+            .cloned()
+            .ok_or_else(|| format!("no chain `{chain}` is open here"))?;
+        door.read(payload)
     }
 }

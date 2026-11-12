@@ -425,7 +425,7 @@ impl ApiTesterApp {
         )
         .with_content_sized_first()
         .with_divider_id("api.request-divider")
-        .with_divider_label("Resize the request and the response");
+        .with_divider_label(crate::locales::CATALOG.t("api-tester-split-label"));
         Box::new(
             Stack::new()
                 .push(Box::new(
@@ -742,7 +742,7 @@ impl ApiTesterApp {
             && let (Some(slot), Some(data)) =
                 (&self.slots.response_body, &self.store.borrow().response)
         {
-            slot.set(response::body(data, self.response_view));
+            slot.set(response::body_view(data, self.response_view));
         }
     }
 
@@ -1069,7 +1069,7 @@ impl ApiTesterApp {
                 value: String::new(),
             },
         };
-        if self.request.auth.label() != next.label() {
+        if self.request.auth.scheme() != next.scheme() {
             let before = self.workspace.request.auth.clone();
             self.request.auth = next;
             let after = Credentials::of(&self.request.auth);

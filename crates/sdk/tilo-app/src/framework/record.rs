@@ -241,6 +241,15 @@ pub(crate) trait RecordDoor {
         let _ = live;
         self.apply_answering(action, invoker)
     }
+
+    /// What a read of this door's record answers, asked as `payload`
+    /// ([`super::chain::CHAIN_READ_TYPE`]): a chain of parts reads what its
+    /// parts hold, where the app's own record reads its document. A record
+    /// that keeps no chain of its own answers none.
+    fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
+        let _ = payload;
+        Err(format!("`{}` answers no reads of its parts", self.id()))
+    }
 }
 
 impl<P: Resource> RecordDoor for Held<P> {

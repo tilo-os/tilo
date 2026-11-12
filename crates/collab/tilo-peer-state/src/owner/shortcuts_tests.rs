@@ -29,8 +29,8 @@ fn saved(owner: &NativeWorkspaceOwner) -> Vec<Shortcut> {
         .unwrap()
 }
 
-#[test]
-fn a_saved_shortcut_is_a_workspace_write_that_survives_a_reopen() {
+#[tokio::test]
+async fn a_saved_shortcut_is_a_workspace_write_that_survives_a_reopen() {
     let fixture = fixture();
     let mut water = shortcut("water");
     crate::workspace::sign_saved_shortcut(
@@ -44,6 +44,7 @@ fn a_saved_shortcut_is_a_workspace_write_that_survives_a_reopen() {
     let receipt = fixture
         .owner
         .commit_shortcut_change(&save, &fixture.key, fixture.now)
+        .await
         .unwrap();
     receipt.validate_for(&save).unwrap();
     assert_eq!(saved(&fixture.owner), vec![water.clone()]);
@@ -51,6 +52,7 @@ fn a_saved_shortcut_is_a_workspace_write_that_survives_a_reopen() {
     assert_eq!(saved(&reopened), vec![water]);
     let again = reopened
         .commit_shortcut_change(&save, &fixture.key, fixture.now)
+        .await
         .unwrap();
     assert_eq!(
         again.generation, receipt.generation,
@@ -60,12 +62,13 @@ fn a_saved_shortcut_is_a_workspace_write_that_survives_a_reopen() {
     let delete = request(&fixture, &ShortcutChange::Delete("water".into()));
     reopened
         .commit_shortcut_change(&delete, &fixture.key, fixture.now)
+        .await
         .unwrap();
     assert!(saved(&reopened).is_empty());
 }
 
-#[test]
-fn no_device_saves_a_shortcut_as_someone_else() {
+#[tokio::test]
+async fn no_device_saves_a_shortcut_as_someone_else() {
     let fixture = fixture();
     let mut forged = shortcut("water");
     forged.saved_by = Some("42".repeat(32));
@@ -74,6 +77,7 @@ fn no_device_saves_a_shortcut_as_someone_else() {
         fixture
             .owner
             .commit_shortcut_change(&save, &fixture.key, fixture.now)
+            .await
             .is_err()
     );
     assert!(saved(&fixture.owner).is_empty());

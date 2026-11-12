@@ -38,7 +38,6 @@ pub(super) struct Delivery {
         tilo_actions::offload::OffloadRequest,
         tilo_actions::remote::InvokeRequest,
     )>,
-    pub(super) checkpoint: Option<(String, String, tilo_actions::ActionContract)>,
     pub(super) untrusted: bool,
 }
 
@@ -180,16 +179,9 @@ impl AppBrokerState {
             envelope,
             sender,
             offload,
-            checkpoint,
             untrusted,
         } = delivery;
         let invocation = envelope.invocation;
-        if let Some(checkpoint) = checkpoint {
-            self.checkpoint_jobs
-                .lock()
-                .map_err(|_| "checkpoint registry unavailable")?
-                .insert(id, checkpoint);
-        }
         if untrusted {
             self.untrusted_jobs
                 .lock()

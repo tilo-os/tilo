@@ -45,12 +45,50 @@ class ClockContractTests(unittest.TestCase):
         root = self.fixture(
             {
                 f"{OWNER}/src/session.rs": (
-                    "pub fn at() -> tilo_clock::SystemTime { tilo_clock::wall() }\n"
-                    "pub fn deadline() -> tilo_clock::Instant { tilo_clock::now() }\n"
+                    "pub fn at() -> tilo_clock::time::SystemTime { tilo_clock::wall() }\n"
+                    "pub fn deadline() -> tilo_clock::time::Instant { tilo_clock::now() }\n"
                 ),
             }
         )
         self.assertEqual(contract.audit(root), [])
+
+    def test_a_clock_type_tilo_clock_names_is_never_read_directly(self):
+        anywhere = "crates/system/anything/src/deadline.rs"
+        for phase, source in (
+            ("the type named in full", "fn at() -> tilo_clock::time::Instant {\n"
+             "    tilo_clock::time::Instant::now()\n}\n"),
+            ("the wall clock", "fn at() -> tilo_clock::time::SystemTime {\n"
+             "    tilo_clock::time::SystemTime::now()\n}\n"),
+            ("the bare name an import brings", "use tilo_clock::time::Instant;\n"
+             "fn at() -> Instant { Instant::now() }\n"),
+            ("the bare name of a braced import", "use tilo_clock::time::{Duration, SystemTime};\n"
+             "fn at() -> SystemTime { SystemTime::now() }\n"),
+            ("a test's own", "use tilo_clock::time::Instant;\n"
+             "#[test]\nfn held() { let now = Instant::now(); }\n"),
+            ("a read in a test file", "fn held() { tilo_clock::time::Instant::now(); }\n"),
+        ):
+            with self.subTest(phase=phase):
+                path = anywhere if "test file" not in phase else "crates/system/anything/tests/deadline.rs"
+                root = self.fixture({path: source})
+                self.assertEqual(self.paths(root), [path])
+
+    def test_the_machines_own_types_read_where_they_like(self):
+        root = self.fixture(
+            {
+                "crates/system/anything/src/deadline.rs": (
+                    "use std::time::Instant;\n"
+                    "pub fn started() -> Instant { Instant::now() }\n"
+                    "pub fn at() -> std::time::SystemTime { std::time::SystemTime::now() }\n"
+                ),
+                # The crate that names the types, and the ones the crates above
+                # judge, are not judged twice.
+                "crates/platform/tilo-clock/src/lib.rs": (
+                    "pub fn now() -> Instant { Instant::now() }\n"
+                ),
+                f"{OWNER}/src/session.rs": "fn at() { tilo_clock::time::Instant::now(); }\n",
+            }
+        )
+        self.assertEqual(self.paths(root), [f"{OWNER}/src/session.rs"])
 
     def test_tests_and_clock_arithmetic_are_not_reads(self):
         root = self.fixture(

@@ -1611,11 +1611,7 @@ impl Widget for Dropdown {
         // Explicit names are Fluent ids. Keep the legacy value/placeholder
         // fallback for unlabeled standalone dropdowns.
         let name = if let Some(name) = &self.accessible_name {
-            Some(if self.name_resolved {
-                name.clone()
-            } else {
-                widget_text(name)
-            })
+            crate::i18n::spoken_name(name, self.name_resolved)
         } else if let Some(caption) = &self.caption {
             Some(caption.clone())
         } else if self.has_selected_value() {

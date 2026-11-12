@@ -5,7 +5,7 @@ use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicBool, Ordering},
 };
-use tilo_clock::{Duration, Instant};
+use tilo_clock::time::{Duration, Instant};
 use tilo_messaging::{Pairing, SendError, ServiceAccount};
 use whatsapp_rust::{
     Client,
@@ -122,7 +122,7 @@ impl WhatsappLinking {
                 if !qr.code.is_empty() && qr.code.len() <= 4096 && qr.timeout.as_secs() > 5 =>
             {
                 let life = Duration::from_secs(qr.timeout.as_secs().min(120).saturating_sub(5));
-                let Some(expires) = Instant::now().checked_add(life) else {
+                let Some(expires) = tilo_clock::now().checked_add(life) else {
                     state.interrupted = true;
                     return;
                 };
@@ -147,7 +147,7 @@ impl WhatsappLinking {
                     && state
                         .presentation
                         .as_ref()
-                        .is_some_and(|p| p.expires > Instant::now())
+                        .is_some_and(|p| p.expires > tilo_clock::now())
                     && identity.len() <= 128
                     && identity.ends_with("@s.whatsapp.net")
                     && identity.split_once('@').is_some_and(|(number, _)| {
@@ -203,7 +203,7 @@ impl WhatsappLinking {
             return Err(SendError::AlreadyReserved);
         }
         self.start()?;
-        let deadline = Instant::now()
+        let deadline = tilo_clock::now()
             .checked_add(Duration::from_secs(60))
             .ok_or(SendError::Unavailable)?;
         loop {
@@ -214,7 +214,7 @@ impl WhatsappLinking {
                     return Err(SendError::Revoked);
                 }
                 if let Some(presentation) = &state.presentation
-                    && presentation.expires > Instant::now()
+                    && presentation.expires > tilo_clock::now()
                 {
                     return Ok(Pairing::new(
                         ServiceAccount::new("whatsapp", &self.owner.account),
@@ -224,7 +224,7 @@ impl WhatsappLinking {
                     ));
                 }
             }
-            if Instant::now() >= deadline {
+            if tilo_clock::now() >= deadline {
                 self.cancel();
                 return Err(SendError::Unavailable);
             }
@@ -247,7 +247,7 @@ impl WhatsappLinking {
         if state
             .presentation
             .as_ref()
-            .is_some_and(|p| p.expires <= Instant::now())
+            .is_some_and(|p| p.expires <= tilo_clock::now())
         {
             drop(state);
             self.cancel();
@@ -472,7 +472,7 @@ mod tests {
         let attempt = {
             let mut state = linker.state.lock().unwrap();
             let presentation = state.presentation.as_mut().unwrap();
-            presentation.expires = Instant::now();
+            presentation.expires = tilo_clock::now();
             let attempt = presentation.attempt.clone();
             drop(state);
             attempt

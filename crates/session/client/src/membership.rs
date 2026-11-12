@@ -169,14 +169,13 @@ impl<'a> Membership<'a> {
                 command,
             },
         };
-        self.engine
-            .owner()
-            .commit_workspace_membership_command(
-                request,
-                identity.signer.as_ref(),
-                tilo_clock::wall(),
-            )
-            .map(|_receipt| ())
+        collab_types::signer::at_once(self.engine.owner().commit_workspace_membership_command(
+            request,
+            identity.signer.as_ref(),
+            tilo_clock::wall(),
+        ))
+        .map_err(|error| error.to_string())?
+        .map(|_receipt| ())
     }
 
     /// Let `app` author its own records in the workspace, as this device: the
@@ -236,7 +235,7 @@ pub fn authorship(
         // A workspace that lives only on this desk holds no governance here, so the desk's own
         // policy is where its authorship goes.
         let now = tilo_clock::wall()
-            .duration_since(tilo_clock::UNIX_EPOCH)
+            .duration_since(tilo_clock::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());
         edit_workspace(desk, id, |shown| author_on_desk(shown, app, now))?;
     }

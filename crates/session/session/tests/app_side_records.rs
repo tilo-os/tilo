@@ -14,8 +14,8 @@
 //! - **The SDK runner stops doing it for it.** About sixty apps never name the broker, the join
 //!   or the keys themselves: the runner they share (`ui::main!`, `ui::framework::run`) does it
 //!   on their behalf, before any of the app's code runs. An app the session's document host
-//!   serves declares `ResourceApp::ATTACHES_RUNTIME = false` — the one flag the runner already
-//!   reads — and joins no workspace of its own. So every app the runner starts and that still
+//!   serves declares `ResourceApp::HOSTED_BY_SESSION = true`, and a launch the session hosts
+//!   joins no workspace of its own. So every app the runner starts and that still
 //!   attaches is on the list as `runner`, beside whatever its own sources carry.
 //!
 //! The migration is once, across every app, and it lands in slices, so this test lists the apps
@@ -179,16 +179,16 @@ fn on_runner(app: &Path) -> bool {
     text.contains("ui::main!") || text.contains("ui::framework::run")
 }
 
-/// Whether `app` declares that it joins no runtime of its own, because the session's document
-/// host keeps its records: `ResourceApp::ATTACHES_RUNTIME = false` (with or without a type
-/// annotation), the one flag the runner already reads (`framework/app.rs`'s `launch_spec`),
-/// which disables its collaboration manager — no join proof, no content keys, no sync.
+/// Whether `app` declares that the session's document host keeps its records:
+/// `ResourceApp::HOSTED_BY_SESSION = true` (with or without a type annotation). A launch the
+/// session hosts starts no collaboration manager (`ui_core::launch::LaunchSpec::attaches_runtime`)
+/// — no join proof, no content keys, no sync.
 fn hosted(app: &Path) -> bool {
     let text = text_of(app);
-    text.match_indices("ATTACHES_RUNTIME").any(|(at, _)| {
+    text.match_indices("HOSTED_BY_SESSION").any(|(at, _)| {
         text.get(at..)
             .and_then(|rest| rest.split([';', '\n']).next())
-            .is_some_and(|declaration| declaration.trim_end().ends_with("false"))
+            .is_some_and(|declaration| declaration.trim_end().ends_with("true"))
     })
 }
 
@@ -303,8 +303,8 @@ fn apps_using_app_side_storage_identity_or_sync_do_not_grow() {
          An app holds no identity, keys or transport: it is handed readings and submits \
          actions over its one launcher-made connection. The host runs its model and verbs \
          (tilo-model-host), so an app's process needs none of what this lists — and an app the \
-         host serves declares `ATTACHES_RUNTIME = false`, so the runner joins no workspace for \
-         it."
+         host serves declares `HOSTED_BY_SESSION = true`, so the runner joins no workspace for \
+         a launch the session hosts."
     );
 
     // A drop is not a failure: it only means the baseline can lose the line.

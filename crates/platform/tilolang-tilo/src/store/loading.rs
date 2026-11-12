@@ -42,9 +42,11 @@ impl TiloStore {
                 "the workspace record cannot be loaded".into(),
             ));
         };
-        inner.attach_document(chunk::FIRST, &record);
+        let moved = inner.attach_document(chunk::FIRST, &record);
         drop(inner);
-        self.changing().notify_all();
+        if moved {
+            self.changing().notify_all();
+        }
         Ok(())
     }
 
@@ -100,9 +102,11 @@ impl TiloStore {
                 "the chunk {chunk} cannot be loaded"
             )));
         };
-        inner.attach_document(chunk, &doc);
+        let moved = inner.attach_document(chunk, &doc);
         drop(inner);
-        self.changing().notify_all();
+        if moved {
+            self.changing().notify_all();
+        }
         Ok(())
     }
 

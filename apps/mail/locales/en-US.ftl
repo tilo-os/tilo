@@ -216,3 +216,4 @@ mail-bulk-read = Mark selected messages read
 mail-bulk-unread = Mark selected messages unread
 mail-bulk-purge = Delete selected trashed messages permanently
 mail-bulk-delete = Move selected messages to Trash
+mail-draft-subject-to = Draft: { $subject }, to { $to }

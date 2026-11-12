@@ -128,7 +128,7 @@ impl SignalBroker {
             return Err(SendError::Unavailable);
         }
         let setup = runtime
-            .verify_account(tilo_clock::Duration::from_secs(10))
+            .verify_account(tilo_clock::time::Duration::from_secs(10))
             .map_err(|_| SendError::Unavailable)?;
         let scope = setup.scope();
         let wire_account = setup.number.ok_or(SendError::Unavailable)?;
@@ -238,7 +238,7 @@ impl SignalBroker {
             .verify_recipient(
                 &request.route.recipient,
                 &request.route.revision,
-                tilo_clock::Duration::from_secs(10),
+                tilo_clock::time::Duration::from_secs(10),
             )
             .map_err(|_| SendError::Revoked)?;
         worker
@@ -252,7 +252,7 @@ impl SignalBroker {
             &route,
             &request.operation,
             &request.text,
-            tilo_clock::Duration::from_secs(10),
+            tilo_clock::time::Duration::from_secs(10),
         );
         let acknowledgment = result.map_err(|error| match error {
             crate::signal_session::CheckedSendError::Routing(_) => SendError::Revoked,

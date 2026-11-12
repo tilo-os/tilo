@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::abi::Imp;
-use crate::core::{Args, Core, HResult, ret_f64, ret_i64, ret_void, trap};
+use crate::core::{Args, Core, HResult, ret_f64, ret_i32, ret_i64, ret_void, trap};
 use crate::engine::Wasm;
 use crate::handles::{FrameKind, ViewState};
 use crate::space::Space;
@@ -542,6 +542,7 @@ impl Core {
                 ret_void()
             }
             Imp::SpaceI | Imp::SpaceF => self.space_import(imp, a),
+            Imp::RowOpen => ret_i32(i32::from(self.with_view(|vs| Ok(vs.open))?)),
             Imp::StateGet => self.state_get(a),
             Imp::StateAt => self.state_at(a),
             Imp::ArgAt => self.arg_at(a),

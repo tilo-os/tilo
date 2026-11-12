@@ -59,10 +59,6 @@ impl AppBrokerState {
     /// reach it: an agent, or a person acting over one of them, invokes through
     /// [`Self::action_invoke`] as itself, so the broker's per-action and per-role permissions
     /// decide, and custody is refused to anything but a person at the native seat.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered door for the person at this desk: the act as themselves, then the seat's custody, then what behind it refuses and why"
-    )]
     pub fn action_invoke_local_person(
         self: &Arc<Self>,
         caller: &Caller,
@@ -169,20 +165,6 @@ impl AppBrokerState {
                     Ok(Some(receipt)) => return Pending::ready(Ok(receipt)),
                     Err(error) => return Pending::ready(Err(error)),
                     Ok(None) => {}
-                }
-                if let InvocationCaller::NativePerson {
-                    workspace,
-                    certificate,
-                    ..
-                } = &origin
-                {
-                    match self.checkpoint_replay(workspace, certificate, caller, request) {
-                        Ok(Some(receipt)) => return Pending::ready(Ok(receipt)),
-                        Err(reason) => {
-                            return Pending::ready(Err(ActionHostError::Unavailable { reason }));
-                        }
-                        Ok(None) => {}
-                    }
                 }
                 self.action_invoke_with_origin(caller, None, None, Some(&origin), request)
             }
@@ -372,22 +354,22 @@ impl CertifiedActionLifecycle {
     }
 
     pub fn statuses(&self) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
-        let (Ok(admitted), Some(owner)) = (self.0.check(&self.0.caller), self.owner()) else {
+        let (Ok(_), Some(owner)) = (self.0.check(&self.0.caller), self.owner()) else {
             return Vec::new();
         };
         self.0
             .state
             .invocation_statuses_for_owner(&owner)
             .into_iter()
-            .filter(|(id, update)| self.permitted_job(*id, update.invocation(), &admitted))
+            .filter(|(id, update)| self.permitted_job(*id, update.invocation()))
             .collect()
     }
 
     pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
-        let admitted = self.0.check(&self.0.caller).ok()?;
+        self.0.check(&self.0.caller).ok()?;
         let owner = self.owner()?;
         let update = self.0.state.invocation_status_for_owner(id, &owner)?;
-        self.permitted_job(id, update.invocation(), &admitted)
+        self.permitted_job(id, update.invocation())
             .then_some(update)
     }
 
@@ -410,12 +392,7 @@ impl CertifiedActionLifecycle {
             .wait_blocking()
     }
 
-    fn permitted_job(
-        &self,
-        id: u64,
-        invocation: tilo_actions::InvocationId,
-        admitted: &super::AdmittedJoinIdentity,
-    ) -> bool {
+    fn permitted_job(&self, id: u64, invocation: tilo_actions::InvocationId) -> bool {
         let Ok(guard) = self.0.state.journal.lock() else {
             return false;
         };
@@ -431,25 +408,11 @@ impl CertifiedActionLifecycle {
             owner,
             invocation,
         };
-        let in_room = journal
+        journal
             .lookup(&key)
             .ok()
             .flatten()
-            .is_some_and(|row| row.wire_id == id);
-        drop(guard);
-        in_room
-            && self
-                .0
-                .state
-                .authorize_checkpoint_job(
-                    &self.0.admission.workspace,
-                    admitted
-                        .certificate
-                        .as_ref()
-                        .filter(|_| admitted.agent_id.is_none()),
-                    id,
-                )
-                .is_ok()
+            .is_some_and(|row| row.wire_id == id)
     }
 }
 
@@ -629,14 +592,12 @@ impl ActionHost for CertifiedLocalActionHost {
         }
         // A new application admission is queued onto the broker. Validate its
         // lease here, but verify live certificate/policy there, not twice across
-        // an asynchronous boundary. Replay/checkpoint replies still verify here
-        // because they may return retained private data without another dispatch.
-        let deferred = request.target.address.resource.as_str()
-            != super::workspace_checkpoints::RESOURCE
-            && self
-                .state
-                .remote_job(&self.effective, &request.invocation)
-                .is_none();
+        // an asynchronous boundary. Replies still verify here because they may
+        // return retained private data without another dispatch.
+        let deferred = self
+            .state
+            .remote_job(&self.effective, &request.invocation)
+            .is_none();
         let admitted = if deferred {
             if let Err(error) = self.check_lease(caller) {
                 return Pending::ready(Err(error));
@@ -651,11 +612,6 @@ impl ActionHost for CertifiedLocalActionHost {
         if !certified_target(&request.target.provider, &request.target.address) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
-        if request.target.address.resource.as_str() == super::workspace_checkpoints::RESOURCE
-            && admitted.agent_id.is_some()
-        {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
-        }
         match self
             .state
             .host_action_replay(&self.effective, &self.invocation_origin(), &request)
@@ -663,31 +619,6 @@ impl ActionHost for CertifiedLocalActionHost {
             Ok(Some(receipt)) => return Pending::ready(Ok(receipt)),
             Err(error) => return Pending::ready(Err(error)),
             Ok(None) => {}
-        }
-        let person_certificate = admitted
-            .certificate
-            .as_ref()
-            .filter(|_| admitted.agent_id.is_none());
-        if let Some(certificate) = person_certificate {
-            match self.state.checkpoint_replay(
-                &self.admission.workspace,
-                certificate,
-                &self.effective,
-                &request,
-            ) {
-                Ok(Some(receipt)) => return Pending::ready(Ok(receipt)),
-                Err(reason) => return Pending::ready(Err(ActionHostError::Unavailable { reason })),
-                Ok(None) => {}
-            }
-        }
-        if let Some(job) = self.state.remote_job(&self.effective, &request.invocation)
-            && let Err(reason) = self.state.authorize_checkpoint_job(
-                &self.admission.workspace,
-                person_certificate,
-                job,
-            )
-        {
-            return Pending::ready(Err(ActionHostError::Unavailable { reason }));
         }
         // Only lend a live admission to synchronous work. A newly queued
         // dispatch verifies its original custody on the broker turn instead.
@@ -722,18 +653,7 @@ impl ActionHost for CertifiedLocalActionHost {
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        let admitted = self.check(caller).ok()?;
-        let job = self.state.remote_job(&self.effective, id)?;
-        self.state
-            .authorize_checkpoint_job(
-                &self.admission.workspace,
-                admitted
-                    .certificate
-                    .as_ref()
-                    .filter(|_| admitted.agent_id.is_none()),
-                job,
-            )
-            .ok()?;
+        self.check(caller).ok()?;
         self.state.action_observe(&self.effective, id)
     }
 

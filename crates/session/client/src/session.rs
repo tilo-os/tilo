@@ -981,6 +981,22 @@ impl Task {
                 return false;
             }
         }
+        // What the host brought into a sealed record's history is this device's to fold, as its
+        // own writes are before each of them.
+        let now = crate::clock::system_time(tilo_clock::unix_now_ns());
+        for workspace_id in self.workspaces.clone() {
+            let Some(workspace) = self.replicas.workspace(workspace_id) else {
+                continue;
+            };
+            if let Err(error) = self
+                .replicas
+                .owner()
+                .compact_outgoing(workspace, self.signer.as_ref(), now)
+                .await
+            {
+                tracing::warn!(%error, "sealed histories stay uncompacted");
+            }
+        }
         // What this device's custody still owes the host goes as its queue takes it:
         // every answer from the host, every command, every tick is a
         // chance to hand it more.

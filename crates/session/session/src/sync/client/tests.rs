@@ -1102,7 +1102,7 @@ fn where_i_am_is_said_with_the_rest_of_the_word_and_only_when_it_moves() {
             reaction: None,
         })
     };
-    let at = presence::Point {
+    let at = tilo_live::presence::Point {
         tab: 3,
         x: 12.5,
         y: 34.5,

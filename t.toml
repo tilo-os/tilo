@@ -4726,14 +4726,15 @@ requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge/binaries/**"]
 # The image's programs, built as the image ships them: a release build whose whole-program link
 # covers everything a host that serves pages carries. Only the image waits for this build; the
-# checks that run these programs themselves ask for `lounge-gate-binaries` below. A release waits
+# checks that run these programs themselves (e2e, page-tour, the tilo.sh stack) ask for
+# `lounge-gate-binaries` below. A release waits
 # for it, so it gets longer than a check of a change does: the whole-program link grows with the
 # graph and this is the only build of it left.
 timeout_secs = 5400
 default = false
 
-# The same two programs, for the checks that run them directly (page-boot, page-two-people,
-# agent-setup): the profile Cargo.toml's `lounge-gate` describes, which is release optimisation
+# The same two programs, for the checks that run them directly (e2e, page-tour, the tilo.sh
+# stack): the profile Cargo.toml's `lounge-gate` describes, which is release optimisation
 # without the whole-program link. A check starts from an empty build directory, so a run is the
 # whole graph taken from the compiler cache and then linked whole, which grows with every crate a
 # host that serves pages carries and which any change in that graph redoes — for a binary no check
@@ -4795,84 +4796,37 @@ requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge/gate-tools/**"]
 default = false
 
-# The image, run and used as the deployment runs it: a fresh volume reaching Ready, the
-# workspace listed in its public directory, the web entry served beside it, and people in
-# browsers using the Lounge through it. It keeps everything it found in /target/lounge-gate —
-# each page's snapshot and console, the site's and the Lounge's logs — as its outputs, and says
-# in its log what the pages said as they failed.
+# The tilo command an agent runs in e2e's setups, built as the relay beside it is (Cargo.toml's
+# `lounge-gate`: the release's code and opt-level without its whole-program link), from the same
+# compiler cache, so a change to the command relinks it in seconds. The static musl build a
+# release publishes is cli-x86_64's, which cli-rehearsal installs the way a person does: its build
+# from cold is no part of what a change to a page waits for.
 [[check]]
-name = "lounge-gate"
-run = "mkdir -p /target/lounge-gate-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/lounge-gate-cli tilo\nbash os/containers/tilo-lounge/test-integration.sh /target/publish/lounge/image.oci.tar /target/publish/web-desktop/bundle /target/lounge-gate"
-setup = { run = "dnf install -y --setopt=install_weak_deps=False buildah && dnf clean all" }
-needs = ["image-lounge", "web-desktop-bundle", "lounge-gate-tools", "cli-x86_64"]
-env = { TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/lounge-gate-cli/tilo" }
+name = "lounge-gate-cli"
+run = "cargo build --locked --profile lounge-gate -p tilo-cli --bin tilo\nrm -rf /target/publish/lounge-gate/cli\nmkdir -p /target/publish/lounge-gate/cli\ncp \"$CARGO_TARGET_DIR/lounge-gate/tilo\" /target/publish/lounge-gate/cli/\n"
+env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
-isolation = "vm"
-outputs = ["/target/lounge-gate/**"]
-timeout_secs = 3600
+outputs = ["/target/publish/lounge-gate/cli/**"]
 default = false
 
-# The gate's agent step on its own, in minutes: a person sets Tilo up through their agent, comes
-# back to their workspace on a reload, and signs in again on a fresh browser through the agent.
-# The Lounge's entrypoint runs the relay the image carries (lounge-binaries, with the fonts its
-# context prepares) directly, beside the web entry and the tilo command a release publishes (cli-x86_64), with no image or micro-VM
-# around them. It builds nothing itself: a change to the page or the test reruns only the test,
-# and a change to the relay or the command rebuilds that one output, which the gate shares.
+# The web page end to end on every change that reaches it, in minutes: the Lounge's own programs
+# run directly with its image's entrypoint and environment, the web entry served beside them and
+# one headless Chromium, started once; then every flow at the same time against them, each as
+# people of its own (os/containers/tilo-lounge/test-e2e.sh says which flows there are). Every app
+# opening from the search on the next frame is the desktop surface's in-process test, not a
+# browser's walk. It builds nothing itself: a change to a page driver reruns only this, and the
+# relay, the command and the bundle are the cached outputs the other page checks share. One flow
+# alone: `bash os/containers/tilo-lounge/test-e2e.sh BUNDLE WORK people-call`.
 [[check]]
-name = "agent-setup"
-run = "mkdir -p /target/agent-setup-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/agent-setup-cli tilo\nbash os/containers/tilo-lounge/test-agent-setup.sh /target/publish/web-desktop/bundle /target/agent-setup"
-needs = ["lounge-gate-binaries", "lounge-fonts", "cli-x86_64", "lounge-gate-tools", "web-desktop-bundle"]
-env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/agent-setup-cli/tilo" }
+name = "e2e"
+run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e"
+needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo" }
 requires = ["arch=x86_64"]
-outputs = ["/target/agent-setup/**"]
-timeout_secs = 1800
-default = false
-
-# A person's setup survives what their browser does mid-way, on every change that reaches it: the
-# real page in headless Chromium against the Lounge's relay run directly and the tilo command an
-# agent runs, reloaded, closed and reopened, gone back and forward to and opened in a second tab at
-# every step of "Set up with your agent", with a code running out and the network dropping. Each
-# case must land on the step the person was at, never in the Lounge by surprise. It builds nothing
-# itself: it takes the same cached outputs as agent-setup.
-[[check]]
-name = "setup-resume"
-run = "mkdir -p /target/setup-resume-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/setup-resume-cli tilo\nbash os/containers/tilo-lounge/test-setup-resume.sh /target/publish/web-desktop/bundle /target/setup-resume"
-needs = ["lounge-gate-binaries", "lounge-fonts", "cli-x86_64", "lounge-gate-tools", "web-desktop-bundle"]
-env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/setup-resume-cli/tilo" }
-requires = ["arch=x86_64"]
-# What it found, not what it ran: the captures, the report, each tab's console and the Lounge's logs.
-outputs = ["/target/setup-resume/setup-resume/*.png", "/target/setup-resume/setup-resume/*.json", "/target/setup-resume/setup-resume/*.log", "/target/setup-resume/*.log"]
-timeout_secs = 1800
-
-# The web page boots for real, on every change that reaches it: the built bundle in headless
-# Chromium against the Lounge's relay run directly, arriving, joining the workspace and opening
-# Notes, failing on any exception the page throws or panic it reports. A page's unit tests run
-# against a fake runtime, so what only a real page meets (a runtime export the page calls by
-# another name, storage read before it is loaded, std's clock reached in wasm) passes them all.
-# Like agent-setup it builds nothing itself: the bundle and the relay are the cached outputs the
-# gate shares, rebuilt only when what they are built from moved.
-[[check]]
-name = "page-boot"
-run = "bash os/containers/tilo-lounge/test-page-boot.sh /target/publish/web-desktop/bundle /target/page-boot"
-needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle"]
-env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto" }
-requires = ["arch=x86_64"]
-outputs = ["/target/page-boot/**"]
+# What it found, not what it ran: each flow's pages, reports and consoles and each part's log; the
+# site it served is the bundle again.
+outputs = ["/target/e2e/*.log", "/target/e2e/lounge/*.log", "/target/e2e/boot/**", "/target/e2e/people-call/**", "/target/e2e/people-desk/**", "/target/e2e/people-menus/**", "/target/e2e/people-invite/**", "/target/e2e/share-link/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/wait-list/**", "/target/e2e/restart/**"]
 timeout_secs = 1200
-
-# The front door of a workspace that takes people by invitation, in a real browser: a stranger
-# whose browser has never been here sees the wait list rather than the setup screen, leaves an
-# address, confirms it through the mail the door sends to a local sink, and stays on the list
-# when the tab reloads. The screenshots it keeps are what someone arriving today sees.
-[[check]]
-name = "wait-list-door"
-run = "bash os/containers/tilo-lounge/test-wait-list-door.sh /target/publish/web-desktop/bundle /target/wait-list-door"
-needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle"]
-env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto" }
-requires = ["arch=x86_64"]
-outputs = ["/target/wait-list-door/**"]
-timeout_secs = 1200
-default = false
 
 # A newcomer's tour of the page for a person to review: every screen a first-time visitor meets,
 # light, dark and at a phone's width, kept as pictures. It judges nothing on looks.
@@ -4884,35 +4838,6 @@ env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO
 requires = ["arch=x86_64"]
 outputs = ["/target/page-tour/tour/**", "/target/page-tour/*.log"]
 timeout_secs = 1800
-default = false
-
-# Two people on the page, each in their own browser, against the Lounge's relay run directly as
-# page-boot runs it: the gate's people step, brief (chat, presence, a call and the names on its
-# card, the strip panned and a sideways swipe over Sheets among a few apps), so what broke between
-# two people's pages is caught in minutes. The gate runs the whole step: every app the Lounge
-# offers, the menus, an invitation.
-[[check]]
-name = "page-two-people"
-run = "bash os/containers/tilo-lounge/test-page-two-people.sh /target/publish/web-desktop/bundle /target/page-two-people"
-needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle"]
-env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto" }
-requires = ["arch=x86_64"]
-outputs = ["/target/page-two-people/**"]
-timeout_secs = 1200
-default = false
-
-# The gate's shared-link step on its own, in minutes: a document's link copied
-# from the bar's Share opens as that one document, live, on a phone-sized page,
-# and a run's link opens Console on that run. A step of the gate that fails
-# after it is chased here instead of by running the whole gate again.
-[[check]]
-name = "page-share-link"
-run = "bash os/containers/tilo-lounge/test-page-share-link.sh /target/publish/web-desktop/bundle /target/page-share-link"
-needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle"]
-env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto" }
-requires = ["arch=x86_64"]
-outputs = ["/target/page-share-link/**"]
-timeout_secs = 1200
 default = false
 
 # The two programs the tilo.sh stack's checks run as a release's: tilo-enroll makes the VM host's

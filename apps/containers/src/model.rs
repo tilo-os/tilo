@@ -50,15 +50,15 @@ impl ContainerStatus {
     }
 
     /// Short human label used in the status pill.
-    pub fn label(self) -> &'static str {
-        match self {
-            ContainerStatus::Running => "Running",
-            ContainerStatus::Exited => "Exited",
-            ContainerStatus::Created => "Created",
-            ContainerStatus::Paused => "Paused",
-            ContainerStatus::Restarting => "Restarting",
-            ContainerStatus::Dead => "Dead",
-        }
+    pub fn label(self) -> String {
+        crate::resource::CATALOG.t(match self {
+            ContainerStatus::Running => "containers-status-running",
+            ContainerStatus::Exited => "containers-status-exited",
+            ContainerStatus::Created => "containers-created",
+            ContainerStatus::Paused => "containers-status-paused",
+            ContainerStatus::Restarting => "containers-status-restarting",
+            ContainerStatus::Dead => "containers-status-dead",
+        })
     }
 
     pub fn is_running(self) -> bool {
@@ -273,13 +273,13 @@ impl Section {
             _ => None,
         }
     }
-    pub fn label(self) -> &'static str {
-        match self {
-            Section::Containers => "Containers",
-            Section::Images => "Images",
-            Section::Volumes => "Volumes",
-            Section::Distrobox => "Distrobox",
-        }
+    pub fn label(self) -> String {
+        crate::resource::CATALOG.t(match self {
+            Section::Containers => "containers-a11y-containers",
+            Section::Images => "containers-nav-images",
+            Section::Volumes => "containers-nav-volumes",
+            Section::Distrobox => "containers-nav-distrobox",
+        })
     }
 }
 
@@ -311,13 +311,13 @@ impl DetailTab {
             _ => None,
         }
     }
-    pub fn label(self) -> &'static str {
-        match self {
-            DetailTab::Logs => "Logs",
-            DetailTab::Stats => "Stats",
-            DetailTab::Inspect => "Inspect",
-            DetailTab::Terminal => "Terminal",
-        }
+    pub fn label(self) -> String {
+        crate::resource::CATALOG.t(match self {
+            DetailTab::Logs => "containers-tab-logs",
+            DetailTab::Stats => "containers-tab-stats",
+            DetailTab::Inspect => "containers-tab-inspect",
+            DetailTab::Terminal => "containers-tab-terminal",
+        })
     }
     pub const ALL: [DetailTab; 4] = [
         DetailTab::Logs,

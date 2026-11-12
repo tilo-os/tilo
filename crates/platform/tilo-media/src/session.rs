@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tilo_clock::Instant;
+use tilo_clock::time::Instant;
 
 use crate::cache::{FrameCache, FrameKey, SourceKey, bucket_ms_for_fps, bucket_of};
 use crate::engine::{EngineConfig, MediaEngine};
@@ -54,7 +54,7 @@ impl EngineSession {
             // Until the source's frame rate is known, bucket at 1ms so no
             // two distinct times are ever conflated. `set_fps` narrows it.
             bucket_ms: 1,
-            last_used: Instant::now(),
+            last_used: tilo_clock::now(),
         }
     }
 
@@ -76,7 +76,7 @@ impl EngineSession {
     /// Borrow the engine — for transport control (play/pause/volume) and for
     /// anything the session does not wrap.
     pub fn engine(&mut self) -> &mut MediaEngine {
-        self.last_used = Instant::now();
+        self.last_used = tilo_clock::now();
         &mut self.engine
     }
 
@@ -100,7 +100,7 @@ impl EngineSession {
     /// The frame at `time_ms` if it is already cached. Never seeks, never
     /// blocks — the fast path for a repaint that has not moved the playhead.
     pub fn cached_frame_at(&mut self, time_ms: u64) -> Option<Arc<Frame>> {
-        self.last_used = Instant::now();
+        self.last_used = tilo_clock::now();
         let k = self.key_for(time_ms);
         self.cache.get(&k)
     }
@@ -124,12 +124,12 @@ impl EngineSession {
         if let Some(f) = self.cached_frame_at(time_ms) {
             return Some(f);
         }
-        let deadline = Instant::now().checked_add(timeout);
-        let left = || deadline.map_or(timeout, |d| d.saturating_duration_since(Instant::now()));
+        let deadline = tilo_clock::now().checked_add(timeout);
+        let left = || deadline.map_or(timeout, |d| d.saturating_duration_since(tilo_clock::now()));
         self.engine.seek_and_wait(time_ms, timeout).ok()?;
         let mut offered = self.engine.latest()?.pts_ms;
         while !self.lands_on(offered, time_ms) {
-            if deadline.is_some_and(|d| Instant::now() >= d) {
+            if deadline.is_some_and(|d| tilo_clock::now() >= d) {
                 tracing::debug!(
                     "media: seek to {time_ms}ms kept answering the picture at {offered}ms"
                 );
@@ -175,7 +175,7 @@ impl EngineSession {
     /// [`MediaEngine::seek_ms`], then call this each frame until it returns
     /// `true`.
     pub fn poll_into_cache(&mut self) -> bool {
-        self.last_used = Instant::now();
+        self.last_used = tilo_clock::now();
         self.engine.poll();
         if !self.engine.frame_is_current() {
             // Still showing the previous position's picture; nothing new to
@@ -344,7 +344,7 @@ mod tests {
             cache: FrameCache::for_preview(),
             key,
             bucket_ms: 1,
-            last_used: Instant::now(),
+            last_used: tilo_clock::now(),
         };
         s.engine.open(Source::LocalFile(p.clone()));
         s.set_fps(30.0);

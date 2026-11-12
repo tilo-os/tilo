@@ -27,9 +27,9 @@ work=$(mktemp -d)
 . "$here/direct-lounge.sh"
 trap 'stop_lounge; rm -rf "$work"' EXIT
 
-# The mail the door sends goes to a sink this run keeps, never to a service.
-# Its address is fixed like the Lounge's own (direct-lounge.sh).
-sink_port=19790
+# The mail the door sends goes to a sink this run keeps, never to a service,
+# at a port after the Lounge's own (direct-lounge.sh, LOUNGE_PORT_BASE).
+sink_port=$((${LOUNGE_PORT_BASE:-19780} + 10))
 export LOUNGE_ADMISSION=invite
 export LOUNGE_WAIT_LIST_MAX=50
 export LOUNGE_CONTACT='hello@tilo.example'

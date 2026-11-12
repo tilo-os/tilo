@@ -1,8 +1,9 @@
 // The web page boots for real: the built bundle in headless Chromium, served
 // beside a running relay, as a person's browser loads it. The tab arrives,
 // joins the Lounge's workspace, opens Notes from the search, and Notes'
-// window shows. Then a sideways swipe over Sheets, whose grid scrolls
-// sideways, scrolls Sheets and leaves the strip of windows where it is.
+// window shows. Then its GPU device is lost, and the desk draws on with its
+// windows. (A sideways swipe over Sheets is the people's desk case,
+// people.mjs.)
 //
 // What it catches is what compiles and passes every unit test yet stops a
 // real page: the page's scripts calling a runtime function the wasm module
@@ -20,6 +21,7 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
+import {stepLimit} from './waits.mjs';
 
 const [site, relay, out] = process.argv.slice(2);
 if (!site || !relay || !out) {
@@ -93,7 +95,7 @@ const checkPage = async step => {
 
 // Wait until `expression` holds in the page, or fail naming where the page
 // stopped instead.
-const until = async (expression, what, timeout = 180_000) => {
+const until = async (expression, what, timeout = stepLimit(4)) => {
   const deadline = Date.now() + timeout;
   for (;;) {
     await checkPage(what);
@@ -189,7 +191,7 @@ const open = async (name, app) => {
   // The rows shown right after typing can be the previous query's: Enter
   // waits until two reads agree that the app is the first result.
   const first = rows => (rows ? rows[rows.indexOf('Results') + 1] ?? null : null);
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + stepLimit(3);
   for (;;) {
     await checkPage(`searching for ${name}`);
     const rows = await paletteRows();
@@ -233,7 +235,7 @@ const open = async (name, app) => {
   await until(`(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(app)})`,
     `${name}'s window showing`);
   await until(`(() => { const w = globalThis.__bootOpen; w?.read?.(); return w?.shown !== null; })()`,
-    `the frame showing ${name}'s window`, 60_000);
+    `the frame showing ${name}'s window`, stepLimit(2));
   const counted = JSON.parse(await tab.evaluate('JSON.stringify(globalThis.__bootOpen)'));
   report.opens = [...(report.opens ?? []), counted];
   console.log(`frames: ${name} shown on frame ${counted.shown}; the page read ${counted.atKeydown} at Enter, the desk had presented ${counted.atKey} when it took the key; frames between: ${JSON.stringify(counted.trace)}`);
@@ -249,78 +251,14 @@ await sleep(3000);
 await checkPage('showing Notes');
 mark('Notes looked at');
 
-// 5. A sideways swipe over an app whose content scrolls sideways is the
-// app's: Sheets' grid scrolls and the strip of windows stays where it is. The
-// strip overflows first (a few more windows), so it could pan; Sheets is
-// opened last, from the search, and swiped right after, as the Lounge gate
-// does it.
+// What the desk drew since: its own frame count, waited on as frames, not a stopwatch.
 const frames = () => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0').catch(() => 0);
 const settled = async (by = 2) => {
   const from = await frames();
   await until(`(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`, `the desk drawing ${by} more frame(s)`);
 };
-const panOf = async () => JSON.parse(await tab.evaluate(
-  'JSON.stringify(globalThis.tiloMount?.navigation?.getSnapshot?.()?.desktopPan ?? null)').catch(() => 'null'));
-// Sheets opens first and the others after it, so the search brings Sheets
-// back from the far end of the strip, as it does for a person (and in the
-// gate) once more windows opened since: the strip travels to it, and the
-// swipe comes two frames later.
-for (const [name, app] of [['Sheets', 'so.tilo.sheets'], ['Calculator', 'so.tilo.calculator'], ['Clocks', 'so.tilo.clocks'],
-  ['Weather', 'so.tilo.weather'], ['Tasks', 'so.tilo.tasks'], ['Contacts', 'so.tilo.contacts']]) {
-  await open(name, app);
-}
-const away = await panOf();
-await open('Sheets', 'so.tilo.sheets');
-await settled(2);
-// The fingers rest on Sheets' grid: its cell B2, wherever its window is.
-let centre = null;
-for (let tries = 0; tries < 20 && !centre; tries++) {
-  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-  await sleep(200);
-  centre = JSON.parse(await tab.evaluate(`(() => {
-    let found = null;
-    const node = s => { if (!found && s.name === 'B2' && (s.bounds ?? s.rect)) found = s.bounds ?? s.rect; (s.children || []).forEach(node); };
-    const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
-    const root = globalThis.tiloMount?.state()?.semantics?.root;
-    if (root) walk(root);
-    if (!found) return 'null';
-    const [x0, y0, x1, y1] = Array.isArray(found) ? found : [found.x0 ?? found.x, found.y0 ?? found.y,
-      found.x1 ?? found.x + found.width, found.y1 ?? found.y + found.height];
-    const r = globalThis.tiloMount.canvas.getBoundingClientRect();
-    return JSON.stringify({x: Math.round(r.x + (x0 + x1) / 2), y: Math.round(r.y + (y0 + y1) / 2)});
-  })()`).catch(() => 'null'));
-}
-if (!centre) await fail('Sheets shows no cell B2 to swipe over');
-// The search slides the strip to Sheets: the swipe waits until it is at
-// rest, the same place on three reads a few frames apart.
-let before = null;
-for (let reads = 0, same = 0; reads < 100 && same < 2; reads++) {
-  await settled(2);
-  const now = await panOf();
-  same = now && before && now.offset === before.offset ? same + 1 : 0;
-  before = now;
-}
-if (!before || !(before.max > 0)) await fail(`the strip does not overflow, so a pan could not show: ${JSON.stringify(before)}`);
-const swipe = [];
-for (const step of [6, 12, 18, 24, 18, 12, 6]) {
-  await tab.send('Input.dispatchMouseEvent', {type: 'mouseWheel', x: centre.x, y: centre.y, deltaX: step, deltaY: 0});
-  swipe.push((await panOf())?.offset ?? null);
-}
-await settled(2);
-const after = await panOf();
-// Where the strip goes with no input at all: a strip still settling from
-// Sheets' opening moves here too, and that is no wheel's doing.
-await sleep(1500);
-const resting = await panOf();
-report.sheets = {away, before, swipe, after, resting};
-if (after?.offset !== before.offset) {
-  await fail(`a sideways swipe over Sheets panned the strip from ${before.offset} to ${after?.offset} (each event: ${swipe.join(', ')}; at rest: ${resting?.offset})`);
-}
-await checkPage('swiping over Sheets');
-console.log('ok: a sideways swipe over Sheets scrolls Sheets and leaves the strip');
-mark('a sideways swipe over Sheets');
 
-// 6. The GPU device is lost mid-session, as a driver reset or the browser
+// 5. The GPU device is lost mid-session, as a driver reset or the browser
 // does it: the desk makes a new device and draws on, with every window it
 // had, and a person can keep working there. A desktop that stopped instead
 // says so in its phase.
@@ -336,7 +274,7 @@ await until(`(() => {
   const state = globalThis.tiloMount?.state();
   return !!state && state.phase !== 'failed' && (state.gpuGeneration ?? 0) > ${beforeLoss.gpu ?? 0}
     && (state.frames ?? 0) > ${beforeLoss.frames};
-})()`, 'the desk drawing again on a new GPU device after its device was lost', 60_000);
+})()`, 'the desk drawing again on a new GPU device after its device was lost', stepLimit(2));
 await open('Calculator', 'so.tilo.calculator');
 await settled(2);
 const afterLoss = JSON.parse(await tab.evaluate(`JSON.stringify({

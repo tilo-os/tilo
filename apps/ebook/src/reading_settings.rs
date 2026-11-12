@@ -133,13 +133,19 @@ impl ReadingSettings {
                     ),
                     ReadingSettingsAction::SetMode(mode) => (
                         format!("books.reader.settings.mode:{}", mode.as_str()),
-                        format!("{} layout", mode.label()),
+                        CATALOG.t_args(
+                            "ebook-action-mode",
+                            &[("mode", ArgValue::Text(mode.as_str().to_owned()))],
+                        ),
                         Role::RadioButton,
                         Some(settings.mode == *mode),
                     ),
                     ReadingSettingsAction::SetComposition(style) => (
                         format!("books.reader.settings.composition:{}", style.as_str()),
-                        format!("{} text", style.label()),
+                        CATALOG.t_args(
+                            "ebook-action-composition",
+                            &[("style", ArgValue::Text(style.as_str().to_owned()))],
+                        ),
                         Role::RadioButton,
                         Some(settings.composition == *style),
                     ),
@@ -153,7 +159,7 @@ impl ReadingSettings {
                         format!("books.reader.settings.theme:{}", theme.as_str()),
                         CATALOG.t_args(
                             "ebook-reading-theme",
-                            &[("theme", ArgValue::Text(theme.label().to_owned()))],
+                            &[("theme", ArgValue::Text(theme.as_str().to_owned()))],
                         ),
                         Role::RadioButton,
                         Some(settings.theme == *theme && settings.scheme_id.is_empty()),

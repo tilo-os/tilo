@@ -106,7 +106,7 @@ impl HeldCopies {
         caller: &Caller,
         asks: &[RecordAsk],
     ) -> Result<serde_json::Value, String> {
-        read_records(self, caller, asks, None, tilo_clock::Instant::now())
+        read_records(self, caller, asks, None, tilo_clock::now())
             .map_err(|error| error.to_string())?
             .readable()
     }
@@ -166,7 +166,7 @@ pub fn read_records(
     caller: &Caller,
     asks: &[RecordAsk],
     after: Option<&str>,
-    deadline: tilo_clock::Instant,
+    deadline: tilo_clock::time::Instant,
 ) -> Result<RecordReadings, ActionHostError> {
     loop {
         let (wake, woken) = RecordWake::new();
@@ -232,7 +232,7 @@ pub fn read_records(
             records.extend(read);
         }
         let revision = revision.finalize().to_hex().to_string();
-        let now = tilo_clock::Instant::now();
+        let now = tilo_clock::now();
         if after != Some(revision.as_str()) || now >= deadline {
             return Ok(RecordReadings { revision, records });
         }
@@ -495,7 +495,7 @@ mod tests {
         let mut held = HeldCopies::default();
         held.0.insert("note".into(), message("hello"));
         let caller = Caller::local_person("me");
-        let now = tilo_clock::Instant::now();
+        let now = tilo_clock::now();
         let read = read_records(
             &held,
             &caller,
@@ -538,7 +538,7 @@ mod tests {
         held.0.insert(part(0), message("first"));
         held.0.insert(part(1), message("second"));
         let caller = Caller::local_person("me");
-        let now = tilo_clock::Instant::now();
+        let now = tilo_clock::now();
         let read = read_records(&held, &caller, &[ask("chain", true)], None, now).unwrap();
         let texts: Vec<_> = values(&read)
             .into_iter()

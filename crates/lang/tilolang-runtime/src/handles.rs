@@ -131,6 +131,9 @@ impl RunState {
 pub struct ViewState {
     /// The space this run of the view was offered.
     pub space: Space,
+    /// Whether the row this run of the view is for stands open into its document: a slot that
+    /// holds the document is built only then.
+    pub open: bool,
     /// The window the view runs in: what its `state` is kept under.
     pub window: String,
     /// The person looking: whose `state` the view reads.

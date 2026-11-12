@@ -72,12 +72,8 @@ impl ResourceApp for TubeShell {
     const ICON: Option<&'static str> = Some("tube");
     /// A launch may name a search (`tube:search?q=cats`).
     const ARGUMENTS: usize = 1;
-    /// The session's document host runs the library's model (`tube-model`, built as the
-    /// `tube.library` module), so the app's process opens no record of its own: it joins no
-    /// workspace of its own, and reads the readings the session publishes and submits its
-    /// actions over its one connection (`docs/architecture/apps.md` §8 step 2,
-    /// `one-app-model.md` §4).
-    const ATTACHES_RUNTIME: bool = false;
+    /// The session's document host runs the library's model where the session serves it: a
+    /// launch it hosts opens no record and joins no workspace of its own.
     const HOSTED_BY_SESSION: bool = true;
 
     #[cfg(feature = "samples")]

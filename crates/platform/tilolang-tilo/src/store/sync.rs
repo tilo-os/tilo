@@ -98,10 +98,12 @@ impl TiloStore {
     fn sync_document(&self, chunk: ChunkNo, doc: &Doc) -> bool {
         let mut inner = self.mutate();
         if inner.chunks.mirror(chunk).is_none() {
-            inner.attach_document(chunk, doc);
+            let moved = inner.attach_document(chunk, doc);
             drop(inner);
-            self.changing().notify_all();
-            return true;
+            if moved {
+                self.changing().notify_all();
+            }
+            return moved;
         }
         let heads = doc.committed_document().get_heads();
         if inner.chunks.seen(chunk) == heads.as_slice() {

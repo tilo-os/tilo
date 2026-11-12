@@ -132,18 +132,24 @@ pub(super) fn duplicate_field_value(contact: &Contact, field: MergeField) -> Str
 /// phone number and a name".
 pub(super) fn shared_facts(reasons: &[crate::actions::DuplicateReason]) -> String {
     use crate::actions::DuplicateReason;
-    let facts: Vec<&str> = reasons
+    let facts: Vec<String> = reasons
         .iter()
         .map(|reason| match reason {
-            DuplicateReason::Email => "an email",
-            DuplicateReason::Phone => "a phone number",
-            DuplicateReason::Name => "a name",
+            DuplicateReason::Email => CATALOG.t("contacts-fact-email"),
+            DuplicateReason::Phone => CATALOG.t("contacts-fact-phone"),
+            DuplicateReason::Name => CATALOG.t("contacts-fact-name"),
         })
         .collect();
     match facts.split_last() {
-        None => "their details".to_owned(),
-        Some((last, [])) => (*last).to_owned(),
-        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => CATALOG.t("contacts-facts-details"),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => CATALOG.t_args(
+            "contacts-facts-and",
+            &[
+                ("first", rest.join(", ").into()),
+                ("last", last.as_str().into()),
+            ],
+        ),
     }
 }
 

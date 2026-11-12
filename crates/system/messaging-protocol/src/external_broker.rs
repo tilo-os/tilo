@@ -98,7 +98,7 @@ impl NativeAdapter for crate::whatsapp_runtime::WhatsappRuntime {
             route,
             &request.operation,
             &request.text,
-            tilo_clock::Duration::from_secs(10),
+            tilo_clock::time::Duration::from_secs(10),
         ))
     }
     fn whatsapp_receipt(
@@ -145,7 +145,7 @@ impl NativeAdapter for crate::sms_runtime::SmsRuntime {
             route,
             &request.operation,
             &request.text,
-            tilo_clock::Duration::from_secs(10),
+            tilo_clock::time::Duration::from_secs(10),
         ))
     }
     fn sms_incoming<'a>(
@@ -160,7 +160,7 @@ impl NativeAdapter for crate::sms_runtime::SmsRuntime {
                 &auth.binding,
                 route,
                 object,
-                tilo_clock::Duration::from_secs(10),
+                tilo_clock::time::Duration::from_secs(10),
             )
             .await
             .map_err(|error| match error {

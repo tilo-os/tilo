@@ -1,7 +1,6 @@
 use super::bool_control::{
     BoolControl, bool_control_api, bool_control_capabilities, bool_control_widget_methods,
 };
-use crate::i18n::widget_text;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Interaction;
@@ -647,19 +646,17 @@ impl ToggleFace {
 
 /// Build the accessibility node shared by retained toggles and
 /// context-specific toggle controls that own a different mutation channel.
+/// `accessible_name` is the name a reader hears, already in the language
+/// this thread reads.
 pub fn toggle_accessibility(
     on: bool,
     focused: bool,
     enabled: bool,
-    accessible_name: Option<&str>,
+    accessible_name: Option<String>,
 ) -> crate::a11y::AccessNode {
     use crate::a11y::{AccessNode, AccessState, Role};
     AccessNode::new(Role::Switch)
-        .with_optional_name(
-            accessible_name
-                .map(|name| widget_text(name))
-                .filter(|name| !name.is_empty()),
-        )
+        .with_optional_name(accessible_name.filter(|name| !name.is_empty()))
         .with_state(
             AccessState::new()
                 .focusable(enabled)
@@ -907,7 +904,7 @@ impl Widget for Toggle {
             self.control.is_checked,
             self.is_focused(),
             self.is_enabled(),
-            self.control.accessible_name.as_deref(),
+            self.control.spoken_name(),
         )
         .with_semantic_key(&self.semantic_id);
         if self.control.is_bare() {
@@ -979,6 +976,21 @@ mod tests {
             assert_eq!(
                 Widget::accessibility(&named).unwrap().name.as_deref(),
                 Some("Airplane mode"),
+            );
+
+            // A row's caption is text, never a message id: naming a switch by
+            // the toolkit's own key says the caption, while the message-id
+            // setter resolves it in the catalogue.
+            let caption =
+                Toggle::new("any", "path").with_resolved_accessible_name("window-root-name");
+            assert_eq!(
+                Widget::accessibility(&caption).unwrap().name.as_deref(),
+                Some("window-root-name"),
+            );
+            let key = Toggle::new("any", "path").with_accessible_name("window-root-name");
+            assert_eq!(
+                Widget::accessibility(&key).unwrap().name.as_deref(),
+                Some("Tilo application window"),
             );
         }
     }

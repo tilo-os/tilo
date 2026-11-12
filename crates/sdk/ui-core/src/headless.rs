@@ -3566,12 +3566,10 @@ impl FrameHarness {
         // rebuild path on every frame.
         let history_width = f64::from(self.viewport.0);
         // A resize re-solves the retained tree against the new window size.
-        // Only a tree with a widget that composes from its allocation is
-        // composed again for it.
-        // History's own chrome picks its presentation from the window's width.
+        // Only a tree that composes from its allocation is composed again for
+        // it.
         let recompose_for_viewport = viewport_changed
-            && (self.history.is_some()
-                || crate::widget::layout::tree_composition_follows_allocation(self.root.as_ref()));
+            && crate::widget::layout::tree_composition_follows_allocation(self.root.as_ref());
         let mut structure = self.full_relayout_forced_now()
             || !self.layout_built
             || recompose_for_viewport

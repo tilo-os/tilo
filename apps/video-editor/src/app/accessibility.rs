@@ -778,7 +778,7 @@ impl VideoEditorApp {
             PickField::LinkToggle => (
                 self.link_affordance().map_or_else(
                     || crate::resource::CATALOG.t("video-editor-link-audio-video"),
-                    |o| o.label().to_string(),
+                    super::LinkAffordance::label,
                 ),
                 Role::Button,
                 false,

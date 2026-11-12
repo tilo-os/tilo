@@ -98,7 +98,7 @@ impl Scope {
     pub(crate) async fn read_with_modified(
         &self,
         path: &VPath,
-    ) -> Result<(Vec<u8>, tilo_clock::SystemTime), FsError> {
+    ) -> Result<(Vec<u8>, tilo_clock::time::SystemTime), FsError> {
         let full = self.full(path);
         let parts: Vec<&str> = full.components().collect();
         let Some((name, parents)) = parts.split_last() else {
@@ -109,11 +109,11 @@ impl Scope {
             .await?
             .unchecked_into();
         let buffer = await_js(file.array_buffer(), FsError::IsADirectory).await?;
-        let modified = tilo_clock::UNIX_EPOCH
-            .checked_add(tilo_clock::Duration::from_millis(whole(
+        let modified = tilo_clock::time::UNIX_EPOCH
+            .checked_add(tilo_clock::time::Duration::from_millis(whole(
                 file.last_modified(),
             )))
-            .unwrap_or(tilo_clock::UNIX_EPOCH);
+            .unwrap_or(tilo_clock::time::UNIX_EPOCH);
         Ok((Uint8Array::new(&buffer).to_vec(), modified))
     }
 
@@ -303,11 +303,11 @@ impl Scope {
                     .unchecked_into();
                 Ok(Meta {
                     len: whole(file.size()),
-                    modified: tilo_clock::UNIX_EPOCH
-                        .checked_add(tilo_clock::Duration::from_millis(whole(
+                    modified: tilo_clock::time::UNIX_EPOCH
+                        .checked_add(tilo_clock::time::Duration::from_millis(whole(
                             file.last_modified(),
                         )))
-                        .unwrap_or(tilo_clock::UNIX_EPOCH),
+                        .unwrap_or(tilo_clock::time::UNIX_EPOCH),
                     kind: Kind::File,
                     mode: None,
                     symlink: false,
@@ -335,7 +335,7 @@ impl Scope {
 fn directory_meta() -> Meta {
     Meta {
         len: 0,
-        modified: tilo_clock::UNIX_EPOCH,
+        modified: tilo_clock::time::UNIX_EPOCH,
         kind: Kind::Dir,
         mode: None,
         symlink: false,

@@ -51,6 +51,27 @@ const CARD_HEIGHT: f64 = 52.0;
 const CARD_GAP: f64 = 6.0;
 const CARD_MARGIN: f64 = 12.0;
 
+/// Where an app's activity cards stand in `viewport`: a column at the viewport's top-right corner,
+/// each a card's width and height, the shape and spacing the app draws them with
+/// ([`PresenceCtx::interaction_card_layout`]).
+///
+/// A host that stands cards of its own over a window ([`crate::control_hints`]) reads the same
+/// slots: a card placed by the toolkit and one the app draws never cover each other.
+#[must_use]
+pub fn interaction_card_slots(viewport: Rect) -> Vec<Rect> {
+    if viewport.width() < 96.0 || viewport.height() < 32.0 {
+        return Vec::new();
+    }
+    let width = CARD_WIDTH.min((viewport.width() - CARD_MARGIN * 2.0).max(80.0));
+    let x1 = viewport.x1 - CARD_MARGIN;
+    (0..MAX_VISIBLE_CARDS)
+        .map(|index| {
+            let y = viewport.y0 + CARD_MARGIN + index as f64 * (CARD_HEIGHT + CARD_GAP);
+            Rect::new(x1 - width, y, x1, y + CARD_HEIGHT)
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct InteractionPresenceEntry {
     interaction: SemanticInteraction,
@@ -677,18 +698,15 @@ impl PresenceCtx {
         if visible == 0 {
             return Vec::new();
         }
-        let width = CARD_WIDTH.min((viewport.width() - CARD_MARGIN * 2.0).max(80.0));
+        let slots = interaction_card_slots(viewport);
         let mut out = Vec::with_capacity(visible);
         for (index, entry) in entries.iter().copied().take(visible).enumerate() {
-            let y = viewport.y0 + CARD_MARGIN + index as f64 * (CARD_HEIGHT + CARD_GAP);
+            let Some(&rect) = slots.get(index) else {
+                break;
+            };
             out.push(InteractionCardPlacement {
                 invocation: entry.interaction.invocation,
-                rect: Rect::new(
-                    viewport.x1 - CARD_MARGIN - width,
-                    y,
-                    viewport.x1 - CARD_MARGIN,
-                    y + CARD_HEIGHT,
-                ),
+                rect,
                 additional: if index + 1 == visible {
                     entries.len().saturating_sub(visible)
                 } else {

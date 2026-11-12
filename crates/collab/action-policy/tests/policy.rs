@@ -335,7 +335,7 @@ fn grants_apply_only_to_their_subject() {
 
 #[test]
 fn wall_clock_context_preserves_epoch_and_expiry() {
-    use tilo_clock::{Duration, UNIX_EPOCH};
+    use tilo_clock::time::{Duration, UNIX_EPOCH};
 
     assert_eq!(Context::at_time(UNIX_EPOCH).now_unix_ms, 0);
     assert_eq!(

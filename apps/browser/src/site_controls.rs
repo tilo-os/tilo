@@ -309,8 +309,9 @@ impl SiteControls {
     pub fn panel(&self, width: f32, max_height: f32) -> Box<dyn Widget> {
         self.panel_with(width, max_height, Vec::new())
     }
-    fn button(&self, id: &str, label: &str, pending: Pending) -> Button {
-        Button::new(id, label).on_effect(self.command(pending))
+    /// A button of this panel, its words from `key`, a catalogue message.
+    fn button(&self, id: &str, key: &str, pending: Pending) -> Button {
+        Button::new(id, &crate::CATALOG.t(key)).on_effect(self.command(pending))
     }
     fn command(&self, pending: Pending) -> impl FnMut() + 'static {
         let state = self.pending.clone();
@@ -380,7 +381,7 @@ impl SiteControls {
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(self.button(
                         "browser.site.close",
-                        &crate::CATALOG.t("browser-site-done"),
+                        "browser-site-done",
                         Pending::Close,
                     ))),
             ))
@@ -471,7 +472,7 @@ impl SiteControls {
                     .push(Box::new(
                         self.button(
                             "browser.site.revoke",
-                            &crate::CATALOG.t("browser-site-block-permissions"),
+                            "browser-site-block-permissions",
                             action("revoke"),
                         )
                         .role(ButtonRole::Destructive)
@@ -484,7 +485,7 @@ impl SiteControls {
                     column = column.push(Box::new(
                         self.button(
                             "browser.site.reset",
-                            &crate::CATALOG.t("browser-site-ask-again"),
+                            "browser-site-ask-again",
                             action("reset"),
                         )
                         .with_enabled(self.action.is_none()),
@@ -494,7 +495,7 @@ impl SiteControls {
                     .push(Box::new(
                         self.button(
                             "browser.site.clear",
-                            &crate::CATALOG.t("browser-site-clear-data"),
+                            "browser-site-clear-data",
                             action("clear"),
                         )
                         .role(ButtonRole::Destructive)
@@ -521,11 +522,11 @@ impl SiteControls {
                     .push(Box::new(
                         self.button(
                             "browser.site.toggle",
-                            &crate::CATALOG.t(if status.excepted {
+                            if status.excepted {
                                 "browser-site-protection-enable"
                             } else {
                                 "browser-site-protection-disable"
-                            }),
+                            },
                             action(if status.excepted { "enable" } else { "disable" }),
                         )
                         .with_enabled(self.action.is_none() && self.pending_reload.is_none()),
@@ -540,7 +541,7 @@ impl SiteControls {
                 column = column.push(Box::new(
                     self.button(
                         "browser.site.filters.retry",
-                        &crate::CATALOG.t("browser-site-filters-update"),
+                        "browser-site-filters-update",
                         Pending::Refresh,
                     )
                     .with_enabled(!self.filters.busy),

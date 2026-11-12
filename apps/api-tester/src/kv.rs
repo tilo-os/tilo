@@ -217,7 +217,7 @@ pub(crate) struct KvTable {
 }
 
 /// A table of `rows` followed by the blank row `blank_id`.
-pub(crate) fn build(
+pub(crate) fn build_table(
     table: Table,
     label: &str,
     rows: &[KeyValue],

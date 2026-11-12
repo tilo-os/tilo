@@ -90,6 +90,11 @@ api-tester-response-headers = Antwort-Header
 api-tester-requests = Anfragen
 api-tester-add-row = { $field } hinzufügen
 
+## What the request's panels say when there is nothing to show
+api-tester-auth-not-used = Diese Anfrage verwendet keine Anmeldung.
+api-tester-body-absent = Diese Anfrage hat keinen Inhalt.
+api-tester-form-fields = Formularfelder
+
 ## What the window shows
 api-tester-name = Name
 api-tester-variable-key-field = Variable
@@ -113,3 +118,23 @@ api-tester-copy-headers = Kopfzeilen kopieren
 api-tester-copy-request = Anfrage kopieren
 api-tester-new-collection-button = Neue Sammlung
 api-tester-reset-area = Anfragebereich zurücksetzen
+api-tester-size-more-than = Mehr als { $size }
+
+## What the request builder's selectors are called
+api-tester-auth-none = Ohne Authentifizierung
+api-tester-auth-bearer = Bearer-Token
+api-tester-auth-basic = Basic-Authentifizierung
+api-tester-auth-api-key = API-Schlüssel
+api-tester-auth-stored = Gespeicherte Authentifizierung
+api-tester-body-none = Keiner
+api-tester-body-json = JSON
+api-tester-body-form = Formular
+api-tester-body-raw = Rohtext
+api-tester-tab-params = Parameter
+api-tester-tab-headers = Kopfzeilen
+api-tester-tab-auth = Anmeldung
+api-tester-tab-body = Inhalt
+api-tester-view-pretty = Formatiert
+api-tester-view-raw = Rohtext
+api-tester-view-headers = Kopfzeilen
+api-tester-split-label = Anfrage und Antwort in der Größe ändern

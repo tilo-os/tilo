@@ -308,8 +308,14 @@ async function restingShot(tab, combo, name, up, ms = 15000, settledMs = 2000) {
   let previous = null;
   let kept = null;
   while (Date.now() - began < ms) {
+    // Whether it stood as the screenshot began: a screenshot takes seconds on the builder, and one
+    // begun while it stood is of it, even when it left before the screenshot came back.
+    const before = await up();
     const png = await tab.screenshot();
-    if (!(await up())) break;
+    if (!(await up())) {
+      if (before && png && !kept) kept = png;
+      break;
+    }
     if (png) {
       if (previous && png.equals(previous)) {
         writeFileSync(join(shotsDir, `${combo}-${name}.png`), png);
@@ -2061,6 +2067,17 @@ try {
         if (!finished) log(`${combo}: the finished notice`, (await semantics(tab)).filter(finishedNotice).map(node => node.name).join(' | ') || 'none');
         check(`${combo}: the person is told what the agent changed once it stops`, Boolean(finished),
           finished ? finished.name : names(await semantics(tab)));
+        // The agent's sessions (one per tilo mcp above) worked one run: it is told once, and a
+        // session that changed nothing tells nothing. Read while the notice stands, before its shot:
+        // it leaves a few seconds after. Told once it is done, the notice names what the run
+        // changed, never a live status ("Working in Notes") it no longer has.
+        if (finished) {
+          const told = (await semantics(tab)).filter(node => /^claude code finished/i.test(node.name));
+          check(`${combo}: one run is one finished notice`, told.length === 1,
+            told.map(node => `"${node.name}"`).join(', ') || 'none');
+          const statusLine = told.map(node => node.description ?? '').find(text => /\b(looking at|working in|reading|writing)\b/i.test(text));
+          check(`${combo}: the finished notice says no live status`, !statusLine, statusLine ?? '');
+        }
         // The notice slides in on the clock and stands a few seconds before it fades out, and the
         // builder draws a frame in seconds: it is shot once two screenshots in a row are the same
         // while it is still up, which is the notice at rest, neither part way in nor on its way out.
@@ -2073,14 +2090,6 @@ try {
           for (const dx of [0, 1, 0]) await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: x + dx, y});
         }
         await restingShot(tab, combo, 'agent-finished', async () => (await semantics(tab)).some(finishedNotice));
-        // The agent's sessions (one per tilo mcp above) worked one run: it is told once, and a
-        // session that changed nothing tells nothing. Told once it is done, the notice names what
-        // the run changed, never a live status ("Working in Notes") it no longer has.
-        const told = (await semantics(tab)).filter(node => /^claude code finished/i.test(node.name));
-        check(`${combo}: one run is one finished notice`, told.length === 1,
-          told.map(node => `"${node.name}"`).join(', ') || 'none');
-        const statusLine = told.map(node => node.description ?? '').find(text => /\b(looking at|working in|reading|writing)\b/i.test(text));
-        check(`${combo}: the finished notice says no live status`, !statusLine, statusLine ?? '');
 
         const exceptions = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
         check(`${combo}: no exceptions in the page`, exceptions.length === 0, exceptions.join(' | '));

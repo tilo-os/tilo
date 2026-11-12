@@ -11,7 +11,6 @@
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the relay co-edit session with that host.
 mod certified;
-mod checkpoint;
 mod create;
 mod document_read;
 mod effect_history;
@@ -44,10 +43,6 @@ mod workspace_membership;
 mod write;
 
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
-pub use checkpoint::{
-    CheckpointAcknowledgement, CheckpointCapture, CheckpointCompleteness, CheckpointEntry,
-    CheckpointRoute, CheckpointSchema, MaterializedCheckpoint, NameBinding, NativeCheckpoint,
-};
 pub use document_read::{
     CommittedDocument, DocumentChanges, DocumentRead, History, Holding, revision_of_heads,
 };
@@ -59,14 +54,14 @@ pub use history_content::HistoryContent;
 pub use join_service::OwnerJoinWorkspaces;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use publication::{
-    CUSTODY_FULL, HostAnswer, NativeOutgoing, NativeOutgoingEntry, RecordWrites,
+    CUSTODY_FULL, HostAnswer, NativeOutgoing, NativeOutgoingEntry, RecordWrites, SealedHistoryKeys,
     validate_file_layout,
 };
 pub use record::{
     EnrollmentTarget, NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus,
     StoredPendingEnrollment,
 };
-pub use write::{Committed, Write};
+pub use write::Committed;
 
 use crate::replica::Replica;
 use crate::{AdmissionReport, StatePeer, TransportOrigin};
@@ -177,14 +172,17 @@ struct SharedOwner {
     /// The committed record; replaced only inside a publication's `install`.
     authority: RwLock<NativeAuthorityStorage>,
     mutation: Mutex<()>,
-    /// One write of this device at a time, from its draft to its commit
-    /// ([`NativeWorkspaceOwner::write`]).
-    writes: tokio::sync::Mutex<()>,
     current: RwLock<Current>,
     listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
     /// Who hands on what this device commits to a workspace it hosts itself
     /// ([`NativeWorkspaceOwner::observe_kept_here`]).
     kept_here: Mutex<Vec<Weak<dyn NativeKeptHereObserver>>>,
+    /// The channel keys that keep this device's sealed record histories within
+    /// their bound ([`NativeWorkspaceOwner::keep_sealed_histories`]).
+    history_keys: Mutex<Option<Arc<dyn SealedHistoryKeys>>>,
+    /// How many more passes each workspace takes before a compaction that
+    /// drafted nothing is tried again.
+    compaction_wait: Mutex<BTreeMap<WorkspaceId, usize>>,
 }
 #[derive(Default)]
 struct Current {
@@ -541,10 +539,11 @@ impl NativeWorkspaceOwner {
             store,
             authority: RwLock::new(NativeAuthorityStorage::default()),
             mutation: Mutex::new(()),
-            writes: tokio::sync::Mutex::new(()),
             current: RwLock::new(Current::default()),
             listeners: Mutex::new(Vec::new()),
             kept_here: Mutex::new(Vec::new()),
+            history_keys: Mutex::new(None),
+            compaction_wait: Mutex::new(BTreeMap::new()),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -576,17 +575,17 @@ impl NativeWorkspaceOwner {
         for (workspace, record) in &authority.workspaces {
             let view = enrollment::restore(*workspace, record, now)?;
             effect_receipt::validate_history(&view, store.as_ref())?;
-            checkpoint::validate_restore(&view, store.as_ref())?;
             current.workspaces.insert(*workspace, Arc::new(view));
         }
         Ok(Self(Arc::new(SharedOwner {
             store,
             authority: RwLock::new(authority),
             mutation: Mutex::new(()),
-            writes: tokio::sync::Mutex::new(()),
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
             kept_here: Mutex::new(Vec::new()),
+            history_keys: Mutex::new(None),
+            compaction_wait: Mutex::new(BTreeMap::new()),
         })))
     }
     #[must_use]
@@ -735,20 +734,6 @@ impl NativeWorkspaceOwner {
         self.publish(workspace, &view.replica, record, None)
     }
 
-    /// Publish `workspace`'s live replica whenever `changes` says a link
-    /// admitted into it, until the link is gone.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn persist_changes(
-        &self,
-        workspace: WorkspaceId,
-        changes: &mut tokio::sync::watch::Receiver<u64>,
-    ) {
-        while changes.changed().await.is_ok() {
-            if let Err(error) = self.persist(workspace) {
-                tracing::warn!(%error, ws = %workspace, "a workspace's admitted state was not published");
-            }
-        }
-    }
     /// The verdicts this device recorded on writes in `workspace`, each with
     /// the changes of the write it refused: what its author reads to see where
     /// its write is not. Nothing outside this device's own slice is returned:

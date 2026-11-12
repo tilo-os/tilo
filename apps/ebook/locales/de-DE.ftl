@@ -116,8 +116,93 @@ ebook-selected-passage = Ausgewählte Textstelle
 ebook-manage-fonts = Schriften und Farbthemen verwalten
 ebook-close-appearance = Leseerscheinung schließen
 ebook-use-font = Schrift { $font } verwenden
-ebook-reading-theme = Lesethema { $theme }
+ebook-reading-theme = { $theme ->
+    [light] Helles Lesethema
+    [sepia] Sepia-Lesethema
+    [dark] Dunkles Lesethema
+   *[high-contrast] Kontrastreiches Lesethema
+}
 ebook-use-scheme = Farbthema { $scheme } verwenden
 ebook-untitled = Ohne Titel
 
 ebook-get = Holen
+
+## What an action is called, in a tooltip and for assistive technology
+ebook-action-open-book = Buch öffnen
+ebook-action-share-book = Buch im Arbeitsbereich freigeben
+ebook-action-share-book-title = { $book } im Arbeitsbereich freigeben
+ebook-action-remove-book = Buch aus der Bibliothek entfernen
+ebook-action-remove-book-title = { $book } aus der Bibliothek entfernen
+ebook-action-back-to-library = Zurück zur Bibliothek
+ebook-action-previous-page = Vorherige Seite
+ebook-action-next-page = Nächste Seite
+ebook-action-reading-progress = Lesefortschritt: { $progress }
+ebook-action-go-to-chapter = Zu Kapitel { $number }
+ebook-action-contents = Inhalt
+ebook-action-annotations = Anmerkungen
+ebook-action-reading-appearance = Leseerscheinung
+ebook-action-bookmark-page = Diese Seite merken
+ebook-action-increase-text = Schrift vergrößern
+ebook-action-decrease-text = Schrift verkleinern
+ebook-action-increase-spacing = Zeilenabstand vergrößern
+ebook-action-decrease-spacing = Zeilenabstand verkleinern
+ebook-action-next-typeface = Nächste Schrift verwenden
+ebook-action-mode = { $mode ->
+    [paged] Seiten-Layout
+    [continuous] Scroll-Layout
+   *[two_up] Doppelseiten-Layout
+}
+ebook-action-composition = { $style ->
+    [book] Blocksatz
+   *[ragged] Flatterrand
+}
+ebook-action-highlight = { $colour ->
+    [yellow] In Gelb hervorheben
+    [green] In Grün hervorheben
+    [pink] In Rosa hervorheben
+    [blue] In Blau hervorheben
+    [purple] In Lila hervorheben
+   *[custom] In eigener Farbe hervorheben
+}
+ebook-action-copy-selection = Ausgewählten Text kopieren
+ebook-action-reveal-annotation = Anmerkung zeigen
+ebook-action-delete-annotation = Anmerkung löschen
+ebook-action-annotation = { $action }: { $text }
+ebook-action-open-comments = Kommentare zur Markierung öffnen
+ebook-action-close-comments = Kommentare schließen
+ebook-action-delete-highlight = Markierung löschen
+ebook-action-add-comment = Kommentar hinzufügen
+ebook-action-edit-comment = Kommentar bearbeiten
+ebook-action-delete-comment = Kommentar löschen
+ebook-action-watch-folder = { $folder } beobachten
+ebook-keep-catalogues = Buchkataloge auf diesem Gerät behalten
+ebook-tab-library = Bibliothek
+ebook-tab-fonts = Schriften
+ebook-tab-schemes = Farbschemata
+ebook-tab-shortcuts = Tastenkürzel
+ebook-action-press-key = Taste für { $shortcut } drücken; Escape bricht ab
+ebook-action-shortcut-error = { $shortcut }: { $error }
+ebook-action-change-shortcut = { $shortcut } ändern, derzeit { $keys }
+ebook-action-show-scheme = { $scheme } im Leser anzeigen
+ebook-action-duplicate-scheme = { $scheme } duplizieren
+ebook-action-delete-scheme = { $scheme } löschen
+ebook-action-edit-scheme = { $scheme } bearbeiten
+ebook-action-done-editing-theme = Farbthema fertig bearbeitet
+ebook-action-new-colour-theme = Neues Farbthema
+ebook-action-edit-scheme-colour = { $slot ->
+    [page] Seitenfarbe von { $scheme } bearbeiten
+    [text] Textfarbe von { $scheme } bearbeiten
+    [accent] Akzentfarbe von { $scheme } bearbeiten
+   *[custom] Eigene Farbe von { $scheme } bearbeiten
+}
+ebook-action-rename-scheme = { $scheme } umbenennen
+ebook-action-show-font = { $font } im Leser anzeigen
+ebook-action-remove-font = { $font } entfernen
+ebook-action-add-font = Schrift hinzufügen
+ebook-action-close-font-picker = Schriftauswahl schließen
+ebook-action-add-family = { $family } hinzufügen
+ebook-action-rename-font = { $font } umbenennen
+ebook-action-open-result = Treffer öffnen
+ebook-action-get-book = Buch holen
+ebook-action-back = Zurück
+ebook-empty-comment = Leerer Kommentar

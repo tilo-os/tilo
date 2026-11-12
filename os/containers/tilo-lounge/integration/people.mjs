@@ -35,6 +35,7 @@ import {request} from 'node:https';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import * as waits from './waits.mjs';
+import {stepLimit} from './waits.mjs';
 
 const [site, relay, origin, out, rolesFile, earlier] = process.argv.slice(2);
 if (!site || !relay || !origin || !out || !rolesFile) {
@@ -42,12 +43,28 @@ if (!site || !relay || !origin || !out || !rolesFile) {
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
-// Brief: the steps that caught what broke between two people's pages (chat,
-// presence, a call and the names on its card, the strip over a few apps),
-// for a check that runs in minutes. The gate runs it all: every app, the
-// menus, an invitation.
-const brief = process.env.TILO_PEOPLE_BRIEF === '1';
-const BRIEF_APPS = ['Notes', 'Sheets', 'Calculator', 'Clocks', 'Weather', 'Tasks'];
+// One case of what two people do, each with two people of its own who join
+// and see each other first: `call` (a call, its card and hanging up), `desk`
+// (the window menu, a few apps from the search, the strip panned over Notes
+// and Sheets swiped), `menus` (a pinch, the text menu, the profile card's
+// Report a problem, the search chord, and nothing of it reaching the browser)
+// or `invite` (a person made an inviter while their page is open invites a
+// third). The cases share nothing but the Lounge, so a run starts them side by
+// side; none named runs them all in one pair, one after another.
+const only = process.env.TILO_PEOPLE_CASE ?? '';
+if (only && !['call', 'desk', 'menus', 'invite'].includes(only)) {
+  console.error(`TILO_PEOPLE_CASE is call, desk, menus or invite, not ${only}`);
+  process.exit(2);
+}
+const runs = name => !only || only === name;
+// The apps the desk case opens from the search, by label: the browser's own
+// part of opening an app (its code fetched as its window fills in, its frame
+// drawn by the page's GPU), on a few apps. That every app the page offers
+// opens from the search on the frame after Enter is an in-process test of the
+// desk's own search, in seconds
+// (crates/session/desktop-surface/tests/every_web_app_opens_from_search.rs);
+// `all` opens every one here as well.
+const APPS = (process.env.TILO_PEOPLE_APPS ?? 'Notes,Sheets,Calculator').split(',').map(label => label.trim()).filter(Boolean);
 
 const report = {site, relay, origin, at: new Date().toISOString()};
 // Every page this run opened, so a failure leaves what each one said behind.
@@ -170,7 +187,7 @@ const dump = async (tab, name) => {
 // costs the page's main thread — the same thread that is drawing its frames —
 // a turn between frames, so a wait of forty polls was adding forty turns of
 // work to the very page it waited for.
-const until = async (tab, expression, what, timeout = 90_000) => {
+const until = async (tab, expression, what, timeout = stepLimit(3)) => {
   const value = await tab.evaluate(`globalThis.__tiloWait?.(() => (${expression}), ${timeout}) ?? false`)
     .catch(() => false);
   if (value) return value;
@@ -262,7 +279,7 @@ const settle = (tab, by = 2, owed = () => true) => waits.settle({
   by,
   owed,
   sleep,
-  timeoutMs: 120_000,
+  timeoutMs: stepLimit(3),
   pollMs: 100,
   onTimeout: ({from, by}) => until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
     `the desk stepping ${by} more frame(s)`, 1),
@@ -297,7 +314,7 @@ const search = async (tab, command, query, row, opens = null) => {
     await key(tab, 'k', command);
   }
   const chorded = Date.now();
-  await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, 120_000);
+  await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, stepLimit(3));
   await type(tab, query);
   const typed = Date.now();
   const asked = JSON.stringify(query);
@@ -310,9 +327,9 @@ const search = async (tab, command, query, row, opens = null) => {
   })()`;
   let card = null;
   let last = null;
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + stepLimit(3);
   for (;;) {
-    const read = await until(tab, answered, `the desk answering "${query}"`, 120_000);
+    const read = await until(tab, answered, `the desk answering "${query}"`, stepLimit(3));
     card = JSON.parse(read);
     if (card.rows[0]?.title === row) break;
     // The same settled answer twice is the desk's answer, not a frame of one
@@ -331,7 +348,7 @@ const search = async (tab, command, query, row, opens = null) => {
   if (opens) await armOpen(tab, opens);
   await key(tab, 'Enter');
   const pressed = Date.now();
-  await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, 180_000);
+  await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, stepLimit(4));
   // Where a search's time went, in the parts a person's search has: the chord,
   // the text typed, the desk answering the query, the rows it offers, Enter,
   // and what the search waited for after it (the app's window, arriving), with
@@ -513,7 +530,7 @@ const press = async (tab, name) => {
 };
 // Press the control `name` once the desktop publishes it: the tree is read
 // again until the control is there, then pressed where it is drawn.
-const pressWhen = async (tab, name, what, timeout = 120_000) => {
+const pressWhen = async (tab, name, what, timeout = stepLimit(3)) => {
   const deadline = Date.now() + timeout;
   for (;;) {
     await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
@@ -628,7 +645,7 @@ const mounted = async (tab, name) => {
 const open = async name => {
   const tab = await anotherBrowser();
   await tab.navigate(site);
-  await until(tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, `${name} arriving`, 240_000);
+  await until(tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, `${name} arriving`, stepLimit(6));
   return mounted(tab, name);
 };
 // The invitations a site hands over: `https://<site>/i/<handle>#<key>`, the
@@ -641,7 +658,7 @@ const pageText = tab => tab.evaluate(`(document.body.innerText || '').replace(/\
 const followLink = async (name, link) => {
   const tab = await anotherBrowser();
   await tab.navigate(link);
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + stepLimit(3);
   for (;;) {
     const card = await pageText(tab);
     if (card.includes('invites you to')) {
@@ -658,7 +675,7 @@ const followLink = async (name, link) => {
   }
 };
 // The first semantic node named `name`, once the page shows it.
-const waitFor = async (tab, name, what, timeout = 120_000) => {
+const waitFor = async (tab, name, what, timeout = stepLimit(3)) => {
   const deadline = Date.now() + timeout;
   for (;;) {
     const node = JSON.parse(await find(tab, name));
@@ -707,10 +724,10 @@ try {
     const showing = `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {})`;
     await until(visitor.tab,
       `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === 'so.tilo.chat')`,
-      "V's own chat window", 120_000);
-    await until(visitor.tab, `${showing}.includes('Message composer')`, "V's chat composer", 120_000);
+      "V's own chat window", stepLimit(3));
+    await until(visitor.tab, `${showing}.includes('Message composer')`, "V's chat composer", stepLimit(3));
     await until(visitor.tab, `${showing}.includes(${JSON.stringify(earlier)})`,
-      'the chat message the workspace kept from before this start', 180_000);
+      'the chat message the workspace kept from before this start', stepLimit(4));
     report.earlier = earlier;
     console.log(`ok: the chat the workspace kept shows "${earlier}" to a person who was not here`);
     mark('the chat the workspace kept after a restart');
@@ -718,15 +735,17 @@ try {
     if (!await press(visitor.tab, 'Message composer')) failed("V's chat has no message composer", visitor.tab);
     await type(visitor.tab, reply);
     await key(visitor.tab, 'Enter');
-    await until(visitor.tab, `${showing}.includes(${JSON.stringify(reply)})`, 'the reply in the chat', 180_000);
+    await until(visitor.tab, `${showing}.includes(${JSON.stringify(reply)})`, 'the reply in the chat', stepLimit(4));
     report.reply = reply;
     await dump(visitor.tab, 'earlier-chat');
     console.log('ok: the person joining after the restart wrote in the same chat');
     mark('the person who was not here wrote in it');
     writeFileSync(`${out}/report.json`, JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report, null, 2));
-    await browser.close().catch(error => console.error('close:', error.message));
-    process.exit(0);
+    for (const launched of browsers) await launched.close().catch(error => console.error('close:', error.message));
+    // A check that failed without waiting for the exit it asked for still
+    // fails the run: every page's run is read by its status.
+    process.exit(report.error ? 1 : 0);
   }
   const a = await open('A');
   const b = await open('B');
@@ -735,7 +754,7 @@ try {
   // membership in the Lounge's workspace that nobody else holds.
   const joined = async (person, name) => {
     await until(person.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(new URL(origin).origin)}]?.room`,
-      `${name} joining the Lounge`, 240_000);
+      `${name} joining the Lounge`, stepLimit(6));
     const kept = JSON.parse(await membership(person.tab));
     if (!kept?.userPublicKey || !kept?.room) failed(`${name} joined nothing: ${JSON.stringify(kept)}`);
     person.membership = kept;
@@ -755,38 +774,45 @@ try {
   // from each page's channel diagnostics below.
   // A page counts there once its session is open, a moment after it joined:
   // the directory is read until both are, or a minute has passed.
-  const bothHere = here => [keptA, keptB].every(person => here.some(face => face.userPublicKey === person.userPublicKey));
+  //
+  // The listing shows the faces of a few of the people here and counts them
+  // all (`hereCount`), as a busy Lounge's does: a person is shown among the
+  // faces, or counted among those the faces leave out. With others in the
+  // Lounge beside these two, that count is all that names them.
+  const counted = listing => {
+    const faces = listing.here ?? [];
+    const shown = person => faces.some(face => face.userPublicKey === person.userPublicKey);
+    const unshown = [keptA, keptB].filter(person => !shown(person)).length;
+    return unshown === 0 || (listing.hereCount ?? faces.length) >= faces.length + unshown;
+  };
   let listed;
   let lounge;
-  for (const deadline = Date.now() + 60_000; ;) {
+  for (const deadline = Date.now() + stepLimit(4); ;) {
     listed = await directory();
     lounge = listed.workspaces?.find(workspace => workspace.room === keptA.room);
-    if ((lounge && bothHere(lounge.here ?? [])) || Date.now() > deadline) break;
+    if ((lounge && counted(lounge)) || Date.now() > deadline) break;
     await sleep(500);
   }
   if (!lounge) failed(`the directory does not list the workspace both joined: ${JSON.stringify(listed)}`);
   report.listing = lounge;
-  const here = lounge.here ?? [];
-  report.here = here;
-  for (const person of [keptA, keptB]) {
-    if (!here.some(face => face.userPublicKey === person.userPublicKey)) {
-      failed(`the directory does not show ${person.userPublicKey} as here: ${JSON.stringify(here)}`);
-    }
+  report.here = lounge.here ?? [];
+  if (!counted(lounge)) {
+    failed(`the directory neither shows nor counts both people as here: ${JSON.stringify({here: lounge.here, hereCount: lounge.hereCount, a: keptA.userPublicKey, b: keptB.userPublicKey})}`);
   }
 
   // A opens the Lounge's chat the way a person does — search, the app's name,
   // Enter — and writes in it: the hello lands in B's.
   await search(a.tab, a.command, 'chat', 'Chat');
   await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === 'so.tilo.chat')`,
-    "A's own chat window", 120_000);
+    "A's own chat window", stepLimit(3));
   await until(a.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('Message composer')`,
-    "A's chat composer", 120_000);
+    "A's chat composer", stepLimit(3));
   const message = `hello from A ${Date.now()}`;
   if (!await press(a.tab, 'Message composer')) failed("A's chat has no message composer", a.tab);
   await type(a.tab, message);
   await key(a.tab, 'Enter');
   await until(b.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes(${JSON.stringify(message)})`,
-    'the chat message in B', 180_000);
+    'the chat message in B', stepLimit(4));
   report.chat = message;
   console.log('ok: the chat message from A is in B');
   mark('A\'s chat message in B');
@@ -797,9 +823,9 @@ try {
   const beforeB = await dump(b.tab, '4-b-before-open');
   await search(a.tab, a.command, 'notes', 'Notes');
   await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Notes')`,
-    "A's own Notes window", 120_000);
+    "A's own Notes window", stepLimit(3));
   await until(b.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Notes')`,
-    "A's Notes window in B", 180_000);
+    "A's Notes window in B", stepLimit(4));
   report.shared = {bBefore: beforeB.windows, bAfter: (await snapshot(b.tab)).windows};
   console.log('ok: the window A opened is in B\'s strip');
   mark('A\'s window in B\'s strip');
@@ -812,7 +838,7 @@ try {
   // host's address, its relay and the plane all read from the page that used
   // them.
   const joinedPlane = async (person, who) => {
-    const deadline = Date.now() + 120_000;
+    const deadline = Date.now() + stepLimit(3);
     for (;;) {
       const channels = await person.tab.evaluate('globalThis.tiloChannels?.() ?? ""');
       const joined = channels
@@ -835,259 +861,270 @@ try {
   // page, one row per person however many devices they are here from.
   const herePeople = async tab =>
     JSON.parse(await tab.evaluate('JSON.stringify(globalThis.tiloMount?.people?.() ?? null)'));
-  const oneOther = async (person, who) => {
-    const deadline = Date.now() + 120_000;
+  // Others may be in the Lounge beside these two (a busy Lounge, or the other
+  // cases of a run): the other person is among the rows by their own key, and
+  // the person themself never is.
+  const theOther = async (person, other, who) => {
+    const deadline = Date.now() + stepLimit(3);
     for (;;) {
       const rows = await herePeople(person.tab);
-      if (Array.isArray(rows) && rows.length === 1) return rows[0];
+      const listed = Array.isArray(rows) ? rows : [];
+      if (listed.some(row => row.user === person.membership.userPublicKey)) {
+        failed(`${who} shows themself here: ${JSON.stringify(rows)}`, person.tab);
+      }
+      const row = listed.find(entry => entry.user === other.membership.userPublicKey);
+      if (row) return row;
       if (Date.now() > deadline) {
         await dump(person.tab, `timeout-people-${who}`);
-        failed(`${who} does not show exactly one other person here: ${JSON.stringify(rows)}`, person.tab);
+        failed(`${who} does not show the other person here: ${JSON.stringify(rows)}`, person.tab);
       }
       await sleep(500);
     }
   };
-  report.presence = {b: await oneOther(b, 'B'), a: await oneOther(a, 'A')};
+  report.presence = {b: await theOther(b, a, 'B'), a: await theOther(a, b, 'A')};
   if (report.presence.a.id === report.presence.b.id) {
     failed(`each desk shows the same person: ${JSON.stringify(report.presence)}`);
   }
   console.log('ok: each desk shows the other person here');
   mark('each desk shows the other here');
 
-  // A call on the page both people share. A starts it from Chat's own call
-  // control — the workspace's voice channel, joined muted, as every Tilo call
-  // starts — and B, whose channels now list the call with A in it, opens the
-  // same call from its own window. Each browser's microphone is its synthetic
-  // device, so the pages carry real Opus between them over the live plane:
-  // what each page sent and what the other heard is the call's own count.
-  // Both read the call's card — who it is with, the run time its title bar
-  // draws, and its controls — and hanging up ends it for both.
-  const nameA = report.presence.b.label; // who B sees: the person A
-  const nameB = report.presence.a.label;
-  // The same shared window in front on both desks, so its controls are where
-  // a person reaches them.
-  await search(a.tab, a.command, 'chat', 'Chat');
-  await search(b.tab, b.command, 'chat', 'Chat');
-  await until(b.tab, `(() => { globalThis.tiloMount?.requestSemantics?.();
-    return JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('Message composer'); })()`,
-    "B's chat composer", 180_000);
+  if (runs('call')) {
+    // A call on the page both people share. A starts it from Chat's own call
+    // control — the workspace's voice channel, joined muted, as every Tilo call
+    // starts — and B, whose channels now list the call with A in it, opens the
+    // same call from its own window. Each browser's microphone is its synthetic
+    // device, so the pages carry real Opus between them over the live plane:
+    // what each page sent and what the other heard is the call's own count.
+    // Both read the call's card — who it is with, the run time its title bar
+    // draws, and its controls — and hanging up ends it for both.
+    const nameA = report.presence.b.label; // who B sees: the person A
+    const nameB = report.presence.a.label;
+    // The same shared window in front on both desks, so its controls are where
+    // a person reaches them.
+    await search(a.tab, a.command, 'chat', 'Chat');
+    await search(b.tab, b.command, 'chat', 'Chat');
+    await until(b.tab, `(() => { globalThis.tiloMount?.requestSemantics?.();
+      return JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('Message composer'); })()`,
+      "B's chat composer", stepLimit(4));
 
-  // A starts the call the way a person does — the desk's search, Chat's own
-  // action — and Chat joins the workspace's voice channel muted, as every
-  // Tilo call starts, with the call's card as the window's own reading of it.
-  const cardReads = tab => tab.evaluate(`(() => {
-    globalThis.tiloMount?.requestSemantics?.();
-    const found = [];
-    const node = n => { found.push(n); (n.children || []).forEach(node); };
-    const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
-    const root = globalThis.tiloMount?.state()?.semantics?.root;
-    if (root) walk(root);
-    return JSON.stringify(found.filter(n => n.value && /^\\d+:\\d{2}$/.test(n.value)) ?? []);
-  })()`);
-  // The call's card as this page reads it: the person it names and the run
-  // time it counts, once the card is there and counting.
-  const untilCard = async (person, who, what, timeout = 180_000) => {
-    const deadline = Date.now() + timeout;
-    let cards = [];
-    for (;;) {
-      cards = JSON.parse(await cardReads(person.tab));
-      const card = cards.find(node => node.name === who);
-      if (card) return card;
-      if (Date.now() > deadline) {
-        await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-        // Who this page shows as here, by device and by person: a card that
-        // cannot name someone says whether their person was known at all.
-        const here = await herePeople(person.tab).catch(() => null);
-        failed(`${what} does not read ${JSON.stringify(who)} with a run time: ${JSON.stringify(cards)}; here: ${JSON.stringify(here)}`);
+    // A starts the call the way a person does — the desk's search, Chat's own
+    // action — and Chat joins the workspace's voice channel muted, as every
+    // Tilo call starts, with the call's card as the window's own reading of it.
+    const cardReads = tab => tab.evaluate(`(() => {
+      globalThis.tiloMount?.requestSemantics?.();
+      const found = [];
+      const node = n => { found.push(n); (n.children || []).forEach(node); };
+      const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+      const root = globalThis.tiloMount?.state()?.semantics?.root;
+      if (root) walk(root);
+      return JSON.stringify(found.filter(n => n.value && /^\\d+:\\d{2}$/.test(n.value)) ?? []);
+    })()`);
+    // The call's card as this page reads it: the person it names and the run
+    // time it counts, once the card is there and counting.
+    const untilCard = async (person, who, what, timeout = stepLimit(4)) => {
+      const deadline = Date.now() + timeout;
+      let cards = [];
+      for (;;) {
+        cards = JSON.parse(await cardReads(person.tab));
+        const card = cards.find(node => node.name === who);
+        if (card) return card;
+        if (Date.now() > deadline) {
+          await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+          // Who this page shows as here, by device and by person: a card that
+          // cannot name someone says whether their person was known at all.
+          const here = await herePeople(person.tab).catch(() => null);
+          failed(`${what} does not read ${JSON.stringify(who)} with a run time: ${JSON.stringify(cards)}; here: ${JSON.stringify(here)}`);
+        }
+        await sleep(300);
       }
-      await sleep(300);
-    }
-  };
-  const noCard = async (person, what, timeout = 120_000) => {
-    const deadline = Date.now() + timeout;
-    for (;;) {
-      const cards = JSON.parse(await cardReads(person.tab));
-      if (!cards.length) return;
-      if (Date.now() > deadline) {
-        await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-        failed(`${what}: the call's card still reads ${JSON.stringify(cards)}`);
+    };
+    const noCard = async (person, what, timeout = stepLimit(3)) => {
+      const deadline = Date.now() + timeout;
+      for (;;) {
+        const cards = JSON.parse(await cardReads(person.tab));
+        if (!cards.length) return;
+        if (Date.now() > deadline) {
+          await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+          failed(`${what}: the call's card still reads ${JSON.stringify(cards)}`);
+        }
+        await sleep(300);
       }
-      await sleep(300);
-    }
-  };
-  const untilLive = async (person, what, timeout = 180_000) => {
-    const deadline = Date.now() + timeout;
-    let call = null;
-    for (;;) {
-      call = await callOn(person.tab);
-      if (call?.phase === 'live') return call;
-      if (Date.now() > deadline) {
-        await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-        failed(`${what}: the call never went live (${JSON.stringify(call)})`);
+    };
+    const untilLive = async (person, what, timeout = stepLimit(4)) => {
+      const deadline = Date.now() + timeout;
+      let call = null;
+      for (;;) {
+        call = await callOn(person.tab);
+        if (call?.phase === 'live') return call;
+        if (Date.now() > deadline) {
+          await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+          failed(`${what}: the call never went live (${JSON.stringify(call)})`);
+        }
+        await sleep(300);
       }
-      await sleep(300);
-    }
-  };
-  // Both microphones running: the page's audio session captures the
-  // browser's synthetic device, which is what puts frames on the plane.
-  const untilCapture = async (person, what, timeout = 120_000) => {
-    const deadline = Date.now() + timeout;
-    let call = null;
-    for (;;) {
-      call = await callOn(person.tab);
-      if (call?.phase === 'live' && call.captureActive) return call;
-      if (Date.now() > deadline) {
-        await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-        failed(`${what}: the microphone never started (${JSON.stringify(call)})`);
+    };
+    // Both microphones running: the page's audio session captures the
+    // browser's synthetic device, which is what puts frames on the plane.
+    const untilCapture = async (person, what, timeout = stepLimit(3)) => {
+      const deadline = Date.now() + timeout;
+      let call = null;
+      for (;;) {
+        call = await callOn(person.tab);
+        if (call?.phase === 'live' && call.captureActive) return call;
+        if (Date.now() > deadline) {
+          await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+          failed(`${what}: the microphone never started (${JSON.stringify(call)})`);
+        }
+        await sleep(300);
       }
-      await sleep(300);
-    }
-  };
-  // The call this page takes part in, once it is over.
-  const untilNotLive = async (person, what, timeout = 120_000) => {
-    const deadline = Date.now() + timeout;
-    let call = null;
-    for (;;) {
-      call = await callOn(person.tab);
-      if (call?.phase !== 'live') return call;
-      if (Date.now() > deadline) failed(`${what}: the call is still live (${JSON.stringify(call)})`);
-      await sleep(300);
-    }
-  };
-  // What `sender`'s microphone published and `listener` heard of it: one
-  // count per page, the frames the plane carried between them.
-  const flows = async (sender, listener, what, timeout = 180_000) => {
-    const deadline = Date.now() + timeout;
-    let observed = null;
-    for (;;) {
-      const sent = await callOn(sender.tab);
-      const heard = await callOn(listener.tab);
-      observed = {sent: sent?.counters ?? null, heard: heard?.counters ?? null};
-      if ((sent?.counters?.frames ?? 0) > 20 && (heard?.counters?.heard ?? 0) > 20) return observed;
-      if (Date.now() > deadline) {
-        await dump(sender.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-        await dump(listener.tab, `timeout-hearing-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-        failed(`${what}: no audio crossed (${JSON.stringify(observed)})`);
+    };
+    // The call this page takes part in, once it is over.
+    const untilNotLive = async (person, what, timeout = stepLimit(3)) => {
+      const deadline = Date.now() + timeout;
+      let call = null;
+      for (;;) {
+        call = await callOn(person.tab);
+        if (call?.phase !== 'live') return call;
+        if (Date.now() > deadline) failed(`${what}: the call is still live (${JSON.stringify(call)})`);
+        await sleep(300);
       }
-      await sleep(500);
-    }
-  };
+    };
+    // What `sender`'s microphone published and `listener` heard of it: one
+    // count per page, the frames the plane carried between them.
+    const flows = async (sender, listener, what, timeout = stepLimit(4)) => {
+      const deadline = Date.now() + timeout;
+      let observed = null;
+      for (;;) {
+        const sent = await callOn(sender.tab);
+        const heard = await callOn(listener.tab);
+        observed = {sent: sent?.counters ?? null, heard: heard?.counters ?? null};
+        if ((sent?.counters?.frames ?? 0) > 20 && (heard?.counters?.heard ?? 0) > 20) return observed;
+        if (Date.now() > deadline) {
+          await dump(sender.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+          await dump(listener.tab, `timeout-hearing-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+          failed(`${what}: no audio crossed (${JSON.stringify(observed)})`);
+        }
+        await sleep(500);
+      }
+    };
 
-  await search(a.tab, a.command, 'start a call', 'Start a call');
-  const startedA = await untilCard(a, 'Just you', "A's call card, alone in the call");
-  console.log('ok: A started a call from Chat');
-  mark('a call started from Chat');
+    await search(a.tab, a.command, 'start a call', 'Start a call');
+    const startedA = await untilCard(a, 'Just you', "A's call card, alone in the call");
+    console.log('ok: A started a call from Chat');
+    mark('a call started from Chat');
 
-  // B is rung: the workspace's voice channel, in B's own channel list, now
-  // names A in it.
-  const untilChannelPeople = async (person, channel, who, what, timeout = 180_000) => {
-    const deadline = Date.now() + timeout;
-    let people = null;
-    for (;;) {
-      await person.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-      people = JSON.parse(await rowsUnder(person.tab, channel));
-      if (people && people.includes(who)) return people;
-      if (Date.now() > deadline) {
-        await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-        failed(`${what}: ${channel} lists ${JSON.stringify(people)}`);
+    // B is rung: the workspace's voice channel, in B's own channel list, now
+    // names A in it.
+    const untilChannelPeople = async (person, channel, who, what, timeout = stepLimit(4)) => {
+      const deadline = Date.now() + timeout;
+      let people = null;
+      for (;;) {
+        await person.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+        people = JSON.parse(await rowsUnder(person.tab, channel));
+        if (people && people.includes(who)) return people;
+        if (Date.now() > deadline) {
+          await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+          failed(`${what}: ${channel} lists ${JSON.stringify(people)}`);
+        }
+        await sleep(300);
       }
-      await sleep(300);
-    }
-  };
-  const ring = await untilChannelPeople(b, 'voice', nameA, "the call's channel in B");
-  console.log(`ok: B is rung: voice lists ${ring.join(', ')}`);
-  mark('B rung and the call listed');
-  // Nobody is left in the channel: what each desk sees once the call ended.
-  const untilChannelEmpty = async (person, channel, what, timeout = 120_000) => {
-    const deadline = Date.now() + timeout;
-    let people = null;
-    for (;;) {
-      await person.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-      people = JSON.parse(await rowsUnder(person.tab, channel));
-      if (!people || !people.length) return;
-      if (Date.now() > deadline) {
-        await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-        failed(`${what}: ${channel} still lists ${JSON.stringify(people)}`);
+    };
+    const ring = await untilChannelPeople(b, 'voice', nameA, "the call's channel in B");
+    console.log(`ok: B is rung: voice lists ${ring.join(', ')}`);
+    mark('B rung and the call listed');
+    // Nobody is left in the channel: what each desk sees once the call ended.
+    const untilChannelEmpty = async (person, channel, what, timeout = stepLimit(3)) => {
+      const deadline = Date.now() + timeout;
+      let people = null;
+      for (;;) {
+        await person.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+        people = JSON.parse(await rowsUnder(person.tab, channel));
+        if (!people || !people.length) return;
+        if (Date.now() > deadline) {
+          await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+          failed(`${what}: ${channel} still lists ${JSON.stringify(people)}`);
+        }
+        await sleep(300);
       }
-      await sleep(300);
+    };
+
+    // B opens the same call the same way: joining a call that is on is
+    // opening it.
+    await search(b.tab, b.command, 'start a call', 'Start a call');
+    const liveA = await untilLive(a, "A's call going live");
+    const liveB = await untilLive(b, "B's call going live");
+    console.log('ok: both pages are in the call');
+    mark('both pages in the call');
+    // Unmuted, both: each page's microphone is the browser's synthetic device,
+    // so unmuting is what puts audio on the plane.
+    await pressWhen(a.tab, 'Unmute', "A's microphone control");
+    await pressWhen(b.tab, 'Unmute', "B's microphone control");
+    await untilCapture(a, "A's microphone running");
+    await untilCapture(b, "B's microphone running");
+    console.log('ok: both microphones are running');
+    mark('both microphones running');
+
+    // The call's card names the other person, counts, and offers the way out:
+    // on each page the same reading of the same call.
+    const cardA = await untilCard(a, nameB, "A's call card");
+    const cardB = await untilCard(b, nameA, "B's call card");
+    for (const [who, person, card] of [['A', a, cardA], ['B', b, cardB]]) {
+      if (!/^\d+:\d{2}$/.test(card.value ?? '')) failed(`${who}'s call card shows no run time: ${JSON.stringify(card)}`);
+      if (card.description !== 'Connected') failed(`${who}'s call card is not connected: ${JSON.stringify(card.description)}`);
+      // The card's hang-up is drawn; the mute control is what unmuting left.
+      if (!JSON.parse(await find(person.tab, 'Mute'))) failed(`${who}'s call card offers no mute control`);
+      if (!JSON.parse(await find(person.tab, 'Leave call'))) failed(`${who}'s call card offers no hang-up control`);
     }
-  };
+    report.call = {startedA, cardA, cardB, ring};
 
-  // B opens the same call the same way: joining a call that is on is
-  // opening it.
-  await search(b.tab, b.command, 'start a call', 'Start a call');
-  const liveA = await untilLive(a, "A's call going live");
-  const liveB = await untilLive(b, "B's call going live");
-  console.log('ok: both pages are in the call');
-  mark('both pages in the call');
-  // Unmuted, both: each page's microphone is the browser's synthetic device,
-  // so unmuting is what puts audio on the plane.
-  await pressWhen(a.tab, 'Unmute', "A's microphone control");
-  await pressWhen(b.tab, 'Unmute', "B's microphone control");
-  await untilCapture(a, "A's microphone running");
-  await untilCapture(b, "B's microphone running");
-  console.log('ok: both microphones are running');
-  mark('both microphones running');
+    const fromA = await flows({tab: a.tab}, {tab: b.tab}, "A's audio in B");
+    const fromB = await flows({tab: b.tab}, {tab: a.tab}, "B's audio in A");
+    report.call.audio = {fromA, fromB};
+    report.call.live = {a: liveA, b: liveB};
+    console.log(`ok: each page sent audio the other heard (${JSON.stringify(report.call.audio)})`);
+    mark('the pages heard each other');
+    await dump(a.tab, '6-a-call');
+    await dump(b.tab, '6-b-call');
 
-  // The call's card names the other person, counts, and offers the way out:
-  // on each page the same reading of the same call.
-  const cardA = await untilCard(a, nameB, "A's call card");
-  const cardB = await untilCard(b, nameA, "B's call card");
-  for (const [who, person, card] of [['A', a, cardA], ['B', b, cardB]]) {
-    if (!/^\d+:\d{2}$/.test(card.value ?? '')) failed(`${who}'s call card shows no run time: ${JSON.stringify(card)}`);
-    if (card.description !== 'Connected') failed(`${who}'s call card is not connected: ${JSON.stringify(card.description)}`);
-    // The card's hang-up is drawn; the mute control is what unmuting left.
-    if (!JSON.parse(await find(person.tab, 'Mute'))) failed(`${who}'s call card offers no mute control`);
-    if (!JSON.parse(await find(person.tab, 'Leave call'))) failed(`${who}'s call card offers no hang-up control`);
+    // A hangs up: A's card goes, and B's call has A no longer in it. Each wait
+    // says what it took, so a hang-up that costs minutes names the part that
+    // did: the press, the card leaving the desk's own tree, and the call the
+    // page says is over, with the frames spent waiting.
+    const hangup = async (person, who) => {
+      const began = Date.now();
+      const framesFrom = await presented(person.tab);
+      await pressWhen(person.tab, 'Leave call', `${who}'s hang-up control`);
+      const pressed = Date.now();
+      await noCard(person, `${who}'s call card after hanging up`);
+      const gone = Date.now();
+      await untilNotLive(person, `${who} hanging up`);
+      const over = Date.now();
+      console.log(`TIMING hangup who=${who} press=${took(began)} card=${took(pressed)} live=${took(gone)}` +
+        ` done=${took(over)} frames=${await presented(person.tab) - framesFrom}`);
+    };
+    await hangup(a, 'A');
+    // What the other page showed of it: A's card gone is A's own desk, and B
+    // naming itself alone again is the call ending reaching it, which is the
+    // other half and is timed on its own.
+    const peerFrom = Date.now();
+    await untilCard(b, 'Just you', "B's call card after A hung up");
+    console.log(`TIMING hangup who=A peer=${took(peerFrom)}`);
+    console.log('ok: A hung up, and B is alone in the call');
+    mark('A hung up, B alone in the call');
+    await dump(a.tab, '7-a-hung-up');
+
+    // B hangs up too: the call is over on both desks, and no one is in the
+    // channel's call any more.
+    await hangup(b, 'B');
+    await untilChannelEmpty(a, 'voice', "A's voice channel after the call");
+    await untilChannelEmpty(b, 'voice', "B's voice channel after the call");
+    console.log('ok: hanging up ended the call for both');
+    mark('hanging up ended the call');
+    await dump(b.tab, '7-b-hung-up');
   }
-  report.call = {startedA, cardA, cardB, ring};
 
-  const fromA = await flows({tab: a.tab}, {tab: b.tab}, "A's audio in B");
-  const fromB = await flows({tab: b.tab}, {tab: a.tab}, "B's audio in A");
-  report.call.audio = {fromA, fromB};
-  report.call.live = {a: liveA, b: liveB};
-  console.log(`ok: each page sent audio the other heard (${JSON.stringify(report.call.audio)})`);
-  mark('the pages heard each other');
-  await dump(a.tab, '6-a-call');
-  await dump(b.tab, '6-b-call');
-
-  // A hangs up: A's card goes, and B's call has A no longer in it. Each wait
-  // says what it took, so a hang-up that costs minutes names the part that
-  // did: the press, the card leaving the desk's own tree, and the call the
-  // page says is over, with the frames spent waiting.
-  const hangup = async (person, who) => {
-    const began = Date.now();
-    const framesFrom = await presented(person.tab);
-    await pressWhen(person.tab, 'Leave call', `${who}'s hang-up control`);
-    const pressed = Date.now();
-    await noCard(person, `${who}'s call card after hanging up`);
-    const gone = Date.now();
-    await untilNotLive(person, `${who} hanging up`);
-    const over = Date.now();
-    console.log(`TIMING hangup who=${who} press=${took(began)} card=${took(pressed)} live=${took(gone)}` +
-      ` done=${took(over)} frames=${await presented(person.tab) - framesFrom}`);
-  };
-  await hangup(a, 'A');
-  // What the other page showed of it: A's card gone is A's own desk, and B
-  // naming itself alone again is the call ending reaching it, which is the
-  // other half and is timed on its own.
-  const peerFrom = Date.now();
-  await untilCard(b, 'Just you', "B's call card after A hung up");
-  console.log(`TIMING hangup who=A peer=${took(peerFrom)}`);
-  console.log('ok: A hung up, and B is alone in the call');
-  mark('A hung up, B alone in the call');
-  await dump(a.tab, '7-a-hung-up');
-
-  // B hangs up too: the call is over on both desks, and no one is in the
-  // channel's call any more.
-  await hangup(b, 'B');
-  await untilChannelEmpty(a, 'voice', "A's voice channel after the call");
-  await untilChannelEmpty(b, 'voice', "B's voice channel after the call");
-  console.log('ok: hanging up ended the call for both');
-  mark('hanging up ended the call');
-  await dump(b.tab, '7-b-hung-up');
-  // The desk as a laptop drives it: the launcher's search opens every app the
-  // Lounge offers, two fingers sideways pan the strip over an app that does
+  // The desk as a laptop drives it: the launcher's search opens the apps
+  // asked for (APPS), two fingers sideways pan the strip over an app that does
   // not scroll that way and scroll the app over one that does, a pinch is no
   // pan, and the window menu, a right-click menu, Report a problem and the
   // search chord are the desk's own. Nothing any of it does reaches the
@@ -1185,7 +1222,7 @@ try {
     // The menu is the frame after the click's, and a busy desk draws a few a
     // second: its rows are read until they are there.
     let row = null;
-    for (const deadline = Date.now() + 15_000; !row && Date.now() < deadline;) {
+    for (const deadline = Date.now() + stepLimit(1); !row && Date.now() < deadline;) {
       row = await choose(a.tab, /^(Fill the strip|Give the strip back)$/);
     }
     if (!row) {
@@ -1204,145 +1241,9 @@ try {
     }
     return {row, open};
   };
-  const desk = await centreOf(a.tab);
-  const barRow = await shownRow('Maximize') ?? await shownRow('Close');
-  if (!barRow) failed(`no window bar on screen to open the window menu from: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
-  const [bx0, by0, bx1, by1] = barRow.bounds;
-  const bar = {x: desk.corner.x + (bx0 + bx1) / 2, y: desk.corner.y + (by0 + by1) / 2};
-  const first = await stripRow('the window menu', bar);
-  const second = await stripRow('the window menu again', bar);
-  const [filled, given] = [first.row, second.row];
-  if (given === filled) failed(`the window menu's "${filled}" changed nothing: the menu offered it again ${JSON.stringify({bar, openAfterClick: first.open})}`);
-  report.windowMenu = {filled, given};
-  console.log(`ok: the window menu opens from the window bar, and its rows fill the strip and give it back (${filled}, then ${given})`);
-  mark('the window menu filled and gave back the strip');
-
-  // Every app the Lounge offers opens from the launcher's search.
-  const offered = (await nav(a.tab))?.applications ?? [];
-  const applications = brief ? offered.filter(application => BRIEF_APPS.includes(application.label)) : offered;
-  if (!applications.length) failed('the Lounge offers no app');
-  const opened = [];
-  // What a person waits for: Enter on the app's row, to the desk showing its
-  // window. Opening an app is a window on the desk the person already has;
-  // the app's own code arriving is that window filling in, and it must not
-  // hold the window back. The desk draws the window on the frame after the one
-  // that took the key, and that is the whole wait: past it the desk reads as
-  // not having heard the person. How long that frame took to reach the screen
-  // is this machine's rasteriser, so it is reported and not held against the
-  // desk.
-  const OPEN_FRAMES = 1;
-  const timings = [];
-  const started = Date.now();
-  for (const application of applications) {
-    const appBegan = Date.now();
-    await search(a.tab, a.command, application.label.toLowerCase(), application.label, application.id);
-    const searched = Date.now();
-    await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(application.id)})`,
-      `the window of ${application.label}`, 180_000);
-    const arrived = Date.now();
-    // The entry is published in the pass that draws the window, and that
-    // frame reaches the page when the GPU has room for it, which on a busy
-    // software rasteriser is seconds later: the open is measured on that
-    // frame, so it is waited for, and one that never comes is said below.
-    await a.tab.evaluate(`globalThis.__tiloWait?.(() => {
-      const watch = globalThis.__tiloOpen;
-      watch?.read?.();
-      return !watch || watch.shownAt !== null;
-    }, 60_000) ?? false`).catch(() => false);
-    const marks = await openMarks(a.tab);
-    // An open the page's own clock never saw begun or never saw end is not a
-    // fast one: it is no reading, and the gate says so instead of counting a
-    // missing number as zero frames.
-    if (!marks.ok) {
-      failed(`${application.label} opened, but Enter to its window was not measured (${JSON.stringify(marks)}); an unmeasured open is not a fast one`, a.tab);
-    }
-    timings.push({app: application.id, ...marks});
-    const shot = await a.tab.screenshot();
-    if (shot) writeFileSync(`${out}/app-${application.id.replace(/[^a-z0-9]+/gi, '-')}.png`, shot);
-    opened.push(application.id);
-    // Where one app's open went: the search for it, its window arriving, the
-    // frame that showed it, and the picture kept of it.
-    const at = Date.now();
-    console.log(`TIMING app=${application.id} search=${((searched - appBegan) / 1000).toFixed(1)} window=${((arrived - searched) / 1000).toFixed(1)} drawn=${((at - arrived) / 1000).toFixed(1)} shot=${((Date.now() - at) / 1000).toFixed(1)}`);
-  }
-  const spent = Math.round((Date.now() - started) / 1000);
-  report.applications = {offered: applications.map(application => application.id), opened, seconds: spent, presented: timings};
-  const slow = timings.filter(timing => timing.frames > OPEN_FRAMES);
-  console.log(`ok: each of the ${applications.length} apps the Lounge offers opened from the search (${spent}s)`);
-  mark('every app opened from the search');
-  for (const timing of timings) {
-    console.log(`  ${timing.app}: ${timing.presentMs === null ? 'on the frame that took its key' : `${timing.presentMs} ms from Enter to its window`}`);
-  }
-  if (slow.length) {
-    failed(`${slow.length} of ${timings.length} apps showed their window more than ${OPEN_FRAMES} frame after Enter: ${slow.map(timing => `${timing.app} ${timing.frames}`).join(', ')}`);
-  }
-
-  // Two fingers sideways over Notes, which does not scroll that way: the
-  // strip pans by the gesture and the windows stay as they were.
-  const centre = await centreOf(a.tab);
-  await search(a.tab, a.command, 'notes', 'Notes');
-  await settle(a.tab, 2);
-  // Where Notes' own window is once the strip is at rest: with a few windows
-  // open the middle of the desk can be another window's, one whose content
-  // scrolls sideways itself.
-  const keptNotes = await restingPan(a.tab);
-  const notesButton = await notesPoint(a.tab);
-  if (!notesButton) failed('Notes shows no New note button to find its window by');
-  // In Notes' column, at the desk's middle height: its body, not the window's
-  // bar, whose row of tabs scrolls sideways itself.
-  const overNotes = {x: notesButton.x, y: centre.y};
-  const windowsBefore = (await snapshot(a.tab)).windows;
-  const panBefore = keptNotes ?? await panOf(a.tab);
-  if (!panBefore) failed('the strip does not overflow, so nothing can pan');
-  // The way the strip still has room: a gesture at its end pans nothing.
-  const forward = panBefore.offset < panBefore.max / 2;
-  const frameBefore = await picture(a.tab);
-  await sidewaysSwipe(a.tab, overNotes.x, overNotes.y, forward, async () => {
-    const midScroll = await a.tab.screenshot();
-    if (midScroll) writeFileSync(`${out}/strip-mid-scroll.png`, midScroll);
-  });
-  // Where the swipe left the strip, once it has come to rest: a reveal still
-  // sliding is no pan.
-  const panAfter = await restingPan(a.tab);
-  const moved = panAfter.offset - panBefore.offset;
-  report.sideways = {forward, before: panBefore, after: panAfter, at: overNotes, under: await namesAt(a.tab, overNotes.x, overNotes.y)};
-  if (Math.abs(moved) < 1) {
-    failed(`two fingers sideways do not pan the strip over Notes: ${JSON.stringify(report.sideways)}`, a.tab);
-  }
-  if (Math.sign(moved) !== (forward ? 1 : -1)) {
-    failed(`two fingers sideways panned the strip against the fingers: ${JSON.stringify(report.sideways)}`);
-  }
-  if ((await snapshot(a.tab)).windows.join() !== windowsBefore.join()) failed('a sideways pan changed the windows');
-  if (await picture(a.tab) === frameBefore) failed('the strip did not repaint as it panned');
-  console.log(`ok: two fingers sideways pan the strip over Notes (${panBefore.offset} to ${panAfter.offset})`);
-  mark('a sideways pan over Notes');
-
-  // The same gesture over Sheets, whose grid scrolls sideways itself: the app
-  // takes it and the strip stays where it was.
-  // The fingers rest on Sheets' grid, wherever on the strip the search
-  // brought its window: the middle of the desk can be another window's then,
-  // whose sideways wheel the strip takes, as it should.
-  // The search slides the strip to Sheets: the swipe waits until it is at rest.
-  await search(a.tab, a.command, 'sheets', 'Sheets');
-  await settle(a.tab, 2);
-  // Where B2 is, read once the strip is at rest: read while it still slides,
-  // the fingers would land wherever B2 was, on another window by then.
-  const keptPan = await restingPan(a.tab);
-  const cell = await sheetCell(a.tab);
-  if (!cell) failed('Sheets shows no cell B2 to swipe over');
-  const sheetBefore = await picture(a.tab);
-  // Toward the later columns: a sheet opens on its first one, so that is where
-  // its room is. Which way the strip has room says nothing about the grid —
-  // a swipe the columns cannot follow is the strip's, and would pan it.
-  await sidewaysSwipe(a.tab, cell.x, cell.y, true);
-  const sheetPan = await panOf(a.tab);
-  report.sheets = {before: keptPan, after: sheetPan, cell, underCentre: await namesAt(a.tab, centre.x, centre.y)};
-  if ((sheetPan?.offset ?? 0) !== (keptPan?.offset ?? 0)) {
-    failed(`the strip panned under a sideways wheel Sheets scrolled with: ${JSON.stringify(report.sheets)}`, a.tab);
-  }
-  if (await picture(a.tab) === sheetBefore) failed('Sheets did not scroll sideways with the fingers', a.tab);
-  console.log('ok: the same gesture scrolls Sheets and leaves the strip');
-  mark('a sideways swipe over Sheets');
+  // Where the desk's middle is, once the desk case or the menus case has
+  // looked: the pinch, the right-click and the profile card's swipe act there.
+  let centre = null;
 
   // Report a problem: the bar's own avatar, then the card's row. After a
   // while here the bar asks about the person beside their avatar, and while
@@ -1392,8 +1293,154 @@ try {
     await key(a.tab, 'Escape');
   };
 
+  if (runs('desk')) {
+    const desk = await centreOf(a.tab);
+    const barRow = await shownRow('Maximize') ?? await shownRow('Close');
+    if (!barRow) failed(`no window bar on screen to open the window menu from: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
+    const [bx0, by0, bx1, by1] = barRow.bounds;
+    const bar = {x: desk.corner.x + (bx0 + bx1) / 2, y: desk.corner.y + (by0 + by1) / 2};
+    const first = await stripRow('the window menu', bar);
+    const second = await stripRow('the window menu again', bar);
+    const [filled, given] = [first.row, second.row];
+    if (given === filled) failed(`the window menu's "${filled}" changed nothing: the menu offered it again ${JSON.stringify({bar, openAfterClick: first.open})}`);
+    report.windowMenu = {filled, given};
+    console.log(`ok: the window menu opens from the window bar, and its rows fill the strip and give it back (${filled}, then ${given})`);
+    mark('the window menu filled and gave back the strip');
+
+    // The apps asked for open from the launcher's search, each one the Lounge
+    // offers: a label it does not offer is a failure, not a smaller run.
+    const offered = (await nav(a.tab))?.applications ?? [];
+    const applications = APPS.includes('all') ? offered : offered.filter(application => APPS.includes(application.label));
+    const missing = APPS.filter(label => label !== 'all' && !offered.some(application => application.label === label));
+    if (missing.length) failed(`the Lounge does not offer ${missing.join(', ')}: ${offered.map(application => application.label).join(', ')}`);
+    if (!applications.length) failed('the Lounge offers no app');
+    const opened = [];
+    // What a person waits for: Enter on the app's row, to the desk showing its
+    // window. Opening an app is a window on the desk the person already has;
+    // the app's own code arriving is that window filling in, and it must not
+    // hold the window back. The desk draws the window on the frame after the one
+    // that took the key, and that is the whole wait: past it the desk reads as
+    // not having heard the person. How long that frame took to reach the screen
+    // is this machine's rasteriser, so it is reported and not held against the
+    // desk.
+    const OPEN_FRAMES = 1;
+    const timings = [];
+    const started = Date.now();
+    for (const application of applications) {
+      const appBegan = Date.now();
+      await search(a.tab, a.command, application.label.toLowerCase(), application.label, application.id);
+      const searched = Date.now();
+      await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(application.id)})`,
+        `the window of ${application.label}`, stepLimit(4));
+      const arrived = Date.now();
+      // The entry is published in the pass that draws the window, and that
+      // frame reaches the page when the GPU has room for it, which on a busy
+      // software rasteriser is seconds later: the open is measured on that
+      // frame, so it is waited for, and one that never comes is said below.
+      await a.tab.evaluate(`globalThis.__tiloWait?.(() => {
+        const watch = globalThis.__tiloOpen;
+        watch?.read?.();
+        return !watch || watch.shownAt !== null;
+      }, ${stepLimit(4)}) ?? false`).catch(() => false);
+      const marks = await openMarks(a.tab);
+      // An open the page's own clock never saw begun or never saw end is not a
+      // fast one: it is no reading, and the gate says so instead of counting a
+      // missing number as zero frames.
+      if (!marks.ok) {
+        failed(`${application.label} opened, but Enter to its window was not measured (${JSON.stringify(marks)}); an unmeasured open is not a fast one`, a.tab);
+      }
+      timings.push({app: application.id, ...marks});
+      const shot = await a.tab.screenshot();
+      if (shot) writeFileSync(`${out}/app-${application.id.replace(/[^a-z0-9]+/gi, '-')}.png`, shot);
+      opened.push(application.id);
+      // Where one app's open went: the search for it, its window arriving, the
+      // frame that showed it, and the picture kept of it.
+      const at = Date.now();
+      console.log(`TIMING app=${application.id} search=${((searched - appBegan) / 1000).toFixed(1)} window=${((arrived - searched) / 1000).toFixed(1)} drawn=${((at - arrived) / 1000).toFixed(1)} shot=${((Date.now() - at) / 1000).toFixed(1)}`);
+    }
+    const spent = Math.round((Date.now() - started) / 1000);
+    report.applications = {offered: applications.map(application => application.id), opened, seconds: spent, presented: timings};
+    const slow = timings.filter(timing => timing.frames > OPEN_FRAMES);
+    console.log(`ok: each of the ${applications.length} apps the Lounge offers opened from the search (${spent}s)`);
+    mark('every app opened from the search');
+    for (const timing of timings) {
+      console.log(`  ${timing.app}: ${timing.presentMs === null ? 'on the frame that took its key' : `${timing.presentMs} ms from Enter to its window`}`);
+    }
+    if (slow.length) {
+      failed(`${slow.length} of ${timings.length} apps showed their window more than ${OPEN_FRAMES} frame after Enter: ${slow.map(timing => `${timing.app} ${timing.frames}`).join(', ')}`);
+    }
+
+    // Two fingers sideways over Notes, which does not scroll that way: the
+    // strip pans by the gesture and the windows stay as they were.
+    centre = await centreOf(a.tab);
+    await search(a.tab, a.command, 'notes', 'Notes');
+    await settle(a.tab, 2);
+    // Where Notes' own window is once the strip is at rest: with a few windows
+    // open the middle of the desk can be another window's, one whose content
+    // scrolls sideways itself.
+    const keptNotes = await restingPan(a.tab);
+    const notesButton = await notesPoint(a.tab);
+    if (!notesButton) failed('Notes shows no New note button to find its window by');
+    // In Notes' column, at the desk's middle height: its body, not the window's
+    // bar, whose row of tabs scrolls sideways itself.
+    const overNotes = {x: notesButton.x, y: centre.y};
+    const windowsBefore = (await snapshot(a.tab)).windows;
+    const panBefore = keptNotes ?? await panOf(a.tab);
+    if (!panBefore) failed('the strip does not overflow, so nothing can pan');
+    // The way the strip still has room: a gesture at its end pans nothing.
+    const forward = panBefore.offset < panBefore.max / 2;
+    const frameBefore = await picture(a.tab);
+    await sidewaysSwipe(a.tab, overNotes.x, overNotes.y, forward, async () => {
+      const midScroll = await a.tab.screenshot();
+      if (midScroll) writeFileSync(`${out}/strip-mid-scroll.png`, midScroll);
+    });
+    // Where the swipe left the strip, once it has come to rest: a reveal still
+    // sliding is no pan.
+    const panAfter = await restingPan(a.tab);
+    const moved = panAfter.offset - panBefore.offset;
+    report.sideways = {forward, before: panBefore, after: panAfter, at: overNotes, under: await namesAt(a.tab, overNotes.x, overNotes.y)};
+    if (Math.abs(moved) < 1) {
+      failed(`two fingers sideways do not pan the strip over Notes: ${JSON.stringify(report.sideways)}`, a.tab);
+    }
+    if (Math.sign(moved) !== (forward ? 1 : -1)) {
+      failed(`two fingers sideways panned the strip against the fingers: ${JSON.stringify(report.sideways)}`);
+    }
+    if ((await snapshot(a.tab)).windows.join() !== windowsBefore.join()) failed('a sideways pan changed the windows');
+    if (await picture(a.tab) === frameBefore) failed('the strip did not repaint as it panned');
+    console.log(`ok: two fingers sideways pan the strip over Notes (${panBefore.offset} to ${panAfter.offset})`);
+    mark('a sideways pan over Notes');
+
+    // The same gesture over Sheets, whose grid scrolls sideways itself: the app
+    // takes it and the strip stays where it was.
+    // The fingers rest on Sheets' grid, wherever on the strip the search
+    // brought its window: the middle of the desk can be another window's then,
+    // whose sideways wheel the strip takes, as it should.
+    // The search slides the strip to Sheets: the swipe waits until it is at rest.
+    await search(a.tab, a.command, 'sheets', 'Sheets');
+    await settle(a.tab, 2);
+    // Where B2 is, read once the strip is at rest: read while it still slides,
+    // the fingers would land wherever B2 was, on another window by then.
+    const keptPan = await restingPan(a.tab);
+    const cell = await sheetCell(a.tab);
+    if (!cell) failed('Sheets shows no cell B2 to swipe over');
+    const sheetBefore = await picture(a.tab);
+    // Toward the later columns: a sheet opens on its first one, so that is where
+    // its room is. Which way the strip has room says nothing about the grid —
+    // a swipe the columns cannot follow is the strip's, and would pan it.
+    await sidewaysSwipe(a.tab, cell.x, cell.y, true);
+    const sheetPan = await panOf(a.tab);
+    report.sheets = {before: keptPan, after: sheetPan, cell, underCentre: await namesAt(a.tab, centre.x, centre.y)};
+    if ((sheetPan?.offset ?? 0) !== (keptPan?.offset ?? 0)) {
+      failed(`the strip panned under a sideways wheel Sheets scrolled with: ${JSON.stringify(report.sheets)}`, a.tab);
+    }
+    if (await picture(a.tab) === sheetBefore) failed('Sheets did not scroll sideways with the fingers', a.tab);
+    console.log('ok: the same gesture scrolls Sheets and leaves the strip');
+    mark('a sideways swipe over Sheets');
+  }
+
   let invited = null;
-  if (!brief) {
+  if (runs('menus')) {
+    centre ??= await centreOf(a.tab);
     // A pinch, which a browser sends as Ctrl+wheel, is the window's zoom and
     // never a pan, with or without a sideways part.
     const beforePinch = await panOf(a.tab);
@@ -1425,7 +1472,7 @@ try {
     const shownBefore = new Set(await namesOf(a.tab));
     await rightClick(a.tab, centre.corner.x + (cx0 + cx1) / 2, centre.corner.y + (cy0 + cy1) / 2);
     let textRow = null;
-    for (const deadline = Date.now() + 15_000; !textRow && Date.now() < deadline;) {
+    for (const deadline = Date.now() + stepLimit(1); !textRow && Date.now() < deadline;) {
       textRow = (await namesOf(a.tab))
         .find(name => /^(Paste|Paste and match style|Copy|Cut|Select all)\b/.test(name) && !shownBefore.has(name)) ?? null;
       if (!textRow) await sleep(250);
@@ -1445,9 +1492,9 @@ try {
     // frame: the waits are the ones a search gets everywhere in this gate.
     await click(a.tab, 640, 700);
     await key(a.tab, 'k', a.command);
-    await until(a.tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search chord', 120_000);
+    await until(a.tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search chord', stepLimit(3));
     await key(a.tab, 'Escape');
-    await until(a.tab, '!globalThis.tiloMount?.state()?.searchOpen', 'the search closing', 180_000);
+    await until(a.tab, '!globalThis.tiloMount?.state()?.searchOpen', 'the search closing', stepLimit(4));
     console.log('ok: the search chord opens the search and Escape closes it');
     mark('the search chord and Escape');
 
@@ -1473,7 +1520,9 @@ try {
     }
     console.log('ok: no wheel, key or click reached the browser');
     mark('no wheel, key or click reached the browser');
+  }
 
+  if (runs('invite')) {
     // A person the workspace lets invite, from the page itself: the workspace
     // declares them one while their page stands open (the roles file the
     // deployment mounts, which the Lounge takes in again as it changes), and
@@ -1497,10 +1546,10 @@ try {
     await waitFor(a.tab, 'Commenter', "the invite sheet's Commenter part");
     if (!await press(a.tab, 'Commenter')) await failed('the invite sheet offers no Commenter part', a.tab);
     await until(a.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('add comments, but cannot edit it')`,
-      "the sheet's chosen role under the choice", 60_000);
+      "the sheet's chosen role under the choice", stepLimit(2));
     if (!await press(a.tab, 'Create link')) await failed('the invite sheet offers no Create link', a.tab);
     const made = await (async () => {
-      const deadline = Date.now() + 120_000;
+      const deadline = Date.now() + stepLimit(3);
       for (;;) {
         const link = (await nodeValues(a.tab)).find(value => sealedLink.test(value));
         if (link) return link;
@@ -1559,7 +1608,7 @@ try {
       return !!button;
     })()`);
     if (!pressed) await failed('the invitation card went away before Join', c.tab);
-    const arrivalDeadline = Date.now() + 240_000;
+    const arrivalDeadline = Date.now() + stepLimit(6);
     let offered = null;
     for (;;) {
       offered ??= (await snapshot(a.tab)).names.find(name => /^Let .+ in$/.test(name)) ?? null;
@@ -1587,10 +1636,13 @@ try {
     // The desk each person is in is the desk the new person is on too: A's
     // People list names them beside B.
     const rowsAfter = await (async () => {
-      const deadline = Date.now() + 120_000;
+      const deadline = Date.now() + stepLimit(3);
       for (;;) {
         const rows = await herePeople(a.tab);
-        if (Array.isArray(rows) && rows.length === 2) return rows;
+        const listed = Array.isArray(rows) ? rows : [];
+        if (listed.some(row => row.user === keptC.userPublicKey) && listed.some(row => row.id === report.presence.a.id)) {
+          return listed;
+        }
         if (Date.now() > deadline) {
           await dump(a.tab, 'timeout-people-invited');
           await failed(`A's desk does not show the invitation's person beside B: ${JSON.stringify(rows)}`, a.tab);
@@ -1599,18 +1651,12 @@ try {
       }
     })();
     report.hereAfter = rowsAfter.map(row => ({id: row.id, user: row.user ?? null, label: row.label}));
-    const invitedRow = rowsAfter.find(row => row.id !== report.presence.a.id);
-    if (!invitedRow) await failed('the two rows A sees are one person', a.tab);
-    if (invitedRow.user && invitedRow.user !== keptC.userPublicKey) {
-      await failed(`A's desk shows the invitation's arrival as ${invitedRow.user}`, a.tab);
-    }
+    const invitedRow = rowsAfter.find(row => row.user === keptC.userPublicKey);
+    if (invitedRow.id === report.presence.a.id) await failed('A sees B and the invitation\'s person as one row', a.tab);
     console.log(`ok: A's desk shows ${invitedRow.label} beside B`);
     mark('A\'s desk shows the invitee');
     await dump(a.tab, '11-a-people-invited');
   }
-  // The short check opens the card too: it is the step that tells a bar whose
-  // own avatar went missing or opens nothing.
-  if (brief) await reportProblem();
 
   // Nothing failed in either page.
   const both = [...a.tab.log, ...b.tab.log, ...(invited?.tab.log ?? [])];  const errors = both.filter(line => /^EXC/.test(line) || /panic/i.test(line));
@@ -1639,4 +1685,6 @@ try {
 } finally {
   for (const browser of browsers) await browser.close().catch(error => console.error('close:', error.message));
 }
-process.exit(0);
+// A check that failed without waiting for the exit it asked for still fails
+// the run: every page's run is read by its status.
+process.exit(report.error ? 1 : 0);

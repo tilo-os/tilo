@@ -101,7 +101,7 @@ pub fn start_record(
 }
 
 /// Found `name` on `owner` as `certificate`'s device, naming its own host.
-pub fn founded(
+pub async fn founded(
     owner: &NativeWorkspaceOwner,
     name: &str,
     certificate: &DeviceCert,
@@ -109,14 +109,16 @@ pub fn founded(
     now: SystemTime,
 ) -> Result<WorkspaceId, String> {
     let workspace = WorkspaceId::new();
-    owner.create_workspace(
-        workspace,
-        name,
-        certificate,
-        key,
-        Some(&own_host_hint_here(workspace, certificate, key)),
-        now,
-    )?;
+    owner
+        .create_workspace(
+            workspace,
+            name,
+            certificate,
+            key,
+            Some(&own_host_hint_here(workspace, certificate, key)),
+            now,
+        )
+        .await?;
     Ok(workspace)
 }
 
@@ -242,13 +244,7 @@ pub fn certificate_with(
     cert
 }
 
-pub fn raw_fixture() -> (
-    VerifiedNativeEnrollmentIntent,
-    join::JoinBootstrap,
-    Vec<NeighbourMsg>,
-    [u8; 32],
-    SystemTime,
-) {
+pub fn raw_fixture() -> RawFixture {
     raw_fixture_at(tilo_clock::wall())
 }
 /// The joining device's own key the raw fixture enrolls.
@@ -390,15 +386,23 @@ fn seeded(now: SystemTime) -> Seeded {
     }
 }
 
-pub fn raw_fixture_at(
-    now: SystemTime,
-) -> (
+/// A member's enrollment into a governed workspace: its intent, the host's
+/// bootstrap, the governor's history, the governor's device and the time.
+pub type RawFixture = (
     VerifiedNativeEnrollmentIntent,
     join::JoinBootstrap,
     Vec<NeighbourMsg>,
     [u8; 32],
     SystemTime,
-) {
+);
+
+pub fn raw_fixture_at(now: SystemTime) -> RawFixture {
+    governed_fixture_at(now).0
+}
+
+/// [`raw_fixture_at`], with the governor's own replica of the workspace and
+/// its key: the host a member's writes reach, which writes too.
+pub fn governed_fixture_at(now: SystemTime) -> (RawFixture, StatePeer, SigningKey) {
     let Seeded {
         governor_key,
         governor,
@@ -471,7 +475,11 @@ pub fn raw_fixture_at(
         now,
     )
     .unwrap();
-    (intent, bootstrap, messages, governor.device_public_key, now)
+    (
+        (intent, bootstrap, messages, governor.device_public_key, now),
+        peer,
+        governor_key,
+    )
 }
 /// A workspace a newcomer's host vouched for, as that newcomer's session is
 /// sent it in parts: its governance before the change admitting the

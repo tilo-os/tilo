@@ -352,11 +352,14 @@ impl CameraApp {
             Timer::S10 => "10 s",
         };
         let next_timer = super::cycle(&Timer::ALL, self.settings.timer);
+        let resolution = crate::CATALOG.t("camera-settings-resolution");
+        let timer = crate::CATALOG.t("camera-settings-timer");
+        let grid = crate::CATALOG.t("camera-settings-grid");
         let mut leading = vec![
             HudItem {
                 label: self.settings.resolution.label(),
                 icon: None,
-                name: "Resolution",
+                name: &resolution,
                 on: None,
                 action: Action::CycleResolution,
             },
@@ -370,14 +373,14 @@ impl CameraApp {
             HudItem {
                 label: timer_label,
                 icon: Some(Icon::Timer),
-                name: "Self-timer",
+                name: &timer,
                 on: Some(self.settings.timer != Timer::Off),
                 action: Action::SetTimer(next_timer),
             },
             HudItem {
                 label: "",
                 icon: Some(Icon::LayoutGrid),
-                name: "Rule-of-thirds grid",
+                name: &grid,
                 on: Some(self.settings.grid),
                 action: Action::ToggleGrid,
             },
@@ -483,10 +486,11 @@ impl CameraApp {
         shutter: Rect,
     ) {
         let m = HudMetrics::of(theme);
+        let switch_camera = crate::CATALOG.t("camera-a11y-switch-camera-plain");
         let items = [HudItem {
             label: "",
             icon: Some(Icon::SwitchCamera),
-            name: "Switch camera",
+            name: &switch_camera,
             on: None,
             action: Action::CycleFacing,
         }];
@@ -534,7 +538,7 @@ impl CameraApp {
         let duration = countdown.due.saturating_duration_since(ui::time::now());
         let remaining = (duration.as_secs() + u64::from(duration.subsec_nanos() != 0)).max(1);
         let count = remaining.to_string();
-        let hint = CATALOG.t("Tap the shutter to cancel");
+        let hint = CATALOG.t("camera-countdown-cancel-hint");
         let local = on_panel(theme);
         let m = HudMetrics::of(theme);
         let gap = f64::from(theme.tokens.spacing.s2);

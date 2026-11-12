@@ -34,6 +34,11 @@ pub struct HintPlaces {
     /// each: content no hint may stand over, and no control under which it
     /// can point.
     pub over: Vec<Rect>,
+    /// Where the shown windows' apps stand cards of their own over their
+    /// content (an agent's activity), as one rect each
+    /// ([`crate::presence::interaction_card_slots`]): a place no hint stands
+    /// either, since the app's card may be there whether or not it is now.
+    pub app_cards: Vec<Rect>,
 }
 
 /// Whether `window`'s content is asking the person to type: a text field of
@@ -100,6 +105,21 @@ impl GroupRow {
                 .iter()
                 .filter(|group| self.is_floating(group.id))
                 .map(|group| group.get_rect().union(group.bar_rect()))
+                .collect(),
+            app_cards: self
+                .groups
+                .iter()
+                .enumerate()
+                .filter(|(i, group)| shown(*i, group) && !self.is_floating(group.id))
+                .flat_map(|(_, group)| {
+                    let rect = group.get_rect();
+                    let content =
+                        Rect::new(rect.x0, group.bar_rect().y1.max(rect.y0), rect.x1, rect.y1);
+                    crate::presence::interaction_card_slots(content)
+                        .into_iter()
+                        .map(move |slot| slot.intersect(content))
+                        .filter(|slot| !slot.is_zero_area())
+                })
                 .collect(),
         }
     }
@@ -290,6 +310,52 @@ mod tests {
         assert!(
             free.x0 >= group.tab_rects()[0].x1,
             "{free:?} past the title"
+        );
+    }
+
+    // An app stands cards of its own over its window's content (an agent's activity): the corners it
+    // stands them in are reported as places no hint may stand, so the two never cover each other.
+    #[test]
+    fn a_shown_window_reports_the_corners_its_app_stands_cards_in() {
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        row.groups[0].focused = true;
+        let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
+        let places = row.hint_places();
+        let cards = places.app_cards;
+        assert_eq!(
+            cards.len(),
+            6,
+            "three cards' places for each of two windows: {cards:?}"
+        );
+        for (index, group) in row.groups.iter().enumerate() {
+            let rect = group.get_rect();
+            let content = Rect::new(rect.x0, group.bar_rect().y1.max(rect.y0), rect.x1, rect.y1);
+            let first = cards[index * 3];
+            assert_eq!(
+                first.x1,
+                content.x1 - 12.0,
+                "the window's trailing edge, a card's margin in: {first:?}"
+            );
+            assert_eq!(
+                first.y0,
+                content.y0 + 12.0,
+                "the top of its content: {first:?}"
+            );
+            assert!(content.contains_rect(first), "{first:?} in {content:?}");
+        }
+        // A window lifted out of the strip shows no content of its own here: its card's own corners
+        // are the floating card reported whole, not slots inside it.
+        use crate::widget::Widget as _;
+        use std::collections::HashMap;
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        let mut floats = HashMap::new();
+        floats.insert(row.groups[1].id, Rect::new(880.0, 120.0, 1240.0, 640.0));
+        row.set_floats(floats);
+        let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
+        assert_eq!(
+            row.hint_places().app_cards.len(),
+            3,
+            "the strip's one window keeps its corners"
         );
     }
 

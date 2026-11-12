@@ -15,7 +15,7 @@
 
 use std::{marker::PhantomData, path::Path, rc::Rc, sync::OnceLock};
 
-use tilo_clock::{Duration, SystemTime, UNIX_EPOCH};
+use tilo_clock::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::UI::Notifications::{
     NotificationSetting, ScheduledToastNotification, ToastNotification, ToastNotificationManager,

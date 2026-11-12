@@ -259,7 +259,7 @@ suites = [
 
 [[group]]
 name = "lounge-waits"
-# The Lounge gate's waits end on what the desk answers rather than on frames drawn; the
+# The page drivers' waits end on what the desk answers rather than on frames drawn; the
 # test drives them against a stand-in desk, so it needs no image and no browser.
 inputs = ["os/containers/tilo-lounge/integration/"]
 suites = ["os/containers/tilo-lounge/integration/waits.test.mjs"]
@@ -1641,20 +1641,12 @@ suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
 reason = "needs the built web entry image"
 
 [[covered]]
-suite = "os/containers/tilo-lounge/test-page-boot.sh"
-check = "page-boot"
-
-[[covered]]
-suite = "os/containers/tilo-lounge/test-setup-resume.sh"
-check = "setup-resume"
+suite = "os/containers/tilo-lounge/test-e2e.sh"
+check = "e2e"
 
 [[unrequired]]
 suite = "os/containers/tilo-sh/test-vm-host.sh"
 reason = "needs root, KVM, loop devices and the built VM host and hosted guest images; the tilo-sh-vm-host check runs it in a VM of its own on dispatch"
-
-[[unrequired]]
-suite = "os/containers/tilo-lounge/test-agent-setup.sh"
-reason = "needs the built web desktop bundle, headless Chromium and the built relay, CLI and crypto programs; the agent-setup check runs it in its image"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-wait-list-door.sh"
@@ -1665,20 +1657,8 @@ suite = "os/containers/tilo-lounge/test-page-tour.sh"
 reason = "a newcomer's tour kept as pictures for a person to review, judging nothing on looks; needs the built web desktop bundle, headless Chromium and the built relay, CLI and crypto programs; the page-tour check runs it on request"
 
 [[unrequired]]
-suite = "os/containers/tilo-lounge/test-page-two-people.sh"
-reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, in two browsers at once; the page-two-people check runs it in its image"
-
-[[unrequired]]
-suite = "os/containers/tilo-lounge/test-page-share-link.sh"
-reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, in three browsers at once; the page-share-link check runs it in its image"
-
-[[unrequired]]
 suite = "os/containers/tilo-lounge/test-image.sh"
 reason = "needs the built Lounge image"
-
-[[unrequired]]
-suite = "os/containers/tilo-lounge/test-integration.sh"
-reason = "starts the built Lounge image and drives its web entry, so it needs both the image and the desktop bundle"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"

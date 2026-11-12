@@ -60,6 +60,8 @@ impl<M: ListModel> VirtualList<M> {
             in_motion: !self.row_motion.is_empty() || opacity < 1.0,
             first_shown: self.first_shown_row(),
             overlay: self.scrollbar_track(),
+            places: self.places_near(),
+            headings: self.headings_drawn(),
         });
         scene.push_layer(
             vello::peniko::Fill::NonZero,

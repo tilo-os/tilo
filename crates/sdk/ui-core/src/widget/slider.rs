@@ -1,4 +1,3 @@
-use crate::i18n::widget_text;
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
@@ -174,6 +173,8 @@ pub struct Slider {
     /// instead of just the value. When unset a sibling label is resolved
     /// by the tree builder.
     accessible_name: Option<String>,
+    /// `accessible_name` is already resolved text, spoken as given.
+    name_resolved: bool,
     interaction: crate::interaction::InteractionEnvironment,
     /// The target height encoded in the current layout style.
     layout_target: Option<f32>,
@@ -267,6 +268,7 @@ impl Slider {
             last_cursor: Point::ZERO,
             id_override: None,
             accessible_name: None,
+            name_resolved: false,
             interaction: crate::interaction::InteractionEnvironment::default(),
             layout_target: None,
             shows_value: false,
@@ -596,10 +598,21 @@ impl Slider {
     }
 
     /// Give a label-less slider a spoken name so a screen reader announces
-    /// what it adjusts alongside the value.
+    /// what it adjusts alongside the value: `name` is a message id, resolved
+    /// in the language this thread reads.
     #[must_use]
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         self.accessible_name = Some(name.to_string());
+        self.name_resolved = false;
+        self
+    }
+
+    /// [`Self::with_accessible_name`] with text that is already resolved (the
+    /// row's caption): spoken as given, never looked up as a message id.
+    #[must_use]
+    pub fn with_resolved_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self.name_resolved = true;
         self
     }
 
@@ -1456,9 +1469,8 @@ impl Widget for Slider {
         // its value, or the app's own words for it (`value_text`).
         let name = self
             .accessible_name
-            .as_ref()
-            .map(|n| widget_text(n))
-            .filter(|n| !n.is_empty());
+            .as_deref()
+            .and_then(|name| crate::i18n::spoken_name(name, self.name_resolved));
         let mut node = AccessNode::new(Role::Slider)
             // The id it was given names it, so two sliders under one
             // parent are two nodes.

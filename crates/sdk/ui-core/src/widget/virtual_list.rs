@@ -1316,6 +1316,31 @@ impl<M: ListModel> VirtualList<M> {
         })
     }
 
+    /// The rows near the box, each by its key's hash with its top in the list
+    /// and its height, as [`ListShown::places`] holds them.
+    fn places_near(&self) -> Vec<(u64, f64, f64)> {
+        self.mounted
+            .get(self.mounted_near())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|row| {
+                let top = self.viewport.item_top(row.index)?;
+                let height = self.viewport.item_height(row.index)?;
+                Some((Self::key_hash(&row.key), top, height))
+            })
+            .collect()
+    }
+
+    /// The headings the list draws, each with the rows it counts and whether
+    /// its group is folded, as [`ListShown::headings`] holds them.
+    fn headings_drawn(&self) -> Vec<(String, usize, bool)> {
+        self.groups
+            .bands
+            .iter()
+            .map(|band| (band.heading.clone(), self.heading_rows(band), band.closed))
+            .collect()
+    }
+
     /// How far the first row the last presented frame showed has moved on
     /// screen since, while it is still that row.
     fn moved_since_presented(&self) -> Option<f64> {

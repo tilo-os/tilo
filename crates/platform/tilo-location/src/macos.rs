@@ -207,7 +207,7 @@ fn locate_on_this_thread() -> LocationOutcome {
     };
     delegate.advance(&manager);
     let run_loop = NSRunLoop::currentRunLoop();
-    let started = tilo_clock::Instant::now();
+    let started = tilo_clock::now();
     let outcome = loop {
         if let Some(outcome) = delegate.take() {
             break outcome;

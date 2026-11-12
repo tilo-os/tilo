@@ -286,7 +286,7 @@ impl NativeWorkspaceOwner {
     /// `signer` is not the device's, signing failed, it may not invite, the role it hands out is
     /// above its own, the request is invalid or the workspace cannot be
     /// published.
-    pub fn issue_invitation(
+    pub async fn issue_invitation(
         &self,
         workspace: WorkspaceId,
         administrator: &DeviceCert,
@@ -335,6 +335,7 @@ impl NativeWorkspaceOwner {
                 Ok(issued)
             })
         })
+        .await
     }
 
     /// Cancel the invitation `request` names in `workspace` as this device,

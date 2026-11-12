@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use tilo_clock::Instant;
+use tilo_clock::time::Instant;
 
 const CAPACITY: usize = 8;
 const LIFETIME: Duration = Duration::from_secs(120);
@@ -103,7 +103,7 @@ impl CredentialOwner {
         if !admitted() {
             return Err(BrokerError::Denied);
         }
-        let now = Instant::now();
+        let now = tilo_clock::now();
         let mut entries = self
             .requests
             .entries
@@ -159,7 +159,7 @@ impl CredentialOwner {
                 })
                 .collect::<Vec<_>>()
         };
-        let now = Instant::now();
+        let now = tilo_clock::now();
         let mut live = Vec::new();
         let mut retired = Vec::new();
         for (proposal, expires, admitted_revision, admitted) in snapshot {
@@ -192,7 +192,7 @@ impl CredentialOwner {
         let entries = self.requests.entries.lock().ok()?;
         entries
             .values()
-            .map(|pending| pending.expires.saturating_duration_since(Instant::now()))
+            .map(|pending| pending.expires.saturating_duration_since(tilo_clock::now()))
             .min()
     }
     /// Original Passwords confirmation door. Consumes the opaque request once
@@ -220,7 +220,7 @@ impl CredentialOwner {
         if decision == AccessDecision::Deny {
             return Ok(None);
         }
-        if pending.expires <= Instant::now() || !(pending.admitted)() {
+        if pending.expires <= tilo_clock::now() || !(pending.admitted)() {
             return Err(BrokerError::Denied);
         }
         let proposal = pending.proposal;
@@ -282,7 +282,7 @@ mod tests {
             .unwrap()
             .get_mut(&id)
             .unwrap()
-            .expires = Instant::now();
+            .expires = tilo_clock::now();
         assert!(owner.proposal_wake_after().unwrap().is_zero());
         assert!(owner.proposals().unwrap().is_empty());
         assert!(owner.revision().unwrap() > before);

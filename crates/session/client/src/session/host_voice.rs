@@ -6,12 +6,12 @@
 //! the host this session is pinned to signed it, and hands it on as the
 //! plane's own events would carry it ([`crate::Event::LivePlane`] for a run's
 //! presence, [`crate::Event::Live`] for its narration), from the host's device.
-//! Readers keep their one rule: what is said for a run is taken only from
-//! the device the workspace's governance pins as its host.
+//! A run is keyed by the device that speaks for it, so a member of the plane
+//! speaking for the agents it admitted (on the plane, as its own presence
+//! is) never speaks for the host's runs.
 //!
-//! Nothing said for a run is taken from the plane: a run's word travels here
-//! alone, so a host needs no key of the plane to say it, and no member of
-//! the plane can say it in the host's place.
+//! The host's narration of a run travels here alone: no member of the plane
+//! narrates in the host's place.
 
 use tilo_relay_protocol::host_voice::{HOST_VOICE_VERSION, HostSaid, HostWords};
 use tilo_relay_protocol::live::{LiveFrame, OpsFrame};
@@ -102,15 +102,9 @@ impl Task {
     }
 }
 
-/// Whether a presence `body` heard on the plane is said for a run: a run's
-/// word travels only as the host's own ([`Task::heard_from_host`]), never on
-/// the plane.
-pub(super) fn plane_speaks_for_a_run(body: &[u8]) -> bool {
-    tilo_live::presence::decode(body).is_some_and(|presence| presence.on_behalf.is_some())
-}
-
-/// Whether an opened live `frame` heard on the plane narrates a run: the same
-/// rule as [`plane_speaks_for_a_run`], for narration.
+/// Whether an opened live `frame` heard on the plane narrates a run: a run's
+/// narration travels only as the host's own ([`Task::heard_from_host`]),
+/// never on the plane.
 pub(super) fn plane_narrates_a_run(frame: &[u8]) -> bool {
     matches!(
         LiveFrame::decode(frame),

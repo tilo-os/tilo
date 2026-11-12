@@ -445,6 +445,7 @@ impl Checkbox {
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         let label = label.into();
         self.control.accessible_name = Some(label.clone());
+        self.control.name_resolved = true;
         self.label = Some(label);
         self.label_layout_revision = None;
         self
@@ -459,6 +460,7 @@ impl Checkbox {
     /// Change the visible label in place; `None` leaves only the box.
     pub fn set_label(&mut self, label: &str) {
         self.control.accessible_name = Some(label.to_owned());
+        self.control.name_resolved = true;
         self.label = Some(label.to_owned());
         self.label_layout_revision = None;
     }
@@ -856,12 +858,7 @@ impl Widget for Checkbox {
         // A visible inline label names itself; an explicit accessible name
         // covers label-less uses so the control is never announced as an
         // anonymous checkbox. The checked state is the load-bearing semantic.
-        let name = self
-            .control
-            .accessible_name
-            .as_ref()
-            .map(|n| widget_text(n))
-            .filter(|n| !n.is_empty());
+        let name = self.control.spoken_name();
         let mut state = AccessState::new()
             .focusable(self.is_focusable())
             .focused(self.is_focused())

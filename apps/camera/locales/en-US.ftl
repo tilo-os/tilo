@@ -49,6 +49,24 @@ camera-a11y-choose-camera = Choose a camera
 camera-a11y-scan-page = Scan document page
 camera-a11y-apply-crop = Apply crop
 camera-a11y-cancel-crop = Cancel crop
+camera-a11y-switch-camera-plain = Switch camera
 
 ## What the window shows
 camera-scan-kind = Kind
+
+## The settings sheet
+camera-settings-title = Camera settings
+camera-settings-capture = Capture
+camera-settings-resolution = Resolution
+camera-settings-photo-format = Photo format
+camera-settings-timer = Self-timer
+camera-settings-default-camera = Default camera
+camera-settings-viewfinder = Viewfinder and photos
+camera-settings-hdr = HDR
+camera-settings-grid = Rule-of-thirds grid
+camera-settings-level = Level guide
+camera-settings-mirror = Mirror front camera
+camera-settings-geotag = Save location with photos
+camera-timer-3s = 3 seconds
+camera-timer-10s = 10 seconds
+camera-countdown-cancel-hint = Tap the shutter to cancel

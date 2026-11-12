@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
-use tilo_clock::SystemTime;
+use tilo_clock::time::SystemTime;
 
 use tilo_action_policy::WorkspacePolicy;
 use tilo_channels::{ChannelAccess, ChannelKeyProvider};
@@ -287,6 +287,37 @@ impl std::fmt::Debug for Engine {
     }
 }
 
+/// This device's channel keys, as its owner compacts the sealed histories of its records with
+/// them wherever it writes, linked or not
+/// ([`NativeWorkspaceOwner::keep_sealed_histories`]).
+pub struct HistoryKeys(pub ChannelKeyProvider);
+
+impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
+    fn open(
+        &self,
+        workspace: WorkspaceId,
+        write: &collab_types::SignedOp,
+    ) -> Result<Vec<u8>, String> {
+        self.0
+            .get()
+            .ok_or("this device's channel service is not running")?
+            .open_history_write(workspace, write)
+    }
+
+    fn seal_checkpoint(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        record: &str,
+        snapshot: &[u8],
+    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
+        self.0
+            .get()
+            .ok_or("this device's channel service is not running")?
+            .seal_checkpoint(workspace, app, record, snapshot)
+    }
+}
+
 impl Engine {
     /// This device's workspaces as `owner` holds them, with the identity they are held under: what
     /// a host supplies whichever file, store or record it keeps them in.
@@ -297,11 +328,13 @@ impl Engine {
         identity: HostIdentity,
         custody: Arc<dyn Custody>,
     ) -> Self {
+        let keys = ChannelKeyProvider::default();
+        owner.keep_sealed_histories(Arc::new(HistoryKeys(keys.clone())));
         Self {
             owner,
             slots,
             identity,
-            keys: ChannelKeyProvider::default(),
+            keys,
             custody,
             link: std::sync::Mutex::new(None),
             unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
@@ -952,16 +985,14 @@ impl Engine {
                 0,
                 now,
             )?;
-            Ok(vec![tilo_peer_state::owner::Write::Draft(
-                tilo_peer_state::owner_commit::OwnerCommitRequest {
-                    workspace: workspace.to_string(),
-                    operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                        app: app.to_owned(),
-                        record: record.to_owned(),
-                        envelope: Box::new(op),
-                    },
+            Ok(vec![tilo_peer_state::owner_commit::OwnerCommitRequest {
+                workspace: workspace.to_string(),
+                operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                    app: app.to_owned(),
+                    record: record.to_owned(),
+                    envelope: Box::new(op),
                 },
-            )])
+            }])
         };
         let committed = self
             .owner
@@ -983,39 +1014,6 @@ impl Engine {
             author: author.ok_or("the write was not made")?,
             replayed: false,
             envelope: *envelope,
-        })
-    }
-
-    /// [`Self::record`] of a sealed record, opened with `keys` rather than this device's channel
-    /// service: what a caller that holds a channel's keys itself reads back.
-    pub fn record_opened_with(
-        &self,
-        workspace: WorkspaceId,
-        (app, record): (&str, &str),
-        keys: &channel_crypto::ChannelContentKeys,
-    ) -> Result<Option<Vec<u8>>, String> {
-        let read = self.read_in(
-            workspace,
-            (app, record),
-            Holding::default(),
-            MAX_DOCUMENT_BYTES,
-            History {
-                open: &mut |write| {
-                    let metadata = write.encryption.ok_or("the write is not sealed")?;
-                    let ciphertext = collab_types::sealed_ciphertext(write)
-                        .map_err(|error| error.to_string())?;
-                    keys.open_content(write.artifact, &metadata, &ciphertext)
-                        .map(|plaintext| plaintext.to_vec())
-                        .map_err(|error| error.to_string())
-                },
-                kept: &mut KeptRecord::default(),
-            },
-        )?;
-        Ok(match read {
-            RecordReading::Captured { bytes, .. } => Some(bytes),
-            RecordReading::Changes { .. }
-            | RecordReading::Unchanged(_)
-            | RecordReading::Pending => None,
         })
     }
 
@@ -1335,7 +1333,7 @@ impl Engine {
         let reachable = tilo_delivery_protocol::workspace_join::reachable(endpoint);
         let hint = self.own_host_hint(workspace, &reachable)?;
         let now_ns: u64 = now
-            .duration_since(tilo_clock::UNIX_EPOCH)
+            .duration_since(tilo_clock::time::UNIX_EPOCH)
             .map_err(|error| error.to_string())?
             .as_nanos()
             .try_into()
@@ -1343,7 +1341,7 @@ impl Engine {
         let expires_at_ns = now_ns.saturating_add(expires_in_seconds.saturating_mul(1_000_000_000));
         let mut request_id = [0; 32];
         getrandom::fill(&mut request_id).map_err(|error| error.to_string())?;
-        let issued = self.owner.issue_invitation(
+        let issued = collab_types::signer::at_once(self.owner.issue_invitation(
             room,
             &identity.device_cert,
             &IssueInvitationRequest {
@@ -1357,7 +1355,8 @@ impl Engine {
             &[hint],
             identity.signer.as_ref(),
             now,
-        )?;
+        ))
+        .map_err(|error| error.to_string())??;
         Ok(Issued {
             invite: hex::encode(issued.invite_id),
             link: tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation),
@@ -1628,14 +1627,16 @@ impl Engine {
             },
             None => None,
         };
-        match self.owner.create_workspace(
+        let founded = self.owner.create_workspace(
             workspace,
             name,
             &identity.device_cert,
             identity.signer.as_ref(),
             host_hint.as_ref(),
             tilo_clock::wall(),
-        ) {
+        );
+        match collab_types::signer::at_once(founded).unwrap_or_else(|error| Err(error.to_string()))
+        {
             Ok(_) => self.bind(slot, workspace),
             Err(error) => {
                 tracing::warn!(%error, %workspace, "the workspace was not founded here");

@@ -941,7 +941,7 @@ fn a_member_writes_past_its_bound_without_a_workspace_host() {
     let read = AutoCommit::load(&opened.document).unwrap();
     assert_eq!(
         read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-        Some("4103"),
+        Some((MAX_SEALED_OPS + 7).to_string().as_str()),
         "every write before the checkpoint is still in the record"
     );
 }

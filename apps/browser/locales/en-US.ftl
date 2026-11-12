@@ -235,6 +235,19 @@ browser-page-sign-in-retry = That user name or password was not accepted.
 browser-page-sign-in-too-long = That user name or password is too long.
 browser-page-sign-in-submit = Sign in
 
+## The saved addresses the browser fills forms from
+browser-autofill-offline = Address autofill is unavailable here: this window browses without your sign-ins.
+browser-autofill-enable = Turn on address autofill
+browser-autofill-disable = Turn off address autofill
+browser-autofill-selected-address = the selected address
+browser-autofill-delete-question = Delete { $label }?
+browser-autofill-delete = Delete address
+browser-autofill-keep = Keep address
+browser-autofill-save = Save address
+browser-autofill-discard = Discard edits
+browser-autofill-add = Add address
+browser-autofill-saved = Address saved on this device.
+
 ## An address or page that did not open
 browser-address-failed = Couldn’t open this address
 browser-address-empty = Enter a web address or search words

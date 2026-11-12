@@ -224,7 +224,7 @@ pub(crate) fn section(
     let tabs = ui::widget::ViewTabs::new(
         RequestTab::ALL
             .iter()
-            .map(|t| Segment::new(t.label()))
+            .map(|t| Segment::new(crate::locales::CATALOG.t(t.message())))
             .collect(),
         RequestTab::ALL.iter().position(|t| *t == tab).unwrap_or(0),
     )
@@ -284,7 +284,7 @@ fn table_panel(
     blanks: &BlankRows,
     sink: &Sink,
 ) -> Panel {
-    let built = kv::build(table, label, rows, blanks.of(table), sink);
+    let built = kv::build_table(table, label, rows, blanks.of(table), sink);
     Panel {
         element: scrolling(built.element),
         inner: None,
@@ -297,9 +297,9 @@ fn table_panel(
 // ---------------------------------------------------------------------------
 
 fn auth_kind_index(auth: &Auth) -> usize {
-    Auth::LABELS
+    Auth::SCHEMES
         .iter()
-        .position(|label| *label == auth.label())
+        .position(|scheme| *scheme == auth.scheme())
         .unwrap_or(0)
 }
 
@@ -337,8 +337,12 @@ fn auth_input(sink: &Sink, which: AuthField, value: &str, secret: bool, name: &s
 fn auth_fields(auth: &Auth, sink: &Sink) -> Element {
     let column = Column::new().with_no_padding().with_intrinsic_height();
     match auth {
-        Auth::SecretRef { .. } => Box::new(column.push(body("Stored authentication"))),
-        Auth::None => Box::new(column.push(body("This request does not use authentication."))),
+        Auth::SecretRef { .. } => {
+            Box::new(column.push(body(&crate::locales::CATALOG.t("api-tester-auth-stored"))))
+        }
+        Auth::None => {
+            Box::new(column.push(body(&crate::locales::CATALOG.t("api-tester-auth-not-used"))))
+        }
         Auth::Bearer { token } => Box::new(column.push(Box::new(Field::new(
             "Token",
             auth_input(
@@ -406,9 +410,9 @@ pub(crate) fn auth_inner(auth: &Auth, sink: &Sink) -> Element {
 fn auth_panel(request: &Request, sink: &Sink) -> Panel {
     let kind_sink = sink.clone();
     let kind = ToggleGroup::new(
-        Auth::LABELS
+        Auth::SCHEMES
             .iter()
-            .map(|label| Segment::new(*label))
+            .map(|scheme| Segment::new(crate::locales::CATALOG.t(Auth::scheme_message(scheme))))
             .collect(),
         auth_kind_index(&request.auth),
     )
@@ -439,7 +443,10 @@ pub(crate) fn body_inner(
     sink: &Sink,
 ) -> (Element, Option<(Table, KvQueue)>) {
     match request.body_mode {
-        BodyMode::None => (body("This request does not have a body."), None),
+        BodyMode::None => (
+            body(&crate::locales::CATALOG.t("api-tester-body-absent")),
+            None,
+        ),
         BodyMode::Json | BodyMode::Raw => (
             request_text(
                 TextInput::local()
@@ -454,9 +461,9 @@ pub(crate) fn body_inner(
             None,
         ),
         BodyMode::Form => {
-            let built = kv::build(
+            let built = kv::build_table(
                 Table::Form,
-                "Form fields",
+                &crate::locales::CATALOG.t("api-tester-form-fields"),
                 &request.form,
                 blanks.of(Table::Form),
                 sink,
@@ -471,7 +478,7 @@ fn body_panel(request: &Request, blanks: &BlankRows, sink: &Sink) -> Panel {
     let modes = ToggleGroup::new(
         BodyMode::ALL
             .iter()
-            .map(|mode| Segment::new(mode.label()))
+            .map(|mode| Segment::new(crate::locales::CATALOG.t(mode.message())))
             .collect(),
         BodyMode::ALL
             .iter()

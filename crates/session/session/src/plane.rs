@@ -702,12 +702,6 @@ impl WorkspaceMemberships for SessionMemberships {
             .is_some_and(|room| self.engine.holds(room))
     }
 
-    /// The engine keeps no checkpoints of a workspace's records: its owner
-    /// commits them, and a member's changes travel as the changes they are.
-    fn keeps_checkpoints(&self, _workspace: &str) -> bool {
-        false
-    }
-
     /// An app opening in `workspace` is let author there when this device's
     /// person administers the workspace and it does not let that app author
     /// yet: the same decision the launch before it makes
@@ -741,11 +735,14 @@ impl WorkspaceMemberships for SessionMemberships {
         let engine = std::sync::Arc::clone(&self.engine);
         Box::pin(async move {
             let identity = engine.identity();
-            engine.owner().commit_workspace_membership_command(
-                request,
-                identity.signer.as_ref(),
-                std::time::SystemTime::now(),
-            )
+            engine
+                .owner()
+                .commit_workspace_membership_command(
+                    request,
+                    identity.signer.as_ref(),
+                    std::time::SystemTime::now(),
+                )
+                .await
         })
     }
 }

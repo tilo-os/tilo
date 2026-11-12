@@ -719,14 +719,10 @@ fn lay_out_window(
         || grid_changed
         || scroll_opt_disabled()
         || app.root_widget.layout_needs_measure();
-    // A resize re-solves the retained tree; only a widget that composes from
-    // its allocation asks for the composition to be repeated against it.
-    // History's own chrome picks its presentation from the window's width.
+    // A resize re-solves the retained tree; only a tree that composes from
+    // its allocation is composed again for it.
     let recompose_for_viewport = viewport_changed
-        && (app.history.is_some()
-            || crate::widget::layout::tree_composition_follows_allocation(
-                app.root_widget.as_ref(),
-            ));
+        && crate::widget::layout::tree_composition_follows_allocation(app.root_widget.as_ref());
     // What arrives in the window's first frame shows at rest.
     let _window = crate::motion::laying_out_window(app.layout.root_node.is_some());
     // Whether the last pass asked for another only to remount in place.

@@ -110,7 +110,7 @@ fn with_guidance(mut resource: ResourceSpec, id: &str, guidance: &str) -> Resour
             ResourceSpec::new(
                 format!("{id}.guidance:{index}"),
                 "installer.guidance",
-                crate::CATALOG.t("imager-installer-guidance"),
+                crate::resource::CATALOG.t("imager-installer-guidance"),
             )
             .with_presentation(ResourcePresentation {
                 preview: Some(sentence.to_owned()),
@@ -272,7 +272,7 @@ impl InstallerApp {
         let mut root = ResourceSpec::new(
             PROVIDER,
             "installer.session",
-            crate::CATALOG.t("imager-installer-title"),
+            crate::resource::CATALOG.t("imager-installer-title"),
         )
         .with_presentation(ResourcePresentation {
             detail: Some(format!(
@@ -314,10 +314,10 @@ impl InstallerApp {
                 if self.network.snapshot.connectivity
                     == imager_backend::destination::network::ConnectivityState::Full =>
             {
-                crate::CATALOG.t("imager-installer-continue")
+                crate::resource::CATALOG.t("imager-installer-continue")
             }
-            Step::Network => crate::CATALOG.t("imager-installer-continue-offline"),
-            _ => crate::CATALOG.t("imager-installer-next"),
+            Step::Network => crate::resource::CATALOG.t("imager-installer-continue-offline"),
+            _ => crate::resource::CATALOG.t("imager-installer-next"),
         };
         let blocked = match self.step {
             Step::Review => Some((

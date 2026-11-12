@@ -2362,6 +2362,8 @@ include!("personal_cluster_tests.rs");
 
 include!("held_frame_tests.rs");
 
+include!("lagging_policy_tests.rs");
+
 include!("catch_up_tests.rs");
 
 include!("turn_tests.rs");

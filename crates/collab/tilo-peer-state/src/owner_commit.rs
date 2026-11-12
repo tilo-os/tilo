@@ -95,7 +95,8 @@ pub enum CommitTarget {
         device: [u8; 32],
         invocation: uuid::Uuid,
     },
-    /// Signed native content root publication; not a caller-facing operation.
+    /// The publication of a workspace's checkpoint root, anchored before
+    /// checkpoints were retired; still read where it was signed.
     NativeCheckpointRoot {
         root: [u8; 32],
     },

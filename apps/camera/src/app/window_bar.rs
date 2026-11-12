@@ -117,7 +117,7 @@ impl CameraApp {
         );
         if let Some(bar) = &self.bar.actions {
             toolbar.actions.push(ToolbarAction {
-                name: "Camera settings".into(),
+                name: crate::CATALOG.t("camera-settings-title"),
                 icon: "settings".into(),
                 ..bar.effect(&CameraEffect::OpenSettings)
             });

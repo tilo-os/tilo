@@ -564,15 +564,15 @@ fn discovered_row(printer: &os_actions::printing::DiscoveredPrinter) -> LiveRow 
         printer: printer.uri.clone(),
     })
 }
-fn friendly_queue_state(queue: &os_actions::printing::PrinterQueue) -> &'static str {
+fn friendly_queue_state(queue: &os_actions::printing::PrinterQueue) -> String {
     use os_actions::printing::QueueState;
-    match queue.state {
-        QueueState::Ready if queue.accepting_jobs => "Ready",
-        QueueState::Ready => "Not accepting new documents",
-        QueueState::Printing => "Printing",
-        QueueState::Paused => "Paused",
-        QueueState::Offline => "Cannot reach this printer",
-    }
+    crate::locales::CATALOG.t(match queue.state {
+        QueueState::Ready if queue.accepting_jobs => "print-centre-queue-ready",
+        QueueState::Ready => "print-centre-queue-not-accepting",
+        QueueState::Printing => "print-centre-queue-printing",
+        QueueState::Paused => "print-centre-queue-paused",
+        QueueState::Offline => "print-centre-queue-unreachable",
+    })
 }
 fn supply_level(queue: &os_actions::printing::PrinterQueue) -> Option<(f32, u8)> {
     let percent = queue
@@ -584,23 +584,24 @@ fn supply_level(queue: &os_actions::printing::PrinterQueue) -> Option<(f32, u8)>
         .min()?;
     Some((f32::from(percent) / 100.0, percent))
 }
-fn friendly_reason(reason: &str) -> &'static str {
+fn friendly_reason(reason: &str) -> String {
     let normalized = reason.to_ascii_lowercase();
-    if normalized.contains("media-empty") || normalized.contains("out-of-paper") {
-        "Add paper to continue."
+    let key = if normalized.contains("media-empty") || normalized.contains("out-of-paper") {
+        "print-centre-reason-out-of-paper"
     } else if normalized.contains("jam") {
-        "Clear the paper jam, then resume the printer."
+        "print-centre-reason-jam"
     } else if normalized.contains("cover-open") || normalized.contains("door-open") {
-        "Close the printer cover."
+        "print-centre-reason-cover-open"
     } else if normalized.contains("toner-low") || normalized.contains("marker-supply-low") {
-        "A supply is running low; printing can usually continue for now."
+        "print-centre-reason-supply-low"
     } else if normalized.contains("toner-empty") || normalized.contains("marker-supply-empty") {
-        "Replace the empty supply to continue."
+        "print-centre-reason-supply-empty"
     } else if normalized.contains("offline") || normalized.contains("not-connected") {
-        "Check that the printer is awake and connected."
+        "print-centre-reason-offline"
     } else {
-        "The printer reported a condition that may need attention."
-    }
+        "print-centre-reason-unknown"
+    };
+    crate::locales::CATALOG.t(key)
 }
 fn demo_snapshot() -> Snapshot {
     use os_actions::printing::{

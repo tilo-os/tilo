@@ -119,12 +119,12 @@ impl Prompt {
         }
     }
 
-    fn label(&self) -> &'static str {
-        match self.kind {
-            PromptKind::NewVolume => "Name",
-            PromptKind::TagImage => "New tag",
-            PromptKind::PullImage => "Image",
-        }
+    fn label(&self) -> String {
+        crate::resource::CATALOG.t(match self.kind {
+            PromptKind::NewVolume => "containers-prompt-name",
+            PromptKind::TagImage => "containers-prompt-tag",
+            PromptKind::PullImage => "containers-prompt-image",
+        })
     }
 
     fn placeholder(&self) -> &'static str {
@@ -577,7 +577,7 @@ impl ContainersApp {
                 let submit = self.intents.clone();
                 let cancel = self.intents.clone();
                 let dismiss = self.intents.clone();
-                let body = PromptBody::new(prompt.label(), prompt.placeholder())
+                let body = PromptBody::new(&prompt.label(), prompt.placeholder())
                     .with_initial(&prompt.value);
                 ModalDialog::new(prompt.title(), body)
                     .with_test_id("containers-prompt-dialog")

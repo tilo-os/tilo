@@ -272,6 +272,9 @@ pub struct ListRowFace<'a> {
     found: &'a [&'a str],
     subtitle: Option<&'a str>,
     secondary: Option<&'a str>,
+    /// The row's secondary line is the row's description, said after its name
+    /// rather than as its value ([`ListRow::description`]).
+    described: bool,
     /// The line under the title as separate facts, painted where a secondary line would stand:
     /// facts are their own components, never one string joined by a separator glyph.
     facts: &'a [Fact],
@@ -389,6 +392,7 @@ impl<'a> ListRowFace<'a> {
             found: &[],
             subtitle: None,
             secondary: None,
+            described: false,
             facts: &[],
             note: None,
             secondary_lines: 1,
@@ -914,11 +918,14 @@ impl<'a> ListRowFace<'a> {
             .join(", ");
         // A toned meta draws as spans of its own words: the row says it once.
         let meta = self.meta.filter(|_| self.meta_spans.is_empty());
+        // A description explains the row after its name, and the secondary
+        // line is how it is painted: said once, never counted as a value too.
+        let secondary = self.secondary.filter(|_| !self.described);
         let mut value: Vec<&str> = self.tags.iter().map(|(label, _)| *label).collect();
         value.extend(
             [
                 self.subtitle,
-                self.secondary,
+                secondary,
                 (!facts.is_empty()).then_some(facts.as_str()),
                 self.note,
                 meta,
@@ -1726,6 +1733,10 @@ impl ListRow {
     /// What a reader hears of the row beyond its name and value — a task's
     /// status beside its reference, say. It stays out of the pointer's way:
     /// the row explains itself to a reader, not on hover.
+    ///
+    /// A [`secondary`](Self::secondary) line carries the same words on screen
+    /// where it is the row's explanation of itself: the row then speaks it as
+    /// its description, not also as its value.
     #[must_use]
     pub fn description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
@@ -2262,6 +2273,9 @@ impl ListRow {
                 .secondary(secondary)
                 .secondary_lines(self.secondary_line_count);
         }
+        // A description is the row's own explanation, and the secondary line
+        // paints it: the row says those words once, after its name.
+        face.described = self.description.is_some();
         if let Some(note) = &self.note {
             face = face.note(note);
         }

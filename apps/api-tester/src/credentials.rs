@@ -22,7 +22,7 @@ pub fn seal(auth: &Auth, store: &SecretStore) -> Result<Auth, &'static str> {
         .ok_or(PENDING)?;
     Ok(Auth::SecretRef {
         id,
-        scheme: auth.label().into(),
+        scheme: auth.scheme().into(),
     })
 }
 
@@ -42,7 +42,7 @@ pub async fn seal_async(auth: &Auth, store: &SecretStore) -> Result<Auth, &'stat
         .map_err(|_| UNAVAILABLE)?;
     Ok(Auth::SecretRef {
         id,
-        scheme: auth.label().into(),
+        scheme: auth.scheme().into(),
     })
 }
 

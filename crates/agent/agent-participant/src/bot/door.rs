@@ -41,7 +41,10 @@ use tilo_lock::MutexRecover as _;
 pub trait DoorParticipant: Send {
     fn workspace(&self) -> &str;
     /// The held records and what each offers the bot now.
-    fn offered(&self) -> Vec<(DocumentRoute, Vec<tilo_actions::door::ActionDescriptor>)>;
+    /// Every operation of each held record, each in the row of the resource
+    /// holding it: what a caller listing one resource of a record reads its
+    /// children by.
+    fn offered(&self) -> Vec<(DocumentRoute, Vec<CatalogueRow>)>;
     /// Whether the record at `route` is held.
     fn holds(&self, route: &DocumentRoute) -> bool;
     /// The record at `route` as the bot may read it now: its whole document,
@@ -260,8 +263,10 @@ impl<P: DoorParticipant> BotDoor<P> {
                 record_id: route.record.clone(),
                 browsable: false,
             });
-            rows.extend(offered.into_iter().map(|descriptor| {
-                CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
+            rows.extend(offered.into_iter().map(|mut row| {
+                row.provider.clone_from(&provider);
+                row.app_id.clone_from(&route.app_id);
+                row
             }));
         }
         drop(participant);

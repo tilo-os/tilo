@@ -12,7 +12,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use tilo_clock::Duration;
+use tilo_clock::time::Duration;
 
 use super::efi::GLOBAL_GUID;
 use super::linux_parse::{self, MountSource, PowerSupply};

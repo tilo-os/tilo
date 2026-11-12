@@ -259,13 +259,13 @@ pub trait ResourceApp: 'static {
     /// Whether the session's document host keeps this app's record, so the
     /// app's process opens none: its views read the readings the session
     /// publishes and submit actions over its one connection
-    /// (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4). An
-    /// app the host serves says yes and also
-    /// [attaches](Self::ATTACHES_RUNTIME) nothing: it joins no workspace of
-    /// its own and holds no key or transport.
+    /// (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4). A
+    /// launch the session hosts joins no workspace of its own and holds no
+    /// key or transport.
     ///
-    /// A launch the session did not make (a device with the runtime compiled
-    /// in, a capture, a test) keeps the record here, as before.
+    /// A launch the session does not host (one whose model no service of
+    /// the session runs, a device with the runtime compiled in, a capture, a
+    /// test) keeps the record here and joins its workspace, as before.
     const HOSTED_BY_SESSION: bool = false;
 
     /// The app's message catalog, loaded before its view is built in every

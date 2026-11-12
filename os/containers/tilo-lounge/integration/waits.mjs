@@ -7,6 +7,18 @@
 // finished. Every wait here ends when the desk's own answer says so, and the
 // frames it may also look at are progress only while the desk still owes work.
 
+/** How long one step of a page test may take before the run calls it hung
+ * and says which step it was: one thing a person does and the page's answer.
+ * TILO_STEP_SECONDS sets it (default 5), for a machine whose pages answer
+ * slower; every wait in the drivers is a whole number of steps, so a hang
+ * fails in seconds and a slow step is named by its own wait, never hidden
+ * inside a minutes-long one. */
+export const STEP_MS = Math.round(1000 * (Number(process.env.TILO_STEP_SECONDS) || 5));
+
+/** `n` steps, for what takes a person more than one: a page loading and
+ * joining (6), an answer crossing to another person's page (4). */
+export const stepLimit = n => n * STEP_MS;
+
 /** The page's own word for whether the open search still has rows to find:
  * a source still to answer, or rows not yet cut to the card. A settled search
  * (and a closed one) reads false. */
@@ -41,7 +53,7 @@ export async function settle({
   idleMs = 0,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
   now = () => Date.now(),
-  timeoutMs = 120_000,
+  timeoutMs = stepLimit(3),
   pollMs = 100,
   onTimeout = null,
 }) {

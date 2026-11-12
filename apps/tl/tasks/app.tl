@@ -458,9 +458,11 @@ fn folded(items: List<Task>, t: Task) -> Bool {
     finished(items, t) and items.ancestors(t, .parent).all(a -> finished(items, a))
 }
 
-/// How many of a task's subtasks are done ("1/3"); none before the whole workspace is read.
-fn subtask_count(kids: List<Task>, t: Task) -> Option<Text> {
-    let mine = kids.filter(x -> x.parent == t)
+/// How many of a task's subtasks are done ("1/3"), wherever they stand: its own column of the
+/// index, so a change to any other task leaves it as it was. None before the whole workspace is
+/// read.
+fn subtask_count(t: Task) -> Option<Text> {
+    let mine = tasks.items.filter(x -> x.parent == t)
     if let total = mine.counted() {
         if not mine.is_empty() { "{mine.count(x -> x.done)}/{total}" }
     }
@@ -540,8 +542,6 @@ view home(t: Tasks) {
     let in_today = place == Task.today
     // Due soonest first, Done newest finished first, a project's list with finished work last.
     let ordered = found.sort_by(.due)
-    // The tasks that name a parent, read once: a row counts its own under them.
-    let kids = found.filter(x -> x.parent != .none)
     let shown = if done_place {
         found.sort_by(x -> changed(x, .done)?.at, desc)
     } else if folds { ordered.sort_by(x -> folded(found, x)) } else { ordered }
@@ -597,7 +597,7 @@ view home(t: Tasks) {
                 foot: {
                     stack {
                         if all_done {
-                            task_list(shown, kids, by_day, done_place, folds, opened, project)
+                            task_list(shown, by_day, done_place, folds, opened, project)
                         }
                         // A task typed in Today that names no day is due today, so it stands
                         // where it was typed.
@@ -610,7 +610,7 @@ view home(t: Tasks) {
                 } else if shown.is_empty() {
                     ui.EmptyState("No tasks here", icon: .list_checks)
                 } else {
-                    task_list(shown, kids, by_day, done_place, folds, opened, project)
+                    task_list(shown, by_day, done_place, folds, opened, project)
                 }
             }
         }
@@ -620,7 +620,6 @@ view home(t: Tasks) {
 /// The tasks of a place as a list, branches nested under their tasks, finished work under the foot.
 view task_list(
     items: List<Task>,
-    kids: List<Task>,
     by_day: Bool,
     done_place: Bool,
     folds: Bool,
@@ -643,7 +642,7 @@ view task_list(
                 p
             }
         }
-        task_item(x, at, project, heading, done_place, tail, above, subtask_count(kids, x))
+        task_item(x, at, project, heading, done_place, tail, above, subtask_count(x))
     }
 }
 
@@ -695,7 +694,6 @@ view project_list(p: Project) {
     state opened: Option<Task> = .none
     on show(x: Task): set(opened, x)
     let shown = tasks.items.filter(t -> t.project == p)
-    let kids = shown.filter(x -> x.parent != .none)
     let listed = holding(shown, opened)
     ui.NavShell(content_kind: .list, title: p.name) {
         content: {
@@ -711,7 +709,7 @@ view project_list(p: Project) {
                 if listed.is_empty() {
                     ui.EmptyState("No tasks yet", icon: .folder)
                 } else {
-                    task_list(listed, kids, false, false, false, opened, .some(p))
+                    task_list(listed, false, false, false, opened, .some(p))
                 }
             }
         }
@@ -882,7 +880,7 @@ template view task_body(t: Task) {
                             before,
                         ),
                         x -> check(x),
-                        progress: x -> subtask_count(kids, x),
+                        progress: x -> subtask_count(x),
                         fill: false,
                     ) { (x, under) ->
                         task_outline_row(x, t.project, under)

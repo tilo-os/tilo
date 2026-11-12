@@ -72,6 +72,10 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# Read the agent's own catalogues in its tests, as the catalogue check does.
+tilo-copy-lint = { path = "../../crates/dev/copy-lint" }
+# The person's settings, as the session hands them to a launched app.
+settings-store = { path = "../../crates/system/settings-store" }
 tempfile.workspace = true
 # The web tools' tests ask a server on this machine instead of the engines,
 # and read from it, where the shipped paths refuse its addresses.

@@ -163,8 +163,8 @@ fn a_member_introduces_itself_and_an_unlisted_device_does_not() {
 /// generation is a private count, so two devices stamping the same workspace's
 /// receipts would leave every member with a set no other member can merge, and
 /// their link would end refusing the other's state.
-#[test]
-fn a_members_catch_up_leaves_the_workspaces_durable_receipts_to_its_host() {
+#[tokio::test]
+async fn a_members_catch_up_leaves_the_workspaces_durable_receipts_to_its_host() {
     let held = vouched();
     let receipts = |held: &Vouched| {
         held.owner
@@ -193,6 +193,7 @@ fn a_members_catch_up_leaves_the_workspaces_durable_receipts_to_its_host() {
             &crate::owner::testing::member_key(),
             held.now,
         )
+        .await
         .expect("the member publishes its snapshots");
     assert!(
         !messages.is_empty(),

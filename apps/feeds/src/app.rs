@@ -20,6 +20,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, Live, ViewCx};
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, LaunchChannel, LaunchOutcome, PickRequest,
@@ -378,21 +379,30 @@ impl RefreshState {
     /// One sentence for the progress line.
     pub(crate) fn status(&self) -> String {
         if self.in_progress() {
-            return format!("Refreshing {} of {} feeds", self.done, self.total);
+            return crate::i18n::t_args(
+                "feeds-status-refreshing",
+                &[
+                    ("done", ArgValue::Number(self.done as f64)),
+                    ("total", ArgValue::Number(self.total as f64)),
+                ],
+            );
         }
         let mut parts: Vec<String> = Vec::new();
         if self.new_items > 0 {
-            parts.push(plural(self.new_items, "new article", "new articles"));
+            parts.push(crate::i18n::t_args(
+                "feeds-status-new",
+                &[("count", ArgValue::Number(self.new_items as f64))],
+            ));
         }
         if self.failed_feeds > 0 {
-            parts.push(format!(
-                "{} could not be refreshed",
-                plural(self.failed_feeds, "feed", "feeds")
+            parts.push(crate::i18n::t_args(
+                "feeds-status-failed",
+                &[("count", ArgValue::Number(self.failed_feeds as f64))],
             ));
         }
         // Each part opens with its count, so the sentence starts with one.
         if parts.is_empty() {
-            "All feeds are up to date".to_string()
+            crate::i18n::t("feeds-status-up-to-date")
         } else {
             parts.join(", ")
         }
@@ -588,23 +598,23 @@ impl Core {
     /// The overview's title: what the chosen place is called.
     pub(crate) fn filter_title(&self) -> String {
         match &self.filter {
-            Filter::All => "All articles".to_string(),
-            Filter::Unread => "Unread".to_string(),
-            Filter::Starred => "Starred".to_string(),
+            Filter::All => crate::i18n::t("feeds-filter-all"),
+            Filter::Unread => crate::i18n::t("feeds-filter-unread"),
+            Filter::Starred => crate::i18n::t("feeds-filter-starred"),
             Filter::Folder(id) => self
                 .store
                 .folder(id)
-                .map_or_else(|| "Folder".into(), |f| f.name.clone()),
+                .map_or_else(|| crate::i18n::t("feeds-filter-folder"), |f| f.name.clone()),
             Filter::Feed(id) => self
                 .store
                 .feed(id)
-                .map_or_else(|| "Feed".into(), |f| f.title.clone()),
+                .map_or_else(|| crate::i18n::t("feeds-filter-feed"), |f| f.title.clone()),
             Filter::Tag(key) => self
                 .store
                 .tags()
                 .into_iter()
                 .find(|tag| crate::model::tag_key(tag) == *key)
-                .unwrap_or_else(|| "Tag".into()),
+                .unwrap_or_else(|| crate::i18n::t("feeds-filter-tag")),
         }
     }
 

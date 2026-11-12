@@ -203,7 +203,7 @@ pub(crate) fn metadata(root: &Path, path: &VPath) -> Result<Meta, FsError> {
         len: meta.len(),
         modified: meta
             .modified()
-            .map_or(tilo_clock::UNIX_EPOCH, tilo_clock::from_std),
+            .map_or(tilo_clock::time::UNIX_EPOCH, tilo_clock::from_std),
         kind,
         mode: mode_of(meta),
         symlink,

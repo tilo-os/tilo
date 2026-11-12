@@ -2060,3 +2060,25 @@ fn a_wrapping_control_settles_at_every_width_beside_marks_after_it() {
         );
     }
 }
+
+/// A row that explains itself says that explanation after its name, and does
+/// not also read it out as its value.
+#[test]
+fn a_described_rows_explanation_is_its_description_and_not_its_value() {
+    let row = ListRow::new("bounce-alert", "Flash when a key is ignored")
+        .secondary("Show the visual alert each time bounce keys drops a press")
+        .description("Show the visual alert each time bounce keys drops a press");
+    let node = Widget::accessibility(&row).unwrap();
+    assert_eq!(node.name.as_deref(), Some("Flash when a key is ignored"));
+    assert_eq!(
+        node.description.as_deref(),
+        Some("Show the visual alert each time bounce keys drops a press")
+    );
+    assert_eq!(node.value, None, "the explanation is said once");
+
+    // Without a description the same line is what the row has to say.
+    let read = ListRow::new("path", "Home").secondary("/home/quinten");
+    let node = Widget::accessibility(&read).unwrap();
+    assert_eq!(node.value.as_deref(), Some("/home/quinten"));
+    assert_eq!(node.description, None);
+}

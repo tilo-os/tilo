@@ -1238,16 +1238,19 @@ impl Checker<'_> {
             vec![s_ex.clone(), Ex::str("name"), Ex::str(&slot.name)],
         ));
         if slot.when_open {
-            self.emit(host(
-                Imp::UiPropI,
-                vec![
-                    s_ex.clone(),
-                    Ex::str(crate::toolkit::WHEN_OPEN_PROP),
-                    Ex::int(1),
-                ],
+            // The document a row opens into is the row's only while it stands open: a closed
+            // row runs none of it, so a list of rows on screen costs the rows, not a page each.
+            self.push_sink();
+            self.child_block_of("slot", body, s, true);
+            let document = self.pop_sink();
+            self.emit(Stmt::If(
+                Ex::host(Imp::RowOpen, Vec::new(), Ty::Bool),
+                document,
+                Vec::new(),
             ));
+        } else {
+            self.child_block_of("slot", body, s, true);
         }
-        self.child_block_of("slot", body, s, true);
         self.emit(host(Imp::UiChild, vec![Ex::local(n, Ty::View), s_ex]));
         slot.when_open
     }

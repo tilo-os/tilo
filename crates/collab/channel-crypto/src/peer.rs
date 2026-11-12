@@ -173,12 +173,24 @@ pub enum PeerEvent {
     /// A commit admitted this waiting device with a member key it no longer
     /// holds. It still waits, and asks again with the key it holds now.
     AdmittedWithAnotherKey,
-    /// A Welcome for this waiting device was refused for the reason named:
-    /// a member of the channel sent it into a group that is not the one the
-    /// frame commits. Like [`Self::Desynchronised`], the device waits with a
-    /// fresh member key and must send a new access request: the members that
-    /// took the frame's commit hold this device admitted with the key it
-    /// asked with, and admit it again only when it asks with another.
+    /// A Welcome for this waiting device was refused for the reason named.
+    ///
+    /// [`crate::WelcomeRefusal::SignedByAnotherDevice`] is a member of the
+    /// channel sending it into a group that is not the one the frame commits.
+    /// Like [`Self::Desynchronised`], the device waits with a fresh member key
+    /// and must send a new access request: the members that took the frame's
+    /// commit hold this device admitted with the key it asked with, and admit
+    /// it again only when it asks with another.
+    ///
+    /// [`crate::WelcomeRefusal::DeviceNotAllowed`] is judged against this
+    /// device's view of the membership, which may be behind or ahead of the
+    /// committer's: an honest Welcome names a device admitted a moment ago
+    /// that this device has not heard of yet, or one it heard was removed
+    /// that the committer has not. So the device keeps the key the Welcome
+    /// is for, and the caller offers the same frame again once its view of
+    /// the membership changed. It gives up with [`ChannelPeer::refuse_welcome`]
+    /// when the channel moved past the frame or its view does not come to
+    /// back the Welcome in time.
     WelcomeRefused(crate::WelcomeRefusal),
 }
 
@@ -1661,7 +1673,9 @@ impl ChannelPeer {
     /// lets read it. Without that any member could send this device into a
     /// group of its own making, which would show only later, as a channel
     /// whose commits never apply. Both are a look at each leaf's credential,
-    /// no signature work.
+    /// no signature work. A tree refused for a device `allowed` does not name
+    /// leaves this device waiting with the same key, so the frame can be
+    /// judged again under a later view ([`PeerEvent::WelcomeRefused`]).
     fn receive_welcome(
         &mut self,
         frame: MlsGovernanceFrame,
@@ -1747,13 +1761,29 @@ impl ChannelPeer {
                 Ok(PeerEvent::Joined { epoch })
             }
             Err(Error::WelcomeRefused(refusal)) => {
-                self.desynchronise(vault)?;
+                if refusal == crate::WelcomeRefusal::SignedByAnotherDevice {
+                    self.desynchronise(vault)?;
+                }
                 Ok(PeerEvent::WelcomeRefused(refusal))
             }
             // A Welcome for a key package this device no longer holds: stay
             // waiting; the next request is admitted anew.
             Err(_) => Ok(PeerEvent::Desynchronised),
         }
+    }
+
+    /// Give up on a Welcome this waiting device held for its view of the
+    /// membership ([`PeerEvent::WelcomeRefused`]): wait with a fresh member
+    /// key, which the members admit anew. Nothing for a device not waiting.
+    ///
+    /// # Errors
+    ///
+    /// A failed write of the state.
+    pub fn refuse_welcome(&mut self, vault: &VaultKey) -> Result<PeerEvent> {
+        if !matches!(self.record, MemberRecord::Waiting(_)) {
+            return Ok(PeerEvent::Ignored);
+        }
+        self.desynchronise(vault)
     }
 
     /// Start over: wait with a fresh member key, keeping the gate.

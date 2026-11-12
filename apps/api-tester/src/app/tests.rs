@@ -1517,7 +1517,7 @@ fn a_history_entry_keeps_the_whole_request_it_sent() {
     assert_eq!(replay.params.len(), authored.params.len());
     assert_eq!(
         replay.scheme,
-        authored.auth.label(),
+        authored.auth.scheme(),
         "the scheme is public; the credential itself is not recorded"
     );
 
