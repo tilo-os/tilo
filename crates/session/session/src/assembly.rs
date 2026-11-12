@@ -597,12 +597,11 @@ pub struct Session {
     /// The app a process runs, for the windows it shows.
     #[cfg(target_os = "linux")]
     pub(crate) pids: std::collections::BTreeMap<u32, String>,
-    /// The serial of the icon the desk was last handed each window's own
-    /// artwork at, and which windows it was told of at all, so a window that
-    /// sets another icon is handed the new one and a window that closed lets
-    /// go of its own.
+    /// The key of the artwork the desk was last handed for each window, and
+    /// which windows it was told of at all, so a window that sets another
+    /// icon is handed the new one and a window that closed lets go of its own.
     #[cfg(target_os = "linux")]
-    pub(crate) window_artwork: std::collections::BTreeMap<u64, u64>,
+    pub(crate) window_artwork: std::collections::BTreeMap<u64, String>,
     /// The watch that keeps the notification policy current; dropping it
     /// stops the news.
     #[cfg(target_os = "linux")]

@@ -1975,6 +1975,7 @@ impl WindowGroup {
         if tab.title == descriptor.title
             && tab.app_kind == descriptor.app_kind
             && tab.named == descriptor.named
+            && tab.app_name == descriptor.app_name
         {
             return false;
         }
