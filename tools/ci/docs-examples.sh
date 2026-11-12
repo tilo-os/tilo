@@ -8,7 +8,7 @@
 #
 # The Python and TypeScript environments come from the ci-sdk image, offline, as the sdk-python
 # and sdk-typescript checks take them: uv runs a Python block from sdk/python, and bun resolves
-# `@tilo/sdk` to the tree's sdk/typescript, so an example runs against this tree's SDKs.
+# `tilo-sdk` to the tree's sdk/typescript, so an example runs against this tree's SDKs.
 #
 # usage: docs-examples.sh <directory of the docs-examples-build outputs> [run arguments]
 set -euo pipefail

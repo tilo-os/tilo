@@ -49,7 +49,7 @@ print(Tilo)
 
 TYPESCRIPT = """
 ```typescript example=first-workspace
-import { Tilo } from "@tilo/sdk";
+import { Tilo } from "tilo-sdk";
 
 console.log(Tilo);
 ```
@@ -132,7 +132,7 @@ class DocExampleTests(unittest.TestCase):
         self.assertEqual(python.location, "docs/tilo-sh/index.md:3")
         self.assertEqual(typescript.location, "docs/tilo-sh/index.md:9")
         self.assertEqual(typescript.lang, "typescript")
-        self.assertEqual(typescript.code, 'import { Tilo } from "@tilo/sdk";\n\nconsole.log(Tilo);')
+        self.assertEqual(typescript.code, 'import { Tilo } from "tilo-sdk";\n\nconsole.log(Tilo);')
 
     def test_list_names_every_example(self) -> None:
         status, output = self.run_tool("list")

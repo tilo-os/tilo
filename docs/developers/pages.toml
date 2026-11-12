@@ -13,7 +13,7 @@
 base = "/docs/developers/"
 origin = "https://tilo.so"
 repository = "https://code.tilo.so/tilo/tilo"
-related_manifests = ["docs/development/pages.toml"]
+related_manifests = ["docs/development/pages.toml", "docs/tilo-sh/pages.toml"]
 
 [api]
 title = "tilo-app API reference"

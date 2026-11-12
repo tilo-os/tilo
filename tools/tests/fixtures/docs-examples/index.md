@@ -24,7 +24,7 @@ asyncio.run(main())
 ```
 
 ```typescript example=create-a-workspace
-import { Tilo } from "@tilo/sdk";
+import { Tilo } from "tilo-sdk";
 
 const tilo = new Tilo(); // the key is TILO_API_KEY, the door TILO_DOOR
 const created = await tilo.workspaces.create("Example customer");

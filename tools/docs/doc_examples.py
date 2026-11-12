@@ -7,7 +7,7 @@ languages every example has to be written in. A runnable example is a fenced
 code block whose info string is `<lang> example=<id>`. Consecutive blocks with
 one id are that example's tabs, and each of them is the whole program its
 language needs: a Python program importing `tilo`, a TypeScript module
-importing `@tilo/sdk`, a shell program running the `tilo` command. A block
+importing `tilo-sdk`, a shell program running the `tilo` command. A block
 whose info string says `fragment` is a partial snippet and is not run.
 
 `check` enforces the conventions and runs nothing. `list` prints what the pages
@@ -15,7 +15,7 @@ carry. `run` executes every block against a local Tilo: `--door` names the
 `door-on-relay` example of `tilo-agent-participant`, which serves a host with
 its API and runs the program with `TILO_DOOR` and `TILO_API_KEY` set, so an
 example reaches the API the way the published one reaches tilo.sh. Python runs
-from `sdk/python` with uv, TypeScript resolves `@tilo/sdk` to the tree's
+from `sdk/python` with uv, TypeScript resolves `tilo-sdk` to the tree's
 `sdk/typescript` and runs with bun, and `sh` runs the `tilo` command `--tilo`
 names.
 """
@@ -260,11 +260,14 @@ def load(root: Path, manifest_path: str = MANIFEST) -> Book:
 
 
 def typescript_configuration(repository: Path) -> str:
-    """A tsconfig.json resolving `@tilo/sdk` to this checkout's own package, sources and all."""
-    sources = repository / "sdk/typescript/src"
+    """A tsconfig.json resolving the TypeScript SDK's package, by the name its package.json
+    publishes it under, to this checkout's own sources."""
+    package = repository / "sdk/typescript"
+    name = json.loads((package / "package.json").read_text(encoding="utf-8"))["name"]
+    sources = package / "src"
     paths = {
-        "@tilo/sdk": [str(sources / "index.ts")],
-        "@tilo/sdk/types": [str(sources / "types/index.ts")],
+        name: [str(sources / "index.ts")],
+        f"{name}/types": [str(sources / "types/index.ts")],
     }
     return json.dumps({"compilerOptions": {"paths": paths}}, indent=2) + "\n"
 
