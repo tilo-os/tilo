@@ -425,7 +425,7 @@ impl ApiTesterApp {
         )
         .with_content_sized_first()
         .with_divider_id("api.request-divider")
-        .with_divider_label("Resize the request and the response");
+        .with_divider_label(crate::locales::CATALOG.t("api-tester-split-label"));
         Box::new(
             Stack::new()
                 .push(Box::new(
