@@ -239,6 +239,13 @@ pub mod invite;
 pub mod keyboard;
 mod keyboard_shortcuts;
 mod keys;
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "a page answers on its own loop: only a Linux session lands work done off it"
+    )
+)]
 mod landing;
 #[cfg(target_os = "linux")]
 mod launches;

@@ -202,7 +202,13 @@ impl<'a> Membership<'a> {
 }
 
 /// The grant [`authorship`] asks of a workspace's governance, signed by this device's signer.
+/// A native session runs it on a worker thread, so it is `Send` there; a page has one thread,
+/// and the engine it shares is not `Send` there (`MaybeSendSync`).
+#[cfg(not(target_family = "wasm"))]
 pub type Granting = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+/// The grant [`authorship`] asks of a workspace's governance, signed by this device's signer.
+#[cfg(target_family = "wasm")]
+pub type Granting = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>>;
 
 /// Let `app` author its own records in `workspace`, as the person who opens it
 /// there: the workspace's governance gives the grant when they administer it
