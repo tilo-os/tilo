@@ -2314,14 +2314,22 @@ impl Instance {
         let opened = self.take_open_requests();
         let pulled = self.poll_origins();
         let settled = self.settle_outbox();
-        let renamed =
-            std::mem::take(&mut self.names_changed) | std::mem::take(&mut self.formats_changed);
-        if renamed {
+        // What the window calls a participant, or how the person writes a day or a time of day,
+        // changed: the boundaries that show one run again, and no other.
+        let named = std::mem::take(&mut self.names_changed);
+        let formatted = std::mem::take(&mut self.formats_changed);
+        if named || formatted {
             for view in [self.root.as_ref(), self.detail.as_ref()]
                 .into_iter()
                 .flatten()
             {
-                view.view.borrow().refresh();
+                let mut view = view.view.borrow_mut();
+                if named {
+                    view.names_moved();
+                }
+                if formatted {
+                    view.formats_moved();
+                }
             }
         }
         // Who is at a resource shows wherever a view reads its lenses.
@@ -2335,15 +2343,17 @@ impl Instance {
             || pulled
             || settled
             || lenses
-            || renamed
+            || named
+            || formatted
             || members
             || timed
             || self.views_stale();
         if changed {
             self.poll_views();
         }
-        if renamed {
-            // A name is read into a node's value when it is sent: every tree is sent again.
+        if named || formatted {
+            // A name, and how a day or a time of day reads, go into a node's value when it is
+            // sent: every tree is sent again.
             for lane in [Lane::Root, Lane::Detail] {
                 self.resend(lane);
             }

@@ -823,10 +823,23 @@ impl Core {
         if mine {
             return self.word("tilolang-you", "You");
         }
-        self.names.borrow().as_ref().map_or_else(
-            || who.to_owned(),
-            |host| host.name(&Principal::new(who.to_owned())),
-        )
+        self.named(&Principal::new(who.to_owned()))
+    }
+
+    /// What the host calls `who`, and that a view showing it read it: the window calling someone
+    /// something else runs again the boundaries that show a name, and no others.
+    pub(crate) fn named(&self, who: &Principal) -> String {
+        self.in_view(|vs| vs.read_name(who));
+        self.names
+            .borrow()
+            .as_ref()
+            .map_or_else(|| who.0.clone(), |host| host.name(who))
+    }
+
+    /// Note that the code running writes a day or a time of day in the person's format: a view
+    /// that does runs again when they choose another.
+    pub(crate) fn read_format(&self) {
+        self.in_view(crate::handles::ViewState::read_format);
     }
 
     /// `value`, of the type `ty`, as `c.before` and `c.after` show it ([`Self::change_view`]):
@@ -2579,6 +2592,12 @@ impl Core {
                 vs.state_reads.extend(rendered.state_reads.iter().cloned());
                 vs.state_seen.extend(rendered.state_seen.iter().cloned());
                 vs.space_reads.extend(rendered.space_reads.iter().cloned());
+                for who in &rendered.name_reads {
+                    vs.read_name(who);
+                }
+                if rendered.format_reads {
+                    vs.read_format();
+                }
             }
         }
         Ok(Some(rendered.root))
@@ -2639,6 +2658,7 @@ impl Core {
                 }
                 [Value::Text(kind), held, _] if kind == "date" || kind == "time" => {
                     let text = said_value(held);
+                    self.read_format();
                     self.shown
                         .borrow()
                         .as_ref()

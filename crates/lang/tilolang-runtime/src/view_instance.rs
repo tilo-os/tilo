@@ -79,8 +79,6 @@ pub struct ViewInstance {
     subs: Vec<SubId>,
     subscribed: HashSet<DocId>,
     events: RefCell<Vec<ViewEvent>>,
-    /// Run every boundary again at the next poll.
-    refresh_all: std::cell::Cell<bool>,
 }
 
 /// The window a view over `args` runs in when the host names none: the window of its first
@@ -110,7 +108,6 @@ impl ViewInstance {
             subs: Vec::new(),
             subscribed: HashSet::new(),
             events: RefCell::new(Vec::new()),
-            refresh_all: std::cell::Cell::new(false),
         };
         me.subscribe_new();
         Ok(me)
@@ -160,9 +157,6 @@ impl ViewInstance {
         if let Some(now) = self.time_passed() {
             self.live.pass_time(now);
         }
-        if self.refresh_all.take() {
-            self.live.mark_all();
-        }
     }
 
     /// The current tree. Rows of a `list` that were not shown are not in it (for the patches,
@@ -200,10 +194,16 @@ impl ViewInstance {
         self.live.shows(reads);
     }
 
-    /// Run the view again at the next poll although nothing it read changed: what it shows
-    /// without reading it (the names of principals) has changed.
-    pub fn refresh(&self) {
-        self.refresh_all.set(true);
+    /// Run again the boundaries that read a name (`who.name()`), and no others: the window calls
+    /// a participant something else than it did.
+    pub fn names_moved(&mut self) {
+        self.live.names_moved();
+    }
+
+    /// Run again the boundaries that wrote a day or a time of day: the person chose another
+    /// format for one.
+    pub fn formats_moved(&mut self) {
+        self.live.formats_moved();
     }
 
     /// When the time some boundary read (`today` in a query or a filter) next reads
@@ -226,8 +226,7 @@ impl ViewInstance {
     /// Whether a field or view state some boundary read has changed since it last ran, or the
     /// time one read has moved on.
     pub fn is_stale(&self) -> bool {
-        self.refresh_all.get()
-            || self.live.is_dirty()
+        self.live.is_dirty()
             || self.time_passed().is_some()
             || self
                 .changes
