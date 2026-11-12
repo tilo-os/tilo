@@ -827,10 +827,13 @@ impl VideoEditorApp {
                 first.y0,
             );
             for (pal, rect) in &l.colors {
-                let face =
-                    ui::widget::ColorSwatchFace::new(*rect, clip_color(theme, *pal), "Label")
-                        .selected(clip.palette == *pal)
-                        .hovered(rect.contains(self.last_mouse));
+                let face = ui::widget::ColorSwatchFace::new(
+                    *rect,
+                    clip_color(theme, *pal),
+                    crate::resource::CATALOG.t("video-editor-label"),
+                )
+                .selected(clip.palette == *pal)
+                .hovered(rect.contains(self.last_mouse));
                 face.paint(scene, tf, tr, theme);
             }
         }
@@ -1051,7 +1054,7 @@ impl VideoEditorApp {
             draw_button_enabled(
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
-                "Fill frame",
+                &crate::resource::CATALOG.t("video-editor-fill-frame"),
                 ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
                 !plain,
@@ -1140,7 +1143,10 @@ impl VideoEditorApp {
                 tr,
                 theme,
                 rect,
-                "Reset to 0.0 dB, centre",
+                &crate::resource::CATALOG.t_args(
+                    "video-editor-reset-track",
+                    &[("track", ui::i18n::ArgValue::Text(clip.track.to_string()))],
+                ),
                 ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
             );
@@ -1170,7 +1176,10 @@ impl VideoEditorApp {
             draw_button_enabled(
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
-                &format!("Reset {}", ch.label()),
+                &crate::resource::CATALOG.t_args(
+                    "video-editor-reset-curve",
+                    &[("channel", ui::i18n::ArgValue::Text(ch.label().to_owned()))],
+                ),
                 ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
                 shaped,
@@ -1209,9 +1218,13 @@ impl VideoEditorApp {
             // The key colour is the footage's own colour, so it is shown as it
             // is, on the toolkit's swatch.
             let swatch = Color::new([col[0] as f32, col[1] as f32, col[2] as f32, 1.0]);
-            let face = ui::widget::ColorSwatchFace::new(*rect, swatch, "Key colour")
-                .selected(on)
-                .hovered(rect.contains(self.last_mouse));
+            let face = ui::widget::ColorSwatchFace::new(
+                *rect,
+                swatch,
+                crate::resource::CATALOG.t("video-editor-key-colour"),
+            )
+            .selected(on)
+            .hovered(rect.contains(self.last_mouse));
             face.paint(scene, tf, tr, theme);
         }
         if let Some(rect) = l.key_pick {
@@ -1222,11 +1235,11 @@ impl VideoEditorApp {
             draw_button_enabled(
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
-                if have {
-                    "Sample centre"
+                &crate::resource::CATALOG.t(if have {
+                    "video-editor-sample-centre"
                 } else {
-                    "No frame to sample"
-                },
+                    "video-editor-no-frame-to-sample"
+                }),
                 ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
                 have,
@@ -1255,7 +1268,7 @@ impl VideoEditorApp {
                 tr,
                 theme,
                 rect,
-                "Fit to picture",
+                &crate::resource::CATALOG.t("video-editor-fit-to-picture"),
                 ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
             );
@@ -1420,10 +1433,13 @@ impl VideoEditorApp {
                     .iter()
                     .zip(cur.iter())
                     .all(|(a, b)| (a - b).abs() < 1e-6);
-                let face =
-                    ui::widget::ColorSwatchFace::new(*rect, title_color(*col), "Title colour")
-                        .selected(chosen)
-                        .hovered(rect.contains(self.last_mouse));
+                let face = ui::widget::ColorSwatchFace::new(
+                    *rect,
+                    title_color(*col),
+                    crate::resource::CATALOG.t("video-editor-title-colour"),
+                )
+                .selected(chosen)
+                .hovered(rect.contains(self.last_mouse));
                 face.paint(scene, tf, tr, theme);
             }
         }
@@ -1504,7 +1520,8 @@ impl VideoEditorApp {
                 );
             }
             let add = l.add_effect;
-            let face = ButtonFace::new(add, "Add effect")
+            let add_effect = crate::resource::CATALOG.t("video-editor-add-effect-button");
+            let face = ButtonFace::new(add, &add_effect)
                 .icon(Icon::Plus)
                 .control_size(control_size_for(add, theme))
                 .hovered(add.contains(self.last_mouse));
@@ -1531,7 +1548,7 @@ impl VideoEditorApp {
                 tr,
                 theme,
                 l.split,
-                "Split",
+                &crate::resource::CATALOG.t("video-editor-split"),
                 ButtonRole::Secondary,
                 l.split.contains(self.last_mouse),
             );
@@ -1541,7 +1558,7 @@ impl VideoEditorApp {
                 tr,
                 theme,
                 l.delete,
-                "Delete",
+                &crate::resource::CATALOG.t("video-editor-delete-button"),
                 ButtonRole::Destructive,
                 l.delete.contains(self.last_mouse),
             );

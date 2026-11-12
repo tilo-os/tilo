@@ -645,3 +645,9 @@ files-sharing-unavailable = Teilen ist für diese Datei nicht verfügbar
 files-folder-missing = { $path } ist kein vorhandener Ordner.
 files-copy-failed = Das Kopieren ist fehlgeschlagen: { $detail }
 files-resource-nearby = In der Nähe
+
+## Was ein Ort, ein Eintrag und ein entferntes Konto anbieten
+files-account-status = Kontostatus anzeigen
+files-account-reauthenticate = So meldest du dich wieder an
+files-reveal = In Dateien zeigen
+files-remote-details = Verbindungsdetails anzeigen

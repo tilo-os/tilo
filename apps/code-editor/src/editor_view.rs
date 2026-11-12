@@ -2738,7 +2738,8 @@ impl EditorView {
         }
         let inset = f64::from(theme.tokens.spacing.s2);
         let size = ControlSize::Small;
-        let face = ButtonFace::new(Rect::ZERO, "Line start")
+        let label = crate::resource::CATALOG.t("code-editor-line-start");
+        let face = ButtonFace::new(Rect::ZERO, &label)
             .icon(Icon::ArrowLeft)
             .control_size(size);
         let width = face.intrinsic_width(text_renderer, theme);
@@ -2749,7 +2750,7 @@ impl EditorView {
             (code_x0 + inset + width).min(self.rect.x1 - inset),
             self.rect.y1 - inset,
         );
-        let face = ButtonFace::new(rect, "Line start")
+        let face = ButtonFace::new(rect, &label)
             .icon(Icon::ArrowLeft)
             .control_size(size)
             .hovered(rect.contains(self.last_cursor));

@@ -266,3 +266,36 @@ ebook-bookmark-page = Bookmark page
 ebook-highlight-selection = Highlight selection
 ebook-opening = Opening { $name }
 ebook-try-again = Try again
+
+## The settings page, its sections and rows
+ebook-settings-shortcuts-hint = Choose a shortcut, then press a key. Arrow and Page keys always turn pages.
+ebook-settings-press-key = Press a key
+ebook-settings-folders-title = Watched folders
+ebook-settings-folders-hint = Turn a folder on to add its books to your library, now and as new ones arrive.
+ebook-settings-fonts-title = Reading fonts
+ebook-settings-fonts-hint = Turn a font off to leave it out of the reading settings. Select a name to rename it.
+ebook-settings-schemes-hint = Turn a scheme off to leave it out of the reading settings.
+ebook-font-kind-default = Default face
+ebook-font-kind-system = System reading face
+ebook-font-kind-reading = Reading face
+ebook-font-kind-mono = Monospace
+ebook-font-kind-named = System font
+ebook-scheme-in-use = In use
+ebook-scheme-builtin = Built-in
+ebook-scheme-custom = Custom
+ebook-action-delete-note = Delete note
+ebook-save = Save
+ebook-share = Share
+
+## The scheme editor
+ebook-scheme-editor-preview = Preview
+ebook-scheme-editor-preview-text = The quick brown fox jumps over the lazy dog.
+
+## What the search page says while it has nothing to show
+ebook-query-hint = Type to search your books, their pages and your notes.
+ebook-query-no-local = Nothing in your library matches.
+ebook-query-unreachable = { $store } can’t be reached right now.
+ebook-query-no-remote = No matches in { $store }.
+
+## The note editor's hint
+ebook-annotation-hint = Select text in the book to highlight it or add a note.

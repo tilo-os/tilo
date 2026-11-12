@@ -117,3 +117,6 @@ sheets-bold = Bold
 sheets-autosum = AutoSum
 sheets-show-formulas = Show formulas
 sheets-show-results = Show calculated results
+
+## A tab's colour mark
+sheets-tab-colour = Tab colour

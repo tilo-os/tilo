@@ -790,15 +790,10 @@ impl BooksApp {
         ) + gutter;
         y = self.query_chips(ctx, span, y, body, &results) + section;
         if results.query.is_empty() {
-            y = Self::query_note(
-                ctx,
-                span,
-                y,
-                "Type to search your books, their pages and your notes.",
-            );
+            y = Self::query_note(ctx, span, y, &CATALOG.t("ebook-query-hint"));
         } else {
             if results.local.is_empty() {
-                y = Self::query_note(ctx, span, y, "Nothing in your library matches.") + section;
+                y = Self::query_note(ctx, span, y, &CATALOG.t("ebook-query-no-local")) + section;
             }
             for group in &results.local {
                 y = self.query_group(ctx, span, body, y, group) + section;
@@ -1175,14 +1170,25 @@ impl BooksApp {
             y += h;
         } else if let Some(RemoteError(text)) = remote.failure() {
             let note = if text.is_empty() {
-                format!("{} can\u{2019}t be reached right now.", remote.label)
+                CATALOG.t_args(
+                    "ebook-query-unreachable",
+                    &[("store", ArgValue::Text(remote.label.clone()))],
+                )
             } else {
                 text.clone()
             };
             y = Self::query_note(ctx, span, y, &note);
             y = self.query_retry(ctx, span, body, y, &remote.source);
         } else if remote.is_answered() && remote.groups.is_empty() {
-            y = Self::query_note(ctx, span, y, &format!("No matches in {}.", remote.label));
+            y = Self::query_note(
+                ctx,
+                span,
+                y,
+                &CATALOG.t_args(
+                    "ebook-query-no-remote",
+                    &[("store", ArgValue::Text(remote.label.clone()))],
+                ),
+            );
         }
         for item in remote.rows() {
             y = self.query_row(ctx, span, body, y, item);

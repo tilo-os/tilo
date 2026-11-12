@@ -55,21 +55,33 @@ as much when a closure or a conditional picks the literal
 when the builder is handed it directly, so both count.
 
 A surface — an app's window or a session role's — paints through the toolkit's
-text constructors (`Text::new`, `Button::new`, the `with_*`/`set_*` label and
-accessible-name setters, the paint helpers that take the scene first, a
-property list's own label, a section's title), not only through the builders
-above. A literal handed to one of those is the same defect on a German desktop,
-so surfaces are checked for them too. A name a person reads is as often
-selected as it is written: a literal in the result position of a `match` arm or
-an `if` branch is painted when the selection reaches a constructor, whether
-through a tuple pattern (`let (role, name, state) = match …`) or a local.
+text constructors (`Text::new`, `Button::new`, `ButtonFace::new`,
+`ButtonFace::icon_only`, `ColorSwatchFace::new`, a menu entry, the
+`with_*`/`set_*` label and accessible-name setters, the paint helpers that take
+the scene first, a context's own `text_role`/`text_role_in_band`, a property
+list's own label, a section's title), not only through the builders above. A
+literal handed to one of those is the same defect on a German desktop, so
+surfaces are checked for them too. A name a person reads is as often selected
+as it is written: a literal in the result position of a `match` arm or an `if`
+branch is painted when the selection reaches a constructor, whether through a
+tuple pattern (`let (role, name, state) = match …`) or a local.
 
 Two more ways a word reaches a window without the constructor coming first:
 
 - through a helper — a function that hands its parameter to a text constructor
   (`fn button(&self, id: &str, label: &str) -> Button { Button::new(id,
   label) }`): a literal at the parameter's position at any call site of it is
-  painted just the same, and so is one passed on through a second helper;
+  painted just the same, and so is one passed on through a second helper. A
+  parameter that names an action's label through `type_mut().label`
+  (`spec.type_mut().label.clone_from(label)`) paints its callers' words the
+  same way, and a parameter the helper destructures to paint one element of
+  (`(icon, name): (Icon, &str)` handed to `ButtonFace::icon_only(rect, icon,
+  name)`) paints that element of the tuple at its call sites;
+- through a helper's struct — a function that destructures a struct it is
+  handed and paints its fields (`let &SettingsRow { title, secondary, … } =
+  row;` then `face.secondary(secondary)`): a struct literal at that parameter's
+  position (`&SettingsRow { secondary: Some(status), … }`) says the words for
+  those fields, whatever built the value it names;
 - from a function that keeps the words rather than passing them on
   (`fn friendly_reason(reason: &str) -> &'static str { … "Add paper to
   continue." … }`): the value it returns is what is painted where the crate
@@ -546,6 +558,20 @@ TEXT_CONSTRUCTORS = (
     ("Text::new(", 0),
     ("ArgValue::Text(", 0),
     ("Notification::new(", 0),
+    # A paint context hands its words first (`ctx.text_role("Colours", …)`),
+    # and an icon-only button face takes its accessible name after its rect and
+    # icon: the two arguments no other position holds.
+    (".text_role(", 0),
+    (".text_role_in_band(", 0),
+    ("ButtonFace::new(", 1),
+    ("ButtonFace::icon_only(", 2),
+    ("ColorSwatchFace::new(", 2),
+    (".accessible_name(", 0),
+    # A menu entry is its label: a command, one that takes something away, or
+    # the caption above it.
+    ("MenuEntry::new(", 0),
+    ("MenuEntry::destructive(", 0),
+    ("MenuEntry::caption(", 0),
     ("Button::new(", 1),
     # A sheet is titled by the words a person reads above it, so a literal
     # handed to `ModalSpec::new` is the same defect as one handed a label. The
@@ -674,7 +700,9 @@ DEFAULT_CALLS = ("unwrap_or(", "unwrap_or_else(|", "unwrap_or_else(||",
 
 # An action's label, assigned rather than set: it names the action in menus and
 # in the action directory, so an English literal here is copy like any other.
-ACTION_LABEL = re.compile(r"\.type_mut\(\)\.label\s*=(?!=)")
+# It is written as a plain assignment or through a call that replaces the label
+# (`spec.type_mut().label.clone_from(label)`).
+ACTION_LABEL = re.compile(r"\.type_mut\(\)\.label\s*(?:=(?!=)|\.clone_from\s*\()")
 
 
 def english_words(value: str) -> bool:
@@ -1119,9 +1147,12 @@ KEY_LOOKUP = re.compile(
 )
 
 
-def parameters(code: str, start: int) -> list[str]:
-    """A function's parameter names in order, from the `(` at `start - 1`; an
-    empty string where a pattern has no plain name, to keep the positions."""
+def parameters(code: str, start: int) -> list[list[tuple[str, int | None]]]:
+    """What each parameter of a function binds, in order, from the `(` at
+    `start - 1`: its plain names, each with the element of a tuple pattern it
+    sits at (`None` for a plain binding), so `(icon, name): (Icon, &str)` names
+    both. An empty list where a pattern has no plain name, to keep the
+    positions."""
     end = rust_source.matching(code, start - 1) - 1
     pieces = []
     begin = position = start
@@ -1140,14 +1171,22 @@ def parameters(code: str, start: int) -> list[str]:
             begin = position + 1
         position += 1
     pieces.append(code[begin:end])
-    names = []
+    bound: list[list[tuple[str, int | None]]] = []
     for piece in pieces:
         piece = piece.strip()
-        head = piece.split(":", 1)[0] if ":" in piece else piece
+        head = (piece.split(":", 1)[0] if ":" in piece else piece).strip()
+        if head.startswith("(") and head.endswith(")"):
+            elements = []
+            for element, inner in enumerate(head[1:-1].split(",")):
+                inner = inner.strip().removeprefix("mut ").replace("&", " ").strip()
+                elements.append(
+                    (inner if re.fullmatch(r"[a-z_][A-Za-z0-9_]*", inner) else "", element))
+            bound.append(elements)
+            continue
         words = head.replace("&", " ").replace("mut ", " ").split()
         name = words[-1] if words else ""
-        names.append(name if re.fullmatch(r"[a-z_][A-Za-z0-9_]*", name) else "")
-    return names
+        bound.append([(name, None)] if re.fullmatch(r"[a-z_][A-Za-z0-9_]*", name) else [])
+    return bound
 
 
 def bare(argument_text: str, name: str) -> bool:
@@ -1174,8 +1213,14 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
     A parameter a body hands to a catalogue lookup (`t(key)`, `CATALOG.t(key)`,
     `i18n::t(key)`) is a key: the call site chooses which message is painted,
     so words there never reach the catalogue at all.
+
+    The return is the arguments (`argument`, `tuple element`) a call site fills
+    with copy, and per name the fields of a struct parameter the body
+    destructures and paints (`let &SettingsRow { secondary, … } = row;` then
+    `face.secondary(secondary)`): the struct literal a caller hands there says
+    the words for those fields.
     """
-    bodies: list[tuple[str, str, list[str], str, int, int]] = []
+    bodies: list[tuple[str, str, list[list[tuple[str, int | None]]], str, int, int]] = []
     for path in paths:
         text = path.read_text(errors="replace")
         if "fn " not in text:
@@ -1196,7 +1241,7 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
                 continue
             names = parameters(code, function.end())
             # A receiver is not an argument at a call site.
-            if names and names[0] == "self":
+            if names and names[0] and names[0][0][0] == "self":
                 names = names[1:]
             brace = code.find("{", function.end())
             if names and brace >= 0:
@@ -1209,7 +1254,8 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
                 bodies.append((function.group(1), qualified, names, code, brace,
                                rust_source.matching(code, brace)))
 
-    lands: dict[int, set[int]] = {}
+    lands: dict[int, set[tuple[int, int | None]]] = {}
+    fields_painted: dict[int, dict[int, set[tuple[str, str]]]] = {}
     flows: list[tuple[int, int, str, int]] = []
     for number, (name, _, names, code, brace, body_end) in enumerate(bodies):
         painted_at: set[tuple[int, str]] = set()
@@ -1220,6 +1266,17 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
                 if begin < end:
                     painted_at.add((begin, code[begin:end]))
                 at = code.find(call, at + len(call), body_end)
+        # An action's label is what its menu row and the action directory show,
+        # so a helper that names one paints the caller's words as a constructor
+        # does.
+        for label in ACTION_LABEL.finditer(code, brace, body_end):
+            begin = label.end()
+            if code[begin - 1] == "(":
+                begin, end = argument(code, begin, 0)
+            else:
+                end = statement_end(code, begin)
+            if begin < end:
+                painted_at.add((begin, code[begin:end]))
         # What a function iterates and paints one element of, it paints whole:
         # `labels.iter().map(|label| Segment::new(*label))` draws every label it
         # is given, so the caller's argument is copy like any constructor's.
@@ -1228,8 +1285,9 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
             for _, source in painted_at
             if (found := re.fullmatch(r"\s*[*&]?\s*([a-z_][A-Za-z0-9_]*)\s*", source))
         }
+        plain = [parameter for bound in names for parameter, element in bound if element is None]
         iterated = [
-            parameter for parameter in names
+            parameter for parameter in plain
             if parameter and parameter != "self" and painted_variables
             and re.search(rf"(?<![\w$]){re.escape(parameter)}\s*\.\s*"
                           r"(?:iter|into_iter|iter_mut)\s*\(", code[brace:body_end])
@@ -1246,18 +1304,23 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
             for called, (begin, end) in enumerate(calls_of(code, open_paren)):
                 if begin < end:
                     passed_on.append((callee, called, code[begin:end]))
-        for index, parameter in enumerate(names):
-            if not parameter or parameter == "self":
-                continue
-            if any(bare(source, parameter) for _, source in painted_at):
-                lands.setdefault(number, set()).add(index)
-            if parameter in iterated:
-                lands.setdefault(number, set()).add(index)
-            if any(bare(source, parameter) for _, source in keys_at):
-                lands.setdefault(number, set()).add(index)
-            for callee, called, source in passed_on:
-                if bare(source, parameter):
-                    flows.append((number, index, callee, called))
+        for index, bound in enumerate(names):
+            for parameter, element in bound:
+                if not parameter or parameter == "self":
+                    continue
+                if any(bare(source, parameter) for _, source in painted_at):
+                    lands.setdefault(number, set()).add((index, element))
+                if element is None and parameter in iterated:
+                    lands.setdefault(number, set()).add((index, element))
+                if any(bare(source, parameter) for _, source in keys_at):
+                    lands.setdefault(number, set()).add((index, element))
+                for callee, called, source in passed_on:
+                    if element is None and bare(source, parameter):
+                        flows.append((number, index, callee, called))
+            for kind, field in destructured_fields(code, brace, body_end, bound):
+                if any(bare(source, field) for _, source in painted_at):
+                    fields_painted.setdefault(number, {}).setdefault(index, set()).add(
+                        (kind, field))
     by_name: dict[str, set[int]] = {}
     by_type_name: dict[str, set[int]] = {}
     for number, (name, qualified, _, _, _, _) in enumerate(bodies):
@@ -1265,13 +1328,13 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
         if qualified:
             by_type_name.setdefault(qualified, set()).add(number)
 
-    def landings(numbers) -> set[int]:
-        found: set[int] = set()
+    def landings(numbers) -> set[tuple[int, int | None]]:
+        found: set[tuple[int, int | None]] = set()
         for number in numbers:
             found |= lands.get(number, set())
         return found
 
-    def painted_by(name: str) -> set[int]:
+    def painted_by(name: str) -> set[tuple[int, int | None]]:
         """What callers share with a callee: the arguments every definition of
         a bare name paints, or the one definition of a type's method."""
         if "::" in name:
@@ -1285,10 +1348,11 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
     while changed:
         changed = False
         for number, index, callee, callee_index in flows:
-            if callee_index in painted_by(callee) and index not in lands.get(number, set()):
-                lands.setdefault(number, set()).add(index)
+            if ((callee_index, None) in painted_by(callee)
+                    and (index, None) not in lands.get(number, set())):
+                lands.setdefault(number, set()).add((index, None))
                 changed = True
-    table: dict[str, set[int]] = {}
+    table: dict[str, set[tuple[int, int | None]]] = {}
     for name, numbers in by_name.items():
         sets = [lands.get(number, set()) for number in numbers]
         if sets[0] and all(other == sets[0] for other in sets):
@@ -1297,7 +1361,37 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
         shared = landings(numbers)
         if shared and all(lands.get(number, set()) == shared for number in numbers):
             table[qualified] = shared
-    return table
+    fields: dict[str, dict[int, set[tuple[str, str]]]] = {}
+    for name, numbers in by_name.items():
+        held = [fields_painted.get(number, {}) for number in numbers]
+        if held[0] and all(other == held[0] for other in held):
+            fields[name] = held[0]
+    return table, fields
+
+
+# A `let` that takes a struct apart: `let &SettingsRow { title, secondary, … }
+# = row;`, whose fields the function then paints.
+DESTRUCTURE = re.compile(
+    r"(?m)^\s*let\s+(?:&\s*)?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)\s*"
+    r"(?:::\s*<[^<>{]*>\s*)?\{([^{}]*)\}\s*=\s*(?:&\s*)?([a-z_][A-Za-z0-9_]*)\s*;"
+)
+
+
+def destructured_fields(code: str, brace: int, body_end: int,
+                        bound: list[tuple[str, int | None]]) -> list[tuple[str, str]]:
+    """The `(type, field)` pairs the body `[brace, body_end)` takes apart from a
+    parameter `bound` binds: what the destructuring `let` names, whatever a
+    field is renamed to (`secondary: line`) it is the field `secondary`."""
+    names = {name for name, _ in bound}
+    found = []
+    for taken in DESTRUCTURE.finditer(code, brace, body_end):
+        if taken.group(3) not in names:
+            continue
+        for piece in taken.group(2).split(","):
+            field = piece.split(":", 1)[0].strip()
+            if field and field != ".." and re.fullmatch(r"[a-z_][A-Za-z0-9_]*", field):
+                found.append((taken.group(1), field))
+    return found
 
 
 def calls_of(code: str, open_paren: int):
@@ -1497,13 +1591,10 @@ def read_at(code: str, ranges: list[tuple[int, int]], name: str, field: str) -> 
     return any(pattern.search(code[begin:end]) for begin, end in ranges)
 
 
-# What a type's own method hands a field to when it paints the struct: the
-# toolkit's labelled button face takes its label as the second argument, the
-# icon-only one its accessible name as the third.
-FIELD_PAINTERS = TEXT_CONSTRUCTORS + (
-    ("ButtonFace::new(", 1),
-    ("ButtonFace::icon_only(", 2),
-)
+# What a type's own method hands a field to when it paints the struct: every
+# word a window paints, which the toolkit's labelled and icon-only button faces
+# are part of.
+FIELD_PAINTERS = TEXT_CONSTRUCTORS
 
 # The type an `impl` block is for: `impl<'a> HudItem<'a>`, `impl Trait for Row`.
 IMPL = re.compile(r"\bimpl(?:<[^>{]*>)?\s+(?:[^;{}\n]*?\bfor\s+)?([A-Z][A-Za-z0-9_]*)")
@@ -1675,8 +1766,31 @@ def painted_literal_fields(code: str, starts: list[int],
     return found
 
 
-WORD_CONSTANT_TABLE_CACHE: dict[tuple[str, str], dict[str, list[tuple[str, int, str]]]] = {}
+def struct_words(code: str, begin: int, end: int,
+                 held: set[tuple[str, str]]) -> list[tuple[int, int]]:
+    """The value ranges of the fields `held` names in the struct literal an
+    argument `[begin, end)` writes (`&SettingsRow { secondary: Some(status),
+    … }`): what the helper that destructures that struct paints, so where the
+    words are said."""
+    head = begin
+    while head < end and (code[head].isspace() or code[head] == "&"):
+        head += 1
+    opened = STRUCT_LITERAL.match(code, head)
+    if not opened:
+        return []
+    open_brace = opened.end() - 1
+    close = rust_source.matching(code, open_brace) - 1
+    found = []
+    for kind, field in sorted(held):
+        if kind != opened.group(1):
+            continue
+        field_begin, field_end = struct_field(code, open_brace + 1, close, field)
+        if field_begin < field_end:
+            found.append((field_begin, field_end))
+    return found
 
+
+WORD_CONSTANT_TABLE_CACHE: dict[tuple[str, str], dict[str, list[tuple[str, int, str]]]] = {}
 
 def word_constants(code: str, starts: list[int],
                    by_start: dict[int, rust_source.Literal],
@@ -1926,7 +2040,8 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
         for crate in windows:
             if location.startswith(f"{crate}/"):
                 by_crate.setdefault(crate, []).append(path)
-    helpers: dict[str, dict[str, set[int]]] = {}
+    helpers: dict[str, dict[str, set[tuple[int, int | None]]]] = {}
+    struct_fields: dict[str, dict[str, dict[int, set[tuple[str, str]]]]] = {}
     returning: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
     naming: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
     fields: dict[str, set[tuple[str, str]]] = {}
@@ -2014,7 +2129,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 sentences(field.end(), end, end, bindings)
         if window:
             if crate not in helpers:
-                helpers[crate] = helper_table(by_crate[crate])
+                helpers[crate], struct_fields[crate] = helper_table(by_crate[crate])
                 returning[crate] = returning_words(root, by_crate[crate])
                 naming[crate] = named_tuple_words(root, by_crate[crate])
                 constants[crate] = word_constant_table(root, by_crate[crate])
@@ -2065,14 +2180,24 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
             for name, indexes in helpers[crate].items():
                 pattern = re.compile(HELPER_CALL.format(name=re.escape(name)))
                 for hand in pattern.finditer(code):
-                    for index in indexes:
+                    for index, element in sorted(indexes, key=repr):
                         begin, end = argument(code, hand.end(), index)
                         if begin >= end:
                             continue
-                        sentences(begin, end, end, bindings)
-                        ranges.append((begin, end))
-                        found.extend(words_returned_in(code, begin, end,
-                                                       returning[crate]))
+                        painted_ranges = ([(begin, end)] if element is None
+                                          else element_of_tuple(code, begin, end, element))
+                        for painted_begin, painted_end in painted_ranges:
+                            sentences(painted_begin, painted_end, painted_end, bindings)
+                            ranges.append((painted_begin, painted_end))
+                            found.extend(words_returned_in(code, painted_begin, painted_end,
+                                                           returning[crate]))
+            for name, params in struct_fields[crate].items():
+                pattern = re.compile(HELPER_CALL.format(name=re.escape(name)))
+                for hand in pattern.finditer(code):
+                    for index, held in sorted(params.items()):
+                        begin, end = argument(code, hand.end(), index)
+                        for value_begin, value_end in struct_words(code, begin, end, held):
+                            sentences(value_begin, value_end, value_end, bindings)
             for binding, field, literal in stored_fields(code, starts, by_start, kept):
                 if read_at(code, ranges, binding, field):
                     found.append((path.relative_to(root).as_posix(),

@@ -266,3 +266,36 @@ ebook-bookmark-page = Lesezeichen für die Seite
 ebook-highlight-selection = Auswahl markieren
 ebook-opening = { $name } wird geöffnet
 ebook-try-again = Erneut versuchen
+
+## Die Einstellungsseite mit ihren Bereichen und Zeilen
+ebook-settings-shortcuts-hint = Wähle ein Kürzel und drücke dann eine Taste. Pfeil- und Seitentasten blättern immer.
+ebook-settings-press-key = Eine Taste drücken
+ebook-settings-folders-title = Beobachtete Ordner
+ebook-settings-folders-hint = Schalte einen Ordner ein, um seine Bücher in deine Bibliothek aufzunehmen, jetzt und wenn neue dazukommen.
+ebook-settings-fonts-title = Leseschriften
+ebook-settings-fonts-hint = Schalte eine Schrift aus, um sie in den Leseeinstellungen auszulassen. Tippe auf einen Namen, um ihn umzubenennen.
+ebook-settings-schemes-hint = Schalte ein Farbschema aus, um es in den Leseeinstellungen auszulassen.
+ebook-font-kind-default = Standardschrift
+ebook-font-kind-system = Systemschrift zum Lesen
+ebook-font-kind-reading = Leseschrift
+ebook-font-kind-mono = Nichtproportional
+ebook-font-kind-named = Systemschrift
+ebook-scheme-in-use = In Verwendung
+ebook-scheme-builtin = Eingebaut
+ebook-scheme-custom = Eigene
+ebook-action-delete-note = Notiz löschen
+ebook-save = Speichern
+ebook-share = Teilen
+
+## Der Schema-Editor
+ebook-scheme-editor-preview = Vorschau
+ebook-scheme-editor-preview-text = Franz jagt im komplett verwahrlosten Taxi quer durch Bayern.
+
+## Was die Suche sagt, solange sie nichts zu zeigen hat
+ebook-query-hint = Tippe, um deine Bücher, ihre Seiten und deine Notizen zu durchsuchen.
+ebook-query-no-local = In deiner Bibliothek passt nichts dazu.
+ebook-query-unreachable = { $store } ist gerade nicht erreichbar.
+ebook-query-no-remote = Keine Treffer in { $store }.
+
+## Der Hinweis im Notiz-Editor
+ebook-annotation-hint = Wähle Text im Buch aus, um ihn zu markieren oder eine Notiz hinzuzufügen.

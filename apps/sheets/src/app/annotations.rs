@@ -399,7 +399,8 @@ impl SheetsApp {
         let body = face.body_rect(ctx.text, ctx.theme, card);
         let header_y = card.y0 + padding + self.metrics.lh_label / 2.0;
         let more = Rect::from_center_size(Point::new(body.x1 - h / 2.0, header_y), (h, h));
-        let button = ButtonFace::icon_only(more, ui::icons::Icon::MoreHorizontal, "Manage chart")
+        let manage = crate::resource::CATALOG.t("sheets-manage-chart");
+        let button = ButtonFace::icon_only(more, ui::icons::Icon::MoreHorizontal, &manage)
             .role(ButtonRole::Plain)
             .control_size(ControlSize::Small)
             .toggled(managing)

@@ -582,11 +582,12 @@ impl CameraApp {
             body.x1,
             header_mid + control / 2.0,
         );
-        let close = ButtonFace::icon_only(close, Icon::X, "Dismiss");
+        let dismiss = crate::CATALOG.t("camera-a11y-dismiss-scan");
+        let close = ButtonFace::icon_only(close, Icon::X, &dismiss);
         let hit = close.hit_rect(theme);
         let hovered = close.contains(theme, self.last_mouse);
         Button::paint(scene, t, tr, theme, &close.hovered(hovered));
-        self.tooltip_targets.push((hit, "Dismiss".to_owned()));
+        self.tooltip_targets.push((hit, dismiss.clone()));
         self.push_region(hit, Action::DismissScan);
         for (i, (label, rect)) in content.actions.iter().zip(actions).enumerate() {
             let rect = rect + body.origin().to_vec2();

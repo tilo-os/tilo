@@ -2491,8 +2491,12 @@ impl ComposeWindow {
                 t,
                 tr,
                 theme,
-                &ButtonFace::icon_only(rect, Icon::Paperclip, "Attach file")
-                    .hovered(rect.contains(self.last_mouse)),
+                &ButtonFace::icon_only(
+                    rect,
+                    Icon::Paperclip,
+                    &crate::i18n::CATALOG.t("mail-compose-attach-file"),
+                )
+                .hovered(rect.contains(self.last_mouse)),
             );
         }
         if let Some(rect) = self.hit_rect(ComposeHit::Toolbar) {

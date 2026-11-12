@@ -612,13 +612,15 @@ impl NoteComposer {
         let card = Rect::new(x0, y0, x0 + width, y0 + height);
         let left = card.x0 + pad;
         let excerpt_y = card.y0 + pad + header + gap;
+        let delete_note = crate::resource::CATALOG.t("ebook-action-delete-note");
         let input_y = excerpt_y + f64::from(excerpt_height) + gap;
         let input_rect = Rect::new(left, input_y, card.x1 - pad, input_y + input_height);
         let button_y = input_rect.y1 + f64::from(rhythm.section);
-        let save_w = ButtonFace::new(Rect::ZERO, "Save")
+        let save = crate::resource::CATALOG.t("ebook-save");
+        let save_w = ButtonFace::new(Rect::ZERO, &save)
             .role(ButtonRole::Primary)
             .intrinsic_width(text_renderer, theme);
-        let delete_w = ButtonFace::new(Rect::ZERO, "Delete note")
+        let delete_w = ButtonFace::new(Rect::ZERO, &delete_note)
             .role(ButtonRole::Destructive)
             .intrinsic_width(text_renderer, theme);
         NoteLayout {
@@ -692,12 +694,14 @@ impl NoteComposer {
         self.delete = layout.delete;
         self.save = layout.save;
         let on_panel = theme.on_ground(ui::chrome::panel_ground(theme));
+        let delete_note = crate::resource::CATALOG.t("ebook-action-delete-note");
+        let save = crate::resource::CATALOG.t("ebook-save");
         Button::paint(
             scene,
             transform,
             text_renderer,
             &on_panel,
-            &ButtonFace::new(self.delete, "Delete note")
+            &ButtonFace::new(self.delete, &delete_note)
                 .role(ButtonRole::Destructive)
                 .hovered(self.delete.contains(self.cursor)),
         );
@@ -706,7 +710,7 @@ impl NoteComposer {
             transform,
             text_renderer,
             &on_panel,
-            &ButtonFace::new(self.save, "Save")
+            &ButtonFace::new(self.save, &save)
                 .role(ButtonRole::Primary)
                 .hovered(self.save.contains(self.cursor)),
         );

@@ -55,3 +55,6 @@ code-search-scanned = { $head }, { $files } Dateien durchsucht
 ## Die Schaltfläche für das untere Panel in der Fensterleiste
 code-editor-hide-panel = Panel ausblenden
 code-editor-show-panel = Panel einblenden
+
+## Das Scroll-Element der Codeansicht
+code-editor-line-start = Zeilenanfang

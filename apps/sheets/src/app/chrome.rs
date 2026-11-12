@@ -550,12 +550,17 @@ impl SheetsApp {
                     Point::new(rect.x0 + m.s3 + d / 2.0, rect.center().y),
                     (d, d),
                 );
-                ColorSwatchFace::new(mark, tab_palette_color(theme, slot), "Tab colour")
-                    .paint(scene, transform, tr, theme);
+                ColorSwatchFace::new(
+                    mark,
+                    tab_palette_color(theme, slot),
+                    crate::resource::CATALOG.t("sheets-tab-colour"),
+                )
+                .paint(scene, transform, tr, theme);
             }
         }
         let hovered = self.add_tab_rect.contains(self.last_mouse);
-        let face = ButtonFace::icon_only(self.add_tab_rect, Icon::Plus, "Add sheet")
+        let add_sheet = crate::resource::CATALOG.t("sheets-add-sheet");
+        let face = ButtonFace::icon_only(self.add_tab_rect, Icon::Plus, &add_sheet)
             .control_size(ControlSize::Small)
             .hovered(hovered);
         Button::paint(scene, transform, tr, theme, &face);

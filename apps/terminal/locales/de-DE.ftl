@@ -64,3 +64,6 @@ terminal-session-ended = Sitzung beendet. Die Shell wurde beendet, Tippen erreic
 terminal-session-exit-unknown = Sitzung beendet. Der Exit-Status der Shell war nicht lesbar.
 terminal-session-input-unavailable = Sitzung beendet. Eingabe ist nicht möglich.
 terminal-session-read-failed = Sitzung beendet. Das Terminal kann nichts mehr von der Shell lesen.
+
+## Das Schließen der eigenen Bereiche des Terminals
+terminal-a11y-close = Schließen

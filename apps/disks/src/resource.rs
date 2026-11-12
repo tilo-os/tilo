@@ -310,13 +310,13 @@ fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
         &DisksEffect::OpenFolder {
             device: part.name.clone(),
         },
-        "Open in Files",
+        &CATALOG.t("disks-open-in-files"),
     ))
     .operation(row_view_operation(
         &DisksEffect::DiskUsage {
             device: part.name.clone(),
         },
-        "How much space is left?",
+        &CATALOG.t("disks-space-left"),
     ))
 }
 

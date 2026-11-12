@@ -55,3 +55,6 @@ code-search-scanned = { $head }, { $files } files scanned
 ## The window bar's bottom-panel toggle
 code-editor-hide-panel = Hide panel
 code-editor-show-panel = Show panel
+
+## The code view's scroll control
+code-editor-line-start = Line start

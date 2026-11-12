@@ -56,11 +56,13 @@ impl VideoEditorApp {
                 heading_y,
             );
         }
-        let face = ButtonFace::new(add, "Title")
+        let title = crate::resource::CATALOG.t("video-editor-title-button");
+        let new_title = crate::resource::CATALOG.t("video-editor-new-title");
+        let face = ButtonFace::new(add, &title)
             .icon(Icon::Plus)
             .role(ButtonRole::Plain)
             .control_size(ControlSize::Small)
-            .accessible_name("New title")
+            .accessible_name(&new_title)
             .hovered(add.contains(self.last_mouse));
         Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
     }
@@ -336,7 +338,7 @@ impl VideoEditorApp {
                     tr,
                     theme,
                     btn,
-                    "Import media",
+                    &crate::resource::CATALOG.t("video-editor-import-media"),
                     ButtonRole::Primary,
                     btn.contains(self.last_mouse),
                 );

@@ -307,3 +307,19 @@ video-editor-choose-media = Medien auswählen…
 
 ## Ein Projekt ohne Namen
 video-editor-untitled = Unbenannt
+
+## Der Medienkorb, der Inspektor und die Bedienelemente der Zeitleiste
+video-editor-title-button = Titel
+video-editor-new-title = Neuer Titel
+video-editor-import-media = Medien importieren
+video-editor-fill-frame = Bild füllen
+video-editor-reset-curve = { $channel } zurücksetzen
+video-editor-sample-centre = Mitte abtasten
+video-editor-no-frame-to-sample = Kein Bild zum Abtasten
+video-editor-fit-to-picture = An Bild anpassen
+video-editor-title-colour = Titelfarbe
+video-editor-add-effect-button = Effekt hinzufügen
+video-editor-split = Teilen
+video-editor-delete-button = Löschen
+video-editor-video-track = Videospur
+video-editor-audio-track = Tonspur

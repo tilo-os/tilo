@@ -86,3 +86,8 @@ camera-open-photos = Open Photos
 ## What a notice's action is called
 camera-try-again = Try again
 camera-refresh = Refresh
+
+## The document scanner's controls, and what a capture opens in
+camera-scanning = Scanning…
+camera-scan-page = Scan page
+camera-open-in = Open in { $destination }

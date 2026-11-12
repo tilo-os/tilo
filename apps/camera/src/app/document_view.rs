@@ -274,12 +274,14 @@ impl CameraApp {
         }
         let busy = self.document_job.is_some();
         let can_scan = self.selected_scanner.is_some() && !busy;
-        let label = if self.document_job_kind == Some(DocumentJobKind::Capture) {
-            "Scanning…"
-        } else {
-            "Scan page"
-        };
-        let scan = ButtonFace::new(layout.scan, label).role(ButtonRole::Primary);
+        let label = crate::CATALOG.t(
+            if self.document_job_kind == Some(DocumentJobKind::Capture) {
+                "camera-scanning"
+            } else {
+                "camera-scan-page"
+            },
+        );
+        let scan = ButtonFace::new(layout.scan, &label).role(ButtonRole::Primary);
         let hit = scan.hit_rect(theme);
         let hovered = scan.contains(theme, self.last_mouse);
         Button::paint(

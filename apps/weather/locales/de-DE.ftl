@@ -67,3 +67,6 @@ weather-notice-offline-message = Das ist die letzte auf diesem Gerät gespeicher
 
 ## Die Plätze der Fensterleiste
 weather-refresh-forecast = Vorhersage aktualisieren
+
+## Die Vorhersageseite, solange die Vorhersage unterwegs ist
+weather-loading-forecast = Die Vorhersage wird geladen

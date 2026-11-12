@@ -307,3 +307,19 @@ video-editor-choose-media = Choose media…
 
 ## A project nobody has named yet
 video-editor-untitled = Untitled
+
+## The bin, the inspector and the timeline's own controls
+video-editor-title-button = Title
+video-editor-new-title = New title
+video-editor-import-media = Import media
+video-editor-fill-frame = Fill frame
+video-editor-reset-curve = Reset { $channel }
+video-editor-sample-centre = Sample centre
+video-editor-no-frame-to-sample = No frame to sample
+video-editor-fit-to-picture = Fit to picture
+video-editor-title-colour = Title colour
+video-editor-add-effect-button = Add effect
+video-editor-split = Split
+video-editor-delete-button = Delete
+video-editor-video-track = Video track
+video-editor-audio-track = Audio track

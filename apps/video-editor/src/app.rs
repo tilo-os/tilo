@@ -1935,7 +1935,8 @@ impl VideoEditorApp {
         let (h, widths) = self.with_dialog_layout(|_, tr, theme| {
             let h = ButtonFace::height(ControlSize::Small, theme);
             let mut width = |kind| {
-                ButtonFace::new(Rect::ZERO, timeline_paint::add_track_label(kind))
+                let adding = timeline_paint::add_track_label(kind);
+                ButtonFace::new(Rect::ZERO, &adding)
                     .icon(Icon::Plus)
                     .control_size(ControlSize::Small)
                     .intrinsic_width(tr, theme)
@@ -2132,7 +2133,8 @@ impl VideoEditorApp {
     fn add_title_rect(&self, r: &Regions) -> Rect {
         let scale = self.bin_ui_scale();
         let (w, h) = self.with_dialog_layout(|_, tr, theme| {
-            let face = ButtonFace::new(Rect::ZERO, "Title")
+            let title = crate::resource::CATALOG.t("video-editor-title-button");
+            let face = ButtonFace::new(Rect::ZERO, &title)
                 .icon(Icon::Plus)
                 .control_size(ControlSize::Small);
             (
@@ -5294,7 +5296,11 @@ impl VideoEditorApp {
         }
         let (w, h) = self.with_dialog_layout(|_, tr, theme| {
             (
-                ButtonFace::new(Rect::ZERO, "Import media").intrinsic_width(tr, theme),
+                ButtonFace::new(
+                    Rect::ZERO,
+                    &crate::resource::CATALOG.t("video-editor-import-media"),
+                )
+                .intrinsic_width(tr, theme),
                 ButtonFace::height(ControlSize::Regular, theme),
             )
         });

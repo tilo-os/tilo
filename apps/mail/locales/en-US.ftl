@@ -243,3 +243,7 @@ mail-new-message = New message
 mail-cancel-sending = Cancel sending
 mail-bar-discard-draft = Discard draft
 mail-close-keep-draft = Close and keep in Drafts
+
+## Attaching a file, and saving a received one
+mail-compose-attach-file = Attach file
+mail-save-attachment = Save attachment

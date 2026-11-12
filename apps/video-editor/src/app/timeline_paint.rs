@@ -617,7 +617,8 @@ impl VideoEditorApp {
         }
 
         for (kind, rect) in self.add_track_buttons(r) {
-            let face = ButtonFace::new(rect, add_track_label(kind))
+            let adding = add_track_label(kind);
+            let face = ButtonFace::new(rect, &adding)
                 .icon(Icon::Plus)
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small)
@@ -1074,12 +1075,12 @@ impl VideoEditorApp {
 }
 
 /// What an add-track button says.
-pub(super) fn add_track_label(kind: TrackKind) -> &'static str {
-    if kind == TrackKind::Video {
-        "Video track"
+pub(super) fn add_track_label(kind: TrackKind) -> String {
+    crate::resource::CATALOG.t(if kind == TrackKind::Video {
+        "video-editor-video-track"
     } else {
-        "Audio track"
-    }
+        "video-editor-audio-track"
+    })
 }
 
 /// The ground pulled over what will not be heard, seen or written.

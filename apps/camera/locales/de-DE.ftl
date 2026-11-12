@@ -86,3 +86,8 @@ camera-open-photos = Fotos öffnen
 ## Wie die Aktion eines Hinweises heißt
 camera-try-again = Erneut versuchen
 camera-refresh = Aktualisieren
+
+## Die Bedienelemente des Dokumentenscanners und wo eine Aufnahme sich öffnen lässt
+camera-scanning = Wird gescannt…
+camera-scan-page = Seite scannen
+camera-open-in = In { $destination } öffnen

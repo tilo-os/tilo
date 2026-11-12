@@ -240,3 +240,7 @@ mail-new-message = Neue Nachricht
 mail-cancel-sending = Senden abbrechen
 mail-bar-discard-draft = Entwurf verwerfen
 mail-close-keep-draft = Schließen und im Entwurf behalten
+
+## Eine Datei anhängen und einen empfangenen Anhang speichern
+mail-compose-attach-file = Datei anhängen
+mail-save-attachment = Anhang speichern

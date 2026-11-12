@@ -67,3 +67,6 @@ weather-notice-offline-message = This is the last forecast saved on this device.
 
 ## The window bar's slots
 weather-refresh-forecast = Refresh forecast
+
+## The forecast page while the forecast is on its way
+weather-loading-forecast = Loading the forecast

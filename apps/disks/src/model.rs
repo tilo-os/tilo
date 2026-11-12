@@ -97,13 +97,13 @@ pub enum SmartStatus {
 }
 
 impl SmartStatus {
-    pub fn label(&self) -> &'static str {
-        match self {
-            SmartStatus::Passed => "Healthy",
-            SmartStatus::Warning => "Needs attention",
-            SmartStatus::Failing => "Failing",
-            SmartStatus::Unknown => "Unknown",
-        }
+    pub fn label(&self) -> String {
+        crate::locales::CATALOG.t(match self {
+            SmartStatus::Passed => "disks-health-healthy",
+            SmartStatus::Warning => "disks-health-attention",
+            SmartStatus::Failing => "disks-health-failing",
+            SmartStatus::Unknown => "disks-health-unknown",
+        })
     }
 }
 

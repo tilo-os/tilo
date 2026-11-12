@@ -41,3 +41,6 @@ typst-a11y-live-preview = Live rendered preview
 ## Window and accessibility copy
 typst-editor-a11y-outline = Outline
 typst-editor-page-of = Page { $page } of { $pages }
+
+## The problems panel with nothing to report
+typst-no-problems = The document compiled without problems.

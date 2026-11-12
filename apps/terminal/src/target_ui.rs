@@ -1012,7 +1012,7 @@ impl TerminalWidget {
             transform,
             tr,
             theme,
-            &ButtonFace::icon_only(close, Icon::X, "Close")
+            &ButtonFace::icon_only(close, Icon::X, &t("terminal-a11y-close"))
                 .control_size(size)
                 .hovered(close.contains(p)),
         );

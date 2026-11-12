@@ -224,7 +224,7 @@ impl Core {
                 return;
             }
             ctx.text_role(
-                "Loading the forecast",
+                &t("weather-loading-forecast"),
                 TextRole::Body,
                 ctx.theme.text_dim,
                 Point::new(x, y),

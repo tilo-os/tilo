@@ -64,3 +64,6 @@ terminal-session-ended = Session ended. The shell has exited, so typing no longe
 terminal-session-exit-unknown = Session ended. The shell's exit status could not be read.
 terminal-session-input-unavailable = Session ended. Input is unavailable.
 terminal-session-read-failed = Session ended. The terminal can no longer read from the shell.
+
+## The close control of the terminal's own panels
+terminal-a11y-close = Close

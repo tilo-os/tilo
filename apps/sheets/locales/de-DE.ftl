@@ -117,3 +117,6 @@ sheets-bold = Fett
 sheets-autosum = AutoSumme
 sheets-show-formulas = Formeln anzeigen
 sheets-show-results = Berechnete Ergebnisse anzeigen
+
+## Die Farbmarke eines Registers
+sheets-tab-colour = Registerfarbe

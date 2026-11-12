@@ -411,9 +411,13 @@ impl Flow<'_, '_> {
                     self.ctx.transform,
                     self.ctx.text,
                     theme,
-                    &ButtonFace::icon_only(save, Icon::Download, "Save")
-                        .control_size(ControlSize::Small)
-                        .hovered(save.contains(self.pointer)),
+                    &ButtonFace::icon_only(
+                        save,
+                        Icon::Download,
+                        &CATALOG.t("mail-save-attachment"),
+                    )
+                    .control_size(ControlSize::Small)
+                    .hovered(save.contains(self.pointer)),
                 );
                 self.saves.push((save, message.id, index));
                 x += h + gap;

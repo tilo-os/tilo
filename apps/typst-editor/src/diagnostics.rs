@@ -310,11 +310,12 @@ impl DiagnosticsPanel {
         // Header: the title, then what the list holds.
         let header = self.header_rect();
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
+        let problems = crate::resource::CATALOG.t("typst-problems");
         let title_w = ctx
-            .measure_role("Problems", TextRole::Subheading, None)
+            .measure_role(&problems, TextRole::Subheading, None)
             .width;
         ctx.text_role_in_band(
-            "Problems",
+            &problems,
             TextRole::Subheading,
             theme.text_primary,
             header.x0 + gutter,
@@ -340,7 +341,7 @@ impl DiagnosticsPanel {
         if self.diags.is_empty() {
             let band = Rect::new(list.x0, list.y0, list.x1, list.y0 + self.empty_h);
             ctx.text_role_in_band(
-                "The document compiled without problems.",
+                &crate::resource::CATALOG.t("typst-no-problems"),
                 TextRole::Body,
                 theme.text_dim,
                 band.x0 + gutter,

@@ -6607,7 +6607,7 @@ impl BooksApp {
         let title_bottom = Self::draw_page_title(
             ctx,
             Point::new(body.x0 + gutter, title_y),
-            "Library",
+            &CATALOG.t("ebook-tab-library"),
             Some(&count),
         );
         let grid_top = title_bottom + gutter;
@@ -8199,7 +8199,7 @@ impl BooksApp {
         self.push_hit(pointer_target(toggle, theme), Action::ToggleToc);
         let title_x = toggle.x1 + f64::from(spacing.rhythm.related);
         ctx.text_role_in_band(
-            "Contents",
+            &CATALOG.t("ebook-action-contents"),
             TextRole::Heading,
             theme.text_primary,
             title_x,
@@ -8307,16 +8307,16 @@ impl BooksApp {
             );
             y = rect.y1;
         } else {
-            let hint = "Select text in the book to highlight it or add a note.";
+            let hint = CATALOG.t("ebook-annotation-hint");
             let wrap = Some(ui::num::f32_of_f64((x1 - x0).max(1.0)));
             ctx.text_role(
-                hint,
+                &hint,
                 TextRole::Caption,
                 theme.text_dim,
                 Point::new(x0, y),
                 wrap,
             );
-            y += ctx.measure_role(hint, TextRole::Caption, wrap).height;
+            y += ctx.measure_role(&hint, TextRole::Caption, wrap).height;
         }
 
         let gap = f64::from(spacing.rhythm.sibling);
@@ -8435,8 +8435,12 @@ impl BooksApp {
         if layout.delete.intersect(list).height() > 0.0 {
             self.button(
                 ctx,
-                ButtonFace::icon_only(layout.delete, Icon::Trash2, "Delete annotation")
-                    .control_size(ControlSize::Small),
+                ButtonFace::icon_only(
+                    layout.delete,
+                    Icon::Trash2,
+                    &CATALOG.t("ebook-action-delete-annotation"),
+                )
+                .control_size(ControlSize::Small),
                 Action::Delete(a.id),
             );
         }

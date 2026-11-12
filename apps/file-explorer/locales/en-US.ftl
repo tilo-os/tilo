@@ -646,3 +646,9 @@ files-sharing-unavailable = Sharing is unavailable for this file
 files-folder-missing = { $path } is not an existing folder.
 files-copy-failed = Copy failed: { $detail }
 files-resource-nearby = Nearby
+
+## What a place, a record and a remote account offer
+files-account-status = Show account status
+files-account-reauthenticate = How to sign in again
+files-reveal = Reveal in Files
+files-remote-details = Show connection details
