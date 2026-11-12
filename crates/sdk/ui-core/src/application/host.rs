@@ -560,7 +560,6 @@ impl HostContext {
                 definition.record_kind.clone(),
             ),
             reservation: None,
-            initialization: None,
             permissions,
             host_person: author.clone(),
             author,

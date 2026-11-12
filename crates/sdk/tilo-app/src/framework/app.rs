@@ -443,7 +443,6 @@ pub struct SeedCx<'a> {
     pub(crate) me: &'a str,
     pub(crate) device: &'a str,
     pub(crate) host: Option<&'a HostContext>,
-    pub(crate) workspace: Option<&'a str>,
 }
 
 impl SeedCx<'_> {
@@ -456,16 +455,6 @@ impl SeedCx<'_> {
     /// The device creating the record.
     pub fn device(&self) -> &str {
         self.device
-    }
-
-    /// The host-selected workspace of a new record, and its display name. An
-    /// ordinary restore has no creation scope. A windowless workspace participant
-    /// carries its explicit route without supplying device services or secrets.
-    pub fn creation_workspace(&self) -> Option<(&str, &str)> {
-        self.host
-            .and_then(HostContext::creation_workspace)
-            .map(|workspace| (workspace.id.as_str(), workspace.name.as_str()))
-            .or_else(|| self.workspace.map(|workspace| (workspace, workspace)))
     }
 
     /// The app's host on this device; `None` for a participant without a
@@ -1035,7 +1024,6 @@ fn new_record<A: ResourceApp>(
         me: &author,
         device: context.device_id(),
         host: Some(context),
-        workspace: None,
     });
     // What the app's windows kept, one record each, before it kept one per
     // workspace; an app that adopts them in its own seed
@@ -1361,8 +1349,7 @@ fn start_record(
 ) -> Result<Starting, LaunchError> {
     // A record of its own, or the workspace's record an app keeps one of
     // (`ResourceApp::WORKSPACE_RECORD`), opened for the first time.
-    let created = matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew)
-        || context.creation_workspace().is_some();
+    let created = matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew);
     record_content(context);
     let file = context.take_open_file();
     let arguments = context.take_launch_arguments();

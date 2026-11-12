@@ -39,15 +39,6 @@ use tilo_user_identity::{DeviceCert, EndpointDelegation};
 use crate::channels::{self, Member};
 use crate::engine::Engine;
 
-/// The route the workspace scope's live plane is keyed under: the workspace's own record of the
-/// media app.
-fn route() -> collab_types::ChannelRoute {
-    collab_types::ChannelRoute::new(
-        collab_types::scope::MEDIA_APP,
-        collab_types::scope::WORKSPACE_RECORD,
-    )
-}
-
 /// The scope one workspace's live plane carries.
 fn scope_of(workspace: WorkspaceId) -> Scope {
     Scope::workspace(workspace.to_string())
@@ -325,17 +316,12 @@ impl Shared {
         };
         // The plane's tracks are sealed under the workspace's media channel: taking part in it asks
         // the workspace's devices for access, and the plane opens on the keys arriving.
-        let _ = self.engine.join_channel(
+        let keys = self.engine.seal_keys(
             workspace,
             collab_types::scope::MEDIA_APP,
             collab_types::scope::WORKSPACE_RECORD,
         );
-        let keys = self
-            .engine
-            .keys()
-            .get()
-            .and_then(|access| access.record_keys(workspace, &route()));
-        let Some(Ok(keys)) = keys else {
+        let Ok(crate::engine::SealKeys::Here(keys)) = keys else {
             // The plane opens when the workspace's keys are here; a plane already open keeps what
             // it has until they move.
             tracing::debug!(%workspace, "the live plane waits for the workspace's keys");
@@ -399,7 +385,7 @@ impl Shared {
                     .filter(|(pinned, _)| *pinned == chosen)
                     .map_or_else(|| EndpointAddr::new(relay_id), |(_, addr)| addr.clone());
                 let carrier = native::Iroh::new(endpoint, addr);
-                Plane::join_within(&carrier, &grant, join, ATTEMPT).await
+                Plane::join_within(Arc::new(carrier), &grant, join, ATTEMPT).await
             })
         })
         .await;

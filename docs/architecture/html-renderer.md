@@ -409,7 +409,7 @@ The desktop bundle `all-desktop.sh` measures is built by the runtime's own
 script, which is the one a deployment uses:
 
 ```sh
-CARGO=rcargo crates/browser/tilo-browser-runtime/scripts/build.sh \
+crates/browser/tilo-browser-runtime/scripts/build.sh \
   "$CARGO_TARGET_DIR/htmlrenderer/desktop" --bundle desktop --profile release
 tools/web/html-renderer/run-typing.sh [--keys N] [--trace] [--phone]
 tools/web/html-renderer/run-parity.sh [--scenarios] [--phone] [--apps id,id]

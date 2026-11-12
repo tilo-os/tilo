@@ -481,6 +481,10 @@ impl Dial for Iroh {
             .map_err(|_| AdmissionError::Unavailable)?
         })
     }
+
+    fn redials(&self) -> bool {
+        true
+    }
 }
 
 /// Serve the carrier on `endpoint`: every connection that negotiates [`ALPN`]

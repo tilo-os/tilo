@@ -1314,17 +1314,11 @@ impl RecordSet {
             if slot.kind != want.kind {
                 return Err(RecordOpenError::IdentityMismatch);
             }
-            let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
-            if validate_identity(doc, want, &self.home).is_err() {
-                let bridge = self
-                    .native_initial
-                    .as_ref()
-                    .ok_or(RecordOpenError::IdentityMismatch)?;
-                let read = bridge
-                    .record(&self.package_id, &self.home, want)?
-                    .ok_or(RecordOpenError::IdentityMismatch)?;
-                validate_creation_capture(doc, want, &self.home, &read)?;
-            }
+            validate_identity(
+                slot.doc.as_ref().ok_or(RecordOpenError::Busy)?,
+                want,
+                &self.home,
+            )?;
             return Ok(RecordOpenOutcome::AlreadyOpen);
         }
         // A record no committed read answers (the app's own channel serves
@@ -1341,28 +1335,9 @@ impl RecordSet {
             } else {
                 app_state::DocStore::exclusive(backend, key)?
             };
-            let creation = read.clone();
-            // The creation's graph is the snapshot's: its heads are those of the snapshot as it
-            // is decoded to be validated first, never decoded again only to read them.
-            let creation_heads: std::cell::RefCell<Option<Vec<automerge::ChangeHash>>> =
-                std::cell::RefCell::default();
-            let (mut doc, autosave) = canonical_read::finish_created(
-                store,
-                read,
-                |doc| validate_identity(doc, want, &self.home).map_err(|error| error.to_string()),
-                |doc| {
-                    let mut heads = creation_heads.borrow_mut();
-                    let heads = heads.get_or_insert_with(|| doc.base_heads());
-                    validate_created_graph(
-                        doc,
-                        want,
-                        &self.home,
-                        creation.creation_workspace().map(|scope| scope.id.as_str()),
-                        heads,
-                    )
-                    .map_err(|error| error.to_string())
-                },
-            )
+            let (mut doc, autosave) = canonical_read::finish(store, read, |doc| {
+                validate_identity(doc, want, &self.home).map_err(|error| error.to_string())
+            })
             .map_err(RecordOpenError::Initialization)?;
             let history = crate::state::UndoLog::new(&mut doc);
             self.open.insert(
@@ -1605,68 +1580,6 @@ enum Durability {
 /// document; single-threaded on purpose, since a `Mutex` here would guard against nothing.
 #[derive(Clone)]
 pub struct RecordStore(std::rc::Rc<std::cell::RefCell<RecordSet>>);
-
-impl RecordStore {
-    /// Initialize only the exact host-created original record, never an empty restore.
-    pub(crate) fn initialize_admitted_record(
-        &self,
-        checkout: &RecordCheckout,
-        initialization: &crate::collaboration::native_initial::RecordInitialization,
-        initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
-        seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
-    ) -> Result<(), RecordOpenError> {
-        let original = self.read_checked(&checkout.id, Clone::clone)?;
-        let workspace = initialization.workspace().ok_or_else(|| {
-            RecordOpenError::Initialization("original creation scope unavailable".into())
-        })?;
-        if workspace.id != self.0.borrow().home {
-            return Err(RecordOpenError::IdentityMismatch);
-        }
-        initialization.validate_original(checkout, |read| {
-            validate_creation_capture(&original, checkout, &workspace.id, read)
-        })?;
-        let original_heads = original.base_heads();
-        let mut document = original.clone();
-        genesis(&mut document, checkout, &workspace.id, initialize)?;
-        let mut preserved = original;
-        document
-            .merge_incoming(&mut preserved)
-            .map_err(|error| RecordOpenError::Initialization(error.to_string()))?;
-        seed(&mut document).map_err(RecordOpenError::Initialization)?;
-        commit_genesis(&mut document);
-        validate_identity(&document, checkout, &workspace.id)?;
-        let bytes = document.save();
-        initialization
-            .commit(checkout.kind.as_str(), bytes)
-            .map_err(RecordOpenError::Initialization)?;
-        // Ordinary peer merges require an initialized local identity; only this exact original
-        // creation may install its acknowledged genesis, and only after the blocking owner ACK,
-        // never replacing intervening edits.
-        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
-        if set.home != workspace.id {
-            return Err(RecordOpenError::IdentityMismatch);
-        }
-        let slot = set
-            .open
-            .get_mut(&checkout.id)
-            .filter(|slot| slot.kind == checkout.kind)
-            .ok_or(RecordOpenError::IdentityMismatch)?;
-        let current = slot.doc.as_mut().ok_or(RecordOpenError::Busy)?;
-        if current.pending_ops() != 0 || current.base_heads() != original_heads {
-            return Err(RecordOpenError::IdentityMismatch);
-        }
-        slot.history.rebase(&mut document);
-        slot.action_state.generation = slot
-            .action_state
-            .generation
-            .and_then(|generation| generation.checked_add(1));
-        *current = document;
-        if let Some(writer) = &mut slot.autosave {
-            writer.request(current);
-        }
-        Ok(())
-    }
-}
 
 type OwnerIndex =
     Rc<std::cell::RefCell<HashMap<(String, String), std::rc::Weak<std::cell::RefCell<RecordSet>>>>>;
@@ -2091,81 +2004,14 @@ fn validate_identity(
     Ok(())
 }
 
-fn validate_created_identity(
-    doc: &AutoCommit,
-    want: &RecordCheckout,
-    workspace: &str,
-    creation_workspace: Option<&str>,
-) -> Result<(), RecordOpenError> {
-    if creation_workspace != Some(workspace)
-        || workspace.is_empty()
-        || !want.is_valid_local_storage_request()
-        || !primary_document(doc)
-        || home(doc).is_some_and(|found| found != workspace)
-        || workspace_scope(doc).is_some_and(|found| found != workspace)
-        || transfer::is_retired(doc)
-    {
-        return Err(RecordOpenError::IdentityMismatch);
-    }
-    Ok(())
-}
-
 impl From<crate::collaboration::native_initial::RecordReadError> for RecordOpenError {
     fn from(error: crate::collaboration::native_initial::RecordReadError) -> Self {
         use crate::collaboration::native_initial::RecordReadError;
         match error {
-            RecordReadError::IdentityMismatch => Self::IdentityMismatch,
             RecordReadError::Arriving => Self::Arriving,
             RecordReadError::Initialization(error) => Self::Initialization(error),
         }
     }
-}
-
-pub(crate) fn validate_creation_capture(
-    doc: &AutoCommit,
-    want: &RecordCheckout,
-    workspace: &str,
-    read: &crate::collaboration::CommittedDocument,
-) -> Result<(), RecordOpenError> {
-    let heads = creation_capture_heads(read)?;
-    validate_created_graph(
-        doc,
-        want,
-        workspace,
-        read.creation_workspace().map(|scope| scope.id.as_str()),
-        &heads,
-    )
-}
-
-fn validate_created_graph(
-    doc: &AutoCommit,
-    want: &RecordCheckout,
-    workspace: &str,
-    creation_workspace: Option<&str>,
-    heads: &[automerge::ChangeHash],
-) -> Result<(), RecordOpenError> {
-    validate_created_identity(doc, want, workspace, creation_workspace)?;
-    if doc.pending_ops() != 0 || doc.base_heads() != heads {
-        return Err(RecordOpenError::IdentityMismatch);
-    }
-    Ok(())
-}
-
-fn creation_capture_heads(
-    read: &crate::collaboration::CommittedDocument,
-) -> Result<Vec<automerge::ChangeHash>, RecordOpenError> {
-    read.with_mutation(|mutation| {
-        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
-            return Err(RecordOpenError::Initialization(
-                "creation capture is not a snapshot".into(),
-            ));
-        };
-        let original = AutoCommit::load(bytes).map_err(|_| {
-            RecordOpenError::Initialization("creation capture snapshot cannot be parsed".into())
-        })?;
-        Ok(original.base_heads())
-    })
-    .map_err(RecordOpenError::Initialization)?
 }
 
 #[derive(Clone)]
@@ -2505,18 +2351,8 @@ impl RecordStore {
             {
                 return Err(RecordOpenError::IdentityMismatch);
             }
-            if let Some(doc) = set.peek(&checkout.id)
-                && validate_identity(doc, checkout, &set.home).is_err()
-            {
-                let bridge = set
-                    .native_initial
-                    .as_ref()
-                    .ok_or(RecordOpenError::IdentityMismatch)?;
-                let read = bridge
-                    .record(&set.package_id, &set.home, checkout)?
-                    .ok_or(RecordOpenError::IdentityMismatch)?;
-                validate_creation_capture(doc, checkout, &set.home, &read)?;
-                return set.wire_route(&checkout.id);
+            if let Some(doc) = set.peek(&checkout.id) {
+                validate_identity(doc, checkout, &set.home)?;
             }
         }
         self.route(checkout)
@@ -4208,7 +4044,6 @@ mod opening;
 pub use opening::RecordOpening;
 #[cfg(test)]
 #[cfg(feature = "broker-transport")]
-mod named_creation_tests;
 #[cfg(test)]
 #[cfg(feature = "broker-transport")]
 mod native_head_tests;

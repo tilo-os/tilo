@@ -298,6 +298,15 @@ pub trait Dial: Send + Sync + 'static {
         subscribe: Option<moq_net::origin::Producer>,
         timeout: Duration,
     ) -> Dialling<'a>;
+
+    /// Whether this dial opens another carrier after the one it opened is gone. A connection
+    /// dialled between two endpoints can be dialled again, so a plane whose network dropped is
+    /// carried again without anyone above it noticing. A carrier the caller already opened
+    /// ([`Opened`]) is handed over once: a plane on one ends with it, and what holds the plane
+    /// joins again, proving itself anew.
+    fn redials(&self) -> bool {
+        false
+    }
 }
 
 /// A carrier the caller already opened, handed to the plane once: a

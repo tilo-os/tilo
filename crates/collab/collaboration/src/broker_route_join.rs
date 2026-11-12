@@ -80,7 +80,6 @@ pub(super) fn start_route_join(
 pub(super) fn waits_on_route(command: &SdkCommand) -> Option<(RouteSpec, bool)> {
     match command {
         SdkCommand::ToRoute(spec, _) => Some((spec.clone(), true)),
-        SdkCommand::Initialize { route, .. } => Some((route.clone(), false)),
         SdkCommand::InstallEncryption { spec, .. } => Some((spec.clone(), false)),
         _ => None,
     }
@@ -90,14 +89,8 @@ pub(super) fn waits_on_route(command: &SdkCommand) -> Option<(RouteSpec, bool)> 
 /// a write leaves its record unpublished, which the record's owner sends whole once the route opens.
 pub(super) fn refuse_unjoined(command: SdkCommand, reason: &str, state: &BridgeState, key: &str) {
     let document = command.document_len().is_some();
-    match command {
-        SdkCommand::Initialize { reply, .. } => {
-            let _ = reply.send(Err(reason.to_owned()));
-        }
-        SdkCommand::InstallEncryption { reply, .. } => {
-            let _ = reply.send(Err(reason.to_owned()));
-        }
-        _ => {}
+    if let SdkCommand::InstallEncryption { reply, .. } = command {
+        let _ = reply.send(Err(reason.to_owned()));
     }
     // That record alone is not shared, and its owner sends it whole once the
     // route opens; the app and its other records carry on.

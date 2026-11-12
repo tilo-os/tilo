@@ -409,7 +409,7 @@ pub use env::{RecordEnv, WindowDocument};
 pub use form::{Form, FormSubmit};
 pub use hosted::{Answers, Ask, Connection};
 pub use hosted_actions::{HostedActions, HostedActionsLink, HostedInvocation};
-pub use kinds::{hosted_kinds, resource_kind, seed_record, seed_record_in_workspace};
+pub use kinds::{hosted_kinds, resource_kind, seed_record};
 pub use launch::{Command, Helper, LaunchInput, OpenHere};
 pub use live::Live;
 pub use opening::Opened;

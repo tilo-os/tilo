@@ -353,6 +353,9 @@ pub trait PlaceholderFit {
 struct PersonalSpelling {
     owner: Option<[u8; 32]>,
     generation: u64,
+    /// The field's language as it was set, so an unchanged one is compared
+    /// rather than spelled again.
+    configured: String,
     language: String,
     snapshot: Option<crate::personal_dictionary::Snapshot>,
 }
@@ -419,6 +422,11 @@ pub struct TextInput {
     /// frame is due. Cleared by [`Widget::mark_drawn`]: a field that has not
     /// changed shows what the screen already holds.
     repaint: bool,
+    /// The field was placed somewhere else since the last frame drew it.
+    /// What it paints is as it was, so a frame is due for where it stands,
+    /// not for what it draws: a host that keeps a field's drawing moves it
+    /// there instead of painting it again.
+    moved: bool,
     /// The field was made for the person to type in right away (an entry a command just
     /// opened): it asks for the keyboard once ([`Self::wants_focus`]).
     focus_wanted: bool,
@@ -444,6 +452,10 @@ pub struct TextInput {
     /// value. Painting, carets, selection, and hit-testing all consume it.
     single_layout: Option<RichTextLayout>,
     single_attributes: Option<SingleLineAttributes>,
+    /// The signature [`Self::single_attributes`] was hashed to when it was
+    /// set: what it is compared against, so a line whose attributes hold is
+    /// not hashed again for every frame drawn.
+    single_attributes_signature: Option<u64>,
     single_origin: Point,
     shaped_layout_signature: u64,
     shaped_preparation: Option<Preparation>,
@@ -546,6 +558,10 @@ pub struct TextInput {
     spell_dictionary: Option<spellcheck::Dictionary>,
     /// Ephemeral view of the shared host service, never an app vocabulary store.
     personal_spelling: Option<PersonalSpelling>,
+    /// The identity generation and settings revision the personal spelling
+    /// was last read at, so an unchanged service is not asked again for every
+    /// frame drawn.
+    last_personal_spelling_read: Option<(u64, u64)>,
     ignored_spellings: HashSet<String>,
     /// Caches both preview hits and misses so idle redraws never re-query a
     /// dictionary for the same caret word.
@@ -880,6 +896,7 @@ impl TextInput {
             char_x_positions: Vec::new(),
             single_layout: None,
             single_attributes: None,
+            single_attributes_signature: None,
             single_origin: Point::ZERO,
             shaped_layout_signature: u64::MAX,
             shaped_preparation: None,
@@ -891,6 +908,7 @@ impl TextInput {
             compact_multiline: false,
             dirty: false,
             repaint: true,
+            moved: true,
             focus_wanted: false,
             on_change: None,
             action: None,
@@ -931,6 +949,7 @@ impl TextInput {
             spell_spans_stale: false,
             spell_dictionary: None,
             personal_spelling: None,
+            last_personal_spelling_read: None,
             ignored_spellings: HashSet::new(),
             autocorrection_preview_key: None,
             autocorrection_preview: None,
@@ -1451,12 +1470,16 @@ impl TextInput {
         hash.finish()
     }
 
-    pub(super) fn set_rich_spans(&mut self, spans: Option<Vec<RichSpan>>) {
-        if self.rich_spans != spans {
-            self.rich_spans = spans;
-            self.shaped_preparation = None;
-            self.layout_dirty = true;
+    /// Give the field the runs its value is drawn in. Returns whether they
+    /// are another set than the ones it held.
+    pub(super) fn set_rich_spans(&mut self, spans: Option<Vec<RichSpan>>) -> bool {
+        if self.rich_spans == spans {
+            return false;
         }
+        self.rich_spans = spans;
+        self.shaped_preparation = None;
+        self.layout_dirty = true;
+        true
     }
 
     /// Convert the highlighter's logical-line ranges into a complete set of
@@ -1583,16 +1606,23 @@ impl TextInput {
     }
 
     pub(super) fn set_single_line_attributes(&mut self, attributes: SingleLineAttributes) {
+        // Hashed once: the signature kept from the last call stands for the
+        // attributes it set, so re-setting the same ones costs no second hash
+        // over every span.
         let signature = Self::single_attributes_signature(&attributes);
-        if self
-            .single_attributes
-            .as_ref()
-            .is_none_or(|old| Self::single_attributes_signature(old) != signature)
-        {
+        if self.single_attributes_signature != Some(signature) {
+            self.single_attributes_signature = Some(signature);
             self.single_attributes = Some(attributes);
             self.drop_shaped_layouts();
             self.layout_dirty = true;
         }
+    }
+
+    /// Set the field's attributes without asking whether they changed (a
+    /// highlighter repaints its colours over the value it read).
+    fn replace_single_line_attributes(&mut self, attributes: SingleLineAttributes) {
+        self.single_attributes_signature = Some(Self::single_attributes_signature(&attributes));
+        self.single_attributes = Some(attributes);
     }
 
     fn single_attributes_signature(attributes: &SingleLineAttributes) -> u64 {
@@ -3500,7 +3530,7 @@ impl TextInput {
     /// Places the input without a layout tree — only safe on local-mode
     /// `TextInputs` with no presence path or permission scope.
     pub fn apply_layout_external(&mut self, rect: Rect) {
-        self.repaint = true;
+        self.moved = true;
         self.single_origin.x += rect.x0 - self.rect.x0;
         self.single_origin.y += rect.y0 - self.rect.y0;
         self.rect = rect;
@@ -3677,8 +3707,10 @@ impl TextInput {
     }
 
     pub fn set_multiline(&mut self, on: bool) {
-        self.repaint = true;
-        self.multiline = on;
+        if self.multiline != on {
+            self.repaint = true;
+            self.multiline = on;
+        }
     }
 
     pub(super) fn set_compact_multiline(&mut self, compact: bool) {
@@ -4487,7 +4519,7 @@ impl TextInput {
         {
             spans.push(RichSpan::new(tail));
         }
-        self.single_attributes = Some(SingleLineAttributes {
+        self.replace_single_line_attributes(SingleLineAttributes {
             spans,
             ..SingleLineAttributes::default()
         });
@@ -5106,9 +5138,25 @@ impl TextInput {
         if !self.spell_active && !self.is_focused {
             return;
         }
+        // The person's own words live in the shell's records: they change
+        // when the person or their settings do, never per frame. While both
+        // hold, the words already read — and the dictionary built from them —
+        // stand, and reading them again would copy and decode the whole
+        // dictionary for every frame of every field that has been used.
+        let generation = crate::local_identity::generation();
+        let view = crate::personal_dictionary::revision();
+        if self.last_personal_spelling_read == Some((generation, view))
+            && self.personal_spelling.as_ref().is_some_and(|personal| {
+                personal.generation == generation && personal.configured == self.spell_language
+            })
+        {
+            return;
+        }
+        self.last_personal_spelling_read = Some((generation, view));
         let current = PersonalSpelling {
             owner: crate::local_identity::bound().map(|identity| identity.group_public_key),
-            generation: crate::local_identity::generation(),
+            generation,
+            configured: self.spell_language.clone(),
             language: self.spell_language.replace('_', "-").to_ascii_lowercase(),
             snapshot: crate::personal_dictionary::snapshot().ok(),
         };
@@ -6829,7 +6877,7 @@ impl Widget for TextInput {
     /// and a field sitting in a window people are not touching must not keep
     /// that window drawing.
     fn needs_redraw(&self) -> bool {
-        self.repaint || self.layout_dirty || crate::widget::redraw_or_children(false, self)
+        self.moved || self.paint_changed()
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
@@ -6838,6 +6886,7 @@ impl Widget for TextInput {
 
     fn mark_drawn(&mut self) {
         self.repaint = false;
+        self.moved = false;
         self.mark_shown();
         super::defaults::mark_drawn(self.children_mut());
     }
@@ -7324,6 +7373,21 @@ impl crate::widget::controls::ActionControls for TextInput {
 }
 
 impl TextInput {
+    /// Whether what this field paints is another drawing than the last frame
+    /// made, as opposed to where it stands: a field placed somewhere else
+    /// paints as it did, and a host that kept its drawing moves it there.
+    pub(crate) fn paint_changed(&self) -> bool {
+        self.repaint || self.layout_dirty || crate::widget::redraw_or_children(false, self)
+    }
+
+    /// Whether anyone else is shown in this field now (a peer's caret, their
+    /// selection, what they are typing): what a host that keeps the drawing
+    /// it made of the field asks before keeping it.
+    pub(crate) fn shows_peers(&self, presence: &crate::presence::PresenceCtx) -> bool {
+        crate::presence::capability::presence_key(self)
+            .is_some_and(|key| presence.shows_anyone_at(&key))
+    }
+
     /// Peers' typing marks, carets and selections — at the field's own
     /// caret and selection geometry rather than a generic focus ring — then
     /// the denied-permission overlay.
@@ -7340,26 +7404,31 @@ impl TextInput {
             // Peer caret + selection reuse `caret_rect`/`selection_rect`, never a
             // re-derived approximation. `transform` maps the local rect to the scene.
 
-            // Fading "just typed" highlighter under the caret/selection.
-            let now = crate::time::now();
-            for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
-                let rect = self.selection_rect(theme, range.start, range.end);
-                // `Affine * Point` is a geometric transform over f64 coordinates,
-                // not integer arithmetic that can overflow/wrap.
-                #[allow(
-                    clippy::arithmetic_side_effects,
-                    reason = "Affine*Point transform over f64 screen coordinates, no overflow/wrap semantics"
-                )]
-                let (p0, p1) = (
-                    transform * vello::kurbo::Point::new(rect.x0, rect.y0),
-                    transform * vello::kurbo::Point::new(rect.x1, rect.y1),
-                );
-                presence.draw_peer_typing(
-                    scene,
-                    theme,
-                    &user,
-                    &[(vello::kurbo::Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
-                );
+            // Fading "just typed" highlighter under the caret/selection. The
+            // clock is read only when there is a fade to place it on: a field
+            // nobody else is typing in (every line of every document) reads no
+            // clock at all.
+            if presence.has_typing_marks() {
+                let now = crate::time::now();
+                for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
+                    let rect = self.selection_rect(theme, range.start, range.end);
+                    // `Affine * Point` is a geometric transform over f64 coordinates,
+                    // not integer arithmetic that can overflow/wrap.
+                    #[allow(
+                        clippy::arithmetic_side_effects,
+                        reason = "Affine*Point transform over f64 screen coordinates, no overflow/wrap semantics"
+                    )]
+                    let (p0, p1) = (
+                        transform * vello::kurbo::Point::new(rect.x0, rect.y0),
+                        transform * vello::kurbo::Point::new(rect.x1, rect.y1),
+                    );
+                    presence.draw_peer_typing(
+                        scene,
+                        theme,
+                        &user,
+                        &[(vello::kurbo::Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
+                    );
+                }
             }
             if let Some(list) = presence.carets.get(&key) {
                 for (user, caret) in list {

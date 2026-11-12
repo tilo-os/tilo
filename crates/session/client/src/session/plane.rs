@@ -373,7 +373,12 @@ async fn joined(join: PlaneJoin) -> Result<Arc<Plane>, Failed> {
     let joined = match join.host.carrier() {
         Carrier::WebTransport => {
             let session = proven_plane_link(&join).await?;
-            Plane::join(&tilo_live::admit::Opened::new(session), &grant, plane).await
+            Plane::join(
+                Arc::new(tilo_live::admit::Opened::new(session)),
+                &grant,
+                plane,
+            )
+            .await
         }
         #[cfg(not(target_arch = "wasm32"))]
         Carrier::Direct | Carrier::Relay => {
@@ -383,7 +388,7 @@ async fn joined(join: PlaneJoin) -> Result<Arc<Plane>, Failed> {
                 .await
                 .map_err(|_| Failed::Unavailable)?;
             Plane::join(
-                &tilo_live::native::Iroh::new(endpoint, join.host.addr()),
+                Arc::new(tilo_live::native::Iroh::new(endpoint, join.host.addr())),
                 &grant,
                 plane,
             )
@@ -500,12 +505,7 @@ impl Task {
             // does for any record, and joins once they have.
             let route = route(&workspace);
             self.open_channel(&route);
-            let Some(keys) = self
-                .route_keys
-                .get(&route)
-                .and_then(super::RouteKeys::keys)
-                .cloned()
-            else {
+            let Some(keys) = self.keys_of(&route) else {
                 continue;
             };
             let Some(participants) = self.replicas.participants(&route) else {

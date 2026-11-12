@@ -685,7 +685,7 @@ impl JoinedChannel {
             Request::PrivateWindowBinding => Ok(Reply::PrivateWindowBinding {
                 instance: self.native_private_window_instance()?,
             }),
-            Request::Initialize { .. } => Err("no record is created through this channel".into()),
+            Request::RetiredInitialize => Err("no record is created through this channel".into()),
             Request::Cancel { capture, token } => slot.acknowledge(*capture, *token),
             Request::Leave => {
                 slot.leave();

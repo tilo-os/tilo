@@ -1701,6 +1701,27 @@ impl PresenceCtx {
         out
     }
 
+    /// Whether anyone else is shown at `key` now: their caret, their
+    /// selection, or what they are typing. A field that keeps the drawing it
+    /// made of itself asks before keeping it, since what others show there
+    /// comes and goes without the field's own content changing.
+    #[must_use]
+    pub fn shows_anyone_at(&self, key: &PresenceKey) -> bool {
+        self.carets.get(key).is_some_and(|list| !list.is_empty())
+            || self
+                .selections
+                .get(key)
+                .is_some_and(|list| !list.is_empty())
+            || self.typing.keys().any(|(_, typed)| typed == key)
+    }
+
+    /// Whether the room says anyone is typing anywhere: the clock is only
+    /// read to place a fading mark where it says so.
+    #[must_use]
+    pub fn has_typing_marks(&self) -> bool {
+        !self.typing.is_empty()
+    }
+
     /// When the next typing mark steps down its fade (or ends): the host
     /// sleeps until then and paints once, instead of pumping frames through
     /// the fade.

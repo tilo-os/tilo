@@ -122,9 +122,13 @@ impl TextInput {
             style.kind = self.kind.text_kind();
             let base = self.shaped_signature(display, &family, layout_size, None);
             let attributes = self.valid_single_attributes();
-            let signature = attributes.map_or(base, |a| {
-                Self::attributed_signature(base ^ Self::single_attributes_signature(a), &a.spans)
-            });
+            // The attributes were hashed once, when they were set: an
+            // unchanged line hashes its spans no further, it only mixes the
+            // signature it kept with this line's own.
+            let signature = match (&attributes, self.single_attributes_signature) {
+                (Some(_), Some(attributes)) => base ^ attributes,
+                _ => base,
+            };
             if self.single_layout.is_none() || self.shaped_layout_signature != signature {
                 #[cfg(test)]
                 let _phase = crate::profiling::frame_probe::span("single_line_shape");

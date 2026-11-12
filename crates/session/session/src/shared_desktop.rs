@@ -95,13 +95,30 @@ pub(crate) struct SharedDesktops {
     refused: RefCell<Option<(WorkspaceId, String)>>,
     /// The last failure the person heard: the same one again is not said twice.
     told: RefCell<Option<String>>,
+    /// The session's loop, which a write of a desk under way wakes as it moves on.
+    wake: tilo_service::LoopWake,
+    /// The write of a workspace's desk under way: no desk is read or written until it is done.
+    publishing: RefCell<Option<Publishing>>,
+}
+
+/// A write of a workspace's desk under way, with what [`SharedDesktops::published`] takes from it.
+struct Publishing {
+    room: WorkspaceId,
+    writing: crate::engine_write::Writing,
+    candidate: automerge::AutoCommit,
+    replaced: (Written, Option<[u8; 32]>),
 }
 
 impl SharedDesktops {
-    /// This session's shared desktops, writing what its windows note of themselves (`notes`).
-    pub(crate) fn new(notes: std::sync::Arc<crate::continuations::Continuations>) -> Self {
+    /// This session's shared desktops, writing what its windows note of themselves (`notes`), on
+    /// the loop `wake` wakes.
+    pub(crate) fn new(
+        notes: std::sync::Arc<crate::continuations::Continuations>,
+        wake: tilo_service::LoopWake,
+    ) -> Self {
         Self {
             notes,
+            wake,
             ..Self::default()
         }
     }
@@ -145,6 +162,10 @@ impl SharedDesktops {
     /// revision `revision` nor this desk has moved since: nothing of the workspaces' desks can have
     /// changed, so no record is read or written again. Notes what was looked at.
     pub(crate) fn settled(&self, revision: u64, tree: &DesktopTree) -> bool {
+        // A write under way is taken first, and while it is no desk is read or written.
+        if !self.settle_publishing() {
+            return true;
+        }
         let read = self.read.borrow();
         let settled = self.seen.get() == Some((revision, tree.external_revision))
             && tree
@@ -382,7 +403,7 @@ impl SharedDesktops {
                 &person,
                 candidate,
                 ((heads, own, notes), revision),
-                sealed.as_ref(),
+                sealed,
             ),
         }
     }
@@ -401,12 +422,12 @@ impl SharedDesktops {
     /// account for and a desk they could never read.
     fn publish(
         &self,
-        engine: &Engine,
+        engine: &std::sync::Arc<Engine>,
         room: WorkspaceId,
         person: &str,
         mut candidate: automerge::AutoCommit,
-        ((heads, own, notes), revision): (Written, Option<[u8; 32]>),
-        sealed: Option<&channel_crypto::ChannelContentKeys>,
+        replaced: (Written, Option<[u8; 32]>),
+        sealed: Option<channel_crypto::ChannelContentKeys>,
     ) -> bool {
         // Every change a device signs says what it is and who made it: the edit of the record this
         // person just made here.
@@ -414,16 +435,66 @@ impl SharedDesktops {
             automerge::transaction::CommitOptions::default()
                 .with_message(shared_record::change_message(Some(person))),
         );
-        let changes = candidate.save_after(&heads);
+        let heads = &replaced.0.0;
+        let changes = candidate.save_after(heads);
         // A write on no history is the whole record: the one that founds it.
-        let committed = pollster::block_on(engine.write_record(
-            room,
-            (DESKTOP_APP, DESKTOP_RECORD),
-            &changes,
+        let mut writing = crate::engine_write::Writing::start(
+            std::sync::Arc::clone(engine),
+            self.wake.handle(),
+            (room, DESKTOP_APP.to_owned(), DESKTOP_RECORD.to_owned()),
+            changes,
             heads.is_empty(),
             sealed,
-        ));
-        match committed {
+        );
+        if let Some(written) = writing.done() {
+            return self.published(room, written, candidate, replaced);
+        }
+        *self.publishing.borrow_mut() = Some(Publishing {
+            room,
+            writing,
+            candidate,
+            replaced,
+        });
+        false
+    }
+
+    /// Take what the write under way came to, once it is done; whether none is under way now.
+    fn settle_publishing(&self) -> bool {
+        let mut publishing = self.publishing.borrow_mut();
+        let Some(written) = publishing
+            .as_mut()
+            .map(|under_way| under_way.writing.done())
+        else {
+            return true;
+        };
+        let Some(written) = written else {
+            return false;
+        };
+        let Some(Publishing {
+            room,
+            candidate,
+            replaced,
+            ..
+        }) = publishing.take()
+        else {
+            return true;
+        };
+        drop(publishing);
+        self.published(room, written, candidate, replaced);
+        true
+    }
+
+    /// What the workspace did with `candidate`, this device's write of `room`'s desk: what it took
+    /// is the record the next look writes on, and what it refused is dropped. Returns whether it
+    /// took it.
+    fn published(
+        &self,
+        room: WorkspaceId,
+        written: crate::engine_write::Written,
+        mut candidate: automerge::AutoCommit,
+        ((_, own, notes), revision): (Written, Option<[u8; 32]>),
+    ) -> bool {
+        match written {
             Ok(_write) => {
                 // What the workspace took is the record this device wrote: the next look at the
                 // heads it now holds, this desk where it stands, and these notes, writes nothing.

@@ -973,12 +973,6 @@ enum SdkCommand {
         wake: Option<crate::WakeHandle>,
         reply: mpsc::SyncSender<Result<runtime_collab::BrowserServiceSessionReply, String>>,
     },
-
-    Initialize {
-        route: RouteSpec,
-        request: runtime_collab::committed_document::Request,
-        reply: mpsc::SyncSender<Result<[u8; 32], String>>,
-    },
     /// Announce the primary route.
     Hello(PrimaryHello),
     Primary(CollabRequest),
@@ -4024,24 +4018,6 @@ async fn drive_shovel(
                     published = false;
                     inbound_tx.state.route_unpublished(key);
                 }
-            }
-            SdkCommand::Initialize {
-                route,
-                request,
-                reply,
-            } => {
-                let result = if let Some(current) = routes.get(&route.channel_id()) {
-                    match current.channel.committed_document(&request).await {
-                        Ok(runtime_collab::committed_document::Reply::Initialized { revision }) => {
-                            Ok(revision)
-                        }
-                        Ok(_) => Err("application initialization reply invalid".into()),
-                        Err(error) => Err(error.to_string()),
-                    }
-                } else {
-                    Err("application initialization route unavailable".into())
-                };
-                let _ = reply.send(result);
             }
             SdkCommand::PrimaryReady(reply) => {
                 let _ = reply.send(primary_result.clone());

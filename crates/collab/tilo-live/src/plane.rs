@@ -19,6 +19,12 @@
 //! The carrier is whatever [`Dial`] this device has: iroh to the device that
 //! serves the workspace ([`crate::native::Iroh`]). This module does not name
 //! it.
+//!
+//! A carrier goes away for reasons no workspace controls — a network dropped,
+//! a machine slept — so a plane keeps the dial it joined with and opens
+//! another carrier when its own goes ([`Dial::redials`]). While it is gone,
+//! nobody it was reading is drawn as here: what a peer last said of itself is
+//! heard again from the broadcast the next carrier carries.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -212,6 +218,10 @@ struct Demands {
 /// What a plane shares with its readers.
 pub(crate) struct Shared {
     pub(crate) join: Join,
+    /// What this plane publishes into, and what its carrier is subscribed out of: the same two the
+    /// carrier was opened with, for a carrier dialled again after the last one went
+    /// ([`Plane`]'s).
+    outgoing: Producer,
     incoming: Producer,
     opener: Mutex<Opener>,
     /// The keys `publish` seals under: the join's, until the channel's epoch
@@ -294,6 +304,7 @@ impl Shared {
             roster: Mutex::new(join.roster.clone()),
             reading: Mutex::new(BTreeSet::new()),
             join: join.clone(),
+            outgoing: outgoing.clone(),
             incoming: incoming.clone(),
             published: Mutex::new(published),
             _broadcast: broadcast,
@@ -310,20 +321,21 @@ impl Shared {
     }
 
     /// What the carrier publishes: exactly this device's own broadcast.
-    fn publication(&self, outgoing: &Producer) -> Option<Consumer> {
+    fn publication(&self) -> Option<Consumer> {
         if !self.join.publish {
             return None;
         }
         let path = Namespace::new(&self.join.scope, self.join.device).path();
-        exact(&[path.as_str()]).and_then(|names| outgoing.consume().scope("", &names).ok())
+        exact(&[path.as_str()]).and_then(|names| self.outgoing.consume().scope("", &names).ok())
     }
 
     /// What the carrier subscribes to: every participant of this scope.
-    fn subscription(&self, incoming: &Producer) -> Result<Option<Producer>, PlaneError> {
+    fn subscription(&self) -> Result<Option<Producer>, PlaneError> {
         let prefix = live::participants(&self.join.scope);
         let pattern =
             moq_net::Pattern::subtree(prefix.as_str()).map_err(|_| PlaneError::Unavailable)?;
-        let scoped = incoming
+        let scoped = self
+            .incoming
             .scope("", &moq_net::Patterns::from(pattern))
             .map_err(|_| PlaneError::Unavailable)?;
         Ok(Some(scoped))
@@ -338,11 +350,22 @@ impl Shared {
             !std::mem::replace(&mut *ended, true)
         };
         if first {
+            self.forget_readers();
             let hook = self.ended_hook.lock_recover().clone();
             if let Some(hook) = hook {
                 hook();
             }
             self.wake();
+        }
+    }
+    /// Nothing this plane read is heard here any more: every device it was reading has left, as
+    /// whoever draws them sees it. Said when the carrier goes and when the plane ends, so a member
+    /// whose connection dropped is drawn away at once instead of where they last were, and is drawn
+    /// again from the next broadcast of them that is read.
+    fn forget_readers(&self) {
+        let reading: Vec<[u8; 32]> = self.reading.lock_recover().iter().copied().collect();
+        for device in reading {
+            self.deliver(Heard::left(device));
         }
     }
     pub(crate) fn wake(&self) {
@@ -464,6 +487,88 @@ impl Drop for ReadGuard {
     }
 }
 
+/// The first wait before a carrier that went away is dialled again, and the longest: a network that
+/// dropped is usually back within a second, and one that is gone for longer is dialled now and then
+/// rather than never.
+const REDIAL_FIRST: Duration = Duration::from_millis(250);
+const REDIAL_LONGEST: Duration = Duration::from_secs(8);
+
+/// How long to wait before the `attempt`th redial after a carrier went away: the wait doubles with
+/// every attempt that found no relay, up to [`REDIAL_LONGEST`].
+fn redial_wait(attempt: u32) -> Duration {
+    let doublings = attempt.saturating_sub(1).min(8);
+    REDIAL_FIRST
+        .saturating_mul(1_u32 << doublings)
+        .min(REDIAL_LONGEST)
+}
+
+/// Watch the carrier the plane runs on, and dial another when it goes away.
+///
+/// A connection drops for reasons nobody in a workspace controls — a Wi-Fi network moved, a laptop
+/// slept, a peer restarted — and the session it carried is what says where everyone is and what a
+/// call sounds like. So the plane keeps its session and its dial: the carrier is opened again, with
+/// the same grant and the same broadcast, while nothing it had read is drawn as here
+/// ([`Shared::forget_readers`]) and is drawn again from the next word that arrives.
+///
+/// The plane ends instead where no carrier can be opened again: a dial that hands over a carrier
+/// once ([`Dial::redials`]), or a relay that will not admit this device now. What holds the plane
+/// then joins it again, with the keys and membership it has by then.
+async fn reconnect(
+    shared: Arc<Shared>,
+    dial: Arc<dyn Dial>,
+    grant: Arc<Vec<u8>>,
+    carrier: Arc<Mutex<Option<Connected>>>,
+) {
+    let mut attempt: u32;
+    loop {
+        let Some(session) = carrier
+            .lock_recover()
+            .as_ref()
+            .map(|held| held.session.clone())
+        else {
+            return;
+        };
+        let _ = session.closed().await;
+        if shared.ended() {
+            return;
+        }
+        shared.forget_readers();
+        if !dial.redials() {
+            shared.end();
+            return;
+        }
+        // Each carrier that goes away is dialled for afresh: the wait starts over at
+        // [`REDIAL_FIRST`], so a network that flickers recovers at once.
+        attempt = 0;
+        loop {
+            attempt = attempt.saturating_add(1);
+            n0_future::time::sleep(redial_wait(attempt)).await;
+            if shared.ended() {
+                return;
+            }
+            let Ok(subscribe) = shared.subscription() else {
+                shared.end();
+                return;
+            };
+            let publish = shared.publication();
+            match dial.dial(grant.as_slice(), publish, subscribe, JOINT).await {
+                Ok(connected) => {
+                    *carrier.lock_recover() = Some(connected);
+                    break;
+                }
+                // The relay will not admit this device now, or this dial has no carrier left to
+                // hand over: the plane is over.
+                Err(AdmissionError::Denied | AdmissionError::Invalid) => {
+                    shared.end();
+                    return;
+                }
+                // The relay is not there yet: it is dialled again, waiting longer each time.
+                Err(AdmissionError::Unavailable) => {}
+            }
+        }
+    }
+}
+
 /// One device's sealed session in one scope.
 pub struct Plane {
     shared: Arc<Shared>,
@@ -478,7 +583,15 @@ pub struct Plane {
     readers: Mutex<Vec<Task>>,
     _demands: Vec<Task>,
     _origins: Vec<OriginTask>,
-    _connected: Option<Connected>,
+    /// The carrier this plane runs on now ([`reconnect`] replaces it), and the task watching it.
+    _carrier: Option<Carrier>,
+}
+
+/// The carrier a plane runs on, and the task that dials another when this one goes.
+struct Carrier {
+    /// Kept alive here, and swapped by the watch: dropping this closes the session.
+    _connected: Arc<Mutex<Option<Connected>>>,
+    _watch: Task,
 }
 
 impl Plane {
@@ -490,7 +603,7 @@ impl Plane {
     /// [`PlaneError::Unavailable`] when the carrier or its setup fails, and
     /// [`PlaneError::Refused`] when the scope's keys do not cover this
     /// device's own presence.
-    pub async fn join(dial: &impl Dial, grant: &[u8], join: Join) -> Result<Self, PlaneError> {
+    pub async fn join(dial: Arc<dyn Dial>, grant: &[u8], join: Join) -> Result<Self, PlaneError> {
         Self::join_within(dial, grant, join, JOINT).await
     }
 
@@ -498,11 +611,16 @@ impl Plane {
     /// the admission: a device trying the relays of a scope in turn spends no
     /// more than this on one that is not there.
     ///
+    /// The dial is kept: a carrier that goes away mid-session — a network that
+    /// dropped, a laptop that slept — is dialled again ([`Dial::redials`]), and
+    /// the plane carries the same session over it, so what this device says and
+    /// hears survives the gap.
+    ///
     /// # Errors
     ///
     /// As [`Self::join`].
     pub async fn join_within(
-        dial: &impl Dial,
+        dial: Arc<dyn Dial>,
         grant: &[u8],
         join: Join,
         within: Duration,
@@ -510,11 +628,24 @@ impl Plane {
         let (outgoing, outgoing_task) = OriginTask::produce(origin_config(INGRESS, RETAIN));
         let (incoming, incoming_task) = OriginTask::produce(origin_config(EGRESS, RETAIN));
         let shared = Shared::new(&join, &outgoing, &incoming)?;
-        let publish = shared.publication(&outgoing);
-        let subscribe = shared.subscription(&incoming)?;
+        let publish = shared.publication();
+        let subscribe = shared.subscription()?;
         let connected = dial.dial(grant, publish, subscribe, within).await?;
-        let plane = Self::serve(shared, vec![outgoing_task, incoming_task], Some(connected));
-        Ok(plane)
+        let carrier = Arc::new(Mutex::new(Some(connected)));
+        let watch = Task::spawn(reconnect(
+            shared.clone(),
+            Arc::clone(&dial),
+            Arc::new(grant.to_vec()),
+            Arc::clone(&carrier),
+        ));
+        Ok(Self::serve(
+            shared,
+            vec![outgoing_task, incoming_task],
+            Some(Carrier {
+                _connected: carrier,
+                _watch: watch,
+            }),
+        ))
     }
 
     /// Join `join`'s scope on the relay this device itself serves: no
@@ -532,17 +663,9 @@ impl Plane {
     }
 
     /// Start the readers of a prepared plane.
-    fn serve(shared: Arc<Shared>, origins: Vec<OriginTask>, connected: Option<Connected>) -> Self {
+    fn serve(shared: Arc<Shared>, origins: Vec<OriginTask>, carrier: Option<Carrier>) -> Self {
         let mut readers = Vec::new();
         let mut demands = Vec::new();
-        if let Some(connected) = &connected {
-            let watched = connected.session.clone();
-            let ended = shared.clone();
-            readers.push(Task::spawn(async move {
-                let _ = watched.closed().await;
-                ended.end();
-            }));
-        }
         if let Some(requests) = shared.take_demands() {
             demands.push(Task::spawn(accept_demands(shared.clone(), requests)));
         }
@@ -554,7 +677,7 @@ impl Plane {
             readers: Mutex::new(readers),
             _demands: demands,
             _origins: origins,
-            _connected: connected,
+            _carrier: carrier,
         }
     }
 
@@ -1323,4 +1446,30 @@ pub(crate) async fn next(track: &mut moq_net::track::Subscriber) -> Next {
         }
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_carrier_that_went_away_is_dialled_again_sooner_at_first_and_never_gives_up() {
+        let waits: Vec<Duration> = (1..=12).map(redial_wait).collect();
+        assert_eq!(waits[0], REDIAL_FIRST);
+        for pair in waits.windows(2) {
+            assert!(
+                pair[1] >= pair[0],
+                "a redial waits no less than the one before it: {waits:?}"
+            );
+        }
+        assert!(
+            waits.contains(&REDIAL_LONGEST) && waits.iter().all(|wait| *wait <= REDIAL_LONGEST),
+            "a relay that stays away is dialled now and then rather than every turn: {waits:?}"
+        );
+        assert_eq!(
+            redial_wait(0),
+            REDIAL_FIRST,
+            "the first attempt of a carrier that went away waits the shortest"
+        );
+    }
 }

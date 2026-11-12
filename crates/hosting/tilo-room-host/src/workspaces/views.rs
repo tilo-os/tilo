@@ -193,7 +193,7 @@ impl Workspaces {
                 MAX_VIEW_DOCUMENT_BYTES,
             )
             .await?;
-        let bytes = replay_source(source, keys, primary_governor, retained)?;
+        let bytes = replay_source(source, keys.as_ref(), primary_governor, retained)?;
         runtime
             .view_read_policy(caller, &source.app_id, &source.record)
             .ok_or("resource read not permitted")?;
@@ -208,19 +208,12 @@ impl Workspaces {
 
 fn replay_source(
     source: &DocumentRoute,
-    keys: Option<channel_crypto::ChannelContentKeys>,
+    keys: Option<&channel_crypto::ChannelContentKeys>,
     primary_governor: Option<[u8; 32]>,
     retained: Vec<crate::workspace_records::RetainedBody>,
 ) -> Result<Vec<u8>, String> {
     let channel =
         collab_types::document_channel_id(&source.app_id, &source.cluster_id, &source.record);
-    let mut ciphers = tilo_peer_state::document_frame::Ciphers::new();
-    if let Some(keys) = keys {
-        ciphers.insert(
-            source.clone(),
-            tilo_peer_state::document_frame::content_key_reader(keys),
-        );
-    }
     let mut transfers = tilo_peer_state::document_frame::Transfers::default();
     let mut doc = automerge::AutoCommit::new();
     let mut bytes = 0usize;
@@ -252,13 +245,10 @@ fn replay_source(
         if bytes > MAX_VIEW_DOCUMENT_BYTES {
             return Err("source replay exceeds read budget".into());
         }
-        let frame = tilo_peer_state::document_frame::open_frame(
-            &retained.body,
-            retained.author,
-            &mut ciphers,
-        )
-        .map_err(|error| error.to_string())?
-        .ok_or("source frame missing")?;
+        let frame =
+            tilo_peer_state::document_frame::open_frame(&retained.body, retained.author, keys)
+                .map_err(|error| error.to_string())?
+                .ok_or("source frame missing")?;
         let plaintext = frame
             .decrypted_payload
             .as_deref()
