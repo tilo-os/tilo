@@ -371,7 +371,7 @@ impl PeerPublicationMut<'_> {
             )
             .collect::<Vec<_>>()
             .into();
-        if history.len() > super::MAX_SEALED_OPS || history.bytes() > super::MAX_SEALED_BYTES {
+        if !history.within_bounds() {
             return Err("the record's history exceeds its bound".into());
         }
         document.sealed = history;
@@ -993,10 +993,7 @@ impl PeerPublication<'_> {
             .core
             .documents
             .iter()
-            .filter(|(_, document)| {
-                document.sealed.len() >= super::MAX_SEALED_OPS / 4 * 3
-                    || document.sealed.bytes() >= super::MAX_SEALED_BYTES / 4 * 3
-            })
+            .filter(|(_, document)| document.sealed.due())
             .map(|(route, _)| (route.app.clone(), route.record.clone()))
             .collect();
         // Every sealed write leaves exact admission evidence until a
@@ -1011,8 +1008,8 @@ impl PeerPublication<'_> {
                     .core
                     .documents
                     .iter()
-                    .filter(|(_, document)| document.sealed.len() >= PRESSED_HISTORY)
-                    .max_by_key(|(_, document)| document.sealed.len())
+                    .filter(|(_, document)| document.sealed.writes().0 >= PRESSED_HISTORY)
+                    .max_by_key(|(_, document)| document.sealed.writes().0)
                     .map(|(route, _)| (route.app.clone(), route.record.clone())),
             );
         }

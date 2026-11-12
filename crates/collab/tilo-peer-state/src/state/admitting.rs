@@ -3,10 +3,9 @@
 use super::{
     AcceptedCheckpoint, ActionKind, AdmissionError, AdmissionReport, ArtifactKind, AutoCommit,
     BTreeMap, ChannelState, Document, DocumentAdmission, DocumentMutation, DroppedInput, Duration,
-    Ed25519PublicKey, Held, InputDisposition, MAX_SEALED_BYTES, MAX_SEALED_OPS, MemberAuthority,
-    MissingPrerequisite, NeighbourMsg, OpKind, ReceiveOutcome, Route, SignedOp, StatePeer,
-    SystemTime, backend, empty_genesis, empty_genesis_op, err, peer_handle, sealed_compaction,
-    sealed_history, workspace,
+    Ed25519PublicKey, Held, InputDisposition, MemberAuthority, MissingPrerequisite, NeighbourMsg,
+    OpKind, ReceiveOutcome, Route, SignedOp, StatePeer, SystemTime, backend, empty_genesis,
+    empty_genesis_op, err, peer_handle, sealed_compaction, sealed_history, workspace,
 };
 use crate::document;
 
@@ -708,7 +707,7 @@ impl StatePeer {
                 segments,
             )?
             .into();
-            if history.len() > MAX_SEALED_OPS || history.bytes() > MAX_SEALED_BYTES {
+            if !history.within_bounds() {
                 return Err(full());
             }
             candidate.sealed = history;
@@ -723,8 +722,7 @@ impl StatePeer {
 
     /// Whether `sealed`, a record's sealed history, has room for `envelope`, a write after it.
     fn has_room(sealed: &backend::SealedLog, envelope: &SignedOp) -> bool {
-        sealed.len() < MAX_SEALED_OPS
-            && sealed.bytes().saturating_add(envelope.payload.len()) <= MAX_SEALED_BYTES
+        sealed.takes(envelope.payload.len())
     }
 
     /// Whether the sealed history of `record` of `app` has room for `envelope`, a sealed write of

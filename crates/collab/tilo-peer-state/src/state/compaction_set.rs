@@ -7,10 +7,10 @@ use collab_types::{SealedCompaction, SealedCompactionSegment, SignedOp, is_compa
 
 use super::{Route, StatePeer, err};
 
-/// Most bytes of pieces gathered for one record: a compaction's snapshot as
-/// large as one document transfer, with room for its pieces' envelopes.
-const MAX_GATHERED_BYTES: usize =
-    collab_types::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES + 4 * 1024 * 1024;
+/// Most bytes, and pieces, gathered for one record: one compaction set as
+/// large as a record keeps.
+const MAX_GATHERED_BYTES: usize = super::MAX_COMPACTION_SET_BYTES;
+const MAX_GATHERED_PIECES: usize = super::MAX_COMPACTION_SET_OPS;
 /// Most records gathering a compaction at once; the one gathering longest
 /// goes first.
 const MAX_GATHERING_RECORDS: usize = 4;
@@ -37,11 +37,12 @@ impl Gathering {
             return;
         }
         pieces.push(Arc::new(op));
-        while pieces
-            .iter()
-            .map(|piece| piece.payload.len())
-            .sum::<usize>()
-            > MAX_GATHERED_BYTES
+        while pieces.len() > MAX_GATHERED_PIECES
+            || pieces
+                .iter()
+                .map(|piece| piece.payload.len())
+                .sum::<usize>()
+                > MAX_GATHERED_BYTES
         {
             pieces.remove(0);
         }
