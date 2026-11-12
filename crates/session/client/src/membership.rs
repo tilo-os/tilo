@@ -180,8 +180,14 @@ impl<'a> Membership<'a> {
                 identity.signer.as_ref(),
                 tilo_clock::wall(),
             )
-            .await
-            .map(|_receipt| ())
+            .await?;
+        // What this device just committed leaves for the workspace's other devices now, rather
+        // than with whatever it next writes there.
+        tilo_broker_core::custody::OwnerCustody::schedule_publication(
+            self.engine,
+            self.workspace_id,
+        );
+        Ok(())
     }
 
     /// Let `app` author its own records in the workspace, as this device: the
@@ -286,10 +292,12 @@ fn author_on_desk(workspace: &mut Workspace, app: &str, now: u64) -> Result<bool
 
 /// Write the people `policy` — the workspace's governance — names into `workspace` : the part each
 /// of them takes there, when each was admitted, the owner aside, whom the desk's policy names on
-/// its own, the agents it admits, each with the grants governance gave it, and the apps it lets
-/// author their own records there. The grants a person gives to a person on a node below the
-/// workspace, and the ones a consent or an invite makes for this session, are the desk's own and
-/// stay. Whether anything changed.
+/// its own, the agents it admits, each with the grants governance gave it, the apps it lets
+/// author their own records there, and the windows its devices share with it
+/// ([`tilo_desktop_model::window_share`]): a share is the workspace's, so the desk of every device
+/// that holds the workspace reads it there, the sharer's own included. The grants a person gives
+/// to a person on a node below the workspace, and the ones a consent or an invite makes for this
+/// session, are the desk's own and stay. Whether anything changed.
 pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     let owner = policy.owner.as_deref();
     let members: BTreeMap<UserId, Role> = policy
@@ -307,10 +315,13 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
         matches!(grant.subject, Subject::Agent(_))
     });
     let held_authored = picked_grants(&workspace.policy.grants, is_authorship);
+    let shared = picked_grants(&policy.grants, is_window_share);
+    let held_shared = picked_grants(&workspace.policy.grants, is_window_share);
     if workspace.policy.members == members
         && workspace.policy.joined == joined
         && held == agents
         && held_authored == authored
+        && held_shared == shared
     {
         return false;
     }
@@ -329,6 +340,13 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
             .grants
             .retain(|grant| !is_authorship(grant));
         workspace.policy.grants.extend(authored);
+    }
+    if held_shared != shared {
+        workspace
+            .policy
+            .grants
+            .retain(|grant| !is_window_share(grant));
+        workspace.policy.grants.extend(shared);
     }
     true
 }
@@ -354,6 +372,16 @@ fn picked_grants<'a>(
 /// and the desk takes them from the governance alone.
 fn is_authorship(grant: &Grant) -> bool {
     grant.id.as_str().starts_with("app-author:") && matches!(grant.subject, Subject::App(_))
+}
+
+/// Whether `grant` is one of a window's share with the workspace, or of the share of what that
+/// window shows ([`tilo_desktop_model::window_share::window_of_share_id`]): the workspace's
+/// governance holds these, written there by the device the window runs on, and the desk takes them
+/// from the governance alone.
+fn is_window_share(grant: &Grant) -> bool {
+    tilo_peer_state::workspace::share::share_of(&grant.id)
+        .and_then(tilo_desktop_model::window_share::window_of_share_id)
+        .is_some()
 }
 
 /// Whether `grant` is the one making `app` an author of its own records in the workspace.

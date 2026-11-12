@@ -382,6 +382,15 @@ resource, and keeps no state of its own. Only a window the device maps, in a
 tab it minted, in a workspace its session takes part in offers the row; a
 device that shows the window's picture, or its placeholder, does not.
 
+The share itself is workspace state. The device the window runs on writes the
+share's grants, on the window's own node, into the workspace's governance as
+its member's change (`WorkspaceMembershipCommand::Share`), so they leave with
+the rest of what that device writes there. Every device that holds the
+workspace, the sharer's included, reads them from the governance it admitted
+and shows the window from there. A desk takes the grants into its own copy of
+a workspace only when the device holds no governance of that workspace: one
+that lives on that desk alone, which has no other device to tell.
+
 ## Presence
 
 Presence is per resource, layout is per person. Inside a resource several

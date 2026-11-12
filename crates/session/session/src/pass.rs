@@ -233,6 +233,7 @@ impl Session {
             &self.shared.handle,
             displays,
             sync.as_deref(),
+            self.shared.engine.as_ref(),
             &self.shared.pages,
             Instant::now(),
         );

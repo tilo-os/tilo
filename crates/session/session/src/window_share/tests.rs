@@ -1773,6 +1773,10 @@ mod devices;
 /// A window shared with its workspace, and no longer, from its own menu.
 mod menu;
 
+/// A window's share written into the workspace's own governance, and read from it on another
+/// device of the workspace.
+mod governed;
+
 /// A window one device shares shows on another device's desk because the workspace's governance
 /// says it is shared there: nobody names the tab on the other device.
 #[test]

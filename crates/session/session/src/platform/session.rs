@@ -1359,6 +1359,10 @@ impl Session {
             })
         });
         let landings = Rc::new(crate::landing::Landings::new(options.wake.handle()));
+        // A share's write into a workspace's governance answers through the same landings.
+        window_shares
+            .borrow_mut()
+            .answer_through(Rc::clone(&landings));
         let inviting = crate::invite::Invite::new(
             Rc::new(crate::platform::invite::DeskWorkspace {
                 landings: Rc::clone(&landings),
