@@ -705,3 +705,31 @@ fn a_prompt_built_afresh_shows_the_hosts_error_busy_line_and_caps_lock() {
         Some(("Touch the key".to_owned(), NoticeTone::Quiet))
     );
 }
+
+/// The keypad's keys are painted only while it shows. A prompt without one
+/// gives its keys no place, and keys laid out in no room at all would be
+/// painted at the window's corner, over whatever stands there.
+#[test]
+fn the_keypad_is_painted_only_while_it_shows() {
+    let window = Rect::new(0.0, 0.0, 900.0, 620.0);
+    let painted = |prompt: &mut SecretPrompt| {
+        let mut text = TextRenderer::new();
+        let theme = Theme::dark();
+        prompt.place(window, &mut text, &theme);
+        let mut scene = Scene::new();
+        prompt.paint(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        scene.encoding().draw_tags.len()
+    };
+    let mut prompt = focused(SecretKind::Pin { min: 4, max: 8 });
+    assert!(!prompt.shows_keypad());
+    let without = painted(&mut prompt);
+    prompt.set_touch_mode(true);
+    assert!(prompt.shows_keypad());
+    let with = painted(&mut prompt);
+    let keys = prompt.layout().keypad.len();
+    assert!(keys >= 10, "a keypad has a key for every digit");
+    assert!(
+        with >= without + keys,
+        "{with} things painted with its {keys} keys, {without} without"
+    );
+}

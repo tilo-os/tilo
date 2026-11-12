@@ -2201,18 +2201,22 @@ impl SecretPrompt {
                 &style,
             );
         }
-        self.keyboard.paint(
-            scene,
-            transform,
-            text,
-            theme,
-            (
-                self.layout.keypad_area,
-                Self::keypad_key_height(theme),
-                Self::gap(theme),
-            ),
-            self.can_submit(),
-        );
+        // Only a keypad that shows has a place: without one its keys would
+        // be laid out in no room at all and painted at the window's corner.
+        if self.shows_keypad() {
+            self.keyboard.paint(
+                scene,
+                transform,
+                text,
+                theme,
+                (
+                    self.layout.keypad_area,
+                    Self::keypad_key_height(theme),
+                    Self::gap(theme),
+                ),
+                self.can_submit(),
+            );
+        }
         if self.presentation == Presentation::Inline {
             let [cancel, primary] = self.modal_actions();
             for (action, rect, role) in [
