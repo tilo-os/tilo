@@ -1433,6 +1433,10 @@ mod component_adapter {
             self.in_root(|root| root.accessibility_child_description(child_index))
                 .flatten()
         }
+        fn accessibility_child_name(&self, child_index: usize) -> Option<String> {
+            self.in_root(|root| root.accessibility_child_name(child_index))
+                .flatten()
+        }
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,

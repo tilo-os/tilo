@@ -1025,4 +1025,35 @@ mod tests {
         assert!(!banners_on("so.tilo.chat"), "inherited");
         assert!(banners_on("so.tilo.mail"), "overridden");
     }
+
+    /// A switch of an app's rule is named by its row: "Banners" under Mail
+    /// says what it turns on for Mail, and the line under the row explains
+    /// it to the same reader.
+    #[test]
+    fn a_per_app_switch_is_named_by_its_row() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.harness().resize((1200, 4000)).unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Notifications);
+        for _ in 0..4 {
+            app.settle();
+            let _ = app.harness().poll_frame();
+        }
+        let name = t("notif-app-banners");
+        let switches: Vec<_> = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .map(|(_, node)| node)
+            .filter(|node| {
+                node.role() == ui::accesskit::Role::Switch && node.label() == Some(&name)
+            })
+            .collect();
+        assert_eq!(
+            switches.len(),
+            3,
+            "one for each verified app: {switches:#?}"
+        );
+        let explains = t("notif-app-banners-desc");
+        assert_eq!(switches[0].description(), Some(explains.as_str()));
+    }
 }

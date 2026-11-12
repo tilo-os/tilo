@@ -753,6 +753,16 @@ pub trait Widget {
         None
     }
 
+    /// What names one retained [`children`](Widget::children) entry to
+    /// assistive technology, when this widget holds the words for it: a
+    /// row's caption names the switch, slider or chooser it holds. The
+    /// bridge sets it as that child's node's name unless the child names
+    /// itself, so a control that says more than the row does keeps its own
+    /// words.
+    fn accessibility_child_name(&self, _child_index: usize) -> Option<String> {
+        None
+    }
+
     /// Perform an accessibility [`Action`](crate::a11y::Action) on this
     /// widget, or on one of its **synthetic** accessibility nodes. May mutate
     /// the CRDT like [`handle_event`](Widget::handle_event).

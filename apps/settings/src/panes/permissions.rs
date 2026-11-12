@@ -1822,4 +1822,36 @@ mod tests {
             assert!(said(&mut app).contains(&"Workspace access can't be checked".to_string()));
         }
     }
+
+    /// The exported switch named `name`, as a reader lands on it.
+    fn switch_named(app: &mut TestApp<SettingsShell>, name: &str) -> ui::accesskit::Node {
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .find_map(|(_, node)| {
+                (node.role() == ui::accesskit::Role::Switch && node.label() == Some(name))
+                    .then_some(node)
+            })
+            .unwrap_or_else(|| panic!("no switch named {name}"))
+    }
+
+    /// The switch of an app's secrets says the access it grants, which the
+    /// row's own caption (the app's name) does not: a control that names
+    /// itself apart from its row keeps its words, and says how it stands.
+    #[test]
+    fn a_secrets_switch_keeps_the_words_it_says_apart_from_its_row() {
+        let apps = vec![SecretApp {
+            id: "binary:/usr/bin/chromium".into(),
+            name: "chromium".into(),
+            access: "allowed".into(),
+            uses: 2,
+            items: 1,
+        }];
+        let mut app = window_over(Arc::new(Fixed {
+            secrets: Ok(apps),
+            ..Fixed::state(None)
+        }));
+        let switch = switch_named(&mut app, &t("perm-secrets-access"));
+        assert_eq!(switch.toggled(), Some(ui::accesskit::Toggled::True));
+    }
 }

@@ -2082,3 +2082,31 @@ fn a_described_rows_explanation_is_its_description_and_not_its_value() {
     assert_eq!(node.value.as_deref(), Some("/home/quinten"));
     assert_eq!(node.description, None);
 }
+
+/// A row holds the words for the control it carries: its caption names it,
+/// and its explanation describes it, one resolution point for every row.
+#[test]
+fn a_row_holds_the_name_and_description_of_the_control_it_carries() {
+    let row = ListRow::new("sdr-brightness", "Brightness")
+        .subtitle("External display")
+        .secondary("How bright standard content is")
+        .description("How bright standard content is")
+        .trailing(Box::new(crate::widget::Toggle::new("sdr", "sdr")));
+    assert_eq!(
+        Widget::accessibility_child_name(&row, 1).as_deref(),
+        Some("Brightness")
+    );
+    // Said once: the explanation is the row's description and its second
+    // line, so a reader hears it once after the name.
+    assert_eq!(
+        Widget::accessibility_child_description(&row, 1).as_deref(),
+        Some("How bright standard content is, External display")
+    );
+    // The band's stand-in is not a control of the row's and takes no name.
+    assert_eq!(Widget::accessibility_child_name(&row, 0), None);
+
+    // A row without a control holds no words for one.
+    let plain = ListRow::new("path", "Home");
+    assert_eq!(Widget::accessibility_child_name(&plain, 1), None);
+    assert_eq!(Widget::accessibility_child_description(&plain, 1), None);
+}

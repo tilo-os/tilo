@@ -3105,4 +3105,42 @@ mod tests {
         assert_eq!(here.config.device_role, there.config.device_role);
         assert_eq!(here.runtime_status, there.runtime_status);
     }
+
+    /// The exported switch named `name`, as a reader lands on it.
+    fn switch_named(app: &mut TestApp<SettingsShell>, name: &str) -> ui::accesskit::Node {
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .find_map(|(_, node)| {
+                (node.role() == ui::accesskit::Role::Switch && node.label() == Some(name))
+                    .then_some(node)
+            })
+            .unwrap_or_else(|| panic!("no switch named {name}"))
+    }
+
+    /// A workspace's home-relay switch is named by its row, so a reader
+    /// hears which workspace it puts on the relay and how it stands.
+    #[test]
+    fn a_home_relay_switch_is_named_by_its_workspace_row() {
+        use ui::tilo_actions::remote::Caller;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut model = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+        model.remote = ui::RemoteActions::with_host(
+            Arc::new(PairingHost::default()),
+            Caller::local_person("owner"),
+        );
+        let mut app = window_on(model);
+        // The window's model asks the host which workspaces it hosts.
+        change_model(&mut app, |model| {
+            model.refresh_home_relay();
+            model.poll_background_tasks();
+        });
+        let switch = switch_named(&mut app, "Personal");
+        assert_eq!(
+            switch.toggled(),
+            Some(ui::accesskit::Toggled::True),
+            "the workspace is hosted on the relay"
+        );
+    }
 }

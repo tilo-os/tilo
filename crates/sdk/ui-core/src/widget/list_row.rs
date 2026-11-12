@@ -3182,18 +3182,34 @@ impl Widget for ListRow {
                 .is_some_and(|t| t.element.is_layout_dirty())
     }
 
+    // The control (child 1, after the band's stand-in) is the row's own: its
+    // caption names it, and what explains the row explains the control.
+    fn accessibility_child_name(&self, child_index: usize) -> Option<String> {
+        if child_index != 1 || self.trailing.is_none() {
+            return None;
+        }
+        (!self.title.is_empty()).then(|| self.title.clone())
+    }
+
     // The control (child 1, after the band's stand-in) is described by the
-    // row's subtitle and secondary line, which a reader would otherwise only
-    // meet on the row.
+    // row's own explanation, then its subtitle and secondary line, which a
+    // reader would otherwise only meet on the row.
     fn accessibility_child_description(&self, child_index: usize) -> Option<String> {
         if child_index != 1 || self.trailing.is_none() {
             return None;
         }
-        let words: Vec<&str> = [self.subtitle.as_deref(), self.secondary.as_deref()]
-            .into_iter()
-            .flatten()
-            .filter(|words| !words.is_empty())
-            .collect();
+        let mut words: Vec<&str> = Vec::new();
+        let lines = [
+            self.description.as_deref(),
+            self.subtitle.as_deref(),
+            self.secondary.as_deref(),
+        ];
+        for line in lines.into_iter().flatten() {
+            if line.is_empty() || words.contains(&line) {
+                continue;
+            }
+            words.push(line);
+        }
         (!words.is_empty()).then(|| words.join(", "))
     }
 

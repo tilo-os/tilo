@@ -35,7 +35,9 @@ pub(crate) trait A11yVisitor: Sized {
     type SyntheticPending;
 
     /// `slot` is the widget's parent and its index there when the parent
-    /// walks it as its own child ([`Widget::accessibility_child_description`]).
+    /// walks it as its own child ([`Widget::accessibility_child_name`],
+    /// [`Widget::accessibility_child_description`]), also through a wrapper
+    /// that exports no node of its own and holds only this child.
     fn open(
         &mut self,
         w: &dyn Widget,
@@ -89,8 +91,14 @@ pub(crate) fn walk<const BOUND: bool, V: A11yVisitor>(
     match v.open(w, slot, parent) {
         Visit::Skip => {}
         Visit::Collapse => {
-            for child in w.children() {
-                walk::<BOUND, V>(v, child, None, parent);
+            let children = w.children();
+            // A widget with no node of its own that holds one child stands
+            // for that child (a container around a row's slider): the words
+            // its parent holds for it are the child's, and reach the child
+            // through it rather than stopping at a wrapper nobody hears.
+            let slot = (children.len() == 1).then_some(slot).flatten();
+            for child in children {
+                walk::<BOUND, V>(v, child, slot, parent);
             }
         }
         Visit::Node(pending, mut scope) => {

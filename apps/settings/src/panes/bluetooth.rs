@@ -1997,4 +1997,31 @@ mod tests {
         drop(following);
         assert!(model.next_wake().is_some());
     }
+
+    /// The exported switch named `name`, as a reader lands on it.
+    fn switch_named(
+        app: &mut ui::prelude::TestApp<crate::resource::SettingsShell>,
+        name: &str,
+    ) -> ui::accesskit::Node {
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .find_map(|(_, node)| {
+                (node.role() == ui::accesskit::Role::Switch && node.label() == Some(name))
+                    .then_some(node)
+            })
+            .unwrap_or_else(|| panic!("no switch named {name}"))
+    }
+
+    /// The radio's switch is named by its row, so a reader hears that it
+    /// turns Bluetooth on rather than landing on a switch of no name.
+    #[test]
+    fn the_radio_switch_is_named_by_its_row() {
+        use ui::accesskit::Toggled;
+
+        let mut app = window_over(vec![dev()]);
+        app.settle();
+        let switch = switch_named(&mut app, &t("settings-bluetooth-card"));
+        assert_eq!(switch.toggled(), Some(Toggled::True));
+    }
 }

@@ -511,6 +511,7 @@ decorator_trait! {
         fn accessibility_represents_child(child_index: usize) -> bool;
         fn lays_out_child(child_index: usize) -> bool;
         fn accessibility_child_description(child_index: usize) -> Option<String>;
+        fn accessibility_child_name(child_index: usize) -> Option<String>;
         fn is_enabled() -> bool;
         fn ime_requires_deferred_ack() -> bool;
         fn ime_refuses_ordinary_commits() -> bool;

@@ -408,13 +408,27 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
         self.control(trailing_slider(Box::new(slider)))
     }
 
+    /// `control` named by the setting's label where it stands on a line of
+    /// its own: a row names the control it holds by its caption
+    /// ([`ui::widget::Widget::accessibility_child_name`]), so only a stacked
+    /// control has to say what it sets itself.
+    fn named<C>(&self, control: C, named: impl FnOnce(C) -> C) -> C {
+        if self.stacked {
+            named(control)
+        } else {
+            control
+        }
+    }
+
     fn toggle_widget(&self, on: &LocalState<bool>) -> Toggle {
-        // The row names the switch, its state the switch's own: named by the
-        // kind alone a reader says "Toggle, switch, on" and never what it
-        // turns on.
-        let toggle = Toggle::from_state(on)
-            .with_resolved_accessible_name(self.label.clone())
-            .with_enabled(self.enabled);
+        // Its state is the switch's own, its name the row's or its own: a
+        // switch named by the kind alone says "Toggle, switch, on" and never
+        // what it turns on.
+        let label = &self.label;
+        let toggle = self.named(
+            Toggle::from_state(on).with_enabled(self.enabled),
+            |toggle| toggle.with_resolved_accessible_name(label.clone()),
+        );
         match &self.id {
             Some(id) => toggle.with_id(id),
             None => toggle,
@@ -423,13 +437,15 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
 
     fn chooser(&self, options: Vec<String>, current: &LocalState<String>) -> Dropdown {
         let placeholder = current.get();
-        let chooser = Dropdown::from_state(options, current)
-            .with_placeholder(&placeholder)
-            // The row names the setting; what the chooser shows is the value.
-            // Named by the value alone, a reader says "100 %" and never what
-            // of, which is the same silence as no name at all.
-            .with_resolved_accessible_name(self.label.clone())
-            .with_enabled(self.enabled);
+        // What the chooser shows is the value; named by the value alone a
+        // reader says "100 %" and never what of.
+        let label = &self.label;
+        let chooser = self.named(
+            Dropdown::from_state(options, current)
+                .with_placeholder(&placeholder)
+                .with_enabled(self.enabled),
+            |chooser| chooser.with_resolved_accessible_name(label.clone()),
+        );
         match &self.id {
             Some(id) => chooser.with_id(id),
             None => chooser,
@@ -442,15 +458,18 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
         if !as_segments(options) {
             return None;
         }
-        let group = ToggleGroup::from_state(
-            options
-                .iter()
-                .map(|option| (option.clone(), Segment::new(option.clone())))
-                .collect(),
-            current,
-        )
-        .with_resolved_accessible_name(self.label.clone())
-        .with_enabled(self.enabled);
+        let label = &self.label;
+        let group = self.named(
+            ToggleGroup::from_state(
+                options
+                    .iter()
+                    .map(|option| (option.clone(), Segment::new(option.clone())))
+                    .collect(),
+                current,
+            )
+            .with_enabled(self.enabled),
+            |group| group.with_resolved_accessible_name(label.clone()),
+        );
         Some(match &self.id {
             Some(id) => group.with_id(id),
             None => group,
@@ -458,13 +477,16 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
     }
 
     fn slider_widget(&self, value: &LocalState<f64>) -> Slider {
-        // Every settings slider says where it is ("72%" beside the track) and
-        // what it sets: named by the value alone a reader says "72 percent"
-        // and never what of.
-        let slider = Slider::from_state(value)
-            .shows_value()
-            .with_resolved_accessible_name(self.label.clone())
-            .with_enabled(self.enabled);
+        // Every settings slider says where it is ("72%" beside the track),
+        // and what it sets: named by the value alone a reader says "72
+        // percent" and never what of.
+        let label = &self.label;
+        let slider = self.named(
+            Slider::from_state(value)
+                .shows_value()
+                .with_enabled(self.enabled),
+            |slider| slider.with_resolved_accessible_name(label.clone()),
+        );
         match &self.id {
             Some(id) => slider.with_id(id),
             None => slider,

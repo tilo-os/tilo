@@ -1949,3 +1949,32 @@ fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
         "the inspection still carries it"
     );
 }
+
+/// The exported switch named `name`, as a reader lands on it.
+fn switch_named(app: &mut App, name: &str) -> ui::accesskit::Node {
+    app.harness()
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(_, node)| {
+            (node.role() == ui::accesskit::Role::Switch && node.label() == Some(name))
+                .then_some(node)
+        })
+        .unwrap_or_else(|| panic!("no switch named {name}"))
+}
+
+/// A display's switch is named by its row, so a reader hears which display
+/// it turns on and how it stands rather than landing on a switch of no name.
+#[test]
+fn a_display_switch_is_named_by_the_row_it_stands_in() {
+    use ui::accesskit::Toggled;
+
+    let _config = crate::prefs::test_env::ConfigGuard::new();
+    let mut app = on_displays();
+    frame(&mut app);
+    let switch = switch_named(&mut app, &crate::i18n::t("display-use"));
+    assert_eq!(
+        switch.toggled(),
+        Some(Toggled::True),
+        "the display is in use"
+    );
+}
