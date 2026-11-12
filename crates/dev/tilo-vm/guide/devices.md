@@ -217,10 +217,10 @@ work on a device too, beside the device's session.
 - **Your worktree on the device** (`--builder vm`, the default when the
   device's image can build): the slot's `release` profile with the
   manifest's features, so the build is the real one. `control` and `shot`
-  drive the old shell's dev socket, so a session swapped onto the device
-  cannot be driven that way yet. A board with little memory (the Orange Pi)
-  builds only small components or `--profile dev` there: build the session on
-  a remote builder (above), or take CI's.
+  drive the control socket the deleted shell bound, so a session swapped onto
+  the device cannot be driven that way yet. A board with little memory (the
+  Orange Pi) builds only small components or `--profile dev` there: build the
+  session on a remote builder (above), or take CI's.
 
 Each layer records its provenance (`authority = "ci"` for CI builds, `local`
 for everything built from a worktree), which `slot show --json` and the
