@@ -458,6 +458,10 @@ impl IdentityRegistryStore {
                 last.clone()
             },
         )?;
+        // The registry this worker keeps current is what every authorization decision reads, so
+        // each read that changed it is announced: a decision waiting for an identity to be named
+        // is woken by the registry that names it, not by the write that preceded it.
+        registry.on_change(crate::policy_change::announce);
         registries.push((self.identity_dir.clone(), registry.clone()));
         drop(registries);
         Ok(registry)

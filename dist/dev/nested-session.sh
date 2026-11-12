@@ -639,14 +639,18 @@ if ((!keep_identity)); then
 fi
 if ((!keep_identity)) && [[ ! -f $marker ]]; then
     # Nobody completes first-login setup here; a headless pass mints the
-    # development identity a dev image would, then exits.
+    # development identity a dev image would, then exits. Its control socket is
+    # its own: the person's socket answers only the session this script goes on
+    # to start, so a client that asks the moment a socket is there reaches the
+    # desktop rather than a pass that is about to exit and holds no identity.
     say "minting a throwaway identity"
-    env -u WAYLAND_DISPLAY -u DISPLAY TILO_TEST_CONTROL="$control" setsid "$session_bus" "$dbus_daemon" \
+    identity_control=$runtime/identity-control.sock
+    env -u WAYLAND_DISPLAY -u DISPLAY TILO_TEST_CONTROL="$identity_control" setsid "$session_bus" "$dbus_daemon" \
         "$bin/tilo-session" --backend headless > "$logs/identity.log" 2>&1 &
     pid=$!
     children+=("$pid")
-    wait_for_socket "$control" "$pid" || die "the headless session did not start (see $logs/identity.log)"
-    TILO_TEST_CONTROL=$control "$bin/tilo-control" raw '{"op":"provision_test_identity"}' \
+    wait_for_socket "$identity_control" "$pid" || die "the headless session did not start (see $logs/identity.log)"
+    TILO_TEST_CONTROL=$identity_control "$bin/tilo-control" raw '{"op":"provision_test_identity"}' \
         | grep -q '"throwaway": *true' || die "identity provisioning failed (see $logs/identity.log)"
     # Gone before the session starts: it holds the state file's writer lease
     # while it lives.

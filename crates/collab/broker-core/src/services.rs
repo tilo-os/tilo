@@ -31,6 +31,19 @@ pub trait LocalPersonServices: Send + Sync {
         workspace: &str,
         person: &str,
     ) -> Result<tilo_user_identity::DeviceCert, String>;
+
+    /// [`Self::certificate`] for an action the person at this seat starts, which the host answers
+    /// once its identity names them: a login reads the identity directory as its files land, and an
+    /// action asked in that moment waits here for it, woken by the identity store's own
+    /// announcement, instead of being refused for an identity that is on its way. A host whose
+    /// identity is not on its way answers as [`Self::certificate`] does.
+    fn certificate_when_named(
+        &self,
+        workspace: &str,
+        person: &str,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        self.certificate(workspace, person)
+    }
 }
 
 /// The origin of a workspace's records on this device: it applies an agent task's change the broker
