@@ -50,8 +50,8 @@ pub fn shown_brief(node: &UiNode, name: &str, under: Option<&str>) -> Option<Str
         return Some(text);
     };
     let done = done_day(node, name);
-    if let Some(left) = under.and_then(|heading| said_by_heading(node, name, heading)) {
-        return left;
+    if under.is_some_and(|heading| said_by_heading(node, name, heading)) {
+        return paired_time(node, name).map(|time| ui::format::time(&time));
     }
     Some(match kind.as_str() {
         "date" if done => day_of(&text).map_or(text, ui::format::day_done_today),
@@ -74,18 +74,16 @@ fn trailing_day(node: &UiNode) -> Option<&'static str> {
     }
 }
 
-/// What is left of the row `node`'s trailing day fact where `heading` says the day: the time of
-/// day it is due alone, or nothing where it names no time. `None` where the fact is the row's
-/// own to say, and for a prop that is no trailing day fact of a row.
-fn said_by_heading(node: &UiNode, name: &str, heading: &str) -> Option<Option<String>> {
+/// Whether `heading` says the day of the trailing day fact the row `node` states in `name`: the
+/// fact is the heading's to say, then, and no day fact of the row's own.
+fn said_by_heading(node: &UiNode, name: &str, heading: &str) -> bool {
     if trailing_day(node) != Some(name) || done_day(node, name) {
-        return None;
+        return false;
     }
-    let day = day_of(&display(node.props.get(name)?))?;
-    if !says_day(heading, day) {
-        return None;
-    }
-    Some(paired_time(node, name).map(|time| ui::format::time(&time)))
+    node.props
+        .get(name)
+        .and_then(|value| day_of(&display(value)))
+        .is_some_and(|day| says_day(heading, day))
 }
 
 /// The day the heading over the rows `node` holds says, where it heads them by a day: its
@@ -141,11 +139,14 @@ pub fn under_headings(node: UiNode) -> UiNode {
             .or_else(|| group_heading(&node))
             .or_else(|| heading.map(str::to_owned));
         if let Some(name) = trailing_day(&node)
-            && let Some(left) = said_by_heading(&node, name, here.as_deref().unwrap_or_default())
+            && here
+                .as_deref()
+                .is_some_and(|heading| said_by_heading(&node, name, heading))
         {
-            match left {
-                Some(of_day) => {
-                    node.props.insert(name.to_owned(), Value::text(of_day));
+            match paired_time(&node, name) {
+                Some(time) => {
+                    node.props
+                        .insert(name.to_owned(), Value::text(ui::format::time(&time)));
                 }
                 None => {
                     node.props.remove(name);
@@ -438,6 +439,20 @@ mod tests {
         row
     }
 
+    /// The facts the first list row of `widget` shows, as a screen reader reads them.
+    fn row_facts(widget: &dyn ui::widget::Widget, found: &mut Option<String>) {
+        if let Some(list_row) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::ListRow>())
+        {
+            *found = list_row.accessibility().and_then(|access| access.value);
+            return;
+        }
+        for child in widget.children() {
+            row_facts(child, found);
+        }
+    }
+
     /// The words the day fact of `day` says, as a heading over a row says it.
     fn heading(day: NaiveDate) -> String {
         ui::format::day_fact_today(day, None).text
@@ -533,6 +548,52 @@ mod tests {
             shown_brief(&shown.children[1], "meta", Some(&heading(today))),
             Some(heading(today + chrono::Days::new(2))),
             "and reads as that day under the card"
+        );
+    }
+
+    /// The facts a card's row shows on its trailing edge, as the window builds it: the tree is
+    /// the one a card of rows is — its title, the list it draws, and the rows within.
+    fn card_row_facts(title: &str, meta: &[(&str, &str)]) -> Option<String> {
+        let mut props = vec![("title", "Water the plants")];
+        props.extend_from_slice(meta);
+        let mut list = UiNode::empty("list", "card~rows");
+        list.children.push(row("ListRow", &props));
+        let mut card = row("Card", &[("title", title)]);
+        card.children.push(list);
+        let mut reconciler = crate::reconcile::Reconciler::new(std::rc::Rc::default());
+        let element = reconciler.build(&crate::reconcile::normalize(&card));
+        let mut found = None;
+        row_facts(element.as_ref(), &mut found);
+        found
+    }
+
+    #[test]
+    fn a_card_naming_the_day_shows_no_day_on_its_rows() {
+        let today = ui::clock::today();
+        let day = today.format("%Y-%m-%d").to_string();
+        let at_nine = NaiveTime::from_hms_opt(9, 0, 0).expect("nine");
+        assert_eq!(
+            card_row_facts(
+                &heading(today),
+                &[("meta", &day), ("meta:as", "date"), ("meta:time", &at(9))]
+            )
+            .as_deref(),
+            Some(ui::format::time(&at_nine).as_str()),
+            "the card says the day, so its row keeps the time of day it is due"
+        );
+        assert_eq!(
+            card_row_facts(&heading(today), &[("meta", &day), ("meta:as", "date")]),
+            None,
+            "a row with no time of day has nothing left to say under the card's day"
+        );
+        assert_eq!(
+            card_row_facts(
+                &heading(today + chrono::Days::new(2)),
+                &[("meta", &day), ("meta:as", "date")]
+            )
+            .as_deref(),
+            Some(heading(today).as_str()),
+            "a card naming another day leaves the row its own"
         );
     }
 

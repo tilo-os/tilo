@@ -864,12 +864,7 @@ impl Walk<'_> {
         if geometric && !has_area(own.intersect(clip)) {
             return;
         }
-        // The words this box reads over what it holds: a card's or a section's title, or the
-        // group a list heads its rows by. What it holds stands under them.
-        let was_heading = self.heading.clone();
-        if let Some(said) = heading_words(node) {
-            self.heading = Some(said);
-        }
+        let was_heading = self.heading_over(node);
         // A page scrolls the window's content under its heading; a list inside it scrolls rows
         // the page already scrolls.
         let under_page = self.page;
@@ -928,10 +923,7 @@ impl Walk<'_> {
             self.content_beside_sidebar(node, keys);
             self.navigation(node, keys, own.intersect(inner_clip));
         }
-        self.cramped_card(node, keys);
-        self.shown_twice(node, keys);
-        self.heading_rhythm(node, keys);
-        self.unruled_body(node, keys);
+        self.page_checks(node, keys);
         for child in &node.children {
             if floats(&child.widget) {
                 continue;
@@ -979,6 +971,26 @@ impl Walk<'_> {
         self.off_pixel = was_off_pixel;
         self.page = under_page;
         self.heading = was_heading;
+    }
+
+    /// The checks of a page's own parts: cards standing cramped against a sibling, an item shown
+    /// twice, a heading crowded or a body unruled.
+    fn page_checks(&mut self, node: &InspectionNode, keys: &[String]) {
+        self.cramped_card(node, keys);
+        self.shown_twice(node, keys);
+        self.heading_rhythm(node, keys);
+        self.unruled_body(node, keys);
+    }
+
+    /// What the box `node` heads what it holds with, where it heads it — a card's or a section's
+    /// title, or the group a list heads its rows by — as the words its children then stand
+    /// under; the heading before it, to give back once they are read.
+    fn heading_over(&mut self, node: &InspectionNode) -> Option<String> {
+        let was = self.heading.clone();
+        if let Some(said) = heading_words(node) {
+            self.heading = Some(said);
+        }
+        was
     }
 
     /// A row's trailing day fact naming the day the heading over it names: the group, card or

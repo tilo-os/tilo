@@ -39,6 +39,38 @@ use crate::{ResourceRef, UiNode, Value};
 /// Every virtual list of the window's views, by the key of its node in the window's tree.
 pub type Registry = Rc<RefCell<HashMap<String, Rc<RefCell<RemoteRows>>>>>;
 
+/// A list whose rows the window keeps: its key in the window's tree, the lane and prefix of the
+/// view it stands in, the kind of component a row is, and the words of the heading over its rows
+/// where one heads them.
+struct Rows {
+    key: String,
+    lane: Lane,
+    prefix: &'static str,
+    list: String,
+    item: String,
+    heading: Option<String>,
+}
+
+impl Rows {
+    /// The list `list` of the view of `lane` whose nodes carry `prefix`.
+    fn new(
+        prefix: &'static str,
+        lane: Lane,
+        list: &str,
+        item: String,
+        heading: Option<String>,
+    ) -> Self {
+        Self {
+            key: format!("{prefix}{list}"),
+            lane,
+            prefix,
+            list: list.to_owned(),
+            item,
+            heading,
+        }
+    }
+}
+
 /// One of the window's two views, as the app last sent it.
 struct View {
     /// The resource it shows.
@@ -861,38 +893,36 @@ impl AppWindow {
     /// rows of lists gone.
     fn track_rows(&self) {
         // Each list with the words of the heading over it, where one heads its rows.
-        let mut wanted: Vec<(String, Lane, String, &'static str, String, Option<String>)> =
-            Vec::new();
+        let mut wanted: Vec<Rows> = Vec::new();
         for (view, lane, prefix) in [
             (self.root.as_ref(), Lane::Root, ""),
             (self.detail.as_ref(), Lane::Detail, DETAIL),
         ] {
             let Some(view) = view else { continue };
             for (list, item, heading) in crate::rows::lists(&view.tree) {
-                wanted.push((format!("{prefix}{list}"), lane, list, prefix, item, heading));
+                wanted.push(Rows::new(prefix, lane, &list, item, heading));
             }
         }
         // A row a list holds can hold a list of its own — the document of a row standing open
         // where it stands — and so can that list's rows.
         let mut at = 0;
-        while let Some((key, lane, _, prefix, _, heading)) = wanted.get(at) {
-            let (lane, prefix) = (*lane, *prefix);
-            let heading = heading.as_deref();
+        while let Some(rows) = wanted.get(at) {
+            let (lane, prefix, heading) = (rows.lane, rows.prefix, rows.heading.clone());
             let inner: Vec<(String, String, Option<String>)> = self
                 .rows
                 .borrow()
-                .get(key)
+                .get(&rows.key)
                 .map(|rows| {
                     let rows = rows.borrow();
                     rows.rendered()
                         .iter()
                         .filter_map(|row| rows.row(row))
-                        .flat_map(|row| crate::rows::lists_under(row, heading))
+                        .flat_map(|row| crate::rows::lists_under(row, heading.as_deref()))
                         .collect()
                 })
                 .unwrap_or_default();
             for (list, item, heading) in inner {
-                wanted.push((format!("{prefix}{list}"), lane, list, prefix, item, heading));
+                wanted.push(Rows::new(prefix, lane, &list, item, heading));
             }
             at = at.saturating_add(1);
         }
@@ -900,21 +930,21 @@ impl AppWindow {
         registry.retain(|key, rows| {
             wanted
                 .iter()
-                .any(|(want, lane, list, ..)| want == key && rows.borrow().reads(*lane, list))
+                .any(|want| &want.key == key && rows.borrow().reads(want.lane, &want.list))
         });
-        for (key, lane, list, prefix, item, heading) in wanted {
-            let rows = registry.entry(key).or_insert_with(|| {
+        for rows in wanted {
+            let kept = registry.entry(rows.key.clone()).or_insert_with(|| {
                 let reader = Rc::new(RefCell::new(Reconciler::sharing(&self.reconciler.borrow())));
                 Rc::new(RefCell::new(RemoteRows::new(
-                    lane,
-                    &list,
-                    &item,
-                    prefix,
+                    rows.lane,
+                    &rows.list,
+                    &rows.item,
+                    rows.prefix,
                     reader,
                     Rc::clone(&self.bound),
                 )))
             });
-            rows.borrow_mut().under(heading);
+            kept.borrow_mut().under(rows.heading.clone());
         }
     }
 
