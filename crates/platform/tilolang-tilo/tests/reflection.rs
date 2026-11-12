@@ -182,8 +182,8 @@ fn a_scenario_records_each_block_as_its_person_at_its_time() {
         [
             // Each row names the action the call ran, as every change does, and the person and
             // moment the scenario's `invoke` gave it.
-            "scenario:Mia 2026-06-29T07:02:00Z scenario:Mia 2026-06-29T07:02:00Z Say 1",
-            "scenario:Leo 2026-06-29T07:20:00Z scenario:Leo 2026-06-29T07:20:00Z Say 1",
+            "scenario:Mia 2026-06-29T07:02:00Z scenario:Mia 2026-06-29T07:02:00Z Write 1",
+            "scenario:Leo 2026-06-29T07:20:00Z scenario:Leo 2026-06-29T07:20:00Z Write 1",
         ]
     );
     // The window shows them as the log has them.
@@ -338,7 +338,7 @@ fn every_replica_reads_one_history_and_its_steps_whichever_order_changes_arrive_
         ada.sync_with(&mut cy);
         ben.sync_with(&mut cy);
         let readers = [("ada", &ada), ("ben", &ben), ("cy", &cy)];
-        let history = "ada 2026-10-28T09:00:00Z Say | ben 2026-10-28T09:20:00Z Reword \
+        let history = "ada 2026-10-28T09:00:00Z Write | ben 2026-10-28T09:20:00Z Reword \
                        | ada 2026-10-28T09:30:00Z Reword | ben 2026-10-28T09:40:00Z Reword";
         for (who, replica) in readers {
             assert_eq!(
@@ -621,7 +621,7 @@ fn a_field_names_the_version_that_last_changed_it() {
     ada.commit();
     assert_eq!(
         text(call(&ada, "ada", "changed_by", vec![line.clone()])),
-        "ada 2026-10-28T09:00:00Z Say",
+        "ada 2026-10-28T09:00:00Z Write",
         "the version that made it set every field it was made with"
     );
     ada.host.set_clock(|| "2026-10-28T09:05:00Z".to_owned());
@@ -679,7 +679,7 @@ fn undo_puts_a_field_back_to_the_version_that_last_changed_it() {
     undo(&mut ada);
     assert_eq!(
         text(call(&ada, "ada", "changed_by", vec![line.clone()])),
-        "ada 2026-10-28T09:00:00Z Say",
+        "ada 2026-10-28T09:00:00Z Write",
         "the reword was taken back: what last changed the line is the version that made it"
     );
     let described = text(call(&ada, "ada", "describe", vec![line]));
