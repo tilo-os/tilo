@@ -159,9 +159,6 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "tools/tests/test_ci_native_mold.py",
         "tools/tests/test_cosign_install_action.py",
     ),
-    ".forgejo/workflows/build-kernel.yml": (
-        "os/tests/workflow_dependency_invariants.sh",
-    ),
     ".forgejo/workflows/check.yml": (
         "tools/tests/test_ci_check_aggregate.py",
         "tools/tests/test_ci_queue_relief.py",

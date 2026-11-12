@@ -73,8 +73,8 @@ class BuildOsTests(unittest.TestCase):
         ).stdout.split()
         self.assert_in_order(output, self.os_image_commands() + [
             f"bash os/image/compile.sh --dev /target/os/{ARCH}/compiled-dev",
-            "bash tools/ci/publish/rpm-snapshot-ref.sh /target/publish/rpm-snapshot",
-            f"bash tools/ci/publish/env-runtime.sh tree {ARCH} /target/publish/rpm-snapshot "
+            f"bash tools/ci/publish/rpm-snapshot-ref.sh {ARCH} /target/publish/rpm-snapshot/{ARCH}",
+            f"bash tools/ci/publish/env-runtime.sh tree {ARCH} /target/publish/rpm-snapshot/{ARCH} "
             f"/target/publish/rpms/{ARCH} /target/publish/env-runtime/dev-trees",
             f"bash tools/ci/publish/env-runtime.sh dev {ARCH} /target/publish/env-runtime/dev-trees "
             f"/target/os/{ARCH}/compiled /target/publish/env-runtime/dev/{ARCH}",

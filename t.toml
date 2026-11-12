@@ -4044,8 +4044,8 @@ default = false
 
 [[check]]
 name = "os-assembler-x86_64"
-run = "bash os/image/assembler.sh x86_64 /target/os/x86_64/assembler"
-needs = ["image-rpms-x86_64"]
+run = "bash os/image/assembler.sh x86_64 /target/os/x86_64/assembler /target/publish/rpm-snapshot/x86_64"
+needs = ["rpm-snapshot-x86_64", "image-rpms-x86_64"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/os/x86_64/assembler/**"]
@@ -4235,8 +4235,8 @@ default = false
 
 [[check]]
 name = "os-assembler-aarch64"
-run = "bash os/image/assembler.sh aarch64 /target/os/aarch64/assembler"
-needs = ["image-rpms-aarch64"]
+run = "bash os/image/assembler.sh aarch64 /target/os/aarch64/assembler /target/publish/rpm-snapshot/aarch64"
+needs = ["rpm-snapshot-aarch64", "image-rpms-aarch64"]
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/os/aarch64/assembler/**"]

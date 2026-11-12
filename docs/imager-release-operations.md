@@ -585,9 +585,9 @@ needs no stored secret of its own:
   log entry; publishing pushes them with a `registry.tilo.so` identity token.
 - Pinning takes the published buildroots of a release only when main would build
   the same ones (the inputs digest), verifies both signatures with
-  `keys/cosign.pub` and writes `os/kernel-buildroot-snapshot.env` through
-  `os/dev/open-snapshot-pr.py pins`, committed by hand: nothing moves the pins by
-  itself.
+  `keys/cosign.pub` and writes `os/kernel-buildroot-snapshot.env` from what the
+  release's publish step reported (`kernel-buildroot.sh pins`), committed by hand:
+  nothing moves the pins by itself.
 
 Do not configure `COSIGN_PRIVATE_KEY` or `COSIGN_PASSWORD`.
 

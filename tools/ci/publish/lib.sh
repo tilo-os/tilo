@@ -178,13 +178,17 @@ registry_copy() {
 # The frozen RPM snapshot a build installs from (rpm-snapshot-ref.sh wrote SNAPSHOT): the
 # published snapshot of this architecture in SNAPSHOT/rpms-ref, or, where this architecture's set
 # is not published yet (a release tag has not published it), this run's image-rpms-ARCH in RPMS,
-# loaded unsigned into the store `b` runs on (use_buildah first). Sets rpms_ref, what the
-# Containerfile's FROM takes, and rpms_source, what the build records beside its output: the
-# published reference, or "unsigned image-rpms-ARCH DIGEST", which require_published_snapshot
-# refuses, so a build of an unpublished set is tested everywhere and signed or published nowhere.
-# Each architecture is published on its own, so nothing here waits for a node of the other one.
+# loaded unsigned into the store the build reads. Sets rpms_ref, what the Containerfile's FROM
+# takes, and rpms_source, what the build records beside its output: the published reference, or
+# "unsigned image-rpms-ARCH DIGEST", which require_published_snapshot refuses, so a build of an
+# unpublished set is tested everywhere and signed or published nowhere. Each architecture is
+# published on its own, so nothing here waits for a node of the other one.
+#
+# LOADER is how the run's own archive reaches that store: `buildah` (the default, a store
+# use_buildah set up and `b` writes) or `podman`, for a step that installs with podman, such as
+# the OS assembler.
 snapshot_for_build() {
-  local snapshot=$1 rpms=$2 arch=$3 digest
+  local snapshot=$1 rpms=$2 arch=$3 loader=${4:-buildah} digest
   if [[ -f $snapshot/rpms-ref ]]; then
     rpms_ref=$(cat "$snapshot/rpms-ref")
     [[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || die "unexpected snapshot $rpms_ref"
@@ -195,7 +199,11 @@ snapshot_for_build() {
   digest=$(cat "$rpms/digest")
   [[ $(archive_digest "$rpms/image.oci.tar") == "$digest" ]] || die "$rpms/image.oci.tar is not the build $digest"
   rpms_ref=localhost/tilo-rpms:unpublished-$arch
-  b tag "$(b pull -q "oci-archive:$rpms/image.oci.tar")" "$rpms_ref"
+  case $loader in
+    buildah) b tag "$(b pull -q "oci-archive:$rpms/image.oci.tar")" "$rpms_ref" ;;
+    podman) podman tag "$(podman pull -q "oci-archive:$rpms/image.oci.tar")" "$rpms_ref" ;;
+    *) die "unknown snapshot loader $loader" ;;
+  esac
   rpms_source="unsigned image-rpms-$arch $digest"
   printf 'the RPM snapshot %s is not published: building from image-rpms-%s (%s), unsigned; nothing signs or publishes this build\n' \
     "$(cat "$snapshot/unpublished")" "$arch" "$digest"
