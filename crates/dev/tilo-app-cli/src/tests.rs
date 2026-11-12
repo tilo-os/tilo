@@ -1722,10 +1722,7 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
 
         std::fs::create_dir_all(app.join("locales")).unwrap();
         std::fs::write(app.join("locales/en-US.ftl"), STARTER_APP_CATALOG).unwrap();
-        let registry = locale_registry_with_keys(
-            &["en-US".to_owned()],
-            &catalog_message_ids(&parse_fluent_catalog(STARTER_APP_CATALOG).unwrap()),
-        );
+        let registry = locale_registry(&["en-US".to_owned()]);
         std::fs::write(app.join("src/locales.rs"), &registry).unwrap();
         let preview = add_app_artifact(AddRequest {
             start: app.clone(),
@@ -2004,10 +2001,11 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         })
         .unwrap();
         assert_eq!(preserved.checked, ["de-DE"]);
-        // The catalog grew `settings-title` and the registry gained its key.
+        // The registry names the catalogs, not their messages, so a catalog
+        // that grew a message leaves it alone.
         assert_eq!(
             preserved.files.as_slice(),
-            [translation_path.clone(), app.join("src/locales.rs")]
+            std::slice::from_ref(&translation_path)
         );
         assert!(
             preserved
@@ -2160,139 +2158,6 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         assert!(error.to_string().contains("app-owned"), "{error:#}");
         assert!(!app.join("locales/nl.ftl").exists());
         assert_eq!(std::fs::read_to_string(library_path).unwrap(), before);
-    }
-
-    // Phase: a_message_is_one_key_and_a_term_is_no_key.
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let app = temp.path().join("reading-list");
-        create_app(request(app.clone())).unwrap();
-        let source = app.join("locales/en-US.ftl");
-        let mut catalog = std::fs::read_to_string(&source).unwrap();
-        // A plural message is one message: its categories are selectors
-        // inside it, not ids of their own.
-        catalog.push_str(
-            "\nstarter-books =\n    { $count ->\n        [one] One book\n       *[other] { $count } books\n    }\nstarter-add-one = +1\n-item-term = a term, not a message\n",
-        );
-        std::fs::write(&source, &catalog).unwrap();
-        sync_locale_catalogs(&LocaleSyncRequest {
-            start: app.clone(),
-            locale: None,
-            prune: false,
-            reset_variables: false,
-            dry_run: false,
-        })
-        .unwrap();
-        let registry = std::fs::read_to_string(app.join("src/locales.rs")).unwrap();
-        let keys = declared_key_names(&registry).unwrap();
-        assert!(
-            keys.contains(&"STARTER_BOOKS".to_owned()),
-            "a message with plural categories is one key: {keys:?}"
-        );
-        assert!(
-            keys.contains(&"STARTER_ADD_ONE".to_owned()),
-            "a message whose id ends in `-one` is still a message: {keys:?}"
-        );
-        assert!(
-            !keys
-                .iter()
-                .any(|key| key.starts_with('-') || key == "ITEM_TERM"),
-            "a term is no control's label: {keys:?}"
-        );
-        assert_eq!(label_key_name("starter-books"), "STARTER_BOOKS");
-        assert_eq!(label_key_name("starter-add-one"), "STARTER_ADD_ONE");
-        assert_eq!(label_key_name("-brand"), "");
-    }
-
-    // Phase: a_key_the_catalog_lacks_is_reported_and_refreshed.
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let app = temp.path().join("reading-list");
-        create_app(request(app.clone())).unwrap();
-        let registry_path = app.join("src/locales.rs");
-        let current = std::fs::read_to_string(&registry_path).unwrap();
-        // A catalog message with no key behind it is exactly the state a
-        // hand edit of locales/en-US.ftl leaves, and the one `check` reports.
-        let mut catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
-        catalog.push_str("starter-saved = Saved\n");
-        std::fs::write(app.join("locales/en-US.ftl"), &catalog).unwrap();
-        let report = doctor_app(&app).unwrap();
-        let locale_check = report
-            .checks
-            .iter()
-            .find(|check| check.label == "locale registry")
-            .expect("the registry is inspected");
-        assert_eq!(locale_check.status, DoctorStatus::Fail, "{locale_check:?}");
-        assert!(locale_check.detail.contains("stale"), "{locale_check:?}");
-        assert!(
-            locale_check.detail.contains("`tilo-app locale sync`"),
-            "the failure names the command that refreshes it: {locale_check:?}"
-        );
-
-        // A dry run reports the registry it would rewrite, and writes nothing.
-        let preview = sync_locale_catalogs(&LocaleSyncRequest {
-            start: app.clone(),
-            locale: None,
-            prune: false,
-            reset_variables: false,
-            dry_run: true,
-        })
-        .unwrap();
-        assert_eq!(
-            preview.files.as_slice(),
-            std::slice::from_ref(&registry_path),
-            "a stale registry is a file the sync would write"
-        );
-        assert_eq!(std::fs::read_to_string(&registry_path).unwrap(), current);
-
-        sync_locale_catalogs(&LocaleSyncRequest {
-            start: app.clone(),
-            locale: None,
-            prune: false,
-            reset_variables: false,
-            dry_run: false,
-        })
-        .unwrap();
-        let refreshed = std::fs::read_to_string(&registry_path).unwrap();
-        assert!(
-            refreshed.contains(r#"pub const STARTER_SAVED: ui::i18n::LabelKey = ui::i18n::LabelKey::new("starter-saved");"#),
-            "the refresh adds the key: {refreshed}"
-        );
-        let report = doctor_app(&app).unwrap();
-        let locale_check = report
-            .checks
-            .iter()
-            .find(|check| check.label == "locale registry")
-            .expect("the registry is inspected");
-        assert_eq!(locale_check.status, DoctorStatus::Pass, "{locale_check:?}");
-        assert_ne!(refreshed, current);
-        syn::parse_file(&refreshed).expect("the refreshed registry is Rust");
-    }
-
-    // Phase: a_registry_without_label_keys_names_the_command_that_writes_them.
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let app = temp.path().join("reading-list");
-        create_app(request(app.clone())).unwrap();
-        let registry_path = app.join("src/locales.rs");
-        let registry = std::fs::read_to_string(&registry_path).unwrap();
-        // The registry a `tilo-app` older than the keys wrote: its catalogs
-        // registered, no label keys.
-        let declared = registry.split("pub mod keys").next().unwrap().to_owned();
-        std::fs::write(&registry_path, declared).unwrap();
-        let report = doctor_app(&app).unwrap();
-        let locale_check = report
-            .checks
-            .iter()
-            .find(|check| check.label == "locale registry")
-            .expect("the registry is inspected");
-        assert_eq!(locale_check.status, DoctorStatus::Fail, "{locale_check:?}");
-        assert!(
-            locale_check
-                .detail
-                .contains("label keys are not generated; run `tilo-app locale sync`"),
-            "the failure names the command that generates them: {locale_check:?}"
-        );
     }
 }
 
@@ -2675,11 +2540,8 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(library.contains("impl ResourceApp for App"));
         assert!(library.contains(".input(cx.paths().name)"));
         assert!(library.contains("with_id(\"name-input\")"));
-        assert!(
-            library.contains("crate::locales::keys::STARTER_CLEAR")
-                && library.contains("Greeting::CLEAR.invoke()")
-        );
-        assert!(library.contains("labeled_field(crate::locales::keys::STARTER_NAME_LABEL, name)"));
+        assert!(library.contains(".button(\"starter-clear\", Greeting::CLEAR.invoke())"));
+        assert!(library.contains("labeled_field(\"starter-name-label\", name)"));
         assert!(!library.contains("LocalState::new"));
         assert!(!library.contains("ActionForm"));
         assert!(library.contains("pub mod locales;"));
@@ -2690,29 +2552,9 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
             locale_registry.contains(r#"ui::embedded_catalog!(pub static CATALOG, ["en-US"]);"#)
         );
         assert_eq!(parse_locale_registry(&locale_registry).unwrap(), ["en-US"]);
-        // Every message of the template catalog is a generated key, so a
-        // label the catalog lacks stops the app compiling.
         assert!(
-            locale_registry.contains("pub mod keys {"),
-            "the scaffold generates the label keys"
-        );
-        let catalog =
-            std::fs::read_to_string(destination.join("locales/en-US.ftl")).expect("catalog");
-        let messages = catalog_message_ids(&parse_fluent_catalog(&catalog).unwrap());
-        assert_eq!(
-            declared_key_names(&locale_registry).unwrap(),
-            messages
-                .iter()
-                .map(|id| label_key_name(id))
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            locale_registry.contains(r#"pub const STARTER_CLEAR: ui::i18n::LabelKey = ui::i18n::LabelKey::new("starter-clear");"#),
-            "a key names the message it is"
-        );
-        assert!(
-            locale_registry.contains(r#"pub const STARTER_GREETING: ui::i18n::LabelKey = ui::i18n::LabelKey::new("starter-greeting");"#),
-            "a key may hold arguments; it is still the message"
+            !locale_registry.contains("pub mod keys"),
+            "the registry names the catalogs and nothing else: {locale_registry}"
         );
         let manifest =
             std::fs::read_to_string(destination.join("tilo-app.toml")).expect("manifest");
