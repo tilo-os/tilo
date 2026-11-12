@@ -1193,6 +1193,8 @@ impl DesktopSurface {
         if search.is_open() {
             let closed = search.observe();
             let refreshed = search.refresh();
+            // An Enter that waited for its query's rows chooses in a refresh, which ends search.
+            let closed = closed || !search.is_open();
             // The rows the palette found, and the card they stand in, are drawn by the host above
             // the windows (`DesktopHandle::search_palette`), never in this desk's own tree: the
             // card is not a child of the surface. A row that came or went is that card's paint,

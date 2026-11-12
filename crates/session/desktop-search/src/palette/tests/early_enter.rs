@@ -41,11 +41,11 @@ fn an_early_enter_opens_the_typed_rows_while_an_app_still_answers() {
         "nothing from the earlier rows"
     );
     settled(&mut search);
+    assert!(!arrived.get(), "the app has not answered");
     assert!(
-        !arrived.get() && search.expecting(),
-        "the app has not answered"
+        !search.is_open(),
+        "the typed query's rows let Enter choose, and search ended"
     );
-    assert!(!search.results().is_empty(), "the typed query's rows stand");
     let chosen = format!(
         "{:?}",
         search
@@ -73,11 +73,19 @@ fn an_early_enter_opens_once_the_typed_rows_stand() {
     // The desk's passes after the batch, up to the first that shows rows for "notes".
     for _ in 0..50 {
         search.refresh();
-        if search.shown_query.as_deref() == Some("notes") && !search.rows.is_empty() {
+        if !search.is_open()
+            || (search.shown_query.as_deref() == Some("notes") && !search.rows.is_empty())
+        {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+    // The pass that chose also leaves search: the desk reads that in the same pass, and a desk with
+    // nothing left to draw may take no other to notice it later.
+    assert!(
+        !search.is_open(),
+        "the held Enter chose, and search is still open"
+    );
     let chosen = format!(
         "{:?}",
         search
