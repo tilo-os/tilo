@@ -113,6 +113,9 @@ struct Door {
     /// The author of the program running now, as the actions it plans for a preview see their
     /// caller.
     caller: RefCell<tilolang_tilo::publish::Caller>,
+    /// The apps whose records the session changes itself; any other app's change is its own
+    /// action, invoked where the app runs.
+    changed_at_record: std::collections::BTreeSet<String>,
 }
 
 impl TaskDoor for Door {
@@ -136,10 +139,12 @@ impl TaskDoor for Door {
     }
 
     fn invoke(&self, call: &Json) -> Answered {
-        // A change of an app's record goes to the record's origin with the record it changes,
-        // and what the task's read of it would write, which the origin compares its run with.
+        // A change of a record the session changes itself goes there with the record it changes,
+        // and what the task's read of it would write, which the session compares its run with.
+        // Any other app's change is its action, invoked at the app.
         let mut call = call.clone();
         if let Some(app) = call.get("app").and_then(Json::as_str).map(str::to_owned)
+            && self.changed_at_record.contains(&app)
             && let Some((under, record)) = self.reads.address(&app)
         {
             let preview = self
@@ -321,6 +326,7 @@ impl Task {
                 agent: true,
                 on_behalf_of: request.person.clone(),
             }),
+            changed_at_record: request.changed_at_record.clone(),
         });
         let session = TaskSession::new(
             request.person.as_deref(),
@@ -373,6 +379,7 @@ impl Task {
                 agent: true,
                 on_behalf_of: None,
             }),
+            changed_at_record: self.door.changed_at_record.clone(),
         });
         self.guests.borrow_mut().push(Guest {
             line,
@@ -701,6 +708,7 @@ mod tests {
                 agent: true,
                 on_behalf_of: None,
             }),
+            changed_at_record: std::collections::BTreeSet::new(),
         });
         let session = TaskSession::new(None, &(Rc::clone(&reached) as Rc<dyn TaskDoor>), &[], apps)
             .expect("a session");

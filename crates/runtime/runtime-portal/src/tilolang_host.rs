@@ -164,6 +164,11 @@ pub struct TaskRequest {
     /// ([`InstanceRequest::records_under`]).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub records_under: std::collections::BTreeMap<String, String>,
+    /// The apps whose records the session changes itself, the packages it runs: a program's
+    /// change of one goes to its record. A change of any other app is the app's own action,
+    /// invoked where the app runs.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub changed_at_record: std::collections::BTreeSet<String>,
 }
 
 /// The descriptors a task arrives with, in the order the door carries them.
@@ -821,6 +826,7 @@ mod tests {
             person: Some("ada".into()),
             apps_len: 3,
             records_under: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
+            changed_at_record: ["so.tilo.shell".into()].into(),
         };
         let fds = TaskFds {
             program: connection(),

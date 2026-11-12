@@ -2340,6 +2340,7 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
             person: self.person.lock_recover().clone(),
             apps_len: encoded.len() as u64,
             records_under,
+            changed_at_record: kept,
         };
         std::thread::Builder::new()
             .name("tilo-task-host".into())

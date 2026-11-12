@@ -28,8 +28,11 @@ unit tests and found only by starting a session by hand:
            runs (windows at y = -484 and y = 788 on a 752 px high frame).
   repl     through the session's door (`tilolang repl`), on a session whose person named the
            program as they started it (`--admit-repl`, as naming it on the sheet would): the REPL
-           reaches the four apps, reads the record the notes app's window shows, and changes the
-           desk, whose published state says so.
+           reaches the four apps, reads the record the notes app's window shows, writes a note
+           there by the names the app declares (`notes.new_note(notes.notebook)`), and changes
+           the desk, whose published state says so.
+           Catches the door handing a task an installed tilolang app's surface instead of its
+           package: its actions were named by their stored ids and its root by nothing.
            Catches the door not forwarding record changes (fixed in 71382cec3d7): before the
            fix every change answered "this desktop applies no task's changes at a record's
            origin". No build has the deadlock fix without this one, so on 08636f201d9 the run
