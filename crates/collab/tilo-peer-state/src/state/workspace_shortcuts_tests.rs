@@ -183,3 +183,39 @@ fn a_member_sees_a_saved_shortcut_and_never_the_governors_forgery() {
     }
     assert_eq!(saved(&member), vec![own], "the forgery never lands");
 }
+
+#[test]
+fn a_saved_shortcut_is_written_as_one_of_the_workspaces_settings() {
+    use crate::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
+
+    let (mut governor, _, device, cert, now) = crate::admission_tests::seeded();
+    let workspace = governor.core.workspace.clone();
+    let water = signed(&workspace, "water", &cert, &device);
+    // What the session's action door writes when a person saves a shortcut.
+    let save = WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(
+        ShortcutChange::Save(Box::new(water.clone())),
+    ));
+    assert_eq!(
+        governor
+            .workspace_mut()
+            .apply_workspace_membership_command(&cert, &save, &device, now),
+        Ok(true)
+    );
+    assert_eq!(saved(&governor), vec![water.clone()]);
+    assert_eq!(
+        governor.workspace().workspace_shortcuts(),
+        vec![tilo_automation::SavedShortcut::encode(&water)],
+        "the desk and every reader see the shortcut the workspace holds"
+    );
+
+    let delete = WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(
+        ShortcutChange::Delete("water".into()),
+    ));
+    assert_eq!(
+        governor
+            .workspace_mut()
+            .apply_workspace_membership_command(&cert, &delete, &device, now),
+        Ok(true)
+    );
+    assert!(saved(&governor).is_empty());
+}

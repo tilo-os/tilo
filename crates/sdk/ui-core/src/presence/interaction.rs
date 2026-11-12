@@ -198,6 +198,17 @@ impl PresenceCtx {
                 Some(entry) => (entry.first_received_at, entry.superseded, entry.pulsed_at),
                 None if interaction.actor.kind.acts_for_someone() => {
                     let (starts_at, pulsed) = self.pace_agent(&interaction, now);
+                    // The characters a write put in a text are there when its
+                    // phase arrives. The rest on the agent's last target still
+                    // takes the targets in between off the rail and keeps the
+                    // cursor's flash, but it is the cursor's rest, not the
+                    // write's: a mark that waited for it named text the person
+                    // could already read a second late.
+                    let starts_at = if writes_text(&interaction) {
+                        now
+                    } else {
+                        starts_at
+                    };
                     (starts_at, false, pulsed)
                 }
                 None => (now, false, None),
@@ -415,22 +426,17 @@ impl PresenceCtx {
             })
     }
 
-    /// Earliest discrete wake at which visible semantic activity expires.
-    /// Motion is intentionally omitted: [`Self::interaction_animation_demand`]
-    /// drives those short frame sequences.
+    /// Earliest discrete wake at which visible semantic activity expires, its
+    /// cursor begins to move on it, or a write's mark steps down its fade: each
+    /// one is a frame the host asks for, not only an instant to sleep to. A
+    /// deadline pass on its own presents no presence-only change. Continuous
+    /// motion is intentionally omitted: [`Self::interaction_animation_demand`]
+    /// drives those frames.
     pub fn interaction_next_wake_deadline(&self, now: Instant) -> Option<Instant> {
         self.interactions
             .values()
-            .map(|entry| {
-                // A cursor waiting for its rest on the last target to end
-                // moves on then.
-                if now < entry.first_received_at && !entry.superseded {
-                    entry.first_received_at
-                } else {
-                    let expiry = entry.expiry_deadline();
-                    expiry.checked_add(EXPIRY_EPSILON).unwrap_or(expiry)
-                }
-            })
+            .flat_map(|entry| entry.next_wakes(now))
+            .flatten()
             .map(|deadline| deadline.max(now))
             .min()
     }
@@ -618,6 +624,23 @@ impl PresenceCtx {
     /// is suppressed. Failure must not look like a successful pointer action.
     pub fn interaction_status_label(&self, interaction: &SemanticInteraction) -> String {
         self.interaction_status_label_doing(interaction, &doing_phrase(&interaction.action.label))
+    }
+
+    /// [`Self::interaction_status_label_doing`] for the characters a write put
+    /// in a text: while they stand there, the chip says what the person sees
+    /// happen ("added text"), never the gerund of the action's menu label,
+    /// which names the place it acts on and reads as a replacement even where
+    /// it only inserted. A phase only a person can settle — waiting, failed,
+    /// cancelled — keeps the action's own words, because then no text of its
+    /// stands to name.
+    pub fn interaction_status_label_written(&self, interaction: &SemanticInteraction) -> String {
+        let doing = match interaction.phase {
+            InteractionPhase::Waiting { .. }
+            | InteractionPhase::Failed { .. }
+            | InteractionPhase::Cancelled { .. } => doing_phrase(&interaction.action.label),
+            _ => crate::i18n::widget_format("interaction-added-text", &[]),
+        };
+        self.interaction_status_label_doing(interaction, &doing)
     }
 
     /// [`Self::interaction_status_label`] where the place says what the action
@@ -895,6 +918,31 @@ impl InteractionPresenceEntry {
         from.checked_add(dwell).unwrap_or(from)
     }
 
+    /// The discrete wakes this entry asks a host for: when its cursor starts
+    /// moving on it, when its dwell ends, and, for the characters a write put
+    /// on text, each step of that mark's fade — the text it wrote dims in
+    /// steps, and a host that slept until the dwell ended would show it whole
+    /// and then gone.
+    fn next_wakes(&self, now: Instant) -> [Option<Instant>; 3] {
+        // A cursor waiting for its rest on the last target to end moves on
+        // then.
+        let beginning =
+            (now < self.first_received_at && !self.superseded).then_some(self.first_received_at);
+        let expiry = self.expiry_deadline();
+        let ends = Some(expiry.checked_add(EXPIRY_EPSILON).unwrap_or(expiry));
+        [beginning, ends, self.fade_step(now)]
+    }
+
+    /// When this entry's mark on the text it wrote steps down its fade: none
+    /// while it has not been drawn, when a later action of its agent took its
+    /// place, or once the mark has gone.
+    fn fade_step(&self, now: Instant) -> Option<Instant> {
+        self.drawn_at
+            .get()
+            .filter(|_| !self.superseded && self.visible_at(now) && writes_text(&self.interaction))
+            .and_then(|drawn| crate::motion::Trace::next_step(drawn, now))
+    }
+
     fn animating_at(&self, now: Instant, theme: &Theme) -> bool {
         let motion = theme.motion();
         let source = crate::tokens::MotionSource::Pointer;
@@ -913,6 +961,15 @@ impl InteractionPresenceEntry {
                 now.saturating_duration_since(at.max(self.first_received_at)) < flash
             })
     }
+}
+
+/// Whether `interaction` wrote characters into a text: the mark it leaves is its text range, not a
+/// place a cursor travels to.
+fn writes_text(interaction: &SemanticInteraction) -> bool {
+    matches!(
+        interaction.anchor,
+        tilo_actions::InteractionAnchor::Text { .. }
+    )
 }
 
 fn marker_entry_is_newer(
@@ -1820,6 +1877,58 @@ mod tests {
         );
     }
 
+    /// The text a write put on a note dims in steps: a host that woke only when
+    /// the dwell ended showed it whole and then gone, so the text mark asks for
+    /// each step of its fade. A place that is not text has no mark to fade and
+    /// asks for none.
+    #[test]
+    fn a_text_write_asks_for_each_step_of_its_fade() {
+        let at = crate::time::now();
+        let mut presence = PresenceCtx::empty();
+        let mut written = interaction(90, 1, InteractionPhase::Applying);
+        written.anchor = tilo_actions::InteractionAnchor::Text {
+            region: "body".into(),
+            ranges: vec![tilo_actions::InteractionTextRange {
+                block: "b1".into(),
+                start: 33,
+                end: 66,
+            }],
+        };
+        presence.apply_interaction_at(written.clone(), at).unwrap();
+        presence.note_drawn(written.invocation, at);
+        // The mark dims in ten steps over its life.
+        let step = Duration::from_millis(250);
+        assert_eq!(
+            presence.interaction_next_wake_deadline(at),
+            Some(at + step),
+            "the frame that dims it once is asked for"
+        );
+        let later = at + step * 4;
+        assert_eq!(
+            presence.interaction_next_wake_deadline(later),
+            Some(at + step * 5),
+            "and each step after it"
+        );
+        assert!(
+            presence
+                .interaction_fade(written.invocation, later)
+                .is_some_and(|alpha| alpha > 0.0 && alpha < 1.0),
+            "the text is still dimming at that step"
+        );
+
+        // A row it names, not text it wrote: its dwell's end is the only wake
+        // there is.
+        let mut elsewhere = PresenceCtx::empty();
+        let listed = interaction(91, 1, InteractionPhase::Applying);
+        elsewhere.apply_interaction_at(listed.clone(), at).unwrap();
+        elsewhere.note_drawn(listed.invocation, at);
+        assert_eq!(
+            elsewhere.interaction_next_wake_deadline(later),
+            Some(at + ACTIVE_INTERACTION_EXPIRY + EXPIRY_EPSILON),
+            "nothing fades, so nothing wakes before the dwell ends"
+        );
+    }
+
     #[test]
     fn a_place_a_widget_painted_leaves_the_rail() {
         let at = crate::time::now();
@@ -1931,5 +2040,102 @@ mod tests {
             assert!(!announcement.to_lowercase().contains("cursor"));
             assert!(!announcement.to_lowercase().contains("click"));
         }
+    }
+
+    /// The characters a write put in a text show when the phase arrives: the
+    /// rest on the agent's last target still takes the targets in between off
+    /// the rail, but it is the cursor's rest, not the write's.
+    #[test]
+    fn a_write_shows_when_it_arrives_not_when_the_cursor_finishes_resting() {
+        let at = crate::time::now();
+        let mut presence = PresenceCtx::empty();
+        // The agent's last action rests on another target.
+        let mut resting = interaction(96, 1, InteractionPhase::Committed);
+        resting.resource.id = "file:todo".into();
+        resting.action.id = "tick".into();
+        presence.apply_interaction_at(resting, at).unwrap();
+
+        let mut write = interaction(97, 1, InteractionPhase::Applying);
+        write.resource.id = "file:notes".into();
+        write.action.id = "replace-range".into();
+        write.anchor = tilo_actions::InteractionAnchor::Text {
+            region: "body".into(),
+            ranges: vec![tilo_actions::InteractionTextRange {
+                block: "b1".into(),
+                start: 33,
+                end: 66,
+            }],
+        };
+        presence.apply_interaction_at(write.clone(), at).unwrap();
+        assert!(
+            presence
+                .visible_interactions(at)
+                .iter()
+                .any(|shown| shown.invocation == write.invocation),
+            "the text it wrote is already there"
+        );
+        assert_eq!(presence.interaction_fade(write.invocation, at), Some(1.0));
+
+        // A place the cursor has to travel to still waits for the rest.
+        let mut card = interaction(98, 1, InteractionPhase::Applying);
+        card.resource.id = "file:third".into();
+        card.action.id = "open".into();
+        presence.apply_interaction_at(card.clone(), at).unwrap();
+        assert!(
+            !presence
+                .visible_interactions(at)
+                .iter()
+                .any(|shown| shown.invocation == card.invocation),
+            "the cursor rests before it moves on"
+        );
+        assert!(
+            presence
+                .visible_interactions(at + AGENT_TARGET_DWELL)
+                .iter()
+                .any(|shown| shown.invocation == card.invocation)
+        );
+    }
+
+    /// The chip on the characters a write put in a note says what the person
+    /// sees happen there, not the gerund of the action's menu label: "Helper:
+    /// added text", where "replacing text at a place" named the menu and said
+    /// replacement even for an insertion. A write that failed keeps the
+    /// action's own words, since none of its text stands.
+    #[test]
+    fn a_text_write_says_it_added_text() {
+        let mut presence = PresenceCtx::empty();
+        presence
+            .names
+            .insert(UserId("agent:helper".into()), "Helper".into());
+        let mut write = interaction(95, 1, InteractionPhase::Applying);
+        write.actor = InteractionActor::new("agent:helper", ActorKind::Agent);
+        write.action = InteractionAction {
+            id: "replace-range".into(),
+            label: "Replace text at a place".into(),
+            app: None,
+        };
+        write.anchor = tilo_actions::InteractionAnchor::Text {
+            region: "body".into(),
+            ranges: vec![tilo_actions::InteractionTextRange {
+                block: "b1".into(),
+                start: 33,
+                end: 66,
+            }],
+        };
+        assert_eq!(
+            presence.interaction_status_label_written(&write),
+            "Helper: added text"
+        );
+        let mut failed = write.clone();
+        failed.sequence = 2;
+        failed.phase = InteractionPhase::Failed {
+            code: None,
+            message: "The note is read-only".into(),
+        };
+        let name = presence.interaction_status_label_written(&failed);
+        assert!(
+            name.starts_with("Helper: replacing text at a place. Failed"),
+            "a failed write names the action, not text that never landed: {name}"
+        );
     }
 }

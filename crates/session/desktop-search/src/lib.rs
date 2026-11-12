@@ -20,8 +20,11 @@
 //! - [`usage`] and [`preferences`]: what the person chose before, and the
 //!   sources they switched off; the host keeps both.
 //! - [`i18n`]: the palette's own copy, in the desktop's language.
-//! - Features `settings` and `catalogue` (native): Settings' pages and the
-//!   apps a person can get, from their own crates' indexes.
+//! - Feature `settings`: Settings' pages and the settings on them, from
+//!   Settings' own index — every desktop's search offers them, the page's
+//!   too, each listing the pages its build has.
+//! - Feature `catalogue` (native): the apps a person can get, from the
+//!   catalogue the Store reads.
 
 pub mod answers;
 pub mod availability;

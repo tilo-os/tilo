@@ -128,8 +128,16 @@ pub trait TileSource {
     /// The content for `tab` in `workspace` , built the first time the tab's strip is shown.
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost;
 
-    /// A launch command named `app` : the tab to open under `id` . `None` opens nothing.
-    fn launch(&mut self, _workspace: &Workspace, _id: TabId, _app: &str) -> Option<Tab> {
+    /// A launch command named `app` : the tab to open under `id` , beside the tab `beside` when
+    /// it is a window of the app's own rather than the window the launch opens. `None` opens
+    /// nothing.
+    fn launch(
+        &mut self,
+        _workspace: &Workspace,
+        _id: TabId,
+        _app: &str,
+        _beside: Option<TabId>,
+    ) -> Option<Tab> {
         None
     }
 
@@ -1914,7 +1922,7 @@ impl DesktopSurface {
         let Some(workspace) = shared.tree.active_workspace() else {
             return false;
         };
-        let Some(tab) = self.tiles.launch(workspace, id, app) else {
+        let Some(tab) = self.tiles.launch(workspace, id, app, None) else {
             return false;
         };
         let host = build_tile(self.tiles.as_mut(), self.controls.as_ref(), workspace, &tab);

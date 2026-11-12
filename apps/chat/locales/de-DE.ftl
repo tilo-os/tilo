@@ -418,3 +418,4 @@ chat-channel-composer-placeholder = Nachricht an #{ $channel }
 
 ## What the window shows
 chat-writing = Schreibt…
+chat-voice-channel-unnamed = Der Sprachkanal konnte nicht benannt werden

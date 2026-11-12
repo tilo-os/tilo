@@ -24,9 +24,17 @@ app gets on a real system:
   snapshot   a PNG of the nested session per app, in OUT
   windows    a second window of Tasks, opened as a person opens one from search (its row
              with Ctrl+Enter), is a second window of the same process and its instance runs
-             in the same host; a task typed into either window shows in the other at once
+             in the same host; a task typed into either window shows in the other at once, and
+             each window names the controls of its own content where it stands
+  titles     each tab is named by the page its window shows, not by its app: the two windows of
+             Tasks read Today, the place both stand on, not Tasks, the app's name, so a person
+             reads which page a window is at without opening it (titles-window-*.png)
   today      Today's Tasks card reads Tasks' own record: the tasks typed into Tasks' Today
-             show in Today's window, which holds none of them itself (today-*.png)
+             show in Today's window, which holds none of them itself (today-*.png); one is
+             marked done by its box, a checkbox Tasks' window names ("Mark ... done"), another
+             from its row's menu, pressed by name as a tool presses it, and Today's "Morning
+             cleanup", pressed by name, runs on them and asks the person before changing Tasks
+             and Notes
   native     native Notes (so.tilo.notes), installed beside them, launches and
              presents a frame (native-notes.png)
   activation "Show this window" answers for tilolang Notes as for native Notes
@@ -339,7 +347,9 @@ def search_beside(session: Session, title: str) -> None:
 def check_windows(session: Session, processes: dict, session_pid: int, out: Path) -> dict:
     """A second window of Tasks, opened from search as a person opens one, is a window of the
     process Tasks' first window is, and its instance runs in the host the first one's does. A
-    task typed into the first window shows in the second at once."""
+    task typed into the first window shows in the second at once, and each window names the
+    controls of its own content: a tool or an assistive technology pressing one presses the
+    window it stands in."""
     tasks = app_id("tasks")
     first = [w for w in session.windows() if w.get("app_id") == tasks]
     if len(first) != 1:
@@ -396,8 +406,60 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
     session.control({"op": "key", "key": "Enter"})
     until("the second task in both of Tasks' windows", lambda: (lambda now: now if all(
         a != b for a, b in zip(now, after)) else None)(shot("next")), 30, 1.0)
+    # What each window offers by name, listed while it is the one in front: the desk names the
+    # controls of the window an app drew, so a window whose instance is not a tab of the desk's
+    # names nothing of its content at all.
+    typed = ["Water the plants", "Call the plumber"]
+    listed = {}
+    for window in windows:
+        names = window_controls(session, window)
+        listed[str(window["tab"])] = names
+        missing = [title for title in typed if title not in names]
+        if missing:
+            raise Failed(f"{tasks}'s window {window['tab']} names no control of its own: "
+                         f"{missing} not among the controls it lists: {names}")
     return {"windows": [{"group": w["group"], "tab": w["tab"]} for w in windows],
+            "controls": listed,
             "process": procs[0], "host": hosts[0], "changed": len(after)}
+
+
+def check_titles(session: Session, out: Path) -> dict:
+    """Each tab is named by what its window shows, not by its app: the two windows of Tasks read
+    Today, the place both stand on, where both read Tasks, the app's name, before. A person reads
+    which page a window is at without opening it, and the app's own glyph says which app it is."""
+    tasks = app_id("tasks")
+    found = [w for w in session.windows() if w.get("app_id") == tasks]
+    if len(found) != 2:
+        raise Failed(f"{tasks} shows {len(found)} windows, not the two this check reads")
+    titles = {w["tab"]: w.get("title") for w in found}
+    if set(titles.values()) != {"Today"}:
+        raise Failed(f"{tasks}'s tabs read {titles}: a tab names its app, not the page its window "
+                     f"shows (both windows stand on Tasks' Today)")
+    # Both tabs as the strip shows them, each window in front in turn: titles-*.png.
+    for index, (tab, title) in enumerate(titles.items()):
+        window = next(w for w in found if w.get("tab") == tab)
+        focus(session, window)
+        time.sleep(1.0)
+        session.control_cmd("snapshot", str(out / f"titles-window-{index}.png"))
+    return {"titles": {str(tab): title for tab, title in titles.items()},
+            "page": "Today", "app_name": "Tasks"}
+
+
+def window_controls(session: Session, window: dict) -> list[str]:
+    """The controls the desk names in `window`, with the window in front: what its app drew of its
+    own content — its rows, its lists — named where the window stands."""
+    focus(session, window)
+    until(f"window {window['tab']} in front", lambda: any(
+        shown.get("tab") == window["tab"] and shown.get("active")
+        for shown in session.windows()), 30)
+    time.sleep(0.5)
+    rect = next((shown["rect"] for shown in session.windows()
+                 if shown.get("tab") == window["tab"]), None)
+    if rect is None:
+        raise Failed(f"window {window['tab']} is not drawn on the desk to be read")
+    x, y, width, height = rect
+    return [target["name"] for target in session.targets()
+            if x <= target["rect"][0] < x + width and y <= target["rect"][1] < y + height]
 
 
 def today_shown(session: Session, out: Path, name: str) -> bytes:
@@ -418,19 +480,106 @@ def hold_today(session: Session, out: Path, held: list[bytes]) -> dict:
     return {"before": str(out / "today-before.png")}
 
 
+def named(session: Session) -> list[str]:
+    """The controls the desk names now, by the names a tool presses them by."""
+    return [target["name"] for target in session.targets()]
+
+
 def check_today(session: Session, out: Path, before: bytes) -> dict:
     """Today's Tasks card, which held nothing before Tasks held a task, shows the tasks typed
-    into Tasks' Today since: Today reads them from Tasks' own record, live. The card's rows move
-    a good part of the window; a focus ring or a caret moves next to none of it."""
-    def moved(now: bytes) -> float:
-        width = 4  # a snapshot holds RGBA pixels
-        changed = sum(1 for i in range(0, min(len(now), len(before)), width)
-                      if now[i:i + width] != before[i:i + width])
-        return changed / max(1, len(before) // width)
-    share = until("Tasks' tasks in Today's card", lambda: (lambda part: part if part > 0.05 else None)(
-        moved(today_shown(session, out, "after"))), 30, 1.0)
+    into Tasks' Today since: Today reads them from Tasks' own record, live, and its window names
+    them as its own controls. Two of them are finished in Tasks: one by its box, the other from its
+    row's menu, opened where the row stands and run by the command a tool presses by name, both
+    standing in Tasks' history. Its "Morning cleanup" is a control of that window too, pressed here
+    as a tool or an assistive technology presses it: with tasks done in Tasks it clears them and
+    files "Morning: 2 done" in Notes, or asks the person's leave to change those two apps — a
+    headless session has nobody to answer, and an app's change of another app is refused unasked
+    (`docs/architecture/apps.md`)."""
+    today = app_id("today")
+    held = ["Water the plants", "Call the plumber"]
+    # What Today's window offers by name: the card's rows, read off Tasks' record, and the
+    # cleanup its header shows.
+    focus(session, next(w for w in session.windows() if w.get("app_id") == today))
+    until("Tasks' tasks in Today's card", lambda: (lambda shown: shown if all(
+        title in shown for title in held) else None)(named(session)), 30)
+    session.wait_target("Morning cleanup")
+    done = mark_done(session, held[0])
+    menu = menu_complete(session, held[1])
+    # The tasks the two checks above finished: what the cleanup counts.
+    finished = 2
+    note = f"Morning: {finished} done"
+    named_before = named(session)
+    # The cleanup, pressed on Today's window: the app runs it, which either files its note in
+    # Notes and clears the tasks done, or asks the person's leave for the two apps it changes.
+    session.click_named("Morning cleanup")
+
+    def ran():
+        if note in named(session):
+            return "answered"
+        # The app's own log reaches the session's with escape sequences in it, so the line is
+        # matched for its words and the app it names, not by its fields.
+        asked = [line for line in session.log().splitlines()
+                 if "another app's door refused a change asked of it" in line and today in line]
+        return "consent" if asked else None
+    how = until("Today's cleanup to run", ran, 30)
+    if how == "consent":
+        for title in (title for title in held if title in named_before):
+            if title not in named(session):
+                raise Failed(f"{title!r} left Tasks without the note Morning cleanup files")
+        if note in named(session):
+            raise Failed("the note is named without the change it describes")
+    # What the person sees of it, as the pictures the desk drew before and after.
+    after = today_shown(session, out, "after")
+    width = 4  # a snapshot holds RGBA pixels
+    moved = sum(1 for i in range(0, min(len(after), len(before)), width)
+                if after[i:i + width] != before[i:i + width]) / max(1, len(before) // width)
     return {"before": str(out / "today-before.png"), "after": str(out / "today-after.png"),
-            "moved": round(share, 3)}
+            "note": note if how == "answered" else None,
+            "asked_consent": how == "consent", "controls": len(named_before),
+            "moved": round(moved, 3), "done": done, "menu": menu}
+
+
+def mark_done(session: Session, title: str) -> dict:
+    """Mark the task `title` done by its box in Tasks' window, pressed by name as a screen reader
+    or an agent presses it: the box is a checkbox of its own, named for what it does. The workspace
+    takes the change, so it stands in Tasks' history; a change it refused would leave none."""
+    tasks = app_id("tasks")
+    focus(session, next(w for w in session.windows() if w.get("app_id") == tasks))
+    box = f"Mark {title} done"
+    session.wait_target(box)
+    before = history_total(session, "tasks")
+    refused = len([line for line in session.log().splitlines()
+                   if "a change the workspace refuses" in line and tasks in line])
+    session.click_named(box)
+    after = until(f"{title!r} done in Tasks' history",
+                  lambda: (lambda t: t if t > before else None)(history_total(session, "tasks")), 15)
+    if len([line for line in session.log().splitlines()
+            if "a change the workspace refuses" in line and tasks in line]) > refused:
+        raise Failed(f"the workspace refused {title!r} marked done")
+    return {"box": box, "history": [before, after]}
+
+
+def menu_complete(session: Session, title: str) -> dict:
+    """A task's row menu, opened where the row stands, and the command in it a tool presses by
+    name as a screen reader presses it: Complete marks the task done, the menu closes on it, and
+    the change stands in Tasks' history — the workspace took it. Nothing of the window may name
+    Complete before the menu opens, so the press reaches the menu's command and no button of a
+    page that says the same word."""
+    tasks = app_id("tasks")
+    focus(session, next(w for w in session.windows() if w.get("app_id") == tasks))
+    session.wait_target(title)
+    shown = named(session)
+    if "Complete" in shown:
+        raise Failed(f"the window names Complete before {title!r}'s menu opens: {shown}")
+    session.click_named(title, verb="show-context-menu")
+    session.wait_target("Complete")
+    before = history_total(session, "tasks")
+    session.click_named("Complete")
+    after = until(f"{title!r} completed from its menu in Tasks' history",
+                  lambda: (lambda t: t if t > before else None)(history_total(session, "tasks")), 15)
+    if any(target["name"] == "Complete" for target in session.targets()):
+        raise Failed(f"{title!r}'s menu stood open after Complete")
+    return {"task": title, "command": "Complete", "history": [before, after]}
 
 
 def invoke_found(session: Session, found: dict, args: dict | None = None) -> dict:
@@ -730,6 +879,7 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         ("idle", lambda: check_idle(session, summary["checks"]["processes"], pid)),
         ("today-before", lambda: hold_today(session, out, today_before)),
         ("windows", lambda: check_windows(session, summary["checks"]["processes"], pid, out)),
+        ("titles", lambda: check_titles(session, out)),
         ("today", lambda: check_today(session, out, today_before[0])),
     ])
     stop_session(proc)

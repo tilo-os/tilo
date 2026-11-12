@@ -399,6 +399,39 @@ impl CachedDocument {
         });
         (Arc::clone(&stored.base.bytes), Arc::clone(&stored.since))
     }
+    /// A document as a store kept it: [`Self::stored`]'s saved base, then
+    /// the changes made since it, which [`AutoCommit::load`] reads as one
+    /// state. Its base is the saved chunk the bytes lead with, so the state
+    /// reopens on the base it was stored on and stores as these very bytes
+    /// again. A state reopened as one whole save would be saved anew on its
+    /// next change, and the aggregate a peer reports for an unchanged state
+    /// would differ after every restart.
+    ///
+    /// Bytes that do not lead with a saved base, or whose changes since it
+    /// are not what storing the state again makes of them, reopen whole.
+    pub(crate) fn stored_as(mut self, bytes: &[u8]) -> Result<Self, String> {
+        let Some(base_len) = saved_chunk(bytes) else {
+            return Ok(self);
+        };
+        let Some((base_bytes, since)) = bytes.split_at_checked(base_len) else {
+            return Ok(self);
+        };
+        let mut base = AutoCommit::load(base_bytes).map_err(|error| error.to_string())?;
+        let heads = base.get_heads();
+        if heads.is_empty() || self.save_after(&heads) != since {
+            return Ok(self);
+        }
+        // Nothing has kept this state yet: the memo this state was made with
+        // holds no base.
+        let _ = self.stored.set(Stored {
+            base: Base {
+                bytes: base_bytes.into(),
+                heads,
+            },
+            since: since.into(),
+        });
+        Ok(self)
+    }
     pub(crate) fn saved(&self) -> Vec<u8> {
         self.saved_bytes().to_vec()
     }
@@ -410,6 +443,36 @@ impl CachedDocument {
             AutoCommit::clone(&self.doc).save()
         })
     }
+}
+/// The length of the saved chunk `bytes` lead with, when they lead with one
+/// that is not the whole of them: automerge's storage leads a chunk with its
+/// magic bytes, a checksum, the chunk's type and the length of its data, and
+/// `save` writes one document chunk, while the changes after it follow as
+/// chunks of their own ([`AutoCommit::save_after`]).
+fn saved_chunk(bytes: &[u8]) -> Option<usize> {
+    const MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
+    /// A chunk holding a saved document, the kind [`AutoCommit::save`] writes.
+    const DOCUMENT: u8 = 0;
+    /// The magic bytes, the checksum and the chunk's type, before its length.
+    const FIXED: usize = 9;
+    if bytes.get(..4)? != MAGIC || *bytes.get(8)? != DOCUMENT {
+        return None;
+    }
+    let (mut data, mut shift, mut at) = (0usize, 0u32, FIXED);
+    loop {
+        let byte = *bytes.get(at)?;
+        at = at.saturating_add(1);
+        data = data.checked_add(((byte & 0x7f) as usize).checked_shl(shift)?)?;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift = shift.checked_add(7)?;
+        if shift > usize::BITS {
+            return None;
+        }
+    }
+    let total = at.checked_add(data)?;
+    (total < bytes.len()).then_some(total)
 }
 #[cfg(test)]
 thread_local! {
@@ -472,6 +535,39 @@ mod tests {
         assert_eq!(cached.pending_ops(), pending);
         cached.delete(ROOT, "owner").unwrap();
         assert_eq!(cached.policy().owner, None);
+    }
+    #[test]
+    fn a_stored_document_reopens_on_the_base_it_was_stored_on() {
+        let mut doc = AutoCommit::new();
+        for n in 0..200 {
+            doc.put(ROOT, format!("row-{n}"), n.to_string()).unwrap();
+        }
+        let mut cached = CachedDocument::from(doc);
+        cached.commit();
+        let _ = cached.stored();
+        cached
+            .put(ROOT, "one-more", "a change since the base")
+            .unwrap();
+        cached.commit();
+        let (base, since) = cached.stored();
+        assert!(
+            !since.is_empty(),
+            "the change since the base is stored beside it"
+        );
+        let bytes = [&*base, &*since].concat();
+        let reopened = CachedDocument::from(AutoCommit::load(&bytes).unwrap())
+            .stored_as(&bytes)
+            .unwrap();
+        let (reopened_base, reopened_since) = reopened.stored();
+        assert_eq!(
+            [&*reopened_base, &*reopened_since].concat(),
+            bytes,
+            "the state reopened as the bytes that were stored"
+        );
+        assert_eq!(
+            reopened_since, since,
+            "the reopened state keeps the changes beside the base it was stored on"
+        );
     }
     #[test]
     fn unchanged_clones_share_serialization_and_mutations_keep_old_snapshots() {

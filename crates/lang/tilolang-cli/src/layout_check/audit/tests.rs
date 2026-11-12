@@ -2421,6 +2421,81 @@ fn a_group_heading_takes_one_band_and_stands_on_the_row_it_heads() {
     );
 }
 
+/// The first band a list that heads its rows draws — the heading over its first run, or the first
+/// row where the list leaves that heading out — stands on the column's content gutter, where a
+/// page's first block stands: one closer to the box over the list hugs it. A list whose rows name
+/// no group is one block and leads with its rows.
+#[test]
+fn a_list_that_heads_its_rows_starts_its_first_band_on_the_content_gutter() {
+    let theme = ui::Theme::dark();
+    let inset = ui::chrome::column_gutter(&theme);
+    let list = |heads_rows: bool, lead: f64| {
+        let mut list = node_of("VirtualList", "list", [100.0, 40.0, 400.0, 600.0]);
+        list.layout = Some(ui::widget::LayoutInfo::List(ui::widget::ListLayout {
+            heads_rows,
+            lead: ui::num::f32_of_f64(lead),
+        }));
+        let mut access = AccessNode::new(Role::List);
+        access.children = vec![
+            AccessNode::new(Role::ListItem)
+                .with_name("Water the plants")
+                .with_bounds(Rect::new(100.0, 40.0 + lead, 500.0, 88.0 + lead)),
+            AccessNode::new(Role::ListItem)
+                .with_name("Call the plumber")
+                .with_bounds(Rect::new(100.0, 88.0 + lead, 500.0, 136.0 + lead)),
+        ];
+        list.semantics = Some(access);
+        list
+    };
+    assert!(
+        heading_rooms(&list(true, inset), &theme, None).is_empty(),
+        "a content gutter of room over the first row"
+    );
+    let hugging = heading_rooms(&list(true, 0.0), &theme, None);
+    assert!(
+        hugging.iter().any(|p| p.kind == Kind::HuggingRow),
+        "a list that heads its rows with none of the content gutter over them: {hugging:?}"
+    );
+    assert!(
+        heading_rooms(&list(true, band_height(&theme)), &theme, None).is_empty(),
+        "a heading's own band is room enough over the row it heads"
+    );
+    assert!(
+        heading_rooms(&list(false, 0.0), &theme, None).is_empty(),
+        "a list whose rows name no group leads with them"
+    );
+    // The heading the list draws is held to the same inset, whatever room the list states.
+    let heading_over = |top: f64| {
+        let mut list = list(true, inset);
+        let mut access = AccessNode::new(Role::List);
+        access.children = vec![
+            AccessNode::new(Role::Heading { level: 3 })
+                .with_name("Overdue")
+                .with_bounds(Rect::new(100.0, top, 400.0, top + band_height(&theme)))
+                .with_action_target("group:Overdue"),
+            AccessNode::new(Role::ListItem)
+                .with_name("Water the plants")
+                .with_bounds(Rect::new(
+                    100.0,
+                    top + band_height(&theme),
+                    500.0,
+                    top + band_height(&theme) + 48.0,
+                )),
+        ];
+        list.semantics = Some(access);
+        list
+    };
+    assert!(
+        heading_rooms(&heading_over(40.0 + inset), &theme, None).is_empty(),
+        "a heading standing on the content gutter"
+    );
+    let hugging_heading = heading_rooms(&heading_over(40.0), &theme, None);
+    assert!(
+        hugging_heading.iter().any(|p| p.kind == Kind::HuggingRow),
+        "a heading hugging the box over the list: {hugging_heading:?}"
+    );
+}
+
 /// A page's body stands under the text a control beside its heading leads to only where the
 /// column has the room: on a phone's screen it starts on the gutter, and a section standing a
 /// control's width in is what a person sees the page lose on every line.
@@ -2508,6 +2583,12 @@ fn a_presence_tag_covers_no_word_and_one_actor_wears_one() {
 
 /// A list drawing one group heading over rows, under the title its window reads.
 fn grouped_list(title: &str, count: u32, heading: &str, rows: u32) -> InspectionNode {
+    grouped_list_of(title, count, heading, rows, 0)
+}
+
+/// A list drawing one group heading over `rows` rows, `done` of them checked off, under the
+/// title its window reads.
+fn grouped_list_of(title: &str, count: u32, heading: &str, rows: u32, done: u32) -> InspectionNode {
     let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 700.0], None);
     let mut list = node(
         "VirtualList",
@@ -2517,7 +2598,7 @@ fn grouped_list(title: &str, count: u32, heading: &str, rows: u32) -> Inspection
     );
     let mut head = AccessNode::new(Role::Button);
     head.name = Some(heading.to_owned());
-    head.value = Some(rows.to_string());
+    head.value = Some(count.to_string());
     head.action_target = Some(format!("group:{heading}"));
     head.bounds = Some(ui::a11y::AccessBounds {
         x0: 0.0,
@@ -2528,6 +2609,9 @@ fn grouped_list(title: &str, count: u32, heading: &str, rows: u32) -> Inspection
     let mut children = vec![head];
     for row in 0..rows {
         let mut item = AccessNode::new(Role::ListItem);
+        if row < done {
+            item.state.checked = Some(true);
+        }
         let top = 68.0 + f64::from(row) * 40.0;
         item.bounds = Some(ui::a11y::AccessBounds {
             x0: 0.0,
@@ -2655,5 +2739,17 @@ fn a_lone_group_heading_repeating_the_titles_words_is_caught() {
         repeated(&grouped_list("Today", 2, "Today", 1)),
         0,
         "a heading counting rows the list does not show heads part of it"
+    );
+    // A heading counts what is left to do: three rows under it, one of them finished, read as
+    // the two the title counts, and say what the title says.
+    assert_eq!(
+        repeated(&grouped_list_of("Today", 2, "Today", 3, 1)),
+        1,
+        "the heading counts the two rows left, as the title does"
+    );
+    assert_eq!(
+        repeated(&grouped_list_of("Today", 3, "Today", 3, 1)),
+        0,
+        "a title counting every row says something else than the two left"
     );
 }

@@ -415,10 +415,15 @@ impl MailEngine for StubEngine {
                     request_id,
                     kind,
                     context: "offline".into(),
-                    message: format!(
-                        "Cannot refresh {} for {} while IMAP is offline",
-                        folder.title(),
-                        account.email
+                    message: crate::i18n::t_args(
+                        "mail-refresh-offline",
+                        &[
+                            (
+                                "folder",
+                                ui::i18n::ArgValue::Text(crate::i18n::t(folder.message())),
+                            ),
+                            ("account", ui::i18n::ArgValue::Text(account.email)),
+                        ],
                     ),
                 });
             }

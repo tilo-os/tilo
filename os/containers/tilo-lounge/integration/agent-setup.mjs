@@ -28,7 +28,7 @@ import {connect} from 'node:tls';
 import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit} from './waits.mjs';
+import {stepLimit, deskMetrics, machine} from './waits.mjs';
 
 const [site, relay, tiloBin, siteCa, out] = process.argv.slice(2);
 if (!site || !relay || !tiloBin || !siteCa || !out) {
@@ -46,14 +46,48 @@ const browserArgs = [
   '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
+  // Chromium's own log on stderr: why a renderer or the GPU process died is said there.
+  '--enable-logging=stderr', '--v=0',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ];
+
+// The memory the browser's processes hold, read from /proc as the gate runs the browser beside
+// this script: each renderer and the GPU process (which holds a software GPU's buffers), and what
+// the machine has left. Sampled while a tab runs, so a renderer that dies says what it held.
+const browserMemory = () => {
+  const kib = (text, field) => Number(text.match(new RegExp(`^${field}:\\s+(\\d+) kB`, 'm'))?.[1] ?? 0);
+  const processes = [];
+  for (const pid of readdirSync('/proc').filter(name => /^\d+$/.test(name))) {
+    try {
+      const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+      const type = command.match(/--type=([a-z-]+)/)?.[1];
+      if (!type || !['renderer', 'gpu-process'].includes(type)) continue;
+      const status = readFileSync(`/proc/${pid}/status`, 'utf8');
+      processes.push(`${type} ${pid}: ${Math.round(kib(status, 'VmRSS') / 1024)} MiB (peak ${Math.round(kib(status, 'VmHWM') / 1024)} MiB)`);
+    } catch { /* gone between the listing and the read */ }
+  }
+  let available = '?';
+  try { available = `${Math.round(kib(readFileSync('/proc/meminfo', 'utf8'), 'MemAvailable') / 1024)} MiB`; } catch {}
+  return `${processes.join(', ') || 'no renderer or GPU process'}; the machine has ${available} available`;
+};
 
 const finish = async (code, message) => {
   if (message) report.error = message;
   // Said first: what follows reads every tab, and a tab that stopped answering
   // must not keep the run from saying why it failed.
   if (message) console.error(`FAIL: ${message}`);
+  if (message) console.error(`the machine as it failed: ${machine().text}`);
+  // And what each tab said, before anything asks a tab: a run past its limit
+  // is stopped, and a stopped run says nothing it had not said yet.
+  if (message) {
+    for (const {name, tab} of tabs) {
+      const lines = (tab.log ?? []).slice(-60);
+      if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
+    }
+  }
+  // Each read of a tab is short: a page that answers does at once, and one
+  // that stopped answering would hold every read to the protocol's own limit.
+  const read = (tab, expression) => briefly(tab, expression, 'no answer');
   for (const {name, tab, browser} of tabs) {
     writeFileSync(join(out, `${name}.log`), (tab.log ?? []).join('\n'));
     // A capture waits for the tab's next frame, which a stopped tab never
@@ -65,23 +99,19 @@ const finish = async (code, message) => {
     // a tab mid-navigation or wedged answers nothing the reads below can show.
     report[`${name}At`] = await browser.send('Target.getTargetInfo', {targetId: tab.targetId})
       .then(reply => reply.result?.targetInfo?.url ?? reply.error?.message, error => error.message).catch(() => '');
-    report[`${name}Answers`] = await tab.evaluate('document.readyState', {timeout: 5_000}).catch(error => `no: ${error.message}`);
+    report[`${name}Answers`] = await read(tab, 'document.readyState');
     // What the page kept of the workspaces it entered and the hosts it is a
     // member of: which way it took in on its next load.
-    report[`${name}People`] = await tab.evaluate(`JSON.stringify(globalThis.tiloMount?.people?.() ?? null)`).catch(() => '');
+    report[`${name}People`] = await read(tab, `JSON.stringify(globalThis.tiloMount?.people?.() ?? null)`);
     // Whose channels the page holds keys for: a page without its workspace's
     // keys joins no live plane, so it hears nobody and nobody hears it.
-    report[`${name}Channels`] = await tab.evaluate(`globalThis.tiloChannels?.() ?? ''`).catch(() => '');
-    report[`${name}Kept`] = await tab.evaluate(`JSON.stringify(Object.fromEntries(Object.keys(localStorage)
-      .filter(key => /workspace|membership|entered/i.test(key)).map(key => [key, localStorage.getItem(key)])))`).catch(() => '');
+    report[`${name}Channels`] = await read(tab, `globalThis.tiloChannels?.() ?? ''`);
+    report[`${name}Kept`] = await read(tab, `JSON.stringify(Object.fromEntries(Object.keys(localStorage)
+      .filter(key => /workspace|membership|entered/i.test(key)).map(key => [key, localStorage.getItem(key)])))`);
   }
   writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2));
   for (const browser of browsers) await browser.close().catch(() => {});
   if (message) {
-    for (const {name, tab} of tabs) {
-      const lines = (tab.log ?? []).slice(-60);
-      if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
-    }
     for (const {name} of tabs) console.error(`--- ${name} at ${report[`${name}At`]}, answering ${report[`${name}Answers`]}\n--- ${name} kept: ${report[`${name}Kept`]}\n--- ${name} people: ${report[`${name}People`]}\n--- ${name} channels: ${report[`${name}Channels`]}`);
     console.error(`FAIL: ${message}`);
   }
@@ -90,7 +120,13 @@ const finish = async (code, message) => {
 };
 const fail = message => finish(1, message);
 
-const pageText = tab => tab.evaluate(`(document.body.innerText || '').replace(/\\s+/g, ' ').trim()`).catch(() => '');
+// A read of a tab that answers at once or is said not to: a renderer that
+// stopped never replies, and the protocol's own limit is two minutes.
+const briefly = (tab, expression, otherwise) => Promise.race([
+  tab.evaluate(expression, {timeout: 5_000}).catch(error => `${otherwise}: ${error.message}`),
+  sleep(10_000).then(() => `${otherwise}: no reply in 10 s`),
+]);
+const pageText = tab => briefly(tab, `(document.body.innerText || '').replace(/\\s+/g, ' ').trim()`, '(the page did not answer)');
 // Wait until `expression` holds in the page, or fail naming what never came.
 const until = async (tab, expression, what, timeout = stepLimit(3)) => {
   const deadline = Date.now() + timeout;
@@ -192,15 +228,39 @@ const visit = async name => {
     } else if (method === 'Page.frameNavigated' && !params.frame.parentId) tab.log.push(`${at()} PAGE now at ${address(params.frame.url)}`);
     else if (method === 'Page.navigatedWithinDocument') tab.log.push(`${at()} PAGE moved within to ${address(params.url)}`);
     else if (method === 'Page.javascriptDialogOpening') tab.log.push(`${at()} PAGE dialog ${params.type}: ${params.message}`);
-    else if (method === 'Inspector.targetCrashed') tab.log.push(`${at()} PAGE the renderer crashed`);
+    else if (method === 'Inspector.targetCrashed') {
+      tab.log.push(`${at()} PAGE the renderer crashed; just before, ${lastMemory}`);
+      tab.log.push(`${at()} PAGE memory now: ${browserMemory()}`);
+      // The browser reports a renderer's end a moment after the event.
+      setTimeout(() => tab.log.push(`${at()} PAGE the browser said:\n${browser.crashLines() || '(nothing)'}`), 1000);
+    }
     else if (method === 'Page.loadEventFired') tab.log.push(`${at()} PAGE loaded`);
     else if (method === 'Runtime.consoleAPICalled' && !['error', 'warning'].includes(params.type)) {
       tab.log.push(`${params.type.toUpperCase()} ${params.args.map(a => a.value ?? a.description ?? '').join(' ')}`.slice(0, 600));
     }
   });
+  // The page's own heap and the browser's processes, every half second, so the sample from
+  // just before a crash is in the log; and before every navigation the page asks for.
+  let lastMemory = 'nothing sampled';
+  const sample = async () => {
+    const heap = await tab.evaluate('JSON.stringify(performance.memory ? {usedJSHeapMiB: Math.round(performance.memory.usedJSHeapSize / 1048576), totalJSHeapMiB: Math.round(performance.memory.totalJSHeapSize / 1048576)} : null)', {timeout: 400})
+      .catch(() => 'no answer');
+    lastMemory = `at ${at()}: page heap ${heap}; ${browserMemory()}`;
+  };
+  let sampling = false;
+  const sampler = setInterval(() => {
+    if (sampling) return;
+    sampling = true;
+    sample().catch(() => {}).finally(() => { sampling = false; });
+  }, 500);
+  sampler.unref?.();
+  browser.on(({sessionId, method}) => {
+    if (sessionId !== tab.sessionId || method !== 'Page.frameRequestedNavigation') return;
+    tab.log.push(`${at()} PAGE memory before it: ${lastMemory}`);
+  });
   await tab.send('Network.enable', {}).catch(() => {});
   await tab.send('Inspector.enable', {}).catch(() => {});
-  await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false}).catch(() => {});
+  await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
   await tab.send('Browser.grantPermissions', {origin: new URL(site).origin,
     permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});
   await tab.navigate(site);

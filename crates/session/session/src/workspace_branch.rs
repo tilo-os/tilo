@@ -760,14 +760,17 @@ impl crate::Shared {
             return;
         };
         let engine = self.engine.clone();
-        if let Some(engine) = &engine {
-            let endpoint = self.sync.as_ref().map(|sync| sync.endpoint_addr());
-            engine.found(slot, workspace, &name, endpoint.as_ref());
-        }
+        let endpoint = self.sync.as_ref().map(|sync| sync.endpoint_addr());
         let until = Instant::now()
             .checked_add(PATIENCE)
             .unwrap_or_else(Instant::now);
+        let founded = name.clone();
         let copied = Polled::new(Arc::clone(&self.wake_handle), async move {
+            if let Some(engine) = &engine {
+                engine
+                    .found(slot, workspace, &founded, endpoint.as_ref())
+                    .await;
+            }
             copy(engine.as_deref(), Places::here(), from, workspace, until).await
         });
         self.telling().show(
@@ -1234,8 +1237,8 @@ mod tests {
         let identity = identity();
         let engine = reopened(&state, &identity);
         let (from, to) = ids();
-        engine.found(WorkspaceSlot(1), from, "Research", None);
-        engine.found(WorkspaceSlot(2), to, "Research branch", None);
+        pollster::block_on(engine.found(WorkspaceSlot(1), from, "Research", None));
+        pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
         let keys = channel_crypto::ChannelGroup::create(
             collab_types::workspace_scope(&to.to_string()),
             channel_crypto::MemberKey::generate("owner").unwrap(),
@@ -1303,6 +1306,81 @@ mod tests {
         );
     }
 
+    /// The workspace's emoji as an app makes it, from its kind alone, branched: an app of the
+    /// branch that opens the emoji before any copy of it reached its own store makes the very
+    /// record the branch holds, so the two meet as one record holding the source's emoji. Before,
+    /// the branch's copy kept the source's genesis, the app's was the branch's, and the two met as
+    /// a record of no identity: Chat's history in the branch stayed blocked after a restart
+    /// ("record identity does not match its binding").
+    #[test]
+    fn an_app_that_first_opens_the_workspaces_emoji_in_the_branch_makes_the_branchs_record() {
+        use automerge::ReadDoc as _;
+        use automerge::transaction::Transactable as _;
+        use tilo_automerge::ApplyIncoming as _;
+        const EMOJI: &str = "tilo.workspace.emoji";
+        let state = tempfile::tempdir().unwrap();
+        let identity = identity();
+        let engine = reopened(&state, &identity);
+        let (from, to) = ids();
+        pollster::block_on(engine.found(WorkspaceSlot(1), from, "Research", None));
+        pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
+        let keys = channel_crypto::ChannelGroup::create(
+            collab_types::workspace_scope(&to.to_string()),
+            channel_crypto::MemberKey::generate("owner").unwrap(),
+        )
+        .unwrap()
+        .content_keys()
+        .unwrap();
+        // An app's window of `workspace` opening the emoji, in a store of its own.
+        let opened = |workspace: &str| {
+            ui::record::workspace::WorkspaceRecords::in_workspace(
+                ui::record::RecordOwners::with_store(std::rc::Rc::new(
+                    durable_store::MemoryStore::new(),
+                )),
+                workspace.to_owned(),
+                ui::permissions::UserId("ada".to_owned()),
+            )
+            .open_record(CHAT, EMOJI, &|doc| {
+                doc.put(automerge::ROOT, "body", "")
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap()
+        };
+        let source = opened(FROM);
+        source
+            .edit(true, |doc| {
+                doc.put(automerge::ROOT, "body", "party-parrot")
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let emoji = collab_types::workspace_record_id(EMOJI);
+        let mut held = source.read(AutoCommit::clone).unwrap();
+        write(&engine, &keys, from, (CHAT, &emoji), &mut held);
+
+        let branched = branch(Some(&engine), Places::default(), from, to);
+        assert!(branched.missing.is_empty(), "{:?}", branched.missing);
+
+        let mut engines = AutoCommit::load(
+            &engine
+                .record(TO, CHAT, &emoji)
+                .unwrap()
+                .expect("the branch holds the emoji"),
+        )
+        .unwrap();
+        let mut met = opened(TO).read(AutoCommit::clone).unwrap();
+        met.merge_incoming(&mut engines).unwrap();
+        assert_eq!(
+            ui::record::identity(&met).map(|checkout| checkout.id.as_str().to_owned()),
+            Some(emoji),
+            "one record of the branch"
+        );
+        assert_eq!(ui::record::workspace_scope(&met).as_deref(), Some(TO));
+        assert!(matches!(
+            met.get(automerge::ROOT, "body").unwrap(),
+            Some((automerge::Value::Scalar(body), _)) if body.as_str() == Some("party-parrot")
+        ));
+    }
+
     /// A workspace with notes, the workspace's emoji and a conversation, branched: the branch
     /// holds the notes and the emoji with their history, sealed under its own channel and naming
     /// it, and not the conversation; its only member is the person, as its owner; the source holds
@@ -1314,8 +1392,8 @@ mod tests {
         let person = hex::encode(identity.device_cert.user_public_key);
         let engine = reopened(&state, &identity);
         let (from, to) = ids();
-        engine.found(WorkspaceSlot(1), from, "Research", None);
-        engine.found(WorkspaceSlot(2), to, "Research branch", None);
+        pollster::block_on(engine.found(WorkspaceSlot(1), from, "Research", None));
+        pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
         assert!(engine.holds(from) && engine.holds(to));
         let channel = collab_types::workspace_scope(&to.to_string());
         let keys = channel_crypto::ChannelGroup::create(

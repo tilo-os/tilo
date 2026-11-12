@@ -91,8 +91,7 @@ pub(crate) struct StoredWorkspace {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_hint: Option<TransportHint>,
     /// `StatePeer::durable()`: the largest field by far.
-    #[serde(with = "base64_bytes")]
-    pub peer: Vec<u8>,
+    pub peer: DurablePeer,
     pub generation: u64,
     pub continuity: u64,
     /// Outgoing publication state; required on every committed workspace record.
@@ -105,9 +104,9 @@ pub(crate) struct StoredWorkspace {
     /// Exact broker terminal bindings, committed with the signed workspace checkpoint.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub effect_receipts: BTreeMap<String, crate::owner::effect_receipt::StoredEffectReceipt>,
-    /// The latest shortcut change committed here: the owner receipt its
-    /// signed workspace checkpoint is published under. A shortcut change is
-    /// idempotent, so no older one is kept.
+    /// Retired with the shortcut commit family: a saved shortcut is one of the
+    /// workspace's settings. A record kept before then still names the receipt
+    /// its published checkpoint was committed under, so it stays here to read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shortcut_change: Option<crate::owner_commit::OwnerCommitReceipt>,
     /// Content-addressed cold UUID index, also anchored in signed public workspace history.
@@ -268,6 +267,104 @@ impl StoredPendingEnrollment {
     #[must_use]
     pub fn target_workspace(&self) -> Option<WorkspaceSlot> {
         self.target.as_ref().map(|target| target.workspace)
+    }
+}
+
+/// A replica's durable encoding as [`crate::StatePeer::durable_parts`] gives
+/// it: the parts concatenated are the bytes stored. A part no change touched
+/// is the same allocation as in the encoding before, so a store keeping the
+/// record writes only what changed ([`crate::owner::file_store`]).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DurablePeer(Vec<std::sync::Arc<[u8]>>);
+
+impl DurablePeer {
+    pub(crate) fn parts(&self) -> &[std::sync::Arc<[u8]>] {
+        &self.0
+    }
+    pub(crate) fn len(&self) -> usize {
+        self.0.iter().map(|part| part.len()).sum()
+    }
+    /// The bytes whole.
+    pub(crate) fn to_vec(&self) -> Vec<u8> {
+        self.0.concat()
+    }
+    fn bytes(&self) -> impl Iterator<Item = &[u8]> {
+        self.parts().iter().map(|part| &**part)
+    }
+}
+
+impl From<Vec<std::sync::Arc<[u8]>>> for DurablePeer {
+    fn from(parts: Vec<std::sync::Arc<[u8]>>) -> Self {
+        Self(parts)
+    }
+}
+
+impl From<Vec<u8>> for DurablePeer {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(vec![bytes.into()])
+    }
+}
+
+/// The same bytes, however they are split: parts that are one allocation are
+/// not read.
+impl PartialEq for DurablePeer {
+    fn eq(&self, other: &Self) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        if self.0.len() == other.0.len()
+            && self
+                .0
+                .iter()
+                .zip(&other.0)
+                .all(|(a, b)| std::sync::Arc::ptr_eq(a, b))
+        {
+            return true;
+        }
+        let (mut ours, mut theirs) = (self.bytes(), other.bytes());
+        let (mut a, mut b): (&[u8], &[u8]) = (&[], &[]);
+        loop {
+            while a.is_empty() {
+                match ours.next() {
+                    Some(next) => a = next,
+                    None => return b.is_empty() && theirs.all(<[u8]>::is_empty),
+                }
+            }
+            while b.is_empty() {
+                match theirs.next() {
+                    Some(next) => b = next,
+                    None => return false,
+                }
+            }
+            let n = a.len().min(b.len());
+            let (Some((a_now, a_next)), Some((b_now, b_next))) =
+                (a.split_at_checked(n), b.split_at_checked(n))
+            else {
+                return false;
+            };
+            if a_now != b_now {
+                return false;
+            }
+            (a, b) = (a_next, b_next);
+        }
+    }
+}
+
+impl PartialEq<Vec<u8>> for DurablePeer {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        *self == Self(vec![std::sync::Arc::from(other.as_slice())])
+    }
+}
+
+impl Serialize for DurablePeer {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        base64_bytes::serialize(&self.to_vec(), serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for DurablePeer {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        base64_bytes::deserialize(deserializer).map(Self::from)
     }
 }
 

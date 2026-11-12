@@ -36,6 +36,7 @@ jobs:
       image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     outputs:
       superseded: ${{ steps.window.outputs.superseded }}
+      window: ${{ steps.window.outputs.window }}
     steps:
       - name: Check out the verdict decision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -59,6 +60,35 @@ jobs:
           WORKFLOW: lint.yml
           MARKER_JOB: policy
         run: python3 tools/ci/push_window.py
+
+  # A superseded run lints nothing, so it must not read as a success: this job
+  # cancels the run, and fails it when the cancellation is refused
+  # (tools/ci/push_window.py --close). The run named in its summary lints the
+  # tree.
+  untested:
+    needs: [supersede]
+    if: ${{ always() && needs.supersede.outputs.superseded == 'true' }}
+    runs-on: runner
+    timeout-minutes: 15
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
+    steps:
+      - name: Check out the window decision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          filter: blob:none
+
+      - name: End this untested run as cancelled
+        env:
+          WINDOW_RUN: ${{ needs.supersede.outputs.window }}
+          RUN_NUMBER: ${{ github.run_number }}
+          API_URL: ${{ github.api_url }}
+          REPOSITORY: ${{ github.repository }}
+          CI_TOKEN: ${{ github.token }}
+          CI_SPARE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          WORKFLOW: lint.yml
+        run: python3 tools/ci/push_window.py --close
 
   policy:
     needs: [supersede]

@@ -123,12 +123,12 @@ impl Home {
         }
     }
 
-    /// What the button that takes the person there says.
-    fn show_label(id: &str) -> &'static str {
+    /// The catalogue message naming the button that takes the person there.
+    fn show_message(id: &str) -> &'static str {
         if id == "sidebar" {
-            "Show in sidebar"
+            "music-show-in-sidebar"
         } else {
-            "Show in player"
+            "music-show-in-player"
         }
     }
 }
@@ -1189,10 +1189,16 @@ impl Music {
                     .push(control);
                 if let Some(home) = home {
                     row = row.push(Box::new(press(
-                        Button::new(&format!("music.control-show.{id}"), Home::show_label(&home))
-                            .role(ButtonRole::Plain)
-                            .control_size(ControlSize::Small)
-                            .with_accessible_name(&format!("{}: {label}", Home::show_label(&home))),
+                        Button::new(
+                            &format!("music.control-show.{id}"),
+                            &crate::i18n::t(Home::show_message(&home)),
+                        )
+                        .role(ButtonRole::Plain)
+                        .control_size(ControlSize::Small)
+                        .with_accessible_name(&format!(
+                            "{}: {label}",
+                            crate::i18n::t(Home::show_message(&home))
+                        )),
                         Action::ShowControl {
                             home,
                             action: Box::new(action),

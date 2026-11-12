@@ -5,7 +5,7 @@ use super::Connect;
 use crate::direct::{Dialed, DirectSync};
 use crate::join::TransportHint;
 use crate::join_transport::{LocalJoinService, WorkspaceJoinClient};
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use std::{sync::Arc, time::Duration};
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_identity_host::custody::HostIdentity;
@@ -61,8 +61,8 @@ impl Linked {
 }
 
 impl Reach {
-    /// Link `connect`'s workspace to its host at `via` as the device whose
-    /// signing key is `key`: in process when `via` is this device's own host,
+    /// Link `connect`'s workspace to its host at `via` as the device `signer`
+    /// is the custody of: in process when `via` is this device's own host,
     /// and over [`DIRECT_ALPN`](crate::direct::DIRECT_ALPN) otherwise.
     ///
     /// # Errors
@@ -73,7 +73,7 @@ impl Reach {
         &self,
         connect: &Connect,
         via: &TransportHint,
-        key: SigningKey,
+        signer: Arc<dyn DeviceSigner>,
     ) -> Result<Linked, String> {
         let (payload, _) =
             IrohWorkspaceHostHintV1::authenticate_transport_hint(via).map_err(|e| e.to_string())?;
@@ -84,7 +84,7 @@ impl Reach {
         {
             return Err("native link workspace pin mismatch".into());
         }
-        let link = connect.link(key)?;
+        let link = connect.link(signer)?;
         let own = link.device();
         if super::hosted_by(via, &own) {
             let host = self

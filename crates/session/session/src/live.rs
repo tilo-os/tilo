@@ -33,7 +33,9 @@ use tilo_live::grant;
 use tilo_live::live::{self, Namespace};
 use tilo_live::native;
 use tilo_live::plane::{Heard, Join, Plane, PlaneError};
-use tilo_live::relay::{Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization};
+use tilo_live::relay::{
+    Admission, Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization,
+};
 use tilo_live::roster::Roster;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::local_host::Protocols;
@@ -237,7 +239,15 @@ struct Shared {
 }
 
 impl RelayAuthority for Shared {
-    fn admit(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit<'a>(&'a self, peer: Peer, proof: &'a [u8]) -> Admission<'a> {
+        Box::pin(std::future::ready(self.decide(peer, proof)))
+    }
+}
+
+impl Shared {
+    /// Whether `peer` may take part in the plane its grant (`proof`) names, from what this
+    /// device holds of the workspace now.
+    fn decide(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let Peer(_) = peer;
         let grant = grant::Native::parse(proof).ok_or(Denied)?;
         let workspace = WorkspaceId::parse(&live::workspace_id(grant.workspace)).ok_or(Denied)?;

@@ -1369,7 +1369,10 @@ impl BooksApp {
             renaming: None,
             number_controls: NumberControls::default(),
             color_picker: SchemeColorSheet::default(),
-            font_dropdown: HostedDropdown::new("books.settings.default-font", "Default font"),
+            font_dropdown: HostedDropdown::new(
+                "books.settings.default-font",
+                &crate::resource::CATALOG.t("ebook-settings-default-font"),
+            ),
             modal_actions: Vec::new(),
             modal_close: Rect::ZERO,
             library_prefs: crate::model::LibraryPrefs::default(),
@@ -2877,7 +2880,10 @@ impl BooksApp {
             let new_id = Self::fresh_id("scheme", &ids);
             let mut dup = src.clone();
             dup.id.clone_from(&new_id);
-            dup.name = format!("{} copy", src.name);
+            dup.name = CATALOG.t_args(
+                "ebook-scheme-copy",
+                &[("scheme", ArgValue::Text(src.title()))],
+            );
             dup.builtin = false;
             dup.enabled = true;
             let pos = sc
@@ -2950,7 +2956,7 @@ impl BooksApp {
             .schemes
             .iter()
             .find(|s| s.id == id)
-            .map(|s| s.name.clone())
+            .map(ColorScheme::title)
             .unwrap_or_default();
         let mut field = EditableLabel::new(&name).with_text_role(TextRole::Body);
         field.begin_edit();
@@ -3026,7 +3032,7 @@ impl BooksApp {
     fn on_begin_rename_font(&mut self, id: String, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         let entry = self.fonts.iter().find(|e| e.id == id);
-        let name = entry.map(|e| e.name.clone()).unwrap_or_default();
+        let name = entry.map(FontEntry::title).unwrap_or_default();
         // Render the rename field in the font's own face, so the name
         // is typeset in the typeface it selects while you edit it.
         let fam = entry.map_or(FontChoice::SansSerif, |e| font_choice(&e.kind));
@@ -3062,7 +3068,14 @@ impl BooksApp {
                 let ids: Vec<String> = sc.iter().map(|s| s.id.clone()).collect();
                 let new_id = Self::fresh_id("scheme", &ids);
                 let n = sc.iter().filter(|s| !s.builtin).count() + 1;
-                let scheme = ColorScheme::from_bg(&new_id, &format!("Scheme {n}"), edit.rgb);
+                let name = CATALOG.t_args(
+                    "ebook-scheme-new",
+                    &[(
+                        "number",
+                        ArgValue::Number(f64::from(u32::try_from(n).unwrap_or(u32::MAX))),
+                    )],
+                );
+                let scheme = ColorScheme::from_bg(&new_id, &name, edit.rgb);
                 self.edit(
                     doc,
                     Ebook::paths().schemes.insert_as(
@@ -3165,7 +3178,7 @@ impl BooksApp {
             .or_else(|| self.fonts.first())
             .cloned()
             .or_else(|| default_fonts().first().cloned())
-            .unwrap_or_else(|| FontEntry::new("default", FontKind::Default, "Default", 1.0, true))
+            .unwrap_or_else(|| FontEntry::builtin("default", FontKind::Default, 1.0, true))
     }
 
     /// The fonts offered in the quick display-settings picker.
@@ -4765,8 +4778,14 @@ impl Widget for BooksApp {
             self.comment_overlay
                 .accessibility_nodes(&self.annotations, self.semantic_focus.as_deref())
         } else if self.reading_settings.is_open() {
+            let appearance = Appearance {
+                settings: &self.settings,
+                fonts: &self.fonts,
+                default_font_id: &self.default_font_id,
+                schemes: &self.schemes,
+            };
             self.reading_settings
-                .accessibility_nodes(&self.settings, self.semantic_focus.as_deref())
+                .accessibility_nodes(&appearance, self.semantic_focus.as_deref())
         } else {
             Vec::new()
         };
@@ -7092,17 +7111,14 @@ impl BooksApp {
         // Reading-settings floats above everything, anchored under the Aa
         // slot in the window's bar, and owns its own modal hit stack.
         let appearance_anchor = self.appearance_anchor(ctx.theme);
-        self.reading_settings.draw(
-            ctx,
-            self.rect,
-            appearance_anchor,
-            &Appearance {
-                settings: &self.settings,
-                fonts: &self.fonts,
-                default_font_id: &self.default_font_id,
-                schemes: &self.schemes,
-            },
-        );
+        let appearance = Appearance {
+            settings: &self.settings,
+            fonts: &self.fonts,
+            default_font_id: &self.default_font_id,
+            schemes: &self.schemes,
+        };
+        self.reading_settings
+            .draw(ctx, self.rect, appearance_anchor, &appearance);
 
         self.library = lib;
     }
@@ -8372,12 +8388,9 @@ impl BooksApp {
             AnnoKind::Bookmark => ChipLead::None,
             _ => ChipLead::Dot(ReaderPalette::highlight_swatch(a.color)),
         };
-        ChipFace::new(layout.chip, a.kind.label()).lead(lead).paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-        );
+        ChipFace::new(layout.chip, &CATALOG.t(a.kind.message()))
+            .lead(lead)
+            .paint(ctx.scene, ctx.transform, ctx.text, theme);
         let caption = theme.text(TextRole::Caption);
         let locator = ctx.text.elide_to_width_style(
             &note.locator,
@@ -8431,7 +8444,7 @@ impl BooksApp {
 /// while it is being written), and where it is. The list sizes each card
 /// from the same measurement it paints.
 struct NoteCard {
-    kind: &'static str,
+    kind: String,
     /// The kind chip leads with the highlight's colour (not for bookmarks).
     dot: bool,
     excerpt: String,
@@ -8453,6 +8466,8 @@ struct NoteCardLayout {
 impl NoteCard {
     fn new(a: &Annotation, composing: Option<Uuid>) -> Self {
         let composing = composing == Some(a.id);
+        let chapter = f64::from(u32::try_from(a.chapter + 1).unwrap_or(u32::MAX));
+        let paragraph = f64::from(u32::try_from(a.block + 1).unwrap_or(u32::MAX));
         let excerpt = if a.excerpt.is_empty() {
             CATALOG.t("ebook-no-passage")
         } else {
@@ -8464,11 +8479,17 @@ impl NoteCard {
             a.note.clone()
         };
         Self {
-            kind: a.kind.label(),
+            kind: CATALOG.t(a.kind.message()),
             dot: a.kind != AnnoKind::Bookmark,
             excerpt,
             text,
-            locator: format!("Chapter {}, paragraph {}", a.chapter + 1, a.block + 1),
+            locator: CATALOG.t_args(
+                "ebook-annotation-locator",
+                &[
+                    ("chapter", ui::i18n::ArgValue::Number(chapter)),
+                    ("paragraph", ui::i18n::ArgValue::Number(paragraph)),
+                ],
+            ),
             composing,
         }
     }
@@ -8487,7 +8508,7 @@ impl NoteCard {
         } else {
             ChipLead::None
         };
-        let chip_w = ChipFace::intrinsic_width(self.kind, lead, false, ctx.text, theme);
+        let chip_w = ChipFace::intrinsic_width(&self.kind, lead, false, ctx.text, theme);
         let chip_h = ChipFace::height(theme);
         let chip = Rect::new(
             body.x0,

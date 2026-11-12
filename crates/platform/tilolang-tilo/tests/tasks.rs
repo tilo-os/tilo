@@ -79,6 +79,32 @@ fn items(r: &Replica) -> Vec<Value> {
     }
 }
 
+/// The title the window's header reads, as a person reads it: the shell's own, unwrapped.
+pub(crate) fn shown_title(view: &ViewInstance) -> Option<String> {
+    let shell = all(view.tree(), "ui.NavShell").into_iter().next()?;
+    match shell.props.get("title") {
+        Some(Value::Text(title)) => Some(title.clone()),
+        Some(Value::Opt(Some(title))) => match &**title {
+            Value::Text(title) => Some(title.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// How many things the window's header says its page lists, or nothing when it says no number.
+pub(crate) fn shown_count(view: &ViewInstance) -> Option<i64> {
+    let shell = all(view.tree(), "ui.NavShell").into_iter().next()?;
+    match shell.props.get("count") {
+        Some(Value::Int(count)) => Some(*count),
+        Some(Value::Opt(Some(count))) => match **count {
+            Value::Int(count) => Some(count),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// A place as the sidebar draws it: its label, and the count the sidebar itself works out for
 /// the places it counts (the inbox's and today's).
 pub(crate) type ShownPlace = (String, Option<i64>);
@@ -1114,7 +1140,7 @@ pub(crate) fn home_list_titles(r: &Replica, view: &mut ViewInstance) -> Vec<Stri
 }
 
 /// The home list's row that presents `item`: its place, its key, and what its box draws.
-fn home_row_of(view: &mut ViewInstance, item: &str) -> (usize, String, bool) {
+pub(crate) fn home_row_of(view: &mut ViewInstance, item: &str) -> (usize, String, bool) {
     let row = home_list_rows(view)
         .into_iter()
         .find(|(_, _, of, _)| of == item);
@@ -1291,6 +1317,62 @@ fn a_peers_completion_takes_its_row_away() {
     ada.sync_with(&mut ben);
     let rows = home_list_rows(&mut view);
     assert_eq!(rows.len(), 1, "the row left: {rows:?}");
+    assert!(rows.iter().all(|(_, _, row, _)| *row != of));
+}
+
+/// A task somebody else completes while the person has it open stays where it stands, drawn
+/// checked, until they leave the place: what they read does not vanish from under them.
+#[test]
+fn a_peers_completion_of_the_open_task_keeps_its_row_until_the_place_is_left() {
+    let (mut ada, root) = workspace();
+    for title in ["Buy oat milk", "Pay the electricity bill", "Book a haircut"] {
+        let made = call(&ada, "new_task", create(&root, title));
+        call(
+            &ada,
+            "schedule",
+            vec![made, Value::some(Value::text("2026-10-29"))],
+        );
+        ada.commit();
+    }
+    let mut ben = ada.fork("ben", PACKAGES);
+    ben.host.sync_from(&ben.doc);
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Today");
+    assert_eq!(home_list_rows(&mut view).len(), 3);
+    let bill = task(&ada, "Pay the electricity bill");
+    let of = target(&bill).expect("a task");
+    let (place, _, _) = home_row_of(&mut view, &of);
+    let list = all(view.tree(), "ui.VirtualList")
+        .first()
+        .expect("the home list")
+        .key
+        .clone();
+    // The person opens the row where it stands, as the list does on a press.
+    let open = view.row_key(&list, place).expect("the row");
+    view.fire_with(&list, "opened", Some(&bill)).unwrap();
+    view.open_row(&list, Some(&open));
+    view.poll_patches().unwrap();
+    call(&ben, "check", vec![task(&ben, "Pay the electricity bill")]);
+    ben.commit();
+    ada.sync_with(&mut ben);
+    let rows = home_list_rows(&mut view);
+    assert_eq!(rows.len(), 3, "the open row stayed: {rows:?}");
+    let (now, _, drawn) = home_row_of(&mut view, &of);
+    assert_eq!(now, place, "in the place it stood");
+    assert!(drawn, "its box drawn checked");
+    // Closing it, or opening another row, is reading on in the same place: the row stays.
+    view.fire(&list, "closed").unwrap();
+    view.open_row(&list, None);
+    assert_eq!(
+        home_list_rows(&mut view).len(),
+        3,
+        "closing it keeps the row"
+    );
+    // Leaving the place settles the list: the task is no longer today's.
+    go_to(&mut view, "Inbox");
+    go_to(&mut view, "Today");
+    let rows = home_list_rows(&mut view);
+    assert_eq!(rows.len(), 2, "the row left with the place: {rows:?}");
     assert!(rows.iter().all(|(_, _, row, _)| *row != of));
 }
 
@@ -2807,4 +2889,22 @@ fn every_declared_action_is_offered() {
         offered, declared,
         "every action is offered, in declaration order"
     );
+}
+
+/// An action run on a task names the kind it is published on, a task's, not the record's that
+/// holds the task: the workspace decides the change against the actions of that kind, and a
+/// change naming the record's kind with a task's action is refused.
+#[test]
+fn a_tasks_action_names_the_kind_of_a_task() {
+    let (ada, root) = workspace();
+    let made = call(&ada, "new_task", create(&root, "Water the plants"));
+    let _ = ada.host.take_committed();
+    call(&ada, "check", vec![made]);
+    let kinds: Vec<String> = ada
+        .host
+        .take_committed()
+        .into_iter()
+        .map(|committed| committed.action.kind)
+        .collect();
+    assert_eq!(kinds, ["tl.so.tilo.lang.tasks.Task"], "{kinds:?}");
 }

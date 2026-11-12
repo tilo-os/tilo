@@ -122,7 +122,8 @@ impl MailShortcutsOverlay {
             .as_ref()
             .and_then(|layout| layout.close)
             .is_some_and(|rect| rect.contains(self.last_cursor));
-        let spec = ModalSpec::new("Keyboard shortcuts")
+        let title = crate::i18n::t("mail-shortcuts-title");
+        let spec = ModalSpec::new(&title)
             .body_height(rows_per_column as f64 * row_h)
             .max_width(f64::from(spacing.s16) * 11.0)
             .close_hovered(close_hovered);

@@ -217,3 +217,14 @@ mail-bulk-unread = Mark selected messages unread
 mail-bulk-purge = Delete selected trashed messages permanently
 mail-bulk-delete = Move selected messages to Trash
 mail-draft-subject-to = Draft: { $subject }, to { $to }
+
+## What the folders are called
+mail-folder-inbox = Inbox
+mail-folder-starred = Starred
+mail-folder-sent = Sent
+mail-folder-drafts = Drafts
+mail-folder-archive = Archive
+mail-folder-trash = Trash
+mail-folder-junk = Junk
+mail-refresh-offline = Cannot refresh { $folder } for { $account } while IMAP is offline
+mail-first-run-message = Email accounts are added in Settings, under External Accounts.

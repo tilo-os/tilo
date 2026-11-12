@@ -221,3 +221,27 @@ tube-queue-shared = Gemeinsame Warteschlange
 tube-video = Video
 tube-creator = Kanal
 tube-playlist = Playlist
+
+## What the segment categories and the search types are called
+tube-category-sponsor = Werbung
+tube-category-self-promo = Eigenwerbung
+tube-category-interaction = Erinnerung zum Mitmachen
+tube-category-intro = Intro
+tube-category-outro = Outro
+tube-category-preview = Vorschau
+tube-category-music-offtopic = Abschnitt ohne Musik
+tube-category-filler = Abschweifung
+tube-category-sponsor-blurb = Bezahlte Werbung, bezahlte Empfehlungen und direkte Anzeigen.
+tube-category-self-promo-blurb = Eigenwerbung ohne Bezahlung, Merch und Spenden.
+tube-category-interaction-blurb = Bitten, zu liken und zu abonnieren, ohne weiteren Inhalt.
+tube-category-intro-blurb = Ein Abschnitt ohne eigentlichen Inhalt: eine Pause, eine Animation oder ein Intro.
+tube-category-outro-blurb = Abspann oder das Ende des Videos: Endkarten und Outros.
+tube-category-preview-blurb = Eine kurze Zusammenfassung früherer Folgen oder eine Vorschau auf das Kommende.
+tube-category-music-offtopic-blurb = Die Abschnitte eines Musikvideos ohne Musik, zum Musikhören.
+tube-category-filler-blurb = Abschweifende Szenen, die das Video nur länger machen.
+tube-skip-auto = Automatisch überspringen
+tube-skip-show = Anzeigen
+tube-skip-off = Aus
+tube-type-video = Video
+tube-type-playlist = Wiedergabeliste
+tube-type-creator = Kanal

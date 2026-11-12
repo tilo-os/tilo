@@ -6,7 +6,6 @@
 //! theme decides how it looks. Interaction leaves as an [`Intent`] that the
 //! app applies to the window, the draft and the engine.
 
-use std::borrow::Cow;
 use std::cell::Cell;
 use std::rc::Rc;
 use ui::num::u32_of_usize;
@@ -346,7 +345,7 @@ fn containers_empty(engine: &Engine, intents: &Intents) -> Element {
         Box::new(
             EmptyState::new("No containers")
                 .with_icon(Icon::Box)
-                .with_message("Create a container from an image to run it here.")
+                .with_message(CATALOG.t("containers-empty-containers-hint"))
                 .with_action("New container")
                 .on_view(intents.sender(Intent::NewContainer)),
         )
@@ -360,7 +359,7 @@ fn containers_empty(engine: &Engine, intents: &Intents) -> Element {
 pub(crate) fn engine_missing(engine: &Engine, intents: &Intents) -> Element {
     let mut state = EmptyState::new("Podman isn't available")
         .with_icon(Icon::Box)
-        .with_message("Install Podman or start its user service to manage containers here.")
+        .with_message(CATALOG.t("containers-engine-missing-hint"))
         .with_action("Try again")
         .on_effect(intents.sender(Intent::Reconnect));
     if !engine.live
@@ -376,7 +375,7 @@ pub(crate) fn nothing_selected() -> Element {
     Box::new(
         EmptyState::new("No container selected")
             .with_icon(Icon::Box)
-            .with_message("Choose a container to see its logs, usage and settings."),
+            .with_message(CATALOG.t("containers-none-selected-hint")),
     )
 }
 
@@ -897,11 +896,10 @@ fn shell(model: &DetailModel<'_>, intents: &Intents) -> Element {
 }
 
 fn used_by(n: u32) -> String {
-    match n {
-        0 => "Not used by any container".into(),
-        1 => "Used by 1 container".into(),
-        n => format!("Used by {n} containers"),
-    }
+    CATALOG.t_args(
+        "containers-used-by",
+        &[("count", ui::i18n::ArgValue::Number(f64::from(n)))],
+    )
 }
 
 /// One page of a section: a sentence about the whole, then its list, both
@@ -930,7 +928,7 @@ pub(crate) fn images_page(
         return Box::new(
             EmptyState::new("No images")
                 .with_icon(Icon::Layers)
-                .with_message("Pull an image to create containers from it.")
+                .with_message(CATALOG.t("containers-empty-images-hint"))
                 .with_action("Pull image")
                 .on_view(intents.sender(Intent::PullImage)),
         );
@@ -1001,7 +999,7 @@ pub(crate) fn volumes_page(
         return Box::new(
             EmptyState::new("No volumes")
                 .with_icon(Icon::HardDrive)
-                .with_message("A volume keeps a container's data when the container is removed.")
+                .with_message(CATALOG.t("containers-empty-volumes-hint"))
                 .with_action("New volume")
                 .on_view(intents.sender(Intent::NewVolume)),
         );
@@ -1051,7 +1049,7 @@ pub(crate) fn distrobox_page(
         return Box::new(
             EmptyState::new("No distroboxes")
                 .with_icon(Icon::Terminal)
-                .with_message("Boxes you create with distrobox appear here."),
+                .with_message(CATALOG.t("containers-empty-distroboxes-hint")),
         );
     }
     let rows: Vec<Element> = engine
@@ -1087,18 +1085,20 @@ pub(crate) fn distrobox_page(
 
 /// What the pull sheet says it is fetching: the bytes Podman reported, or
 /// just the phase where it named none.
-fn downloading_text(fetched: Option<(u64, Option<u64>)>) -> Cow<'static, str> {
+fn downloading_text(fetched: Option<(u64, Option<u64>)>) -> String {
     match fetched {
-        Some((done, Some(total))) => Cow::Owned(format!(
-            "Downloading layers: {} of {}",
-            ui::format::size(done),
-            ui::format::size(total)
-        )),
-        Some((done, None)) => Cow::Owned(format!(
-            "Downloading layers: {} so far",
-            ui::format::size(done)
-        )),
-        None => Cow::Borrowed("Downloading layers"),
+        Some((done, Some(total))) => CATALOG.t_args(
+            "containers-downloading-of",
+            &[
+                ("done", ui::i18n::ArgValue::Text(ui::format::size(done))),
+                ("total", ui::i18n::ArgValue::Text(ui::format::size(total))),
+            ],
+        ),
+        Some((done, None)) => CATALOG.t_args(
+            "containers-downloading-so-far",
+            &[("done", ui::i18n::ArgValue::Text(ui::format::size(done)))],
+        ),
+        None => CATALOG.t("containers-downloading"),
     }
 }
 

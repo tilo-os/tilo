@@ -156,33 +156,11 @@ pub(crate) struct ResourceRoot {
     native_presentation: crate::runner::Presentation,
     /// The links `share-link` is minting.
     share: super::share_link::ShareLinks,
-    /// Where the resource's state comes from and where its edits go: the
-    /// document the host lends each pass, or the session over the app's one
-    /// connection ([`super::Source`]).
-    source: super::Source,
     /// The edits the views bound, as last built ([`OverlayCache`]).
     overlay: std::cell::RefCell<Option<OverlayCache>>,
 }
 
 impl ResourceRoot {
-    /// Adopt the session's newest reading of the resource, when it moved:
-    /// what the view binds follows it as any change does.
-    fn sync_remote_state(&self) {
-        let (Some(resource), Some(connection)) =
-            (self.source.remote_resource(), self.source.connection())
-        else {
-            return;
-        };
-        let Some(reading) = connection.reading(resource) else {
-            // Nothing publishes it yet, or the person may not read it:
-            // denial is absence (`apps.md` §6), and the last state stands.
-            return;
-        };
-        if let Err(error) = self.typed.adopt(&reading) {
-            tracing::warn!(%error, kind = self.resource.kind, "the session's reading is not this resource's state");
-        }
-    }
-
     fn sync_over(&mut self, state: &AutoCommit, path: &automerge::ObjId) {
         self.refresh_access();
         if self.dispatch.take_represent() {
@@ -222,6 +200,15 @@ impl ui_core::component_lifecycle::WindowActivation for ResourceRoot {
         let view = app_view_in(self.content.as_ref())
             .is_some_and(ui_core::component_lifecycle::take_window_activation_intent);
         own || view
+    }
+}
+
+impl ui_core::component_lifecycle::WindowTitle for ResourceRoot {
+    /// The app's own view names what its window shows: the page, the record, the place it is at.
+    /// A view that names nothing lets the window go by its app's name.
+    fn window_title(&self) -> Option<&str> {
+        let view = app_view_in(self.content.as_ref())?;
+        ui_core::component_lifecycle::window_title(view)
     }
 }
 
@@ -483,7 +470,6 @@ impl ResourceRoot {
         let dispatch = env.dispatch.core().clone();
         let typed = Typed {
             live: env.live,
-            reading: std::cell::RefCell::new(None),
             updaters,
             dispatch: env.dispatch,
             bindings,
@@ -572,17 +558,8 @@ impl ResourceRoot {
             ground: true,
             native_presentation,
             share: super::share_link::ShareLinks::default(),
-            source: super::Source::Document,
             overlay: std::cell::RefCell::new(None),
         }
-    }
-
-    /// Take the source the dispatcher submits over as the root's too, so the
-    /// view syncs from the reading the session publishes when the record is
-    /// the session's ([`super::Source::Connection`]).
-    pub(crate) fn reading_from_source(mut self) -> Self {
-        self.source = self.dispatch.source().clone();
-        self
     }
 
     /// A root whose resource keeps no document state: it publishes no
@@ -959,11 +936,7 @@ impl ResourceRoot {
     /// this view last synced.
     #[inline(never)]
     fn current_publication(&self, doc: &AutoCommit) -> ResourceSpec {
-        // The session keeps the record: there is no document here to read
-        // the resource from, so what it publishes is the state the view
-        // syncs from the reading (`one-app-model.md` §4).
-        if !self.source.is_connection()
-            && !self.typed.follows(doc)
+        if !self.typed.follows(doc)
             && let Ok(current) = self.typed.read(doc)
         {
             // Publication can run after an edit and before the view syncs.
@@ -1148,12 +1121,7 @@ impl ResourceRoot {
     /// Answers the document-owned head the bindings were refreshed from, for
     /// the refresh after the view synced to reuse.
     fn refresh(&self, doc: &AutoCommit) -> BindingHead {
-        // The session keeps the record: the state follows the reading
-        // (`sync_remote_state`), never a document this process lent an empty
-        // pass (`one-app-model.md` §4).
-        if !self.source.is_connection()
-            && let Err(error) = self.typed.sync(doc)
-        {
+        if let Err(error) = self.typed.sync(doc) {
             tracing::warn!(%error, kind = self.resource.kind, "resource unreadable");
         }
         // Refresh the same declarations the host publishes before rebuilt
@@ -1497,7 +1465,9 @@ impl SearchCache {
             self.builds = self.builds.saturating_add(1);
         }
         if indexes_off_frame(&entries) {
-            let (send, arriving) = std::sync::mpsc::channel();
+            // The index landing wakes the window that asked: it is an
+            // answer its next sync takes up, never one a frame polls for.
+            let (send, arriving) = ui_core::wake::waking_channel();
             let building = entries.clone();
             let spawned = ui_core::background::Background::current().spawn(
                 "resource-search-index",
@@ -1562,7 +1532,7 @@ impl SearchCache {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl RootModel for ResourceRoot {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle; inner = content);
 
     fn view(&self) -> &(dyn Widget + 'static) {
         match &self.unreadable {
@@ -1611,16 +1581,6 @@ impl RootModel for ResourceRoot {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        if self.source.is_connection() {
-            // The session keeps the record: the view syncs from the reading
-            // it publishes, and the document the host lends this pass holds
-            // nothing of it (`one-app-model.md` §4). Everything the view
-            // binds is still synced, over the state this root now holds.
-            self.sync_remote_state();
-            let empty = AutoCommit::new();
-            self.sync_over(&empty, &automerge::ROOT);
-            return;
-        }
         let (state, path) = ui_core::doc::document_ref(state, path);
         self.sync_over(state, path);
     }
@@ -2489,7 +2449,8 @@ impl RootApp for ResourceRoot {
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
         self.save.record(&status, ui_core::time::now());
-        self.saved.set(status);
+        // Sampled on every sync: only a new status is a change.
+        self.saved.set_if_changed(status);
     }
 
     // The workspace refused what this record sent, and the record withdrew it:

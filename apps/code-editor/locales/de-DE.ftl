@@ -41,3 +41,13 @@ code-editor-a11y-code = Code: { $project }
 ## What the window shows
 code-editor-open-failed = { $path } ließ sich nicht öffnen: { $detail }
 code-editor-cursor = Z. { $line }, Sp. { $column }
+
+## What the search panel reports
+code-search-running = Suche läuft…
+code-search-none = Keine Treffer für „{ $query }“
+code-search-one-result = 1 Treffer in 1 Datei
+code-search-results-one-file = { $count } Treffer in 1 Datei
+code-search-results = { $count } Treffer in { $files } Dateien
+code-search-still-running = { $head }, Suche läuft noch…
+code-search-limit = { $head }, Suchgrenze nach { $files } Dateien erreicht; grenze die Suche ein
+code-search-scanned = { $head }, { $files } Dateien durchsucht

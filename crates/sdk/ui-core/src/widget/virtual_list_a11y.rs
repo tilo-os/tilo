@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::edit::RenameStamp;
-use super::groups::{Band, Group, HEADING_TARGET};
+use super::groups::{Band, HEADING_TARGET};
 use super::open::first_page_title;
 use super::{ListModel, MountedRow, MountedRowState, VirtualList};
 use crate::a11y::{AccessNode, AccessState, Role};
@@ -141,7 +141,15 @@ impl<M: ListModel> VirtualList<M> {
             .standing_open(row)
             .then(|| first_page_title(row.widget.as_ref()))
             .flatten()
-            .or_else(|| child.as_ref().and_then(|node| node.name.clone()));
+            .or_else(|| child.as_ref().and_then(|node| node.name.clone()))
+            // A row still on its way has nothing of its own to read: its slot is reserved and
+            // its placeholder paints nothing. It is named for what it is, as a pending row of a
+            // table is, so a reader moving through the list hears a row that is loading rather
+            // than an unnamed slot in it — the row is focusable from the moment it stands.
+            .or_else(|| {
+                matches!(&row.state, MountedRowState::Pending)
+                    .then(|| widget_text("arriving-loading"))
+            });
         let mut item = AccessNode::new(if self.tree.is_some() {
             Role::TreeItem
         } else {
@@ -156,7 +164,7 @@ impl<M: ListModel> VirtualList<M> {
                 .selected(self.selection.is_selected(&row.key))
                 // A row whose menu the host offers can be asked for it, as a
                 // secondary click does.
-                .context_menu(self.menus.offers_row_menu())
+                .context_menu(self.menus.row_offers(&self.model, &row.key))
                 .disabled(!enabled),
         );
         // A row that is a control of its own — a task's box, say — keeps its state and what it
@@ -448,7 +456,7 @@ impl<M: ListModel> VirtualList<M> {
             bounds: self.row_box(row.index),
             focused: self.is_focused && self.focused_key.as_ref() == Some(&row.key),
             selected: self.selection.is_selected(&row.key),
-            menu: self.menus.offers_row_menu(),
+            menu: self.menus.row_offers(&self.model, &row.key),
             disabled: !enabled,
             level,
             expanded,
@@ -504,7 +512,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// The heading's node in the accessibility tree: a disclosure saying whether its group
-    /// shows and how many rows it holds.
+    /// shows and how many of its rows are left to do.
     fn heading_node(&self, band: &Band, enabled: bool) -> AccessNode {
         let focused = self
             .focused_group
@@ -512,7 +520,7 @@ impl<M: ListModel> VirtualList<M> {
             .is_some_and(|(heading, _)| *heading == band.heading);
         AccessNode::new(Role::Button)
             .with_name(band.heading.clone())
-            .with_value(self.heading_rows(band).to_string())
+            .with_value(self.heading_open_rows(band).to_string())
             .with_action_target(format!("{HEADING_TARGET}{}", band.heading))
             .with_bounds(self.band_rect(band.top))
             .with_state(
@@ -522,27 +530,6 @@ impl<M: ListModel> VirtualList<M> {
                     .disabled(!enabled)
                     .expanded(!band.closed),
             )
-    }
-
-    /// How many rows stand under the band's heading: its group's, and each row after them that
-    /// names no group of its own — one whose item has not arrived yet stands there too, under
-    /// the heading the person reads it by — until the next heading. The count is what the
-    /// heading shows over, never a row less.
-    pub(super) fn heading_rows(&self, band: &Band) -> usize {
-        let len = self.model.len();
-        let tail = self.tail_title.as_deref();
-        let group = |index: usize| super::groups::group_of(&self.model, index, tail);
-        let same =
-            |index: usize| group(index).is_some_and(|group: Group| group.heading == band.heading);
-        let mut start = band.index.min(len);
-        while start > 0 && same(start - 1) {
-            start -= 1;
-        }
-        let mut end = start;
-        while end < len && group(end).is_none_or(|group: Group| group.heading == band.heading) {
-            end += 1;
-        }
-        end - start
     }
 }
 

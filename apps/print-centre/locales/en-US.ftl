@@ -173,3 +173,5 @@ print-centre-reason-unknown = The printer reported a condition that may need att
 print-centre-device-answered = The printer answered the latest status check.
 print-centre-device-no-supplies = This printer does not report supply levels.
 print-centre-device-unreachable = Live details are unavailable. The printer may be asleep or disconnected.
+print-job-document = Document { $number }
+print-centre-cancel-pending-message = It will be removed from the printer. This cannot be undone.

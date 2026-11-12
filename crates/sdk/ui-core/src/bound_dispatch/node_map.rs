@@ -295,6 +295,9 @@ pub unsafe fn invoke_bound_node<R>(
         return Err(BoundDispatchError::MissingNode);
     }
     if let Some(binding) = &admitted.binding {
+        // What the host hands one of the component's widgets is input the
+        // component's next sync takes up.
+        binding.note_input();
         binding.with_document(outer, |document, root| {
             // SAFETY: admission and lifetime were checked before this dereference;
             // the caller guarantees live topology and exclusive widget access.

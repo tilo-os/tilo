@@ -46,3 +46,4 @@ monitor-cpu-core = Kern { $core }
 monitor-memory-swap = Auslagerung
 monitor-section-network = Netzwerk
 monitor-section-disk = Datenträger
+monitor-usage-unavailable-message = Die Nutzung von Prozessor, Arbeitsspeicher, Netzwerk und Datenträgern dieses Computers konnte nicht gelesen werden.

@@ -145,17 +145,6 @@ jobs:
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
 
-      # A builder that predates the audio fixture gets it here. Install only new
-      # packages or replace the audio daemon: never update fonts, Mesa or libraries.
-      # A dependency requiring an existing package upgrade must fail the job.
-      - name: Ensure isolated audio test dependency
-        run: bash tools/ensure-headless-audio.sh
-
-      # Likewise for the private session bus tests (tilo-os-search)
-      # and the launcher's bus-filter tests (xdg-dbus-proxy).
-      - name: Ensure session-bus test tools
-        run: bash tools/ci/ensure-session-bus-tools.sh
-
       # Pinned/older builders may predate native PDF capture coverage. Stage
       # only the verified runtime; leave Mesa, fonts and OS packages unchanged.
       # Where the runner's kernel can enforce Landlock, the PDF helper's

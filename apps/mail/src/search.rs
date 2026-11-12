@@ -38,7 +38,7 @@ fn folder_icon(folder: Folder) -> &'static str {
 /// Every system folder, and the custom folders `custom` names (id, name).
 pub fn folder_entries(custom: &[(String, String)]) -> Vec<SearchEntry> {
     let system = Folder::ALL.into_iter().map(|folder| {
-        SearchEntry::new(folder.title(), "")
+        SearchEntry::new(crate::i18n::t(folder.message()), "")
             .anchored(crate::resource::folder_resource(folder.as_key()))
             .grouped(FOLDER_KIND)
             .subtitled("Mail folder")

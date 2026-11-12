@@ -320,6 +320,7 @@ close-broker-disconnected = Die Verbindung zum Speicherdienst wurde getrennt. Da
 block-image-untitled = Bild
 # The title a row shows for an item nobody has named yet.
 list-row-untitled = Ohne Titel
+list-row-check = { $title } als erledigt markieren
 block-image-missing = Noch nicht auf diesem Gerät
 notes-image-edit = Beschreibung bearbeiten
 notes-image-done = Fertig
@@ -553,6 +554,8 @@ format-day-heading-short = { $weekday }, { $day }. { $month }
 format-day-range-in-month = { $start }.–{ $end }. { $month }
 # Any span between two dates or times: "Jun 29 – Jul 5".
 format-range = { $start } – { $end }
+# Two already-formatted values in a list: "verschlüsselt, 134 GB frei".
+format-list-join = { $head }, { $tail }
 # The top of a month grid: "June 2026".
 format-month-heading = { $month } { $year }
 # The clock the language reads by default: 12 or 24 (here 24-hour).
@@ -602,6 +605,7 @@ interaction-agent = Agent
 interaction-collaborator = Mitwirkende Person
 # Was jemand gerade tut: der Name, dann die Handlung im Präsens.
 interaction-editing-field = bearbeitet { $field }
+interaction-added-text = Text hinzugefügt
 interaction-working = arbeitet
 interaction-action-doing = { $name }: { $doing }
 # Dasselbe mit der Phase, wo sie nur ein Mensch klären kann.
@@ -1212,6 +1216,7 @@ toast-reply-placeholder = Antworten…
 ## Window furniture and widget chrome, named where a screen reader reads it
 floating-window-move-hint = Bewegliches Fenster. Alt halten und mit den Pfeiltasten verschieben; mit Umschalt in größeren Schritten.
 widget-dialog-close = Schließen
+widget-dialog-cancel = Abbrechen
 widget-dismiss = Ausblenden
 widget-hand-to-agent = An Agenten übergeben
 widget-more = Mehr

@@ -51,6 +51,33 @@ pub enum HostError {
     NotFound(String),
 }
 
+/// What an app says of one of its actions on one resource now: what it is called there, the
+/// icon beside it, and whether it can run on it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Offered {
+    /// What the app calls the action on this resource, for one whose presentation follows its
+    /// subject (`label: if t.done { "Reopen" } else { "Complete" }`); `None` for one offered as
+    /// its package publishes it.
+    pub label: Option<String>,
+    /// The icon name its presentation gives there.
+    pub icon: Option<String>,
+    /// Whether it can run on the resource now, and why not; `None` when the app keeps nothing
+    /// its subject decides, and offers it as it is.
+    pub availability: Option<tilo_actions::Availability>,
+}
+
+/// What reading `a` and `b` read of the workspace, each field once ([`Reading`]).
+fn merged(a: Reading, b: Reading) -> Reading {
+    let mut reads = a.reads;
+    reads.extend(b.reads);
+    reads.sort_unstable();
+    reads.dedup();
+    Reading {
+        reads,
+        beyond: a.beyond || b.beyond,
+    }
+}
+
 /// A loaded package.
 #[derive(Clone, Debug)]
 pub struct Package {
@@ -608,37 +635,66 @@ impl HostInner {
     /// published the answer for what it shows, so no surface carries a condition's answer for
     /// every item it holds.
     fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
-        self.availability_reading(resource, action)
-            .map(|(availability, _)| availability)
+        self.offered_reading(resource, action)
+            .and_then(|(offered, _)| offered.availability)
     }
 
-    /// [`Self::availability`], with what reading the answer read of the workspace: a caller
-    /// keeping the answer asks again only when one of those fields moves ([`Reading`]).
-    fn availability_reading(
-        &self,
-        resource: &str,
-        action: &str,
-    ) -> Option<(tilo_actions::Availability, Reading)> {
+    /// What the action `action` offers on the published resource `resource` now, as its app says
+    /// it: what it is called there and the icon beside it, when the app presents it per subject,
+    /// whether it can run on it now — and what reading all of that read of the workspace, so a
+    /// caller keeping the answer asks again only when one of those fields moves ([`Reading`]).
+    /// `None` when the app presents nothing of the action and keeps no requirement it can
+    /// decide, or when one cannot be read.
+    fn offered_reading(&self, resource: &str, action: &str) -> Option<(Offered, Reading)> {
         // What asking reads of the app's package: the action's declaration and the type of its
         // subject. Copied out of the registry by value, not the package: a package is the whole
         // app's compiled metadata, and a window asks this once for each action of each row it
         // shows, so cloning it here would cost more than reading the requirements.
-        let (app, has_guard, has_applies, declared) = {
+        let (app, has_guard, has_applies, has_present, declared) = {
             let packages = self.packages.borrow();
             let package = packages
                 .iter()
                 .find(|package| package.meta.actions.iter().any(|held| held.id == action))?;
             let meta = package.meta.actions.iter().find(|held| held.id == action)?;
             let declared = package.meta.subject_of(&meta.params)?.id.clone();
-            (package.meta.app.clone(), meta.guard, meta.applies, declared)
+            (
+                package.meta.app.clone(),
+                meta.guard,
+                meta.applies,
+                meta.present.is_some(),
+                declared,
+            )
         };
-        if !has_guard && !has_applies {
+        if !has_guard && !has_applies && !has_present {
             return None;
         }
         let id = resource
             .strip_prefix(&crate::publish::resource_id(&app, ""))
             .unwrap_or(resource);
         let target = ResourceRef::parse_id(id, declared)?;
+        // What deciding the action read: what it shows, what applies decided, and what its
+        // requirement did.
+        let mut read = Reading::default();
+        let mut offered = Offered::default();
+        if has_present {
+            // What it is called and the icon beside it on this resource, as its presentation
+            // gives them now: a menu of a finished task offers "Reopen", not "Complete".
+            match self
+                .runtime
+                .presentation_reading(action, &target, &self.viewer)
+            {
+                Ok((presented, read_here)) => {
+                    if let Some(presented) = presented {
+                        offered.label = presented.label;
+                        offered.icon = presented.icon;
+                    }
+                    read = read_here;
+                }
+                // A presentation that cannot be read says nothing of the action: it is offered
+                // as its package publishes it.
+                Err(_) => return None,
+            }
+        }
         // Where the action cannot apply at all, the offer leaves it out: that reason is the
         // answer, before what it needs to run.
         let decided = |reason: Option<String>| match reason {
@@ -648,33 +704,26 @@ impl HostInner {
             },
             None => tilo_actions::Availability::Available,
         };
-        // What deciding the action read: what applies decided, and what its requirement did.
-        let mut read = Reading::default();
         if has_applies {
             match self.runtime.applies_reading(action, &target, &self.viewer) {
-                Ok((Some(reason), applies)) => return Some((decided(Some(reason)), applies)),
-                Ok((None, applies)) => read = applies,
+                Ok((Some(reason), applies)) => {
+                    offered.availability = Some(decided(Some(reason)));
+                    return Some((offered, merged(read, applies)));
+                }
+                Ok((None, applies)) => read = merged(read, applies),
                 // A condition that cannot be read says nothing of the action: it is offered,
                 // and refuses with its reason when it runs.
                 Err(_) => return None,
             }
         }
         if !has_guard {
-            return Some((decided(None), read));
+            offered.availability = Some(decided(None));
+            return Some((offered, read));
         }
         match self.runtime.refusal_reading(action, &target, &self.viewer) {
             Ok((reason, guard)) => {
-                let mut reads = read.reads;
-                reads.extend(guard.reads);
-                reads.sort_unstable();
-                reads.dedup();
-                Some((
-                    decided(reason),
-                    Reading {
-                        reads,
-                        beyond: read.beyond || guard.beyond,
-                    },
-                ))
+                offered.availability = Some(decided(reason));
+                Some((offered, merged(read, guard)))
             }
             Err(_) => None,
         }
@@ -1136,16 +1185,15 @@ impl Host {
         self.inner.availability(resource, action)
     }
 
-    /// As [`Self::availability`], with what reading the answer read of the workspace: the fields
-    /// it read, each once, so a caller keeping the answer knows what has to move for it to be
-    /// read again, and whether it read beyond the workspace at all ([`Reading`]).
+    /// What the action `action` offers on the published resource `resource` now, as its app says
+    /// it ([`Offered`]), with what reading the answer read of the workspace: the fields it read,
+    /// each once, so a caller keeping the answer knows what has to move for it to be read again,
+    /// and whether it read beyond the workspace at all ([`Reading`]). `None` when the app
+    /// presents nothing of the action and keeps no requirement it can decide, or when one cannot
+    /// be read.
     #[must_use]
-    pub fn availability_reading(
-        &self,
-        resource: &str,
-        action: &str,
-    ) -> Option<(tilo_actions::Availability, Reading)> {
-        self.inner.availability_reading(resource, action)
+    pub fn offered_reading(&self, resource: &str, action: &str) -> Option<(Offered, Reading)> {
+        self.inner.offered_reading(resource, action)
     }
 
     /// The resource `action` returned when it was last planned here, for whoever invoked it,

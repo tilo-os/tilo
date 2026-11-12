@@ -989,6 +989,33 @@ impl Runtime {
             })
     }
 
+    /// What the action `action` shows offered on `subject` now: the label, icon and toggled
+    /// state its presentation gives it, with what reading them read. `None` for an action whose
+    /// app presents nothing of it there.
+    ///
+    /// # Errors
+    ///
+    /// A message when the presentation cannot be read.
+    pub fn presentation_reading(
+        &self,
+        action: &str,
+        subject: &ResourceRef,
+        viewer: &Principal,
+    ) -> Result<(Option<Presentation>, Reading), RuntimeError> {
+        let subject = crate::value::RefValue {
+            target: Rc::new(subject.clone()),
+            author: None,
+        };
+        self.core
+            .presentation_reading(action, &subject, viewer)
+            .map_err(|error| match error {
+                crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
+                crate::engine::HostFail::Suspend => {
+                    RuntimeError::Package("a presentation waited on a decision".into())
+                }
+            })
+    }
+
     /// Signatures of every loaded package, for discovery ([`catalogue`](mod@crate::catalogue)).
     pub fn catalogue(&self) -> Vec<Signature> {
         let pkgs = self.core.registry.borrow().packages();
@@ -1491,6 +1518,18 @@ impl Runtime {
     pub fn module_hash(wasm: &[u8]) -> ModuleHash {
         ModuleHash::of_bytes(wasm)
     }
+}
+
+/// What an action shows offered on a subject, as its app presents it there (`present`): what it
+/// is called, the icon beside it, and whether the state it toggles is on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Presentation {
+    /// The label the presentation reads for the subject.
+    pub label: Option<String>,
+    /// The icon name it reads there.
+    pub icon: Option<String>,
+    /// Whether the state it toggles is on, for an action whose presentation says.
+    pub on: Option<bool>,
 }
 
 /// What reading an action's requirements read of the workspace: the fields, each once, and

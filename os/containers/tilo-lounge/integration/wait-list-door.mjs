@@ -11,7 +11,7 @@
 import {mkdirSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
-import {stepLimit} from './waits.mjs';
+import {stepLimit, deskMetrics} from './waits.mjs';
 
 const [site, mailDir, out, before] = process.argv.slice(2);
 if (!site || !mailDir || !out) {
@@ -31,7 +31,7 @@ const browser = await launch({args: [
 // page opens on its first screen unless the door takes its place.
 const tab = await browser.tab({firstRun: true});
 await tab.send('Page.enable', {});
-await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false});
+await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics);
 
 const failures = () => tab.log.filter(line => /^(EXC|ERROR) /.test(line) || /panic/i.test(line));
 const shot = async name => {
@@ -82,7 +82,7 @@ const until = async (expression, what, timeout = stepLimit(4)) => {
 // own, so neither visit sees the other's storage.
 if (before) {
   const was = await browser.tab({firstRun: true});
-  await was.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false});
+  await was.send('Emulation.setDeviceMetricsOverride', deskMetrics);
   await was.navigate(before);
   for (let tries = 0; tries < 240; tries += 1) {
     const shown = await was.evaluate(`!!document.getElementById('first-run')`).catch(() => false);

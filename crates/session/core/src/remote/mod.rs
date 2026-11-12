@@ -638,7 +638,13 @@ impl ActionHost for SessionActions {
         })
     }
 
-    /// The invocation as the device last answered for it. A followed one
+    /// The invocation as the device last answered for it. A followed one is
+    /// read from what the device last said only while that is still its
+    /// word: once it finished, or while a held ask is out, which the device
+    /// answers as soon as it moves. Otherwise the device is asked: an
+    /// invocation accepted after its caller stopped following it (a write
+    /// still being saved when the caller's wait ran out) moves with nobody
+    /// asking, and what was kept would say accepted forever.
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         let kept = self
             .0
@@ -646,7 +652,11 @@ impl ActionHost for SessionActions {
             .lock_recover()
             .follows
             .get(id)
-            .map(|followed| (followed.holds, followed.state.clone()));
+            .map(|followed| {
+                let current =
+                    followed.state.is_terminal() || (followed.holds && followed.asked.is_some());
+                (current, followed.state.clone())
+            });
         match kept {
             Some((true, state)) => Some(state),
             #[cfg(target_arch = "wasm32")]
@@ -851,6 +861,155 @@ mod tests {
             .await
             .is_err(),
             "an answer is never asked as a request"
+        );
+    }
+
+    /// A device that answers every ask at once, never holding an observe (as the host's actions
+    /// do), from the state it is told the invocation is in; it counts the observes it was asked.
+    struct Device {
+        state: Mutex<InvocationUpdate>,
+        heard: Mutex<Vec<Heard>>,
+        wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+        observed: Mutex<usize>,
+        holds: bool,
+    }
+
+    const DEVICE: [u8; 32] = [7; 32];
+
+    impl Device {
+        fn new(invocation: InvocationId, holds: bool) -> Arc<Self> {
+            Arc::new(Self {
+                state: Mutex::new(InvocationUpdate::Accepted { invocation }),
+                heard: Mutex::default(),
+                wake: Mutex::default(),
+                observed: Mutex::default(),
+                holds,
+            })
+        }
+
+        fn say(&self, message: RemoteActionMessage) {
+            let frame = RemoteActionFrame::new(message).encode().expect("encodes");
+            self.heard.lock_recover().push(Heard::Action {
+                workspace_id: 1,
+                from: DEVICE,
+                frame,
+            });
+            let wake = self.wake.lock_recover().clone();
+            if let Some(wake) = wake {
+                wake();
+            }
+        }
+    }
+
+    impl RemoteSession for Device {
+        fn send_remote_action(&self, _: u64, _: [u8; 32], frame: Vec<u8>) -> Result<(), String> {
+            let message = RemoteActionFrame::decode(&frame)
+                .map_err(|error| error.to_string())?
+                .message;
+            match message {
+                RemoteActionMessage::Invoke(request) => {
+                    let state = self.state.lock_recover().clone();
+                    self.say(RemoteActionMessage::Receipt(
+                        InvocationState::new(request.invocation, state).receipt(),
+                    ));
+                }
+                RemoteActionMessage::Observe {
+                    invocation,
+                    wait_ms,
+                    ..
+                } => {
+                    let mut observed = self.observed.lock_recover();
+                    *observed = observed.saturating_add(1);
+                    drop(observed);
+                    if self.holds && wait_ms.is_some() {
+                        return Ok(());
+                    }
+                    let state = self.state.lock_recover().clone();
+                    self.say(RemoteActionMessage::Update {
+                        invocation,
+                        state: Some(InvocationState::new(invocation, state)),
+                    });
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+
+        fn take_heard(&self) -> Vec<Heard> {
+            std::mem::take(&mut *self.heard.lock_recover())
+        }
+
+        fn on_change(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+            *self.wake.lock_recover() = Some(wake);
+        }
+    }
+
+    fn write(invocation: InvocationId) -> InvokeRequest {
+        serde_json::from_value(serde_json::json!({
+            "invocation": invocation,
+            "target": {"provider": "record:notes:one",
+                        "address": {"resource": "notes.note:one", "action": "append-paragraph"}},
+        }))
+        .expect("a request")
+    }
+
+    fn accepted(actions: &SessionActions, invocation: InvocationId) {
+        let receipt = actions
+            .invoke(&caller(), write(invocation))
+            .wait_timeout(Duration::from_secs(5))
+            .ok()
+            .flatten()
+            .expect("the device answers")
+            .expect("the device takes it");
+        assert_eq!(receipt.status, ReceiptStatus::Accepted, "{receipt:?}");
+    }
+
+    /// A write the device answered accepted (still being saved) after its caller stopped
+    /// waiting, which it then finished with nobody following it: asked how it went, the device
+    /// is asked, not the accepted kept from its receipt.
+    #[test]
+    fn an_invocation_nobody_follows_reads_as_the_device_says_it_ended() {
+        let invocation = InvocationId::new();
+        let device = Device::new(invocation, false);
+        let actions = SessionActions::new(Arc::clone(&device) as Arc<dyn RemoteSession>, 1, DEVICE);
+        accepted(&actions, invocation);
+
+        *device.state.lock_recover() = InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput::default(),
+        };
+        let state = actions.observe(&caller(), &invocation).expect("a state");
+        assert!(
+            matches!(state.update, InvocationUpdate::Succeeded { .. }),
+            "the write the device saved reads done: {:?}",
+            state.update
+        );
+        let observed = *device.observed.lock_recover();
+        actions.observe(&caller(), &invocation).expect("a state");
+        assert_eq!(
+            *device.observed.lock_recover(),
+            observed,
+            "what ended is read from what the device said"
+        );
+    }
+
+    /// While a held ask is out the device answers as soon as the invocation moves: a wait that
+    /// looks between its changes reads what the device said, without asking it again.
+    #[test]
+    fn a_held_ask_out_reads_what_the_device_said() {
+        let invocation = InvocationId::new();
+        let device = Device::new(invocation, true);
+        let actions = SessionActions::new(Arc::clone(&device) as Arc<dyn RemoteSession>, 1, DEVICE);
+        accepted(&actions, invocation);
+
+        let change = actions.next_change(&caller(), &invocation);
+        assert!(change.is_some(), "an accepted invocation is followed");
+        let state = actions.observe(&caller(), &invocation).expect("a state");
+        assert!(matches!(state.update, InvocationUpdate::Accepted { .. }));
+        assert_eq!(
+            *device.observed.lock_recover(),
+            1,
+            "only the held ask went to the device"
         );
     }
 }

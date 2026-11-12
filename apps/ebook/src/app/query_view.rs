@@ -763,14 +763,19 @@ impl BooksApp {
         );
         let span = (body.x0 + gutter, body.x1 - gutter);
         let found = results.order().len();
-        let count = (!results.query.is_empty()).then(|| match found {
-            1 => "1 result".to_owned(),
-            n => format!("{n} results"),
+        let count = (!results.query.is_empty()).then(|| {
+            CATALOG.t_args(
+                "ebook-search-results",
+                &[(
+                    "count",
+                    ui::i18n::ArgValue::Number(f64::from(u32::try_from(found).unwrap_or(u32::MAX))),
+                )],
+            )
         });
         // The title names what is shown: the words searched for, or the
         // chips alone when nothing is typed (their chips stand below).
         let title = match results.query.text.trim() {
-            "" if results.query.chips.is_empty() => "Search".to_owned(),
+            "" if results.query.chips.is_empty() => CATALOG.t("ebook-search-title"),
             "" => ui::framework::views::KeptViews::default_name(
                 &results.query,
                 self.query.engine.kinds(),

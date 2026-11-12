@@ -12,17 +12,18 @@ use ui::widget::{ToggleGroup, Widget};
 
 use crate::setup::destination::control::{Bound, Control};
 
-/// The segmented choice of `labels`, the `selected` one chosen, each
-/// segment firing its index-aligned control. `test_id` names it for E2E
-/// targeting and in the inventory.
+/// The segmented choice of `labels` — what a person reads, already in the
+/// window's language when the choice is words rather than stored names — the
+/// `selected` one chosen, each segment firing its index-aligned control.
+/// `test_id` names it for E2E targeting and in the inventory.
 pub fn seg_choice(
-    labels: &[&str],
+    labels: Vec<String>,
     controls: Vec<Control>,
     selected: usize,
     test_id: &str,
 ) -> Bound {
-    let segments = labels.iter().map(|label| Segment::new(*label)).collect();
     let selected = selected.min(labels.len().saturating_sub(1));
+    let segments = labels.into_iter().map(Segment::new).collect();
     // Every segment runs the same action with its own argument: the
     // inventory lists that action once, under the choice's id.
     let listed = controls.first().cloned();
@@ -65,7 +66,12 @@ mod tests {
                 }))
             })
             .collect();
-        let mut choice = seg_choice(&["btrfs", "ext4", "xfs"], controls, 1, "filesystem_choice");
+        let mut choice = seg_choice(
+            ["btrfs", "ext4", "xfs"].map(str::to_owned).to_vec(),
+            controls,
+            1,
+            "filesystem_choice",
+        );
         assert_eq!(choice.test_id(), Some("filesystem_choice"));
         let bindings = ui::widget::controls::control_action_bindings(&choice);
         assert_eq!(bindings.len(), 1, "one action, one inventory entry");

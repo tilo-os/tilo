@@ -188,6 +188,8 @@ NOT_CONTROL_CALLBACKS = {
     "on_selected": "reports which rows a list has chosen: what this window shows, kept where the "
     "person is rather than in the app's resource, no edit",
     "on_station_view": "answers the stepper's published view action for the station chosen",
+    "on_surface": "runs a closure on behalf of a motion surface, so the frames the motion asks "
+    "are that surface's alone: what is drawn, never an edit, and it activates no control",
     "on_files_view": "answers the drop zone's published view action for the files dropped",
     "on_check_view": "answers the table's published view action for the box turned",
     "on_row_click_view": "answers the table's published view action for the row clicked",

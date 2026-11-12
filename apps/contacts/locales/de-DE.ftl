@@ -113,3 +113,22 @@ contacts-fact-phone = eine Telefonnummer
 contacts-fact-name = einen Namen
 contacts-facts-details = ihre Angaben
 contacts-facts-and = { $first } und { $last }
+
+## What a form field is called
+contacts-field-first-name = Vorname
+contacts-field-last-name = Nachname
+contacts-field-organization = Organisation
+contacts-field-job-title = Position
+contacts-field-website = Website
+contacts-field-birthday = Geburtstag
+contacts-field-notes = Notizen
+contacts-field-groups = Gruppen
+contacts-field-phone = Telefon { $number }
+contacts-field-email = E-Mail { $number }
+contacts-field-street = Adresse { $number } Straße
+contacts-field-city = Adresse { $number } Ort
+contacts-field-region = Adresse { $number } Region
+contacts-field-postal-code = Adresse { $number } Postleitzahl
+contacts-field-country = Adresse { $number } Land
+
+contacts-unnamed = Unbenannter Kontakt

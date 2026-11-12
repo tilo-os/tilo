@@ -25,7 +25,7 @@ use tilo_peer_state::owner::{
     NativeWorkspaceOwner, OwnerJoinWorkspaces, VerifiedNativeEnrollmentIntent, open_file,
 };
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
+use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 mod common;
@@ -618,18 +618,21 @@ async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
         )
         .unwrap();
     }
-    // A's device saves a shortcut of its own: a workspace change its own owner
-    // publishes, which B's device has no way to have before the link.
-    let mut hint = testing::shortcut("link");
-    tilo_peer_state::workspace::sign_saved_shortcut(WORKSPACE, &mut hint, &cert_a, &key_a).unwrap();
-    a.commit_shortcut_change(
-        &OwnerCommitRequest {
+    // A's device saves a shortcut of its own, as one of the workspace's
+    // settings: a workspace change its own owner publishes, which B's device
+    // has no way to have before the link.
+    let mut saved = testing::shortcut("link");
+    tilo_peer_state::workspace::sign_saved_shortcut(WORKSPACE, &mut saved, &cert_a, &key_a)
+        .unwrap();
+    a.commit_workspace_membership_command(
+        OwnerCommitRequest {
             workspace: WORKSPACE.into(),
-            operation: CommitOperation::ShortcutChange {
+            operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: cert_a.clone(),
-                change: serde_json::to_vec(&tilo_automation::ShortcutChange::Save(Box::new(hint)))
-                    .unwrap(),
+                command: WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(
+                    tilo_automation::ShortcutChange::Save(Box::new(saved.clone())),
+                )),
             },
         },
         &key_a,
@@ -704,6 +707,16 @@ async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
             .unwrap(),
         held,
         "the link's frames are in B's record"
+    );
+    assert_eq!(
+        reopened
+            .with_current(workspace, |view| Ok(view
+                .peer()
+                .workspace()
+                .workspace_shortcuts()))
+            .unwrap(),
+        vec![tilo_automation::SavedShortcut::encode(&saved)],
+        "the shortcut A saved is one of the workspace's records on B's device"
     );
     link.abort();
 }

@@ -132,6 +132,15 @@ impl Seats {
         agents.into_values().collect()
     }
 
+    /// The agent seated here that `speaker` (this device) speaks for on the presence board as the
+    /// member `member`, by its key in hex: what a card of that member stands for.
+    pub(crate) fn spoken_as(&self, speaker: [u8; 32], member: &str) -> Option<String> {
+        self.here()
+            .into_iter()
+            .map(|seated| seated.agent)
+            .find(|agent| hex::encode(collab_types::presence::stand_in(speaker, agent)) == member)
+    }
+
     /// How the desk shows connection `seat` 's agent ("Claude Code in dev #1"), once admitted.
     pub(super) fn shown(&self, seat: u64) -> Option<String> {
         self.inner

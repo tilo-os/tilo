@@ -6,10 +6,10 @@ use super::DurableDocument;
 use super::durable_before_owner::Durable;
 use super::{
     AcceptedCheckpoint, CachedDocument, ChannelState, DURABLE_BASE_VERSION, DecodedCheckpoint,
-    DeviceCert, Document, DurableDocumentRef, DurableV4, DurableV5, DurableV6, Ed25519PublicKey,
-    ExactAdmissions, GOVERNANCE_LAYOUT_BEFORE, PeerCore, RevocationList, Route, Serialize, Shared,
-    StatePeer, SystemTime, backend, check_governed_snapshot, durable_base_version,
-    durable_before_owner, err, held, now_ns, process_default, workspace,
+    DeviceCert, Document, DurableV4, DurableV5, DurableV6, Ed25519PublicKey, ExactAdmissions,
+    GOVERNANCE_LAYOUT_BEFORE, PeerCore, RevocationList, Route, Serialize, Shared, StatePeer,
+    SystemTime, backend, check_governed_snapshot, durable_base_version, durable_before_owner, err,
+    held, now_ns, process_default, workspace,
 };
 
 #[cfg(test)]
@@ -131,6 +131,14 @@ impl StatePeer {
             .durable_coverage_with_current(app, record)?
             .is_some_and(|(_, current)| current))
     }
+    /// The digest of [`Self::durable`], taken part by part.
+    pub fn durable_hash(&self) -> Result<[u8; 32], String> {
+        let mut hasher = blake3::Hasher::new();
+        for part in self.durable_parts()? {
+            hasher.update(&part);
+        }
+        Ok(*hasher.finalize().as_bytes())
+    }
     /// Encode this peer's durable state.
     pub fn durable(&self) -> Result<Vec<u8>, String> {
         let parts = self.durable_parts()?;
@@ -189,35 +197,7 @@ impl StatePeer {
         }
         let mut documents = Vec::with_capacity(self.core.documents.len());
         for (route, entry) in &self.core.documents {
-            documents.push(entry.encoded(route, || {
-                let document = postcard::to_allocvec(&DurableDocumentRef {
-                    route,
-                    bytes: entry.doc.saved_bytes(),
-                    watermarks: entry
-                        .channel
-                        .last_seq_per_author
-                        .iter()
-                        .map(|(key, seq)| (*key.as_bytes(), *seq))
-                        .collect(),
-                    encryption_required: entry.encryption_required,
-                    covered: &entry.covered,
-                    covered_snapshot: entry
-                        .covered_snapshot
-                        .as_ref()
-                        .map(|snapshot| snapshot.0.bytes.as_slice()),
-                })
-                .map_err(err)?;
-                let sealed = if entry.sealed.is_empty() {
-                    None
-                } else {
-                    Some(entry.sealed.encode_into(route, Vec::new())?.into())
-                };
-                Ok(backend::EncodedDocument {
-                    route: route.clone(),
-                    document: document.into(),
-                    sealed,
-                })
-            })?);
+            documents.push(entry.encoded(route, || encode_document(route, entry))?);
         }
         // The fields of `DurableV6`/`DurableV5`/`DurableV4`, in order.
         let mut parts: Vec<std::sync::Arc<[u8]>> = Vec::new();
@@ -235,7 +215,11 @@ impl StatePeer {
         head = self.put_workspace_document(head, &mut parts)?;
         head = put(&documents.len(), head)?;
         parts.push(head.into());
-        parts.extend(documents.iter().map(|encoded| encoded.document.clone()));
+        parts.extend(
+            documents
+                .iter()
+                .flat_map(|encoded| encoded.document.iter().cloned()),
+        );
         let mut revocations = self.core.revocations.iter().collect::<Vec<_>>();
         revocations.sort_by_key(|entry| entry.revoked_device_public_key);
         let certificates = self
@@ -268,7 +252,9 @@ impl StatePeer {
         parts.extend(
             documents
                 .iter()
-                .filter_map(|encoded| encoded.sealed.clone()),
+                .filter_map(|encoded| encoded.sealed.as_ref())
+                .flatten()
+                .cloned(),
         );
         Ok(parts)
     }
@@ -283,7 +269,10 @@ impl StatePeer {
             .iter()
             .map(|(route, entry)| DurableDocument {
                 route: route.clone(),
-                bytes: entry.doc.saved(),
+                bytes: {
+                    let (base, since) = entry.doc.stored();
+                    [&*base, &*since].concat()
+                },
                 watermarks: entry
                     .channel
                     .last_seq_per_author
@@ -489,6 +478,7 @@ impl StatePeer {
                 tilo_automerge_isolate::load(&bytes)
                     .map(CachedDocument::from)
                     .map_err(err)
+                    .and_then(|doc| doc.stored_as(&bytes))
             })
             .transpose()?;
         // A governance a build before this layout wrote is brought up once,
@@ -521,7 +511,8 @@ impl StatePeer {
                 Document {
                     doc: tilo_automerge_isolate::load(&document.bytes)
                         .map(CachedDocument::from)
-                        .map_err(err)?,
+                        .map_err(err)?
+                        .stored_as(&document.bytes)?,
                     channel,
                     encryption_required: document.encryption_required,
                     covered: document.covered,
@@ -581,4 +572,44 @@ impl StatePeer {
         }
         Ok(peer)
     }
+}
+
+/// A record's part of the durable encoding: its `DurableDocument` in three
+/// parts — the route and the document's length; its stored base, the same
+/// allocation while the base lasts; the changes since the base, which a
+/// further change extends, and the fields after the document — and its
+/// sealed history, when it holds one.
+fn encode_document(route: &Route, entry: &Document) -> Result<backend::EncodedDocument, String> {
+    fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
+        postcard::to_extend(value, out).map_err(err)
+    }
+    let (base, since) = entry.doc.stored();
+    let head = put(&(route, base.len().saturating_add(since.len())), Vec::new())?;
+    let rest = put(
+        &(
+            entry
+                .channel
+                .last_seq_per_author
+                .iter()
+                .map(|(key, seq)| (*key.as_bytes(), *seq))
+                .collect::<Vec<_>>(),
+            entry.encryption_required,
+            &entry.covered,
+            entry
+                .covered_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.0.bytes.as_slice()),
+        ),
+        since.to_vec(),
+    )?;
+    let sealed = if entry.sealed.is_empty() {
+        None
+    } else {
+        Some(entry.sealed.encode_parts(route)?)
+    };
+    Ok(backend::EncodedDocument {
+        route: route.clone(),
+        document: vec![head.into(), base, rest.into()],
+        sealed,
+    })
 }

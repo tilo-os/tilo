@@ -40,8 +40,6 @@ pub const INDEX: &str = "settings";
 pub const INDEX_KIND: &str = "settings.index";
 /// The kind of one setting under [`INDEX`].
 pub const SETTING_KIND: &str = "settings.setting";
-/// The id of a setting's resource, by the setting's id.
-const SETTING_PREFIX: &str = "setting:";
 /// Between a setting's id and the name of one of its values, in the id of
 /// the value's resource: each value of a choice is an action of its own,
 /// on a resource of its own.
@@ -62,21 +60,20 @@ static NAMES: ui::i18n::EmbeddedCatalog = {
 /// The id of the resource of the setting `id`.
 #[must_use]
 pub fn setting_resource(id: &str) -> String {
-    format!("{SETTING_PREFIX}{id}")
+    format!("{}{id}", index::PUBLISHED_PREFIX)
 }
 
 /// The id of the resource of the value named `option` of the setting `id`.
 #[must_use]
 pub fn option_resource(id: &str, option: &str) -> String {
-    format!("{SETTING_PREFIX}{id}{OPTION_SEPARATOR}{option}")
+    format!("{}{id}{OPTION_SEPARATOR}{option}", index::PUBLISHED_PREFIX)
 }
 
 /// The id of the setting whose resource (or whose value's resource) is
 /// `resource`; `None` for another resource.
 #[must_use]
 pub fn setting_of(resource: &str) -> Option<&str> {
-    let id = resource.strip_prefix(SETTING_PREFIX)?;
-    Some(id.split_once(OPTION_SEPARATOR).map_or(id, |(id, _)| id))
+    index::setting_of_resource(resource)
 }
 
 /// The field edit of a section setting the field at `path` (names joined by

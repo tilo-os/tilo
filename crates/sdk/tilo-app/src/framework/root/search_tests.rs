@@ -152,6 +152,96 @@ impl ResourceApp for ViewServerApp {
     }
 }
 
+thread_local! {
+    /// Where the [`WakingServerApp`]'s server delivers what it found.
+    static ANSWER: RefCell<Option<ui_core::local_state::LocalStateWriter<Option<Vec<SearchEntry>>>>> =
+        const { RefCell::new(None) };
+}
+
+/// A view whose server answers from its own thread, into the window's
+/// state: `None` while it is still looking.
+struct WakingServerApp;
+impl ResourceApp for WakingServerApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-waking-server-search";
+    const TITLE: &'static str = "Server";
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        let answer: LocalState<Option<Vec<SearchEntry>>> = LocalState::new(None);
+        ANSWER.with(|slot| *slot.borrow_mut() = Some(answer.writer()));
+        let pending = answer.clone();
+        cx.publishing(
+            crate::framework::Publishes::new()
+                .search_query(|_| {})
+                .search_pending(move || pending.with(Option::is_none))
+                .search_entries(move || answer.with(|found| found.clone().unwrap_or_default())),
+            Box::new(ui_core::widget::Text::new("Results")),
+        )
+    }
+}
+
+#[test]
+fn a_search_answer_syncs_a_window_at_rest_again() {
+    use tilo_resource::profiling::observe;
+    let syncs = |phases: &[tilo_resource::profiling::Sample]| -> usize {
+        phases
+            .iter()
+            .filter(|phase| phase.phase == "ui.component.sync")
+            .map(|phase| phase.calls)
+            .sum()
+    };
+    let mut app = TestApp::<WakingServerApp>::new().unwrap();
+    let query = SearchQuery::new("archive");
+    let (search, token) = app
+        .harness()
+        .with_widget_mut(|root: &mut ResourceRoot| {
+            let search = RootSearch::search_providers(root).remove(0);
+            let first = search.search_page(&query, None, 10, 10);
+            (search, first.pending.expect("the view has yet to answer"))
+        })
+        .unwrap();
+    // The query reached the view, whose server is looking: nothing else
+    // reaches the window, and the frames its host runs for something else
+    // (its own document, as another window's key would) do not sync it.
+    app.idle();
+    app.idle();
+    let ((), waiting) = observe(|| {
+        for _ in 0..3 {
+            let _ = app.harness().state_mut();
+            app.idle();
+        }
+    });
+    assert_eq!(
+        syncs(&waiting),
+        0,
+        "the window rests while its server looks"
+    );
+    assert!(matches!(search.poll_page(&token), PagePoll::Pending));
+
+    // The server answers from its thread: the window wakes, syncs, and the
+    // search showing gets what it found.
+    let writer = ANSWER
+        .with(|slot| slot.borrow().clone())
+        .expect("the view is built");
+    std::thread::spawn(move || {
+        writer.set(Some(vec![
+            SearchEntry::new("From the archive", "an old letter").anchored("msg:9"),
+        ]));
+    })
+    .join()
+    .unwrap();
+    let ((), answered) = observe(|| app.idle());
+    assert!(syncs(&answered) > 0, "the answer synced the window");
+    let PagePoll::Answered(answered) = search.poll_page(&token) else {
+        panic!("the server answered");
+    };
+    let titles: Vec<_> = answered
+        .results
+        .iter()
+        .map(|hit| hit.title.as_str())
+        .collect();
+    assert_eq!(titles, ["From the archive"], "what it found shows");
+}
+
 #[test]
 fn a_showing_search_waits_for_what_a_views_server_finds() {
     LOOKING.with(|looking| looking.set(false));

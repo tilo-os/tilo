@@ -70,3 +70,10 @@ camera-settings-geotag = Aufnahmeort mit Fotos speichern
 camera-timer-3s = 3 Sekunden
 camera-timer-10s = 10 Sekunden
 camera-countdown-cancel-hint = Tippe auf den Auslöser, um abzubrechen
+
+## Wie die Scan-Auswahl heißt
+camera-scan-scanner = Scanner
+camera-scan-resolution = Auflösung
+camera-scan-color = Farbe
+camera-scan-paper-source = Papiereinzug
+camera-scan-text-language = Textsprache

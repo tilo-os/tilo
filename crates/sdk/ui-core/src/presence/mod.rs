@@ -94,7 +94,7 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
 pub use collab_types::presence::{
-    PEER_PALETTE, agent_client, assign_peer_colors, identity_rgb, user_color,
+    PEER_PALETTE, agent_client, agent_identity, assign_peer_colors, identity_rgb, user_color,
 };
 
 /// A presence colour as the surfaces paint it: the `(r, g, b)` a person's
@@ -1370,7 +1370,20 @@ impl PresenceCtx {
         self.color_overrides
             .get(user)
             .copied()
-            .unwrap_or_else(|| user_color(&user.0))
+            .unwrap_or_else(|| identity_rgb(self.identity_hue(user)))
+    }
+
+    /// The hue `user`'s identity derives where the workspace announced none:
+    /// a person's own, and for software the one what it is wears rather than
+    /// the one its run's id would — [`PresenceHue::of_agent`] takes the
+    /// admission's instance number off, so the same agent admitted again is
+    /// the same colour.
+    fn identity_hue(&self, user: &UserId) -> crate::tokens::PresenceHue {
+        if self.is_agent(user) {
+            crate::tokens::PresenceHue::of_agent(agent_identity(&user.0))
+        } else {
+            crate::tokens::PresenceHue::of_identity(&user.0)
+        }
     }
 
     /// The hue `user` wears: the one the workspace announced for them (their
@@ -1384,7 +1397,7 @@ impl PresenceCtx {
             .and_then(|(red, green, blue)| {
                 crate::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
             })
-            .unwrap_or_else(|| crate::tokens::PresenceHue::of_identity(&user.0))
+            .unwrap_or_else(|| self.identity_hue(user))
     }
 
     /// [`Self::hue_for`] by the id a document or a roster spells, for a view
@@ -1570,7 +1583,12 @@ impl PresenceCtx {
                 .map(|(_, name)| name.trim().to_owned())
                 .filter(|name| !name.is_empty())
         });
-        let name = name.unwrap_or_else(|| user.0.clone());
+        let name = match name {
+            Some(name) => name,
+            // Software the roster has not named is named by what it is, never by its id:
+            // "Today · App". Someone presence knows only an id of keeps it until it knows a name.
+            None => crate::history_source::software_name(&user.0).unwrap_or_else(|| user.0.clone()),
+        };
         self.kind_label(user, &name)
     }
 

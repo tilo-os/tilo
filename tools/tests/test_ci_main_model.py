@@ -17,10 +17,14 @@ decisions are unit-tested here on the records the Forgejo API returns, and
 simulated against a steady stream of pushes, which is what main is.
 """
 from pathlib import Path
+import contextlib
 import datetime
 import heapq
 import importlib.util
+import io
+import os
 import unittest
+import urllib.error
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".forgejo/workflows"
@@ -105,8 +109,26 @@ class MainIsNotGated(unittest.TestCase):
         self.assertIn("runs-on: runner\n", supersede)
         self.assertNotIn("runner-large", supersede)
         self.assertNotIn("WAIT_SECONDS", supersede)
-        # The aggregate job does not turn a superseded run red.
+        # The aggregate job leaves a superseded run to `untested`.
         self.assertIn("needs.supersede.outputs.superseded != 'true'", block(check, "checks", 2))
+
+    def test_a_superseded_run_never_reads_as_a_success(self):
+        # Skipping every job would leave the run green although it tested
+        # nothing; `untested` cancels it after the jobs it ran for its own head.
+        for name, needs in (("check.yml", "[supersede, web]"), ("lint.yml", "[supersede]")):
+            with self.subTest(workflow=name):
+                text = workflow(name)
+                self.assertIn("window: ${{ steps.window.outputs.window }}",
+                              block(text, "supersede", 2))
+                untested = block(text, "untested", 2)
+                self.assertIn(f"needs: {needs}", untested)
+                self.assertIn("if: ${{ always() && needs.supersede.outputs.superseded == 'true' }}",
+                              untested)
+                self.assertIn("python3 tools/ci/push_window.py --close", untested)
+                self.assertIn(f"WORKFLOW: {name}", untested)
+                self.assertIn("WINDOW_RUN: ${{ needs.supersede.outputs.window }}", untested)
+        self.assertIn("HEAD_RESULTS: ${{ needs.web.result }}",
+                      block(workflow("check.yml"), "untested", 2))
 
     def test_the_plan_starts_where_the_last_window_that_ran_ended(self):
         check = workflow("check.yml")
@@ -415,6 +437,58 @@ class ReadDepth(unittest.TestCase):
         self.assertEqual(len(requests), 2)
         self.assertEqual(len(runs), push_window.PAGE_SIZE * 2)
 
+
+
+class CloseUntested(unittest.TestCase):
+    """`--close`: a superseded run ends cancelled, or red, and never green."""
+
+    def run_close(self, env, refuse=False):
+        runs = [{"index_in_repo": 20, "id": 1020, "commit_sha": "a" * 40},
+                {"index_in_repo": 19, "id": 1019, "commit_sha": "b" * 40}]
+        cancelled = []
+
+        class Api:
+            token = "token"
+
+            def get(_, path):
+                return {"workflow_runs": runs}
+
+            def cancel(_, run_id, token=None):
+                if refuse:
+                    raise urllib.error.HTTPError("", 403, "forbidden", {}, io.BytesIO())
+                cancelled.append(run_id)
+
+        saved_env = dict(os.environ)
+        saved_api = push_window.api_from_environment
+        os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        os.environ.update({"RUN_NUMBER": "20", "WINDOW_RUN": "23"}, **env)
+        push_window.api_from_environment = Api
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                code = push_window.close()
+        finally:
+            push_window.api_from_environment = saved_api
+            os.environ.clear()
+            os.environ.update(saved_env)
+        return code, cancelled, out.getvalue()
+
+    def test_the_run_cancels_itself_and_names_the_window(self):
+        code, cancelled, out = self.run_close({"HEAD_RESULTS": "success"})
+        self.assertEqual(cancelled, [1020])
+        self.assertIn("run #23 measures these commits", out)
+        # Should the forge still take this job's result, it is a failure.
+        self.assertEqual(code, 1)
+
+    def test_a_failed_head_job_keeps_the_run_red(self):
+        # Cancelling would hide the failure: a cancelled run reads as
+        # cancelled whatever its jobs found.
+        code, cancelled, _ = self.run_close({"HEAD_RESULTS": "failure"})
+        self.assertEqual((code, cancelled), (1, []))
+
+    def test_a_refused_cancellation_fails_the_run(self):
+        code, cancelled, out = self.run_close({}, refuse=True)
+        self.assertEqual((code, cancelled), (1, []))
+        self.assertIn("cannot cancel itself", out)
 
 class SteadyPushRate(unittest.TestCase):
     """Main opens a window at any push rate, not only when the pushes pause.

@@ -709,7 +709,9 @@ fn error_label(error: &crate::feedback::Error) -> &'static str {
 fn restore_progress(services: &FeedbackServices, status: &LocalState<String>) {
     match services.controller.try_borrow() {
         Ok(composer) => match composer.state() {
-            Ok(Some(state)) => status.set(delivery_label(&state).to_owned()),
+            Ok(Some(state)) => {
+                status.set_if_changed(delivery_label(&state).to_owned());
+            }
             Ok(None) => {}
             Err(_) => status.set("feedback-retry-needed".to_owned()),
         },

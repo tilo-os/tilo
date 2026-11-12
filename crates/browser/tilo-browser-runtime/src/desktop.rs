@@ -475,6 +475,14 @@ impl Shared {
             .map(|(tab, _)| *tab)
     }
 
+    /// The applications whose code the page is fetching now: a window of one
+    /// fills in, and offers its views, once it arrives.
+    pub(crate) fn loading_apps(&self) -> Vec<&'static str> {
+        let mut apps: Vec<_> = self.loading.borrow().in_flight().collect();
+        apps.sort_unstable();
+        apps
+    }
+
     /// Whether an application finished loading since the last call.
     pub fn take_arrived(&self) -> bool {
         self.arrived.replace(false)
@@ -1262,7 +1270,7 @@ impl TileSource for Tiles {
         }
     }
 
-    fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, id: TabId, app: &str, _: Option<TabId>) -> Option<Tab> {
         let (app, record, content) =
             if let Some((app, hash)) = tilo_desktop_surface::session::launched_content(app) {
                 (app, None, Some(hash))

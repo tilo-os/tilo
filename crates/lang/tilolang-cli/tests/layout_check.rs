@@ -155,8 +155,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // Its trees fold rows on the line those rows' words stand on.
             | Kind::ChevronOffLine
             | Kind::IndentedBody
-            // Its lists group no rows under headings of their own.
+            // Its lists group no rows under headings of their own, so none heads its rows.
             | Kind::RepeatedGroupTitle
+            | Kind::HuggingRow
             // The fixture's rows state no day of their own.
             | Kind::RepeatedDayFact => "(no view)",
         };
@@ -492,6 +493,55 @@ fn a_phone_layout_shows_what_a_tapped_row_opens() {
             headers.join("\n")
         );
     }
+}
+
+/// A row's box is a control of its own, named for what it does to the item (`Mark Buy oat milk
+/// and eggs done`): a run presses it by those words, as a person or an agent does, and the row
+/// it belongs to stands where it stood, drawn checked, for the shot.
+#[test]
+fn a_run_presses_a_rows_box_by_its_own_words() {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    let shots = manifest().join("../../../target/layout-press-shots");
+    let _ = std::fs::remove_dir_all(&shots);
+    std::fs::create_dir_all(&shots).expect("the shots' directory");
+    let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+        .arg("layout-check")
+        .arg(manifest().join("../../../apps/tl/tasks"))
+        .arg("--allow")
+        .arg(manifest().join("tests/layout_check/allowed"))
+        .args(["--dump", "390x844"])
+        .arg("--shots")
+        .arg(&shots)
+        .args(["--press", "Mark Buy oat milk and eggs done"])
+        .output_locked()
+        .expect("the check runs");
+    let doc = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "the press reaches the box: {}",
+        doc.lines().last().unwrap_or_default()
+    );
+    assert!(
+        doc.lines().any(|line| line.starts_with("== ")
+            && line.contains("then Mark Buy oat milk and eggs done pressed")),
+        "the window as the press leaves it is read:\n{doc}"
+    );
+    let pressed = std::fs::read_dir(&shots)
+        .expect("the shots' directory")
+        .filter_map(std::result::Result::ok)
+        .any(|entry| {
+            let path = entry.path();
+            path.extension().is_some_and(|extension| extension == "png")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains("pressed"))
+        });
+    assert!(
+        pressed,
+        "the window as the press leaves it is shot, in {shots:?}"
+    );
 }
 
 #[test]

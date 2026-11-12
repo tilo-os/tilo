@@ -21,7 +21,7 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit} from './waits.mjs';
+import {stepLimit, deskMetrics, DESK, machine} from './waits.mjs';
 
 const [site, relay, out] = process.argv.slice(2);
 if (!site || !relay || !out) {
@@ -58,7 +58,7 @@ browser.on(({sessionId, method, params}) => {
 });
 await tab.send('Network.enable', {}).catch(() => {});
 await tab.send('Log.enable', {}).catch(() => {});
-await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false})
+await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics)
   .catch(() => {});
 
 // Every exception the page threw and every console line that reports a
@@ -81,6 +81,7 @@ const finish = async (code, message) => {
     const said = tab.log.slice(-30);
     if (said.length) console.error(`--- the page said:\n${said.join('\n')}`);
     console.error(`FAIL: ${message}`);
+    console.error(`the machine as it failed: ${machine().text}`);
   }
   console.log(JSON.stringify(report));
   process.exit(code);
@@ -177,7 +178,7 @@ mark('the page joined the workspace');
 const mac = await tab.evaluate('/Mac/.test(navigator.platform)');
 const box = JSON.parse(await tab.evaluate(`JSON.stringify((() => {
   const r = globalThis.tiloMount?.canvas?.getBoundingClientRect();
-  return r ? {x: r.x + r.width / 2, y: r.y + r.height * 0.85} : {x: 640, y: 700};
+  return r ? {x: r.x + r.width / 2, y: r.y + r.height * 0.85} : DESK.empty;
 })())`));
 for (const type of ['mousePressed', 'mouseReleased']) {
   await tab.send('Input.dispatchMouseEvent', {type, x: box.x, y: box.y, button: 'left', clickCount: 1});
@@ -188,20 +189,24 @@ const open = async (name, app) => {
   await key('k', mac ? 4 : 2);
   await until('!!globalThis.tiloMount?.state()?.searchOpen', `the search opening for ${name}`);
   await type(name.toLowerCase());
-  // The rows shown right after typing can be the previous query's: Enter
-  // waits until two reads agree that the app is the first result.
-  const first = rows => (rows ? rows[rows.indexOf('Results') + 1] ?? null : null);
+  // The card the desk publishes for the query typed, once it owes no row:
+  // nothing before that is its answer to this text (the rows shown right after
+  // typing can be the previous query's), and Enter acts on its first row.
+  const asked = JSON.stringify(name.toLowerCase());
   const deadline = Date.now() + stepLimit(3);
+  let card = null;
   for (;;) {
     await checkPage(`searching for ${name}`);
-    const rows = await paletteRows();
-    await sleep(300);
-    const again = await paletteRows();
-    // The rows on screen are the search's answer to the text typed only once
-    // it says it owes none: an Enter on an earlier query's rows waits for it.
-    const answered = await tab.evaluate('globalThis.tiloMount?.state()?.searchSearching === false').catch(() => false);
-    if (answered && first(rows) === name && JSON.stringify(rows) === JSON.stringify(again)) break;
-    if (Date.now() > deadline) await fail(`the search offers no ${name} first: ${JSON.stringify(again)}`);
+    card = JSON.parse(await tab.evaluate(`(() => {
+      const s = globalThis.tiloMount?.state?.() ?? null;
+      const card = s?.searchCard ?? null;
+      return JSON.stringify(card && s.searchSearching === false && card.query === ${asked} ? card : null);
+    })()`).catch(() => 'null'));
+    if (card?.rows?.[0]?.title === name) break;
+    if (Date.now() > deadline) {
+      await fail(`the search offers no ${name} first: ${JSON.stringify(card?.rows?.map(row => row.title) ?? await paletteRows())}`);
+    }
+    await sleep(250);
   }
   // Which frame showed the window, counted two ways: from the frame counter
   // the page reads when the browser fires Enter, and from the count the desk

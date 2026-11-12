@@ -31,7 +31,7 @@ impl TileSource for Catalogue {
         })
     }
 
-    fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, id: u64, app: &str, _: Option<u64>) -> Option<Tab> {
         let title = app.strip_prefix("so.tilo.")?.to_owned();
         Some(Tab {
             id,

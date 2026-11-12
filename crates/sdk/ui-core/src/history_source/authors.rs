@@ -22,8 +22,9 @@ use collaboration::history_source::authors::handle_actor_hex;
 /// The data half of naming authors, below the toolkit: decoding an actor
 /// id, telling a device's actors apart and the colours history paints.
 pub use collaboration::history_source::authors::{
-    DeviceActors, ResolveAuthor, UNKNOWN_AUTHOR_NAME, actor_handle, author_coloured, device_actor,
-    short_id, stable_hue,
+    AGENT_NAMESPACE, APP_NAMESPACE, BOT_NAMESPACE, DeviceActors, ParticipantNames, ResolveAuthor,
+    SHORTCUT_NAMESPACE, UNKNOWN_AUTHOR_NAME, actor_handle, actor_name, app_name, app_word_key,
+    app_words, author_coloured, device_actor, name_words, short_id, stable_hue,
 };
 #[cfg(test)]
 use collaboration::history_source::authors::{SHORT_LEN, rgb_to_hue};
@@ -259,6 +260,11 @@ impl AuthorDirectory {
         }
         let short = short_id(key);
         match actor_handle(key) {
+            // An app's change reads as the app: its own name, with no fragment of its actor id
+            // beside it, which would say nothing a person reads.
+            Some(handle) if is_app_principal(&handle) => {
+                self.author_from_identity(participant_display_label(&handle), &handle, "")
+            }
             Some(handle) => {
                 self.author_from_identity(participant_display_label(&handle), &handle, short)
             }
@@ -472,11 +478,67 @@ fn principal_name(principal: &str) -> String {
 /// that wire identifier verbatim, however, makes the UI look unfinished and
 /// obscures the important fact that the actor was software. This projection
 /// removes only the protocol prefix and adds a persistent, readable kind
-/// label. Human names and other identifiers pass through unchanged.
+/// label. An app reads as its own name in the person's language (`app:so.tilo.lang.today` is
+/// "Today"), never as its id. Human names and other identifiers pass through unchanged.
 pub fn participant_display_label(principal: &str) -> String {
     match agent_principal_name(principal) {
         Some(name) => agent_display_label(&name),
-        None => principal.trim().to_string(),
+        None => match app_principal(principal) {
+            Some(app) => app_name(app, catalogue_words),
+            None => principal.trim().to_string(),
+        },
+    }
+}
+
+/// The principal `id` names an app's own (`app:so.tilo.lang.today`).
+pub fn is_app_principal(id: &str) -> bool {
+    app_principal(id).is_some()
+}
+
+/// The app a principal id names, when it is an app's own.
+fn app_principal(id: &str) -> Option<&str> {
+    id.trim()
+        .strip_prefix(APP_NAMESPACE)
+        .map(str::trim)
+        .filter(|app| !app.is_empty())
+}
+
+/// A word of the toolkit's own catalogue, `source` where it holds none: a package's own name is
+/// read from the catalogue of the process reading it.
+fn catalogue_words(key: &str, source: &str) -> String {
+    let said = crate::i18n::widget_format(key, &[]);
+    if said == key { source.to_owned() } else { said }
+}
+
+/// What the actor `principal` is called to the person reading, by what it is: a person by their
+/// name, an app by its own name in their language, an agent by its name. Never an id, and never
+/// part of one: a participant nobody named is [`UNKNOWN_AUTHOR_NAME`].
+pub fn participant_name(principal: &str) -> String {
+    actor_name(principal, &CatalogueNames)
+}
+
+/// [`participant_name`] for a principal that names software (`app:`, `agent:`, `bot:`,
+/// `shortcut:`), and nothing for an id that names no principal: what presence shows for someone
+/// it knows only an id of, until the roster names them.
+pub fn software_name(principal: &str) -> Option<String> {
+    let principal = principal.trim();
+    [
+        APP_NAMESPACE,
+        AGENT_NAMESPACE,
+        BOT_NAMESPACE,
+        SHORTCUT_NAMESPACE,
+    ]
+    .iter()
+    .any(|namespace| principal.starts_with(namespace))
+    .then(|| participant_name(principal))
+}
+
+/// The names the toolkit's words give: its own catalogue, and no roster of its own.
+struct CatalogueNames;
+
+impl ParticipantNames for CatalogueNames {
+    fn app(&self, app_id: &str) -> String {
+        app_name(app_id, catalogue_words)
     }
 }
 
@@ -570,6 +632,23 @@ mod tests {
                 HistoryAuthor::new("agent:reviewer", 42.0, "aabbccdd"),
             );
             assert_eq!(registered.resolve("aabbccdd").name, "reviewer · Agent");
+        }
+        // phase: an_apps_change_reads_as_the_app_never_as_its_id
+        // An app changing another app's record is named by its own name, and no fragment of its
+        // actor id stands beside it: a person reads "Notes changed one note", not "app:so.t".
+        {
+            let principal = "app:so.tilo.lang.notes";
+            assert_eq!(participant_display_label(principal), "Notes");
+            assert!(is_app_principal(principal));
+            assert!(!is_app_principal("agent:scribe"));
+
+            let actor = automerge::ActorId::from(principal.as_bytes());
+            let resolved = AuthorDirectory::new().resolve(&actor.to_hex_string());
+            assert_eq!(resolved.name, "Notes");
+            assert_eq!(
+                resolved.identity_short, "",
+                "an app's row shows no fragment of its actor id"
+            );
         }
         // phase: a_public_key_actor_is_not_mistaken_for_a_handle
         // A 32-byte public key is not a handle. It must not be rendered as

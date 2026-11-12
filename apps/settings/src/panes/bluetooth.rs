@@ -1997,4 +1997,16 @@ mod tests {
         drop(following);
         assert!(model.next_wake().is_some());
     }
+
+    /// The radio's switch is named by its row, so a reader hears that it
+    /// turns Bluetooth on rather than landing on a switch of no name.
+    #[test]
+    fn the_radio_switch_is_named_by_its_row() {
+        use ui::accesskit::Toggled;
+
+        let mut app = window_over(vec![dev()]);
+        app.settle();
+        let switch = crate::testing::switch_named(&mut app, &t("settings-bluetooth-card"));
+        assert_eq!(switch.toggled(), Some(Toggled::True));
+    }
 }

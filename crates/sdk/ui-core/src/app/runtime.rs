@@ -788,6 +788,9 @@ pub(super) struct WindowRuntime {
     pub(super) preferred_size: Option<(f64, f64)>,
     pub(super) preferred_size_stated: Option<(f64, f64)>,
     pub(super) title: Option<String>,
+    /// The title the window system was last given ([`crate::App::refresh_window_title`]): what it
+    /// names the window by now.
+    pub(super) shown_title: Option<String>,
     pub(super) app_id: Option<String>,
 }
 
@@ -801,6 +804,7 @@ impl WindowRuntime {
             preferred_size: None,
             preferred_size_stated: None,
             title: None,
+            shown_title: None,
             app_id: None,
         }
     }

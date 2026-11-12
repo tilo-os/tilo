@@ -302,13 +302,12 @@ pub(crate) fn form(
         )
         // Security, the storage target and destructive choices are completed
         // on the device; the filesystem is the one storage preference here.
-        .section(FormSection::new("Storage").field(choice_field(
-            profile,
-            CzField::Filesystem,
-            filesystems,
-            actions,
-            false,
-        )))
+        .section(
+            FormSection::new("Storage").field(
+                choice_field(profile, CzField::Filesystem, filesystems, actions, false)
+                    .with_help(crate::setup::strings::t("imager-filesystem-help")),
+            ),
+        )
 }
 
 #[cfg(test)]
@@ -364,7 +363,7 @@ mod tests {
                 Some("xfs".into())
             );
             assert_eq!(
-                profile_value(CzField::Filesystem, "Btrfs (recommended)"),
+                profile_value(CzField::Filesystem, "Btrfs"),
                 Some("btrfs".into())
             );
             assert_eq!(profile_value(CzField::Filesystem, "FAT32"), None);

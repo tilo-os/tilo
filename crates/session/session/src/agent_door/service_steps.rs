@@ -8,28 +8,34 @@ use tilo_actions::remote::ActionHostError;
 /// names no argument of a session action, which all take their arguments by name.
 pub(super) fn arguments_of(
     slot: Option<&str>,
-) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+) -> Result<serde_json::Map<String, serde_json::Value>, ActionHostError> {
     let Some(slot) = slot else {
         return Ok(serde_json::Map::new());
     };
+    let invalid = |reason: String| ActionHostError::InvalidRequest { reason };
     let json = slot
         .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-        .ok_or("a session action takes its arguments by name")?;
-    serde_json::from_str(json).map_err(|error| format!("the step's arguments do not read: {error}"))
+        .ok_or_else(|| invalid("a session action takes its arguments by name".into()))?;
+    serde_json::from_str(json)
+        .map_err(|error| invalid(format!("the step's arguments do not read: {error}")))
 }
 
 /// Run `address` as `actor` through the session's services, which publish the actions its own
 /// doors do not: what a service keeps (Chat's `record-work` on a turn's summons, the arrangement's
 /// place read from a service) is invoked on the same pass, on the record the service writes. The
 /// `actor` an agent names is `agent:<id>`, attributed as it is at an app's record origin; a person
-/// acts as themselves. A step of a `run` is that run's, as an app's action is.
+/// acts as themselves. A step of a `run` is that run's, as an app's action is. `done` hears what
+/// it ran: at once, or when the async work it started lands.
 pub(crate) fn invoke_service_step(
     services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
     actor: &str,
     run: Option<&tilo_actions::WorkGroup>,
     address: &tilo_actions::ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
-) -> Result<Option<tilo_actions::ActionOutput>, String> {
+    done: tilo_actions::remote::Completer<
+        Result<Option<tilo_actions::ActionOutput>, ActionHostError>,
+    >,
+) {
     use tilo_service::Started;
     let invoker = tilo_actions::ActionInvoker::actor(actor);
     let invoker = if actor.starts_with("agent:") {
@@ -37,16 +43,27 @@ pub(crate) fn invoke_service_step(
     } else {
         invoker
     };
-    match services.borrow_mut().invoke_as(
+    let started = services.borrow_mut().invoke_as(
         &invoker,
         run,
         &address.resource,
         &address.action,
         arguments,
-    ) {
-        Ok(Started::Done(output)) => Ok(Some(output)),
-        Ok(Started::Accepted) => Ok(None),
-        Err(error) => Err(error.to_string()),
+    );
+    match started {
+        Ok(Started::Done(output)) => done.complete(Ok(Some(output))),
+        Ok(Started::Accepted) => done.complete(Ok(None)),
+        Ok(Started::Later(later)) => later.then(move |landed| {
+            done.complete(match landed {
+                Some(ran) => ran
+                    .map(Some)
+                    .map_err(|error| crate::surfaces::refusal(&error)),
+                None => Err(ActionHostError::Unavailable {
+                    reason: "the step's work was given up".to_owned(),
+                }),
+            });
+        }),
+        Err(error) => done.complete(Err(crate::surfaces::refusal(&error))),
     }
 }
 
@@ -88,7 +105,9 @@ pub(super) fn change_through(
                     "value": output.value,
                     "resources": output.resources,
                 }),
-                tilo_service::Started::Accepted => serde_json::Value::Null,
+                tilo_service::Started::Accepted | tilo_service::Started::Later(_) => {
+                    serde_json::Value::Null
+                }
             };
             Ok(serde_json::json!({"ok": output, "change": document}))
         }

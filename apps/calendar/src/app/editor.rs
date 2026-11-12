@@ -32,7 +32,10 @@ use crate::event_popovers::{PopoverAnchors, PopoverKind as FormPopover};
 use crate::model::{Event, Palette, Priority, Recurrence, Task};
 use ui::widget::DrawChild;
 
-const DONE: &str = "Done";
+/// The sheet's primary answer, which closes the editor.
+fn done_label() -> String {
+    crate::resource::t("calendar-done")
+}
 
 /// One dropdown of the editor with the value it last published, so a pick
 /// is applied to the model exactly once.
@@ -44,11 +47,12 @@ pub(crate) struct Choice {
 }
 
 impl Choice {
-    /// A dropdown named `name` whose `icon` says what it chooses.
-    pub(super) fn new(name: &str, icon: Icon) -> Self {
+    /// A dropdown named by the catalogue message `key`, whose `icon` says
+    /// what it chooses.
+    pub(super) fn new(key: &str, icon: Icon) -> Self {
         let state = LocalState::new(String::new());
         let dropdown = Dropdown::from_state(Vec::new(), &state)
-            .with_accessible_name(name)
+            .with_accessible_name(crate::resource::t(key))
             .leading_icon(icon);
         Self {
             state,
@@ -105,12 +109,12 @@ pub(crate) struct Choices {
 impl Choices {
     pub(super) fn new() -> Self {
         Self {
-            calendar: Choice::new("Calendar", Icon::Calendar),
-            repeat: Choice::new("Repeat", Icon::Repeat),
-            alert: Choice::new("Alert", Icon::Bell),
-            timezone: Choice::new("Time zone", Icon::Globe),
-            priority: Choice::new("Priority", Icon::Flag),
-            project: Choice::new("Project", Icon::Folder),
+            calendar: Choice::new("calendar-editor-calendar", Icon::Calendar),
+            repeat: Choice::new("calendar-editor-repeat", Icon::Repeat),
+            alert: Choice::new("calendar-editor-alert", Icon::Bell),
+            timezone: Choice::new("calendar-editor-time-zone", Icon::Globe),
+            priority: Choice::new("calendar-editor-priority", Icon::Flag),
+            project: Choice::new("calendar-project", Icon::Folder),
         }
     }
 
@@ -458,17 +462,23 @@ impl<'a> Flow<'a> {
 
 impl CalendarApp {
     /// The sheet's title: what is being edited.
-    pub(super) fn sheet_title(&self) -> &'static str {
+    pub(super) fn sheet_title(&self) -> String {
         match self.selection {
-            Some(Sel::Task(_)) => "Task",
-            Some(Sel::Event(_)) if self.fresh_draft.is_some() => "New event",
-            _ => "Event",
+            Some(Sel::Task(_)) => crate::resource::t("calendar-task-detail-title"),
+            Some(Sel::Event(_)) if self.fresh_draft.is_some() => {
+                crate::resource::t("calendar-a11y-new-event")
+            }
+            _ => crate::resource::t("calendar-event-detail-title"),
         }
     }
 
     /// The modal sheet's spec: its title and its one action, Done.
-    fn sheet_spec<'a>(&self, actions: &'a [ModalAction<'a>], body_height: f64) -> ModalSpec<'a> {
-        ModalSpec::new(self.sheet_title())
+    fn sheet_spec<'a>(
+        title: &'a str,
+        actions: &'a [ModalAction<'a>],
+        body_height: f64,
+    ) -> ModalSpec<'a> {
+        ModalSpec::new(title)
             .actions(actions)
             .closable(false)
             .body_height(body_height)
@@ -513,10 +523,12 @@ impl CalendarApp {
                 let width = self.detail_body_w();
                 let probe = self.form_layout(Rect::new(0.0, 0.0, width, 0.0), text, &theme);
                 let content_h = probe.notes_top + self.notes_content_h.max(notes_min);
-                let actions = [ModalAction::primary(DONE)];
+                let done = done_label();
+                let title = self.sheet_title();
+                let actions = [ModalAction::primary(&done)];
                 let natural = modal_dialog::layout(
                     window,
-                    &self.sheet_spec(&actions, content_h),
+                    &Self::sheet_spec(&title, &actions, content_h),
                     text,
                     &theme,
                 );
@@ -535,7 +547,12 @@ impl CalendarApp {
                         .filter(|y| *y <= room)
                         .fold(0.0, f64::max);
                     let body_h = if body_h > 0.0 { body_h } else { room };
-                    modal_dialog::layout(window, &self.sheet_spec(&actions, body_h), text, &theme)
+                    modal_dialog::layout(
+                        window,
+                        &Self::sheet_spec(&title, &actions, body_h),
+                        text,
+                        &theme,
+                    )
                 };
                 let max = (content_h - layout.body.height()).max(0.0);
                 let scroll = if self.shots_detail_scroll_to_end {
@@ -931,13 +948,15 @@ impl CalendarApp {
         let Some(layout) = self.modal.clone() else {
             return;
         };
-        let actions = [ModalAction::primary(DONE).hovered(
+        let done = done_label();
+        let title = self.sheet_title();
+        let actions = [ModalAction::primary(&done).hovered(
             layout
                 .actions
                 .first()
                 .is_some_and(|r| r.contains(self.last_mouse)),
         )];
-        let spec = self.sheet_spec(&actions, layout.body.height());
+        let spec = Self::sheet_spec(&title, &actions, layout.body.height());
         modal_dialog::paint_backdrop(scene, t, text, theme, &layout, &spec);
         self.hits.push((layout.scrim, Action::CloseDetail));
         self.hits.push((layout.card, Action::Noop));

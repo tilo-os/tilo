@@ -39,3 +39,4 @@ hex-a11y-status = { $file }; { $bytes ->
 }; Cursor bei Hexadezimal { $cursor }; Modus { $mode }; { $endian }
 hex-a11y-no-file = Keine Datei geöffnet. Öffne eine lokale Datei, um ihre Bytes zu prüfen.
 hex-offset-readout = Offset 0x{ $offset } ({ $cursor })
+hex-editor-empty-hint = Untersuche und bearbeite jede Datei Byte für Byte, oder starte eine leere und tippe Bytes ein.

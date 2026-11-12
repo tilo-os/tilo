@@ -86,6 +86,12 @@ impl CellEvent {
 
 impl CalendarApp {
     pub(super) fn draw_month(&self, ctx: &mut PaintCtx<'_>, area: Rect) -> Vec<(Rect, Action)> {
+        // The day an event's chip is being dragged over, while one is.
+        let dropped_on = self
+            .chip_drag
+            .as_ref()
+            .filter(|drag| drag.moved)
+            .and_then(|drag| drag.over);
         let theme = ctx.theme;
         let ground = theme.tokens.colors.surfaces.content;
         let mut hits = Vec::new();
@@ -124,7 +130,7 @@ impl CalendarApp {
                 grid_top + cell_h * (row as f64 + 1.0),
             );
             let events = events.iter().map(CellEvent::of).collect();
-            self.draw_month_cell(ctx, &m, cell, (day, events), &mut hits);
+            self.draw_month_cell(ctx, &m, cell, (day, events), dropped_on, &mut hits);
         }
 
         // Grid rules once, over the cell grounds, derived from the window
@@ -168,6 +174,7 @@ impl CalendarApp {
         m: &MonthMetrics,
         cell: Rect,
         (day, events): (NaiveDate, Vec<CellEvent>),
+        dropped_on: Option<NaiveDate>,
         hits: &mut Vec<(Rect, Action)>,
     ) {
         let theme = ctx.theme;
@@ -187,8 +194,10 @@ impl CalendarApp {
         let is_anchor = day == self.anchor;
         let weekend = day.weekday().num_days_from_monday() >= 5;
 
-        // The chosen day is the selection lift of the window ground.
-        let cell_ground = if is_anchor {
+        // The chosen day is the selection lift of the window ground, and the
+        // day an event being dragged would land on shows the same lift, so the
+        // drop reads as the place the event will be.
+        let cell_ground = if is_anchor || dropped_on == Some(day) {
             ctx.fill_rect(cell, c.intent.selection);
             c.intent.selection
         } else {

@@ -98,6 +98,35 @@ const VERBS: &[(AkAction, &str)] = &[
     (AkAction::ShowContextMenu, "show-context-menu"),
 ];
 
+/// An agent's invocation of `action` on resource `resource`, as the broker
+/// reports it while it applies: what [`FrameHarness::semantic_locus`] places.
+#[must_use]
+pub fn agent_acting(resource: &str, action: &str) -> tilo_actions::SemanticInteraction {
+    tilo_actions::SemanticInteraction {
+        version: tilo_actions::INTERACTION_VERSION,
+        invocation: tilo_actions::InvocationId::new(),
+        sequence: 1,
+        actor: tilo_actions::InteractionActor {
+            id: "agent".into(),
+            kind: tilo_actions::ActorKind::Agent,
+            for_person: None,
+        },
+        phase: tilo_actions::InteractionPhase::Applying,
+        action: tilo_actions::InteractionAction {
+            id: action.into(),
+            label: action.into(),
+            app: None,
+        },
+        resource: tilo_actions::ActionResource {
+            id: resource.into(),
+            kind: resource.into(),
+            label: resource.into(),
+        },
+        anchor: tilo_actions::InteractionAnchor::Resource,
+        group: None,
+    }
+}
+
 impl FrameHarness {
     fn semantic_tree(&self) -> SemanticTree {
         self.drain_component_wakes();
@@ -178,6 +207,8 @@ impl FrameHarness {
     /// to once that view is laid out. Each action is gone to once, so the
     /// follower can look around until the next one. Answers whether the view
     /// went there.
+    /// Quiet: moves the view through `relayout`, and opens one through `invoke_action`, each of
+    /// which invalidates; a frame where it finds nothing new changes nothing.
     pub fn follow_view(&mut self, actor: &str, followed: &mut FollowedView) -> bool {
         let Some(interaction) = self
             .presence
@@ -418,8 +449,10 @@ impl FrameHarness {
         if !self.action_geometry_visible() {
             return None;
         }
+        // What the live window declares outside its components; theirs are
+        // the components' own nodes, as the live window's tree holds them.
         let mut resources = Vec::new();
-        crate::widget::collect_widget_resources(
+        crate::bound_dispatch::collect_unbound_resources(
             self.root.as_ref(),
             &self.state.doc,
             &mut resources,

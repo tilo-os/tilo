@@ -20,36 +20,7 @@ use durable_store::{DurableStore as _, MemoryStore, Revision, StorageKey, Stored
 use js_sys::{Function, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 
-/// The page-visible form of [`StorageKey`]. Changing it orphans stored rows.
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
-enum DiskKey {
-    Record {
-        package: String,
-        workspace: String,
-        record: String,
-    },
-    Package {
-        package: String,
-    },
-    /// One workspace's index. A profile outlives any one build, and its rows
-    /// were written under this name, so the name it is stored under stays.
-    WorkspaceIndex {
-        package: String,
-        workspace: String,
-    },
-    /// Rows of the removed package-global record key. Main dropped the key
-    /// without a migration; a page skips these rows instead of failing to load.
-    PackageRecord {
-        package: String,
-        record: String,
-    },
-    View {
-        device: String,
-        workspace: String,
-        instance: u64,
-    },
-}
+use crate::disk_key::DiskKey;
 
 /// The exact Settings account record's key for a public root identity: the
 /// person's own record of their accounts, in their own scope, whichever
@@ -128,66 +99,6 @@ pub fn project_browser_accounts(root: &str, origin: &str, bytes: &[u8]) -> Resul
     serde_json::to_string(&accounts).map_err(error)
 }
 
-impl From<&StorageKey> for DiskKey {
-    fn from(key: &StorageKey) -> Self {
-        match key.clone() {
-            StorageKey::Record {
-                package,
-                workspace,
-                record,
-            } => Self::Record {
-                package,
-                workspace,
-                record,
-            },
-            StorageKey::Package { package } => Self::Package { package },
-            StorageKey::WorkspaceIndex { package, workspace } => {
-                Self::WorkspaceIndex { package, workspace }
-            }
-            StorageKey::View {
-                device,
-                workspace,
-                instance,
-            } => Self::View {
-                device,
-                workspace,
-                instance,
-            },
-        }
-    }
-}
-
-impl DiskKey {
-    /// The store key this row holds, or `None` for a row of a removed key.
-    fn into_key(self) -> Option<StorageKey> {
-        Some(match self {
-            Self::Record {
-                package,
-                workspace,
-                record,
-            } => StorageKey::Record {
-                package,
-                workspace,
-                record,
-            },
-            Self::Package { package } => StorageKey::Package { package },
-            Self::WorkspaceIndex { package, workspace } => {
-                StorageKey::WorkspaceIndex { package, workspace }
-            }
-            Self::PackageRecord { .. } => return None,
-            Self::View {
-                device,
-                workspace,
-                instance,
-            } => StorageKey::View {
-                device,
-                workspace,
-                instance,
-            },
-        })
-    }
-}
-
 thread_local! {
     static CACHES: RefCell<HashMap<(String, String), Rc<MemoryStore>>> = RefCell::new(HashMap::new());
 }
@@ -216,7 +127,7 @@ pub(crate) fn load(
         let disk = Reflect::get(&entry, &"key".into())?
             .as_string()
             .ok_or_else(|| error("stored row has no key"))?;
-        let disk: DiskKey = serde_json::from_str(&disk).map_err(error)?;
+        let disk = DiskKey::read(&disk).map_err(error)?;
         let Some(key) = disk.into_key() else {
             continue;
         };

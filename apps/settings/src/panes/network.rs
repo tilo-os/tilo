@@ -20,7 +20,9 @@
 //!
 //! A radio the device does not have is not offered: Wi-Fi and the hotspot
 //! without a Wi-Fi radio, airplane mode without a Wi-Fi radio or a modem
-//! (`NetworkArea::statuses`).
+//! (`NetworkArea::statuses`). The rows only the network service can fill are
+//! left out the same way when this device runs none, and the page names that
+//! once instead of showing its state as unreadable.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -592,6 +594,9 @@ enum DeviceVpnPart {
 /// shown as unreadable instead of as a device state.
 pub(crate) struct NetworkSnapshot {
     networks: Result<Vec<WifiNetworkInfo>, String>,
+    /// Whether the network service runs at all, read with the state it
+    /// provides: `None` when not read.
+    service_present: Option<bool>,
     wifi_enabled: Part<bool>,
     wired: Part<WiredInfo>,
     radios: Part<os_actions::RadioState>,
@@ -618,6 +623,9 @@ impl NetworkSnapshot {
     /// Query `NetworkManager`. Every call here may block on `nmcli` or the
     /// system bus, so this never runs on the UI thread.
     fn read(initial: bool) -> Self {
+        if !os_actions::network_service_present() {
+            return Self::without_service();
+        }
         let profiles = os_actions::list_saved_network_profiles();
         Self {
             wake_settings: profiles
@@ -645,12 +653,16 @@ impl NetworkSnapshot {
     /// profiles, their settings and the session's device VPN (whose file
     /// is followed on its own) are not read, so adopting it leaves them.
     fn status() -> Self {
+        if !os_actions::network_service_present() {
+            return Self::without_service();
+        }
         let radios = os_actions::get_radio_state();
         let networks = os_actions::list_wifi_networks();
         let on_wifi = networks
             .as_ref()
             .is_ok_and(|networks| networks.iter().any(|network| network.connected));
         Self {
+            service_present: Some(true),
             link: on_wifi
                 .then(os_actions::network_settings::wifi_link_details)
                 .and_then(Result::ok),
@@ -683,11 +695,35 @@ impl NetworkSnapshot {
         }
     }
 
+    /// The state of a device that runs no network service: nothing fails,
+    /// and the parts only the service fills are empty, so the page leaves
+    /// their rows out rather than naming them unreadable.
+    fn without_service() -> Self {
+        Self {
+            networks: Ok(Vec::new()),
+            service_present: Some(false),
+            wifi_enabled: Some(Ok(false)),
+            wired: Some(Ok(WiredInfo::default())),
+            radios: Some(Ok(os_actions::RadioState::default())),
+            connectivity: Some(Ok(ConnectivityState::Unknown)),
+            profiles: None,
+            profile_settings: HashMap::new(),
+            wake_settings: HashMap::new(),
+            profile_list: None,
+            hotspot_clients: Some(Ok(Vec::new())),
+            vpns: Some(Ok(Vec::new())),
+            link: None,
+            plugins: None,
+            device_vpn: DeviceVpnPart::NotRead,
+        }
+    }
+
     /// `networks` alone: every other part is not read, so adopting it
     /// leaves them as they are.
     fn networks_only(networks: Result<Vec<WifiNetworkInfo>, String>) -> Self {
         Self {
             networks,
+            service_present: None,
             wifi_enabled: None,
             wired: None,
             radios: None,
@@ -708,6 +744,7 @@ impl NetworkSnapshot {
     fn of_networks(networks: Vec<WifiNetworkInfo>) -> Self {
         Self {
             networks: Ok(networks),
+            service_present: Some(true),
             wifi_enabled: Some(Ok(true)),
             wired: Some(Ok(WiredInfo::default())),
             radios: Some(Ok(os_actions::RadioState {
@@ -739,6 +776,7 @@ const SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 #[derive(PartialEq)]
 struct Adopted {
     loaded: bool,
+    service_present: Option<bool>,
     networks: Vec<WifiNetworkInfo>,
     wifi_enabled: bool,
     wired: WiredInfo,
@@ -984,6 +1022,9 @@ struct DeviceNetwork {
 impl NetworkService for DeviceNetwork {
     fn networks(&self) -> NetworkSnapshot {
         crate::device_read::off_ui_thread();
+        if !os_actions::network_service_present() {
+            return NetworkSnapshot::networks_only(Ok(Vec::new()));
+        }
         NetworkSnapshot::networks_only(os_actions::list_wifi_networks())
     }
 
@@ -1498,6 +1539,12 @@ impl NetworkRadios {
             ),
         }
     }
+
+    /// Whether there is no radio for airplane mode to switch: both known
+    /// to be missing. An unread radio is not missing.
+    fn without_radios(self) -> bool {
+        self.wifi == Some(false) && self.wwan == Some(false)
+    }
 }
 
 /// What the Network area keeps for the window: the model, read when first
@@ -1550,15 +1597,19 @@ impl NetworkArea {
         }
     }
 
-    /// What this device cannot do with its networks now: Wi-Fi and a
-    /// hotspot without a Wi-Fi radio, airplane mode without a Wi-Fi radio
-    /// or a modem. Reads nothing itself: only what the
-    /// radios and the area's model have read, so it never opens the area.
+    /// What this device cannot do with its networks now: everything, when it
+    /// runs no network service; Wi-Fi and a hotspot without a Wi-Fi radio,
+    /// airplane mode without a Wi-Fi radio or a modem. Reads nothing itself:
+    /// only what the radios and the area's model have read, so it never opens
+    /// the area.
     pub(crate) fn statuses(&self) -> Vec<EffectStatus> {
-        let reported = self.model.get().and_then(|model| {
-            let model = model.try_borrow().ok()?;
-            model.reported_radios().cloned()
-        });
+        let (reported, absent) =
+            self.model
+                .get()
+                .map_or((None, false), |model| match model.try_borrow() {
+                    Ok(model) => (model.reported_radios().cloned(), model.network_absent()),
+                    Err(_) => (None, false),
+                });
         let radios = NetworkRadios::of(&self.reach.radios, reported.as_ref());
         let mut statuses = Vec::new();
         let mut unavailable = |effects: &[&'static str], code: &str, reason: &str| {
@@ -1570,25 +1621,40 @@ impl NetworkArea {
                 )
             }));
         };
-        let wifi = radios.wifi == Some(false);
-        let wwan = radios.wwan == Some(false);
-        if wifi {
+        if absent {
             unavailable(
                 &[
                     NetworkEffect::SET_WIFI.id,
                     NetworkEffect::SET_HOTSPOT.id,
                     NetworkEffect::START_HOTSPOT.id,
+                    NetworkEffect::SET_AIRPLANE_MODE.id,
+                    NetworkEffect::SET_WIRED.id,
+                    NetworkEffect::REFRESH_NETWORKS.id,
                 ],
-                "no_adapter",
-                &t("net-no-wifi-adapter"),
+                "no_service",
+                &t("net-no-service"),
             );
-        }
-        if wifi && wwan {
-            unavailable(
-                &[NetworkEffect::SET_AIRPLANE_MODE.id],
-                "no_radio",
-                &t("net-no-radio"),
-            );
+        } else {
+            let wifi = radios.wifi == Some(false);
+            let wwan = radios.wwan == Some(false);
+            if wifi {
+                unavailable(
+                    &[
+                        NetworkEffect::SET_WIFI.id,
+                        NetworkEffect::SET_HOTSPOT.id,
+                        NetworkEffect::START_HOTSPOT.id,
+                    ],
+                    "no_adapter",
+                    &t("net-no-wifi-adapter"),
+                );
+            }
+            if wifi && wwan {
+                unavailable(
+                    &[NetworkEffect::SET_AIRPLANE_MODE.id],
+                    "no_radio",
+                    &t("net-no-radio"),
+                );
+            }
         }
         statuses
     }
@@ -1679,6 +1745,9 @@ pub struct NetworkModel {
     /// False until the first snapshot arrives; until then the pane shows a
     /// pending view.
     loaded: bool,
+    /// Whether this device runs a network service, once read says: the rows
+    /// only it fills are left out when it does not, as for absent hardware.
+    service_present: Option<bool>,
     snapshot: Option<crate::channel::Receiver<NetworkSnapshot>>,
     networks: Vec<WifiNetworkInfo>,
     wifi_enabled: bool,
@@ -1949,6 +2018,7 @@ impl NetworkModel {
             reach,
             service,
             loaded: false,
+            service_present: None,
             snapshot: None,
             networks: Vec::new(),
             wifi_enabled: false,
@@ -2027,6 +2097,22 @@ impl NetworkModel {
     /// Whether this device has no Wi-Fi radio.
     fn wifi_absent(&self) -> bool {
         self.radios_present().wifi == Some(false)
+    }
+
+    /// Whether this device runs no network service: what only it answers is
+    /// left out, as for absent hardware, rather than shown as unreadable.
+    fn network_absent(&self) -> bool {
+        self.service_present == Some(false)
+    }
+
+    /// Whether Wi-Fi is left out: no radio, or no service to switch it.
+    fn wifi_unavailable(&self) -> bool {
+        self.network_absent() || self.wifi_absent()
+    }
+
+    /// Whether airplane mode has a radio to switch.
+    fn airplane_switchable(&self) -> bool {
+        !self.network_absent() && !self.radios_present().without_radios()
     }
 
     /// The networks in range, as last scanned.
@@ -2167,6 +2253,7 @@ impl NetworkModel {
     fn adopted(&self) -> Adopted {
         Adopted {
             loaded: self.loaded,
+            service_present: self.service_present,
             networks: self.networks.clone(),
             wifi_enabled: self.wifi_enabled,
             wired: self.wired.clone(),
@@ -2187,6 +2274,9 @@ impl NetworkModel {
     fn take_snapshot(&mut self, snapshot: NetworkSnapshot) -> Result<String, String> {
         // A whole snapshot says which Wi-Fi link is in use, also none.
         let whole = snapshot.wifi_enabled.is_some();
+        if snapshot.service_present.is_some() {
+            self.service_present = snapshot.service_present;
+        }
         let outcome = match snapshot.networks {
             Ok(networks) => {
                 self.networks = networks;

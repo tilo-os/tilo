@@ -473,32 +473,6 @@ fn push_surface(argv: &mut Vec<String>, payload_root: &Path, payload_mount: &Pat
     ]);
 }
 
-/// Name the resource the session's document host keeps for this launch's app,
-/// when the session serves it: the app's process opens no record of its own,
-/// reads the readings the session publishes there and submits its actions over
-/// the connection the launcher made it
-/// (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
-///
-/// The session hands the value in the launch's environment; the sandbox clears
-/// it, so it is set again here, exactly as the session gave it.
-fn push_hosted_resource(argv: &mut Vec<String>) {
-    let Ok(value) = std::env::var("TILO_HOSTED_RESOURCE") else {
-        return;
-    };
-    // A resource address: a package's kind and id, with no separator the
-    // environment or a shell could take for more than it is.
-    let allowed = !value.is_empty()
-        && value.len() <= 256
-        && !value.contains(['\0', '\n', '\r', ' ', '$', '`']);
-    if allowed {
-        argv.extend([
-            "--setenv".to_string(),
-            "TILO_HOSTED_RESOURCE".to_string(),
-            value,
-        ]);
-    }
-}
-
 fn push_continuity_environment(argv: &mut Vec<String>) {
     for key in [
         "TILO_CONTINUITY_INSTANCE",
@@ -752,9 +726,6 @@ pub fn build_bwrap_argv_for_entry(
     // the parent environment, so forward only the compact identifiers/payload
     // after rejecting control characters and an oversized resume blob.
     push_continuity_environment(&mut argv);
-    // A launch the session's document host serves opens no record of its own:
-    // it is told which resource the session publishes for it as its reading.
-    push_hosted_resource(&mut argv);
 
     // The human-readable app name from `[package].name`; omitted when
     // unset, and the toolkit derives one from the package id.
@@ -1869,36 +1840,6 @@ mod tests {
             );
             drop(env);
             assert_eq!(setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"), None);
-        }
-        {
-            // The session's document host serves this app's record: the
-            // launch names the resource, and the app's sandbox is told it.
-            // Anything but a resource address is refused.
-            for (value, forwarded) in [
-                ("tasks.tracker", true),
-                ("tube.library", true),
-                ("", false),
-                ("tasks.tracker\n", false),
-                ("a b", false),
-                ("$(id)", false),
-            ] {
-                let mut env = tilo_test_env::ScopedEnv::new();
-                env.set("TILO_HOSTED_RESOURCE", value);
-                let argv = build_bwrap_argv(
-                    &mk_manifest("off"),
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
-                assert_eq!(
-                    setenv_value(&argv, "TILO_HOSTED_RESOURCE"),
-                    forwarded.then_some(value),
-                    "{value:?}"
-                );
-            }
         }
         {
             let m = mk_manifest("off");

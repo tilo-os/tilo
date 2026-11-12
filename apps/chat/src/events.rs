@@ -860,7 +860,13 @@ impl ChatApp {
             Hit::HostModel(command) => {
                 self.activate_model_control(&command);
             }
-            Hit::Send => self.send_focused(doc),
+            Hit::Send | Hit::RetrySend => self.send_focused(doc),
+            Hit::ThreadSend => {
+                // The thread's box sends its own draft, to the message it
+                // answers, even where the conversation's box had the caret.
+                self.focus = Focus::Thread;
+                self.send_focused(doc);
+            }
             Hit::UndoDelete => self.undo_delete(),
             Hit::JumpToLatest => self.jump_to_latest(),
             Hit::ThreadScroll(end) => {
@@ -1784,7 +1790,7 @@ impl ChatApp {
     }
 
     fn send_focused(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        // Posting is a write into the workspace: gated by the OS permission
+        // Sending is a write into the workspace: gated by the OS permission
         // context (a View-only / ungranted peer can read but not send).
         if !self.can_participate() {
             return;
@@ -1798,27 +1804,29 @@ impl ChatApp {
             return;
         }
         let body = self.focused_composer().clips();
-        // Posting is the record's `post`, the verb the palette and agents
-        // use; the post binds `@name` to participants once, so no reader
-        // re-parses the body to work out who it was addressed to. The draft
-        // is the writer's own and is emptied in their own record once the
-        // post is taken; a refused post keeps it, to send again, and says
-        // so beside the composer.
-        let posted = self.try_apply_part(
-            doc,
-            ChatPart::POST.with(chat_part::Post {
-                message: NewMessage {
-                    channel: item(&self.active_channel),
-                    text,
-                    parent: parent.as_deref().map(item),
-                    body: Some(body),
-                    attachments: Vec::new(),
-                    mentions: None,
-                    written: None,
-                },
-            }),
-        );
-        if let Err(reason) = posted {
+        // The press sends what the draft holds to the conversation shown, as
+        // Chat's `send` does: the action an agent's send and the desk's
+        // send-to box run, answered here in the press that asked for it. The
+        // post binds `@name` to participants once, so no reader re-parses the
+        // body to work out who it was addressed to. The draft is the writer's
+        // own and is emptied in their own record once the send is taken; a
+        // refused send keeps it, to send again, and says so beside the
+        // composer.
+        let to = [ui::floating_surface::Recipient::found(
+            ui::floating_surface::RecipientKind::Conversation,
+            self.active_channel.clone(),
+            self.active_channel.clone(),
+        )];
+        let sending = crate::direct::SendMessage {
+            to: &to,
+            attached: Vec::new(),
+            text: &text,
+            parent,
+            body: Some(body),
+            opens: false,
+        };
+        let sent = self.send_message(sending, &crate::projection::read(doc.doc()));
+        if let Err(reason) = sent {
             self.not_sent = Some(reason);
             return;
         }

@@ -13,7 +13,7 @@
 )]
 
 use std::collections::HashMap;
-use std::net::{SocketAddr, TcpListener};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -367,12 +367,6 @@ async fn network_manager(record: Arc<Mutex<NmRecord>>) -> (zbus::Connection, zbu
     tokio::try_join!(server.build(), client.build()).expect("simulated NetworkManager")
 }
 
-fn free_port() -> SocketAddr {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|listener| listener.local_addr())
-        .expect("free port")
-}
-
 fn connected(events: &Receiver<ProjectorEvent>) -> Vec<ProjectorEvent> {
     let mut seen = Vec::new();
     let deadline = tilo_test_env::hang_deadline();
@@ -473,11 +467,13 @@ fn a_miracast_session_casts_the_portal_screen_with_audio_to_a_receiver() {
     let nm_record = Arc::new(Mutex::new(NmRecord::default()));
     let (_nm_server, system, _portal, session) =
         simulations(&bus, &screen, &portal_record, &nm_record);
-    let rtsp = free_port();
+    // The session takes the port the kernel picks and announces it in its
+    // WFD information elements; the receiver learns it from them, as a TV
+    // does, rather than being told a port no one holds yet.
     let environment = Environment {
         system,
         session,
-        rtsp,
+        rtsp: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
         audio: AudioInput::DefaultMonitor,
     };
 
@@ -487,26 +483,27 @@ fn a_miracast_session_casts_the_portal_screen_with_audio_to_a_receiver() {
     let (context, events) = SessionContext::for_test(paths, Helpers::from_env());
     let (device, options) = miracast_receiver();
 
-    std::thread::scope(|scope| {
+    let rtsp = std::thread::scope(|scope| {
         let session = scope.spawn(|| run(&device, &options, &context, &environment));
-        // The receiver connects once the session listens, as a TV does after
-        // the group forms.
-        let mut sink =
-            tilo_test_env::wait_for(
-                "the session's RTSP port",
-                || match TestSink::connect_and_play(
-                    rtsp,
-                    &SinkCapabilities::default(),
-                    tilo_test_env::hang_bound(),
-                ) {
-                    Ok(sink) => Some(sink),
-                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
-                        std::thread::sleep(Duration::from_millis(50));
-                        None
-                    }
-                    Err(error) => panic!("the receiver could not negotiate: {error}"),
-                },
-            );
+        // The receiver connects once the source announces its RTSP port, as a
+        // TV does after the group forms.
+        let (mut sink, rtsp) = tilo_test_env::wait_for("the source's announced RTSP port", || {
+            let announced = nm_record.lock().expect("record").wfd_ies.clone();
+            let port = miracast::ie::device_info(&announced)?.rtsp_port;
+            let rtsp = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+            match TestSink::connect_and_play(
+                rtsp,
+                &SinkCapabilities::default(),
+                tilo_test_env::hang_bound(),
+            ) {
+                Ok(sink) => Some((sink, rtsp)),
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    std::thread::sleep(Duration::from_millis(50));
+                    None
+                }
+                Err(error) => panic!("the receiver could not negotiate: {error}"),
+            }
+        });
         let seen = connected(&events);
         assert!(
             seen.contains(&ProjectorEvent::Connecting {
@@ -540,6 +537,7 @@ fn a_miracast_session_casts_the_portal_screen_with_audio_to_a_receiver() {
             .join()
             .expect("session thread")
             .expect("clean disconnect");
+        rtsp
     });
 
     let nm = std::mem::take(&mut *nm_record.lock().expect("record"));

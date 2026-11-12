@@ -34,7 +34,8 @@ use tilo_live::live::{self, Namespace, Track};
 use tilo_live::native;
 use tilo_live::plane::{self, Heard, Join, Plane, PlaneError};
 use tilo_live::relay::{
-    AuthorizationStatus, Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization,
+    Admission, AuthorizationStatus, Denied, Direction, Peer, Relay, RelayAuthority,
+    SessionAuthorization,
 };
 use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
@@ -116,7 +117,13 @@ impl Authority {
 }
 
 impl RelayAuthority for Authority {
-    fn admit(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit<'a>(&'a self, peer: Peer, proof: &'a [u8]) -> Admission<'a> {
+        Box::pin(std::future::ready(self.decide(peer, proof)))
+    }
+}
+
+impl Authority {
+    fn decide(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let Peer(device) = peer;
         let grant = grant::Native::parse(proof).ok_or(Denied)?;
         if live::workspace_bytes(WORKSPACE) != Some(grant.workspace) {

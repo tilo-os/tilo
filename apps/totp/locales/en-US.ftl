@@ -73,3 +73,4 @@ totp-a11y-account = Authenticator account
 totp-a11y-accounts = Authenticator accounts
 totp-a11y-none = No accounts
 totp-a11y-accounts-hint = { $total } accounts. Arrow keys change the selected account.
+totp-empty-message = Scan a QR code or paste a setup link to see its one-time codes here.

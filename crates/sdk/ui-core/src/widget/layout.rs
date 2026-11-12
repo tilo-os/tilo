@@ -1178,6 +1178,10 @@ impl CompositionFocus {
                 mutate_bound_node(bindings, nodes, node, |widget| {
                     if Some(node) != keep && Some(node) != target && widget.is_focused() {
                         widget.set_focus(false);
+                        // Focus leaving is input the component takes up.
+                        if let Some(binding) = bindings.binding_ref(node) {
+                            binding.note_input();
+                        }
                     }
                 })
             };
@@ -1191,6 +1195,9 @@ impl CompositionFocus {
         // must not clear a child after its owner has just focused it.
         if let Some(node) = target {
             let _ = unsafe {
+                if let Some(binding) = bindings.binding_ref(node) {
+                    binding.note_input();
+                }
                 mutate_bound_node(bindings, nodes, node, |widget| {
                     widget.set_focus(true);
                     if let Some(state) = &self.state {

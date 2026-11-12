@@ -10,7 +10,6 @@ pub use reach::{Linked, OwnHost, Reach};
 use crate::direct::DirectSync;
 use crate::join::TransportHint;
 use crate::owner::{AppWrite, NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, took_in};
-use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
 use tilo_identity_host::custody::HostIdentity;
@@ -164,8 +163,11 @@ impl Connect {
     ///
     /// # Errors
     /// The workspace is not held here.
-    pub fn link(&self, key: SigningKey) -> Result<DirectSync, String> {
-        DirectSync::over(self.owner.replica(self.workspace)?, key)
+    pub fn link(
+        &self,
+        signer: impl collab_types::signer::DeviceSigner + 'static,
+    ) -> Result<DirectSync, String> {
+        DirectSync::over(self.owner.replica(self.workspace)?, signer)
             .owning(self.owner.clone(), self.workspace)
     }
     /// The owner of the workspace's record.

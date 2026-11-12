@@ -184,6 +184,9 @@ pub struct Engine {
     /// The desk's workspaces this device could not found here: founding one is asked for again only
     /// by a later session, not by every pass over the desk.
     unfounded: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
+    /// The desk's workspaces being founded now: a pass that comes while one is signed founds it
+    /// no second time.
+    founding: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
     /// This device's workspaces as its other devices reach them, when it keeps a state directory to
     /// hold their frames in.
     #[cfg(not(target_arch = "wasm32"))]
@@ -202,6 +205,17 @@ pub struct Engine {
     /// Sealed records as this device last opened them for a reader, so the next read opens only
     /// what was sealed since: a record its apps follow is opened once per write, not whole per read.
     kept: std::sync::Mutex<KeptRecords>,
+    /// What this device last named its workspaces' hosts as: the address it wrote, and which
+    /// workspaces it wrote it to ([`Self::name_own_hosts`]).
+    named_hosts: std::sync::Mutex<NamedHosts>,
+}
+
+/// What [`Engine::name_own_hosts`] last named: the address of the endpoint it named, and the
+/// workspaces that were hosted then.
+#[derive(Default)]
+struct NamedHosts {
+    endpoint: Option<iroh_base::EndpointAddr>,
+    workspaces: Vec<WorkspaceId>,
 }
 
 /// The sealed records this device keeps opened, by workspace, app and record, with the keys that
@@ -316,6 +330,17 @@ impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
             .ok_or("this device's channel service is not running")?
             .seal_checkpoint(workspace, app, record, snapshot)
     }
+
+    fn renew(
+        &self,
+        workspace: WorkspaceId,
+        write: &collab_types::SignedOp,
+    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
+        self.0
+            .get()
+            .ok_or("this device's channel service is not running")?
+            .renew_sealed(workspace, write)
+    }
 }
 
 impl Engine {
@@ -338,6 +363,7 @@ impl Engine {
             custody,
             link: std::sync::Mutex::new(None),
             unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            founding: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             #[cfg(not(target_arch = "wasm32"))]
             directed: None,
             arrivals: Arc::new(crate::arrivals::Arrivals::default()),
@@ -345,6 +371,7 @@ impl Engine {
             channel_keys: std::sync::Mutex::default(),
             held: HeldWrites::default(),
             kept: std::sync::Mutex::default(),
+            named_hosts: std::sync::Mutex::default(),
         }
     }
 
@@ -377,7 +404,7 @@ impl Engine {
         {
             Ok(store) => Some(tilo_peer_state::direct::Owning::new(
                 owner,
-                engine.identity.signing_key()?,
+                Arc::clone(&engine.identity.signer),
                 Arc::new(store),
             )),
             Err(error) => {
@@ -996,10 +1023,10 @@ impl Engine {
         };
         let committed = self
             .owner
-            .write(workspace, draft, self.identity.signer.as_ref(), true, now)
+            .write(workspace, draft, self.identity.signer.as_ref(), now)
             .await?
             .pop()
-            .ok_or("the workspace has no room for the write now")?;
+            .ok_or("the write was not committed")?;
         self.schedule_publication(workspace);
         let tilo_peer_state::owner_commit::CommitOperation::Document { envelope, .. } =
             committed.0.operation
@@ -1314,7 +1341,7 @@ impl Engine {
     /// The workspace is not held here, this device's person may not invite into it or
     /// hand out that part, or the workspace cannot be published.
     #[cfg(target_os = "linux")]
-    pub fn issue_invitation(
+    pub async fn issue_invitation(
         &self,
         workspace: &str,
         role: MemberRole,
@@ -1341,22 +1368,24 @@ impl Engine {
         let expires_at_ns = now_ns.saturating_add(expires_in_seconds.saturating_mul(1_000_000_000));
         let mut request_id = [0; 32];
         getrandom::fill(&mut request_id).map_err(|error| error.to_string())?;
-        let issued = collab_types::signer::at_once(self.owner.issue_invitation(
-            room,
-            &identity.device_cert,
-            &IssueInvitationRequest {
-                request_id,
-                role,
-                recipient_user_public_key,
-                invitee_name,
-                expires_at_ns,
-                inviter_name: None,
-            },
-            &[hint],
-            identity.signer.as_ref(),
-            now,
-        ))
-        .map_err(|error| error.to_string())??;
+        let issued = self
+            .owner
+            .issue_invitation(
+                room,
+                &identity.device_cert,
+                &IssueInvitationRequest {
+                    request_id,
+                    role,
+                    recipient_user_public_key,
+                    invitee_name,
+                    expires_at_ns,
+                    inviter_name: None,
+                },
+                &[hint],
+                identity.signer.as_ref(),
+                now,
+            )
+            .await?;
         Ok(Issued {
             invite: hex::encode(issued.invite_id),
             link: tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation),
@@ -1586,7 +1615,7 @@ impl Engine {
             host_device_certificate: identity.device_cert.clone(),
             packet_relay_url,
         }
-        .transport_hint(&identity.signing_key()?)
+        .transport_hint(identity.signer.as_ref())
         .map_err(|error| error.to_string())
     }
 
@@ -1596,16 +1625,32 @@ impl Engine {
     /// the workspace's record keeps as its host's address. A workspace this device may not own, or
     /// one that could not be published, stays the desk's own.
     #[cfg(target_os = "linux")]
-    pub fn found(
+    pub async fn found(
         &self,
         slot: WorkspaceSlot,
         workspace: WorkspaceId,
         name: &str,
         endpoint: Option<&iroh_base::EndpointAddr>,
     ) {
-        if self.holds(workspace) || self.unfounded.lock_recover().contains(&workspace) {
+        if self.holds(workspace)
+            || self.unfounded.lock_recover().contains(&workspace)
+            || !self.founding.lock_recover().insert(workspace)
+        {
             return;
         }
+        self.found_here(slot, workspace, name, endpoint).await;
+        self.founding.lock_recover().remove(&workspace);
+    }
+
+    /// [`Self::found`] once nothing else founds `workspace`.
+    #[cfg(target_os = "linux")]
+    async fn found_here(
+        &self,
+        slot: WorkspaceSlot,
+        workspace: WorkspaceId,
+        name: &str,
+        endpoint: Option<&iroh_base::EndpointAddr>,
+    ) {
         let identity = self.identity();
         if !identity.device_cert.capabilities.can_own_workspaces {
             return;
@@ -1635,8 +1680,7 @@ impl Engine {
             host_hint.as_ref(),
             tilo_clock::wall(),
         );
-        match collab_types::signer::at_once(founded).unwrap_or_else(|error| Err(error.to_string()))
-        {
+        match founded.await {
             Ok(_) => self.bind(slot, workspace),
             Err(error) => {
                 tracing::warn!(%error, %workspace, "the workspace was not founded here");
@@ -1651,24 +1695,50 @@ impl Engine {
     /// so what a workspace says keeps up with the relays this device answers through.
     #[cfg(target_os = "linux")]
     pub fn name_own_hosts(&self, endpoint: &iroh_base::EndpointAddr) {
-        for workspace in self.owner.hosted() {
+        // Nothing it would write moved since it last wrote: the address is the one it named and
+        // the same workspaces are hosted, so every record already says this. Naming them again
+        // would sign a hint per workspace and wait on each record's turn for no change — on the
+        // pass, once per workspace, while the person types into one of them.
+        let hosted = self.owner.hosted();
+        if self.named(&hosted, endpoint) {
+            return;
+        }
+        let mut named = true;
+        for workspace in &hosted {
             let hint = match self.own_host_hint(&workspace.to_string(), endpoint) {
                 Ok(hint) => hint,
                 Err(error) => {
                     tracing::warn!(%error, %workspace, "this device's own host could not be named");
+                    named = false;
                     continue;
                 }
             };
-            match self.owner.name_host(workspace, hint) {
+            match self.owner.name_host(*workspace, hint) {
                 Ok(true) => {
                     tracing::info!(%workspace, "the workspace's own host is named in its record");
                 }
                 Ok(false) => {}
                 Err(error) => {
                     tracing::warn!(%error, %workspace, "the workspace's own host was not named");
+                    named = false;
                 }
             }
         }
+        // Only what every one of them took is named: a workspace that refused is asked again on
+        // the next pass rather than waiting for the address to move.
+        if named {
+            *self.named_hosts.lock_recover() = NamedHosts {
+                endpoint: Some(endpoint.clone()),
+                workspaces: hosted,
+            };
+        }
+    }
+
+    /// Whether `hosted` at `endpoint` is what this device last named.
+    #[cfg(target_os = "linux")]
+    fn named(&self, hosted: &[WorkspaceId], endpoint: &iroh_base::EndpointAddr) -> bool {
+        let named = self.named_hosts.lock_recover();
+        named.endpoint.as_ref() == Some(endpoint) && named.workspaces.as_slice() == hosted
     }
 
     /// Whether this device holds a link into a workspace that still admits someone: a person who
@@ -1902,9 +1972,9 @@ mod tests {
         let workspace = WorkspaceId::new();
         let slot = WorkspaceSlot(7);
 
-        engine.found(slot, workspace, "Desk", Some(&at));
+        pollster::block_on(engine.found(slot, workspace, "Desk", Some(&at)));
         // Again, as every pass over the desk does: one workspace, still the one the desk made.
-        engine.found(slot, workspace, "Desk", Some(&at));
+        pollster::block_on(engine.found(slot, workspace, "Desk", Some(&at)));
 
         assert!(
             engine.holds(workspace),
@@ -1932,7 +2002,7 @@ mod tests {
         let host = identity.device_cert.device_public_key;
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
+        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
 
         let hint = engine
             .owner
@@ -1947,6 +2017,56 @@ mod tests {
             .expect("its own member acts there, its host being in this process");
     }
 
+    /// A pass names the host of the workspaces this device hosts only when what it would name
+    /// moved: the same address on the next pass signs nothing and waits on no record's turn.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_pass_names_the_hosts_of_its_workspaces_only_when_the_address_moves() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let at = endpoint(&identity);
+        let device = iroh_base::EndpointId::from_bytes(&identity.device_cert.device_public_key)
+            .expect("a device endpoint");
+        let engine = engine(state.path(), identity);
+        let workspace = WorkspaceId::new();
+        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
+        let named = || {
+            engine
+                .owner
+                .with_current(workspace, |view| Ok(view.transport_hint().cloned()))
+                .expect("a workspace this device founded")
+        };
+        let first = named();
+
+        engine.name_own_hosts(&at);
+        assert!(
+            engine.named(&[workspace], &at),
+            "the address it named is the one it keeps"
+        );
+        // The record says something else now, as a net report of the address beside the same
+        // relay would have it: one more pass at the same address writes nothing, and the pass
+        // after an address that moved names it again.
+        let elsewhere = iroh_base::EndpointAddr::new(device)
+            .with_relay_url("https://relay.example.com/".parse().expect("a relay"));
+        engine.name_own_hosts(&at);
+        assert_eq!(
+            named(),
+            first,
+            "a pass with the same address writes nothing"
+        );
+        assert!(
+            !engine.named(&[workspace], &elsewhere),
+            "an address that moved is not what it last named"
+        );
+        engine.name_own_hosts(&elsewhere);
+        assert_ne!(
+            named(),
+            first,
+            "a pass with an address that moved writes it"
+        );
+        assert!(engine.named(&[workspace], &elsewhere));
+    }
+
     /// What this device tells its siblings of where its workspaces are hosted reads back as the
     /// hint itself: a sibling decodes a `TransportHint` from each, and enters the workspace at the
     /// host it names.
@@ -1958,7 +2078,7 @@ mod tests {
         let host = identity.device_cert.device_public_key;
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
+        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
 
         let hints = engine.host_hints();
         assert_eq!(hints.len(), 1, "one hint for the one workspace held");
@@ -1977,7 +2097,7 @@ mod tests {
         let (identity, _) = identity(DeviceCapabilities::member());
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        engine.found(WorkspaceSlot(7), workspace, "Desk", None);
+        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", None));
 
         assert!(
             engine.holds(workspace),
@@ -2002,7 +2122,7 @@ mod tests {
         let at = endpoint(&identity);
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
+        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
 
         assert!(
             engine.may_delete(workspace),
@@ -2041,7 +2161,7 @@ mod tests {
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
 
-        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
+        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
 
         assert!(!engine.holds(workspace));
         assert!(!engine.may_invite(&workspace.to_string()));

@@ -653,10 +653,16 @@ pub(crate) fn widget_format(key: &str, args: &[(&str, ArgValue)]) -> String {
 /// without one resolves the source copy, as [`widget_format`] does.
 #[must_use]
 pub fn widget_text(key: &str) -> String {
+    widget_text_with(key, None)
+}
+
+/// [`widget_text`] with the message's arguments.
+#[must_use]
+pub fn widget_text_with(key: &str, args: Option<&fluent::FluentArgs<'_>>) -> String {
     if manager_id().is_some() {
         WIDGET_CATALOG.ensure();
     }
-    I18nManager::lookup(key, None)
+    I18nManager::lookup(key, args)
 }
 
 /// The name a control is announced by: `name` taken as text when the caller
@@ -1523,6 +1529,58 @@ impl EmbeddedCatalog {
         sources
     }
 
+    /// Every language's words for `key`, each once, in the order of
+    /// [`Self::every_source`]: what a stored name the app itself wrote can be
+    /// recognised by, whichever language wrote it (a built-in's name kept in
+    /// a record before the reader's language was known).
+    #[must_use]
+    pub fn every_value(&self, key: &str) -> Vec<String> {
+        // Keys are few and the answer never depends on the selected language,
+        // so it is read once per catalogue until the language packs move.
+        thread_local! {
+            static VALUES: std::cell::RefCell<
+                std::collections::HashMap<
+                    (usize, Option<&'static str>, String),
+                    (u64, Vec<String>),
+                >,
+            > = std::cell::RefCell::new(std::collections::HashMap::new());
+        }
+        let catalogue = self.catalogs.as_ptr().addr();
+        let generation = PACKS_GENERATION.load(std::sync::atomic::Ordering::Relaxed);
+        let slot = (catalogue, self.pack.map(|pack| pack.id), key.to_owned());
+        if let Some(held) = VALUES.with(|values| {
+            values
+                .borrow()
+                .get(&slot)
+                .filter(|(held, _)| *held == generation)
+                .map(|(_, words)| words.clone())
+        }) {
+            return held;
+        }
+        let words: Vec<String> = self
+            .every_source()
+            .into_iter()
+            .filter_map(|(locale, source)| {
+                let resource = shared_resource(source).ok()?;
+                let mut bundle = new_bundle(&parse_locale_or_default(locale));
+                bundle.add_resource(resource).ok()?;
+                let message = bundle.get_message(key)?;
+                let mut errors = Vec::new();
+                Some(
+                    bundle
+                        .format_pattern(message.value()?, None, &mut errors)
+                        .into_owned(),
+                )
+            })
+            .collect();
+        VALUES.with(|values| {
+            values
+                .borrow_mut()
+                .insert(slot, (generation, words.clone()));
+        });
+        words
+    }
+
     /// The languages this catalogue can show, each once: the embedded ones
     /// and those with an installed pack, in the order the catalogue names
     /// them. A language installed under two tags (`de` and `de-DE`) is named
@@ -1948,6 +2006,20 @@ mod tests {
         assert_eq!(missing.read("xx-XX"), None);
         assert!(!missing.has("xx-XX"));
         assert_eq!(PACKED.languages(), ["en-US", "de-DE"]);
+    }
+
+    #[test]
+    fn a_messages_words_come_back_in_every_language_the_catalogue_ships() {
+        static SPELLED: EmbeddedCatalog = EmbeddedCatalog::new(
+            "en-US",
+            &[
+                ("en-US", "spelled-name = Default\nspelled-only = English\n"),
+                ("de-DE", "spelled-name = Standard\n"),
+            ],
+        );
+        assert_eq!(SPELLED.every_value("spelled-name"), ["Default", "Standard"]);
+        assert_eq!(SPELLED.every_value("spelled-only"), ["English"]);
+        assert!(SPELLED.every_value("spelled-missing").is_empty());
     }
 
     /// Lookup uses thread-local state; worker threads are reused across tests.

@@ -214,8 +214,9 @@ pub struct Options {
     pub states: Vec<String>,
     /// Controls pressed by the words they carry, in order, before each window is read: what a
     /// person opens by pressing it (`--press "Since you looked"`, or the row of a task, which
-    /// opens where it stands), where a click is the only way to reach it. A label under
-    /// `keys`' rules: it reaches the window at the `dump` size.
+    /// opens where it stands, or the box beside that row's title, `Mark Buy oat milk done`),
+    /// where a click is the only way to reach it. A label under `keys`' rules: it reaches the
+    /// window at the `dump` size.
     pub presses: Vec<String>,
     /// Key presses sent to each window before it is read, in order, as
     /// [`ui::headless::FrameHarness::key`] names them (`Tab`, `Down`, `Space`, or a chord that
@@ -1419,13 +1420,46 @@ fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<Stri
         .find_map(|child| button_named(child, label))
 }
 
-/// How a press by its words reaches a window: the control of that name, or where a menu row of
-/// that name stands — a row is painted by the menu that shows it, so only a press at where it
-/// stands reaches it.
+/// How a press by its words reaches a window: the control of that name, the box a widget
+/// publishes of its own, or where a menu row of that name stands — a row is painted by the menu
+/// that shows it, so only a press at where it stands reaches it.
 enum Pressing {
     /// A control, and whether a click reaches it rather than its semantic action.
     Control(String, bool),
+    /// A control a widget publishes as a semantic child of its own: the widget holding it, and
+    /// the child's target.
+    Child(String, String),
     At(ui::kurbo::Rect),
+}
+
+/// The box a widget publishes as a control of its own, named `label`: the box beside a row's
+/// title, which the row draws apart from its own words so that a person or a tool reaches the
+/// box and not the row (`Mark Buy oat milk done`). The widget's test id, and the child's target.
+fn checked_control_named(
+    node: &ui::headless::InspectionNode,
+    label: &str,
+) -> Option<(String, String)> {
+    let target = node.semantics.as_ref().and_then(|access| {
+        access.children.iter().find_map(|child| {
+            let presses = matches!(
+                child.role,
+                ui::a11y::Role::Checkbox | ui::a11y::Role::Switch | ui::a11y::Role::RadioButton
+            );
+            if presses && !child.state.disabled && child.name.as_deref() == Some(label) {
+                child.action_target.clone()
+            } else {
+                None
+            }
+        })
+    });
+    if let Some(target) = target
+        && let Some(id) = &node.test_id
+    {
+        return Some((id.clone(), target));
+    }
+    node.children
+        .iter()
+        .find_map(|child| checked_control_named(child, label))
 }
 
 /// The box the row `label` of a menu stands at, under `node`, when the window shows one.
@@ -2024,6 +2058,10 @@ impl AppCheck<'_> {
                                 painted_button_named(root, press)
                                     .map(|id| Pressing::Control(id, false))
                             })
+                            .or_else(|| {
+                                checked_control_named(root, press)
+                                    .map(|(id, target)| Pressing::Child(id, target))
+                            })
                             .or_else(|| painted_row_named(root, press).map(Pressing::At))
                     };
                     let Some(pressing) = found else {
@@ -2035,6 +2073,7 @@ impl AppCheck<'_> {
                             staged.press(&id, layout.size.touch)?;
                         }
                         Pressing::Control(id, _) => staged.press_action(&id)?,
+                        Pressing::Child(id, target) => staged.press_child(&id, &target)?,
                         Pressing::At(bounds) => {
                             let center = bounds.center();
                             staged.press_at(center.x, center.y)?;

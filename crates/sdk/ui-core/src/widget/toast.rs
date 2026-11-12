@@ -1346,6 +1346,7 @@ fn paint_card_actions(
     if card.secondary_action.is_empty() || card.primary_action.is_empty() {
         return None;
     }
+    let theme = &on_card(theme);
     let (pad_x, _) = card_pad(theme);
     let left = rect.x0 + pad_x;
     let right = rect.x1 - pad_x;
@@ -1551,6 +1552,7 @@ fn paint_single_action(
     card: &ToastCard<'_>,
     alpha: f32,
 ) -> Rect {
+    let theme = &on_card(theme);
     let width = single_action_width(text_renderer, theme, card.primary_action);
     let height = ButtonFace::height(crate::widget::ControlSize::Small, theme);
     let x1 = if card.closable {
@@ -1582,6 +1584,12 @@ fn paint_single_action(
         scene.pop_layer();
     }
     rect
+}
+
+/// The theme of the controls standing on a card: a secondary face steps off the card's own ground,
+/// as it does on any floating panel, rather than off the window's content it would sink into.
+fn on_card(theme: &Theme) -> Theme {
+    theme.on_ground(crate::widget::floating_surface::card_ground(theme))
 }
 
 /// The height a card's progress bar and the gap above it take.

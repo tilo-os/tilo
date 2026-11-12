@@ -163,6 +163,11 @@ calendar-quick-field = Was hinzugefügt wird
 calendar-quick-add = Hinzufügen
 calendar-quick-cancel = Abbrechen
 
+## Der Titel des Blatts, das einen Termin oder eine Aufgabe bearbeitet
+
+calendar-event-detail-title = Termin
+calendar-task-detail-title = Aufgabe
+
 ## Die Tasten, auf die dieses Fenster hört
 
 calendar-help-title = Tastenkürzel
@@ -195,6 +200,9 @@ calendar-location-placeholder = Ort hinzufügen
 ## Fenster- und Barrierefreiheits-Texte
 calendar-a11y-task-due = Fällig am
 
+## Die Antwort des Editors
+calendar-done = Fertig
+
 ## Was ein Bedienelement vorliest
 calendar-a11y-today = Zum heutigen Tag
 calendar-a11y-previous = Vorheriger Zeitraum
@@ -222,3 +230,21 @@ calendar-a11y-due-previous-month = Vorheriger Fälligkeitsmonat
 calendar-a11y-due-next-month = Nächster Fälligkeitsmonat
 calendar-a11y-clear-due = Fälligkeit der Aufgabe entfernen
 calendar-a11y-set-due = Fälligkeit der Aufgabe auf { $day } setzen
+calendar-a11y-move-event-to = Termin auf { $day } verschieben
+calendar-a11y-show-tasks-in = Aufgaben in { $list } anzeigen
+calendar-a11y-show-calendar = Kalender { $calendar } anzeigen
+calendar-a11y-account-calendars = Kalender von { $account }
+calendar-a11y-open-event = Termin { $title } öffnen
+calendar-a11y-open-task = Aufgabe { $title } öffnen
+calendar-a11y-toggle-task = { $done ->
+    [true] Aufgabe { $title } wieder öffnen
+   *[false] Aufgabe { $title } als erledigt markieren
+}
+calendar-a11y-delete-event = Termin löschen
+
+## Wie die Auswahllisten des Editors heißen
+calendar-editor-calendar = Kalender
+calendar-editor-repeat = Wiederholung
+calendar-editor-alert = Erinnerung
+calendar-editor-time-zone = Zeitzone
+calendar-editor-priority = Priorität

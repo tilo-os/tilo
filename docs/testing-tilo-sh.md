@@ -22,21 +22,25 @@ lists every command.
 under rootless podman. That is the rehearsal of what ships: the images as
 they are packaged, which their own checks (`image-lounge`, `image-web-entry`,
 `test-image-front-door`) hold to booting, answering their health route and
-one request per route, and which the release publishes. `t test
-tilo-sh-local` does not wait for them: it runs this commit's programs.
+one request per route, and which the release publishes. `t test e2e` does not
+wait for them: it runs this commit's programs.
 
 ## Checking a change end to end
 
-`t test tilo-sh-local` is the whole product, used as people use it, on the
-programs this commit builds: the check compiles nothing and starts no
-container. Everything it runs is another check's output — `tilo-sh-binaries`
-(the relay's context and the door), `tilo-sh-caddy`, `image-web-entry-context`
-(the site, laid out as the web entry image lays it out) and `cli-x86_64` —
-handed to `stack.sh` as `TILO_SH_LOUNGE`, `TILO_SH_PROGRAMS`, `TILO_SH_SITE`,
-`TILO_SH_CADDY` and `TILO_SH_CLI_DIR`. A change to the check alone reruns the
-check alone, and a change to the page or the relay reruns only what that
-change moved plus this check. `t test tilo-sh-local-vm` is the same stack with
-its VM host, from the images that host runs.
+`t test e2e` is the whole product, used as people use it, on the programs this
+commit builds: the check compiles nothing and starts no container. Everything
+it runs is another check's output — `tilo-sh-binaries` (the relay's context
+and the door), `tilo-sh-caddy`, `image-web-entry-context` (the site, laid out
+as the web entry image lays it out), `lounge-gate-*` (the relay, the command
+and the tools the page's own flows run) and the web bundle — handed to
+`stack.sh` as `TILO_SH_LOUNGE`, `TILO_SH_PROGRAMS`, `TILO_SH_SITE` and
+`TILO_SH_CADDY`. The stack is brought up once, and then every flow runs at
+the same time against its site, relay and door: the page's own flows
+(`os/containers/tilo-lounge/test-e2e.sh`) and this check's native steps, as
+flows of that runner (`check.sh --flow signin|visa|entry|passkey`). A change
+to a step reruns the run, and a change to the page or the relay reruns only
+what that change moved plus it. `t test tilo-sh-local-vm` is the same stack
+with its VM host, from the images that host runs.
 
 ## Changing code
 
@@ -115,7 +119,7 @@ does not know how to move stops the start.
   over that path for the relay and the door alone, as the containers mount
   it. Nothing else of the machine changes, and nothing runs as root.
 - **Natively, Caddy's version.** The relay's TLS and the web entry use the
-  `caddy` the caller built (`TILO_SH_CADDY`, which `t test tilo-sh-local`
+  `caddy` the caller built (`TILO_SH_CADDY`, which `t test e2e`
   hands the stack), else the `caddy` on your `PATH`, else the pinned release
   (`os/containers/tilo-sh/caddy.env`, the web entry image's version, one pin
   for the stack and the check that builds it) fetched once and checked
@@ -200,10 +204,13 @@ release candidate, give its `sha-<commit>` images.
 ## The end-to-end check
 
 ```sh
-os/containers/tilo-sh/stack.sh check   # this checkout's programs, as t test tilo-sh-local runs it
+os/containers/tilo-sh/stack.sh check   # this checkout's programs, brought up and used end to end
 ```
 
-The check brings the stack up and uses it as people and backends do:
+The check brings the stack up and uses it as people and backends do. `t test
+e2e` runs the same steps against the stack it already has up, as flows beside
+the page's (`check.sh --flow signin|visa|entry|passkey`), so this is what
+`stack.sh check` does on its own:
 
 1. A fresh startup identity, in its own headless Chromium, approves the
    server key that `tilo keys create` asks for on the local `/sign-in` page.

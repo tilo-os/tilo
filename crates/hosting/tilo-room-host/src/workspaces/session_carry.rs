@@ -147,7 +147,8 @@ impl Workspaces {
     /// it, the one its copy becomes once it lands, in the link's order. A
     /// page that opens the record is sent these beside the relay's own, so
     /// it never hears the record is absent while the workspace's host keeps
-    /// it.
+    /// it. A write a sealed compaction `held` covers is no write it lacks:
+    /// the relay folded it into that compaction and let it go.
     ///
     /// # Errors
     ///
@@ -158,6 +159,24 @@ impl Workspaces {
         channel: [u8; 32],
         held: &[crate::transport::Envelope],
     ) -> Result<Vec<crate::transport::Envelope>, String> {
+        let mut covered: std::collections::HashMap<[u8; 32], u64> =
+            std::collections::HashMap::new();
+        for message in held.iter().filter_map(relay_frame_write) {
+            let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = &message else {
+                continue;
+            };
+            if envelope.kind != collab_types::OpKind::Compaction {
+                continue;
+            }
+            // ignored-failure: a compaction that does not parse covers nothing, and the link's writes are sent
+            let Ok(compaction) = collab_types::SealedCompaction::parse(envelope) else {
+                continue;
+            };
+            for (author, floor) in compaction.covers {
+                let at = covered.entry(*author.as_bytes()).or_default();
+                *at = (*at).max(floor);
+            }
+        }
         let held: std::collections::HashSet<(tilo_peer_state::store::Lineage, u64)> = held
             .iter()
             .filter_map(relay_frame_write)
@@ -188,7 +207,11 @@ impl Workspaces {
                 ) else {
                     continue;
                 };
-                if held.contains(&(frame.lineage, frame.seq)) {
+                if held.contains(&(frame.lineage, frame.seq))
+                    || covered
+                        .get(&frame.lineage.author)
+                        .is_some_and(|floor| frame.seq <= *floor)
+                {
                     continue;
                 }
                 let body = postcard::to_allocvec(message).map_err(|error| error.to_string())?;

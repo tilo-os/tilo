@@ -92,24 +92,19 @@ impl ZoneKind {
         }
     }
 
-    /// One-line description shown under the zone title in the summary.
-    pub fn description(self) -> &'static str {
+    /// The catalogue message describing this zone, shown under its title in
+    /// the summary.
+    pub fn description_message(self) -> &'static str {
         match self {
-            ZoneKind::Drop => {
-                "Incoming traffic is dropped without a reply. Outgoing traffic is allowed."
-            }
-            ZoneKind::Block => "Incoming connections are refused. Outgoing traffic is allowed.",
-            ZoneKind::Public => {
-                "For untrusted public networks. Only the services you allow are reachable."
-            }
-            ZoneKind::External => "For the outside of a router that masquerades your network.",
-            ZoneKind::Dmz => "For public-facing hosts with limited access to the internal network.",
-            ZoneKind::Work => "For work networks where you mostly trust the other computers.",
-            ZoneKind::Home => "For home networks where you mostly trust the other computers.",
-            ZoneKind::Internal => {
-                "For internal networks where you mostly trust the other computers."
-            }
-            ZoneKind::Trusted => "All network connections are accepted.",
+            ZoneKind::Drop => "firewall-zone-drop-description",
+            ZoneKind::Block => "firewall-zone-block-description",
+            ZoneKind::Public => "firewall-zone-public-description",
+            ZoneKind::External => "firewall-zone-external-description",
+            ZoneKind::Dmz => "firewall-zone-dmz-description",
+            ZoneKind::Work => "firewall-zone-work-description",
+            ZoneKind::Home => "firewall-zone-home-description",
+            ZoneKind::Internal => "firewall-zone-internal-description",
+            ZoneKind::Trusted => "firewall-zone-trusted-description",
         }
     }
 

@@ -124,6 +124,44 @@ ebook-reading-theme = { $theme ->
 }
 ebook-use-scheme = Use { $scheme } colour theme
 ebook-untitled = Untitled
+ebook-annotation-bookmark = Bookmark
+ebook-annotation-highlight = Highlight
+ebook-annotation-note = Note
+ebook-annotation-comment = { $kind } comment
+ebook-annotation-unknown-book = Unknown book
+ebook-annotation-locator = Chapter { $chapter }, paragraph { $paragraph }
+ebook-search-title = Search
+ebook-search-results = { $count ->
+    [one] 1 result
+   *[other] { $count } results
+}
+ebook-font-default = Default
+ebook-font-mono = Mono
+ebook-scheme-light = Light
+ebook-scheme-sepia = Sepia
+ebook-scheme-dark = Dark
+ebook-scheme-high-contrast = High contrast
+ebook-scheme-new = Scheme { $number }
+ebook-scheme-copy = { $scheme } copy
+ebook-mode-paged = Pages
+ebook-mode-continuous = Scroll
+ebook-mode-two-pages = Two pages
+ebook-composition-justified = Justified
+ebook-composition-ragged = Ragged
+
+## The reading-appearance popover
+ebook-appearance-text-size = Text size
+ebook-appearance-line-spacing = Line spacing
+ebook-appearance-layout = Layout
+ebook-appearance-alignment = Alignment
+ebook-appearance-typeface = Typeface
+ebook-appearance-colours = Colours
+ebook-appearance-manage = Fonts and schemes
+
+## The library settings page, before any folder is watched
+ebook-library-empty-title = No folders yet
+ebook-library-empty-message = Open a book from a folder to keep that folder's books together.
+ebook-library-empty-action = Open a book
 
 ebook-get = Get
 
@@ -171,6 +209,7 @@ ebook-action-annotation = { $action }: { $text }
 ebook-action-open-comments = Open highlight comments
 ebook-action-close-comments = Close comments
 ebook-action-delete-highlight = Delete highlight
+ebook-action-delete-highlight-comments = Delete highlight and comments
 ebook-action-add-comment = Add comment
 ebook-action-edit-comment = Edit comment
 ebook-action-delete-comment = Delete comment
@@ -206,3 +245,15 @@ ebook-action-open-result = Open result
 ebook-action-get-book = Get book
 ebook-action-back = Back
 ebook-empty-comment = Empty comment
+
+## What the settings page and the note editor call themselves
+ebook-settings-default-font = Default font
+ebook-write-comment = Write a comment
+ebook-write-note = Write a note
+
+## What the settings sheets are titled
+ebook-edit-scheme-title = Edit scheme
+ebook-add-font-title = Add a system font
+
+## The buttons of the settings sheets
+ebook-done = Done

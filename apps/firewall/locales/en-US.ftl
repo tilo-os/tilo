@@ -81,3 +81,18 @@ firewall-stop-confirm = Turn off the firewall
 firewall-panic-title = Enter panic mode?
 firewall-panic-body = All incoming and outgoing traffic is dropped, including the remote session you may be using to fix this machine. Anything already connected is cut.
 firewall-panic-confirm = Drop all traffic
+
+## What each zone is for
+firewall-zone-drop-description = Incoming traffic is dropped without a reply. Outgoing traffic is allowed.
+firewall-zone-block-description = Incoming connections are refused. Outgoing traffic is allowed.
+firewall-zone-public-description = For untrusted public networks. Only the services you allow are reachable.
+firewall-zone-external-description = For the outside of a router that masquerades your network.
+firewall-zone-dmz-description = For public-facing hosts with limited access to the internal network.
+firewall-zone-work-description = For work networks where you mostly trust the other computers.
+firewall-zone-home-description = For home networks where you mostly trust the other computers.
+firewall-zone-internal-description = For internal networks where you mostly trust the other computers.
+firewall-zone-trusted-description = All network connections are accepted.
+firewall-service-unavailable-hint = Start firewalld, then try again. No rules were changed.
+firewall-panic-mode-message = All incoming and outgoing network traffic is dropped.
+firewall-stopped-message = No rules are enforced until you turn it on.
+firewall-nothing-dropped-message = The kernel logged no dropped or rejected packets in the last { $minutes } minutes.

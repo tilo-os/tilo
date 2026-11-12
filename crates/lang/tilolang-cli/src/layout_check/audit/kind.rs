@@ -186,14 +186,20 @@ pub enum Kind {
     /// screen that narrow starts its body on the gutter and keeps the control beside the title.
     IndentedBody,
     /// A list's one group heading saying what the title over the list already says: the same
-    /// words, counting the same rows. The title names where the person is and how much stands
-    /// there, so a heading that says it again over the first row says nothing twice.
+    /// words, counting the same rows left to do. The title names where the person is and how
+    /// much stands there, so a heading that says it again over the first row says nothing twice.
     RepeatedGroupTitle,
     /// A row's trailing day fact naming the day the heading over it names: the group, card or
     /// section above the rows says the day, so the row that says it again adds neither a day
     /// the person did not know nor one they can act on. A row keeps the time of day it is due,
     /// and says nothing where it names no time.
     RepeatedDayFact,
+    /// The first band a list that heads its rows draws — the heading over its first run, or the
+    /// first row where the list leaves that heading out — standing against the box over the list,
+    /// with less than a column's content gutter above it: where a page's first block stands. A
+    /// band that hugs the edge reads as part of the block over it rather than as one of the
+    /// list's own.
+    HuggingRow,
 }
 
 impl Kind {
@@ -255,6 +261,7 @@ impl Kind {
             Self::IndentedBody => "indented-body",
             Self::RepeatedGroupTitle => "repeated-group-title",
             Self::RepeatedDayFact => "repeated-day-fact",
+            Self::HuggingRow => "hugging-row",
         }
     }
 }

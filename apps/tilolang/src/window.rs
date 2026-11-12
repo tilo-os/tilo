@@ -757,11 +757,23 @@ impl ResourceSurface<Workspace> for Window {
     }
 }
 
+/// The window is named by what it shows: the page, the record, the place its composed shell names
+/// in its content header. Two windows of the app read apart in the desktop's tabs, the switcher
+/// and assistive technology without either being opened.
+impl ui::component_lifecycle::WindowTitle for Window {
+    fn window_title(&self) -> Option<&str> {
+        self.view
+            .composed()
+            .and_then(tilo_ui_host::shell::shown_title)
+    }
+}
+
 impl Widget for Window {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
         dyn ui::undo::UndoControl,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::component_lifecycle::WindowTitle
     );
 
     fn needs_redraw(&self) -> bool {

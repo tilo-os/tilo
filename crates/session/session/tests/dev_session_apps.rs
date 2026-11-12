@@ -1,6 +1,6 @@
 //! A development session's tilolang apps are installed packages, and the session plans their
 //! connectors from what it installed.
-//! `dist/dev/shell-run.sh` builds each app of `apps/tl` into a signed `.tapp` and installs it into
+//! `tilolang run` builds each app of `apps/tl` into a signed `.tapp` and installs it into
 //! the session's own app store; the session then reads each app from its store row, the way it
 //! reads a device's installed apps, and the manifest it reads there is what the launcher and the
 //! connector planning see (`tilo_session::apps::Apps::plan_connector`). So the `YouTube`

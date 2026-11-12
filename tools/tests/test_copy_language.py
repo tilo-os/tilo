@@ -327,6 +327,124 @@ class CopyLanguageTests(unittest.TestCase):
                 "conversion, and the default of an `unwrap_or` is the words the "
                 "constructor gets; a word only fed to a call is still not painted")
 
+    def test_a_modal_sheets_buttons_are_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn actions(&self) -> Vec<ModalAction<'static>> {",
+                "    if self.export_running() {",
+                '        return vec![ModalAction::secondary("Cancel")];',
+                "    }",
+                "    vec![",
+                '        ModalAction::secondary("Close"),',
+                '        ModalAction::primary("Export").enabled(self.export_is_offered()),',
+                '        ModalAction::alternate_danger("Overwrite"),',
+                "    ]",
+                "}",
+                "fn done(&self) -> Vec<ModalAction<'_>> {",
+                '    let label = crate::i18n::t("demo-name");',
+                "    vec![ModalAction::primary(&label)]",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Cancel", "Close", "Export", "Overwrite"],
+                "a sheet's buttons are the words a person presses: every answer "
+                "it offers paints its label, whichever way the others are "
+                "emphasised, and one resolved through the catalogue is not copy")
+
+    def test_a_modal_sheets_title_is_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-settings = Document settings\n")
+            (locales / "de-DE.ftl").write_text("demo-settings = Dokumenteinstellungen\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn draw(&self) -> ModalSpec<'_> {",
+                '    ModalSpec::new("Document settings").body_height(self.body_h())',
+                "}",
+                "fn catalogued(&self) -> ModalSpec<'_> {",
+                '    let title = crate::i18n::t("demo-settings");',
+                "    ModalSpec::new(&title)",
+                "}",
+                "fn line_height(&self, text: &mut TextRenderer) -> f64 {",
+                "    let line = f64::from(",
+                '        text.measure_style("Ag", None, &self.style).1,',
+                "    );",
+                "    line",
+                "}",
+                "fn token(&self) -> Token {",
+                '    Token::new("Bearer token")',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Document settings"],
+                "a sheet's title is the words a person reads above it, so a "
+                "literal handed to `ModalSpec::new` is copy, while the words "
+                "at another type's `new` are not: there they are a measurement "
+                "sample, an identifier or a message a person never reads. A "
+                "title the crate resolved through its catalogue is not copy "
+                "either")
+
+    def test_a_locals_words_are_read_in_the_function_that_binds_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-settings = Document settings\n")
+            (locales / "de-DE.ftl").write_text("demo-settings = Dokumenteinstellungen\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn empty_state(&self) -> Node {",
+                '    let title = "No folders yet";',
+                "    EmptyState::paint(self.area(), title)",
+                "}",
+                "fn sheet(&self) -> ModalSpec<'_> {",
+                '    let title = crate::i18n::t("demo-settings");',
+                "    ModalSpec::new(&title)",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)], [],
+                "a local lives in the body that declares it: the words one "
+                "function stores in `title` are not what the sheet further down "
+                "the file hands its constructor")
+
+    def test_a_call_handed_fewer_arguments_than_a_label_paints_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn message(&self, anchor: &str) -> String {",
+                '    format!("Files opens no `{anchor}`")',
+                "}",
+                "fn close_button(&self) -> Button {",
+                '    let label = "Close";',
+                '    Button::new("demo.close")',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)], [],
+                "a builder handed the id alone has no label to paint, so the "
+                "words before it in the file — a local it does not take, a "
+                "`format!` it does not take — are another call's")
+
     def test_a_plain_local_and_an_action_label_are_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -424,6 +542,43 @@ class CopyLanguageTests(unittest.TestCase):
                 "a helper hands its parameter to a label, so a literal at that "
                 "position at any call site is painted — also through a second "
                 "helper; a catalogue key or a value is not")
+
+    def test_a_helper_that_takes_a_key_is_handed_a_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "impl ActionButton {",
+                "    pub fn new(key: &str, control: Control) -> Self {",
+                "        let label = crate::strings::t(key);",
+                "        Self { label, control }",
+                "    }",
+                "}",
+                "impl Panel {",
+                "    fn nav_row(&self, forward: Control, forward_key: &str) -> Row {",
+                "        Row::new().push(ActionButton::new(forward_key, forward))",
+                "    }",
+                "    fn page(&self) -> Row {",
+                '        ActionButton::new("demo.action-back", self.back());',
+                '        ActionButton::new("Refresh disks", self.refresh());',
+                '        self.nav_row(self.next(), "demo.action-next");',
+                '        self.nav_row(self.next(), "Next");',
+                "        self.nav_row(self.next(), self.key());",
+                "        Row::new()",
+                "    }",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Refresh disks", "Next"],
+                "a helper that hands its parameter to a catalogue lookup takes "
+                "a key, so a call site filling it with words paints the source "
+                "language inside a translated window")
 
     def test_a_resource_title_and_an_action_reason_are_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -526,6 +681,127 @@ class CopyLanguageTests(unittest.TestCase):
                 "a name the model answers with is not copy, and a crate that gives "
                 "one name two jobs (`line` here and `line` in another module) says "
                 "nothing about the word a call site hands it")
+
+    def test_the_words_a_function_keeps_are_copy_at_a_constructor_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn kind_label(kind: Kind) -> &'static str {",
+                "    match kind {",
+                '        Kind::Login => "Login",',
+                '        Kind::Wifi => "Wi-Fi network",',
+                "    }",
+                "}",
+                "fn basis(pages: usize) -> String {",
+                '    format!("{} pages scanned", pages)',
+                "}",
+                "fn detail(kind: Kind) -> Box<dyn Widget> {",
+                "    Box::new(Text::new(kind_label(kind)))",
+                "}",
+                "fn hint(kind: Kind, pages: usize) -> Node {",
+                "    Node::new(Role::Panel)",
+                "        .with_name(kind_label(kind))",
+                "        .with_description(basis(pages))",
+                "}",
+                "fn heading() -> &'static str {",
+                '    "Last backup"',
+                "}",
+                "fn section() -> Section {",
+                "    Section::titled(heading(), rows())",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Login", "Wi-Fi network", "{} pages scanned", "Last backup"],
+                "a function that keeps the words it hands back paints them at "
+                "every constructor its value reaches, not only at a helper or "
+                "a resource title")
+
+    def test_a_function_that_answers_with_a_machine_name_is_not_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn name() -> &'static str {",
+                '    match self.kind { Camera => "CameraApp", Files => "file-explorer" }',
+                "}",
+                "fn target() -> &'static str {",
+                '    match self.what { Thing => "demo.thing", Other => "utf-8" }',
+                "}",
+                "fn key(&self) -> &'static str {",
+                '    match self.page { Page => "AC", Clear => "esc" }',
+                "}",
+                "fn row(&self) -> Box<dyn Widget> {",
+                "    Box::new(Text::new(name()))",
+                "}",
+                "fn pane(&self) -> Node {",
+                "    Node::new(Role::Panel)",
+                "        .with_name(target())",
+                "        .with_description(key())",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)], [],
+                "the model's own names and a key's name are not words a person "
+                "reads, so a function that answers with one says nothing")
+
+    def test_a_painted_function_word_can_be_allowed_and_the_entry_shrinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn cap() -> &'static str {",
+                '    "Backspace"',
+                "}",
+                "fn key(&self) -> Box<dyn Widget> {",
+                "    Box::new(Text::new(cap()))",
+                "}",
+            ]) + "\n")
+            glossary = root / "glossary.toml"
+            glossary.write_text(GLOSSARY)
+            baseline = root / "baseline"
+            baseline.mkdir()
+            save = root / "save.toml"
+            save.write_text("")
+            exceptions = root / "literals.toml"
+            exceptions.write_text("")
+            errors = copy.check(root, glossary, baseline, save, exceptions)
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn("apps/demo/src/lib.rs:2", errors[0])
+            self.assertIn("[uncatalogued]", errors[0])
+
+            exceptions.write_text(
+                '[[allow]]\nfile = "apps/demo/src/lib.rs"\ntext = "Backspace"\n'
+                'reason = "A key'"'"'s name, as the keyboard prints it."\n')
+            self.assertEqual(copy.check(root, glossary, baseline, save, exceptions), [])
+
+            (source / "lib.rs").write_text("\n".join([
+                "fn cap() -> &'static str {",
+                '    match self.kind { Key => "Delete", Other => "Erase" }',
+                "}",
+                "fn key(&self) -> Box<dyn Widget> {",
+                "    Box::new(Text::new(cap()))",
+                "}",
+            ]) + "\n")
+            errors = copy.check(root, glossary, baseline, save, exceptions)
+            self.assertEqual(len(errors), 3, errors)
+            self.assertTrue(any("no longer matches" in error for error in errors), errors)
 
     def test_a_copy_field_bound_to_a_painted_local_is_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -656,6 +932,237 @@ class CopyLanguageTests(unittest.TestCase):
                 ["Keep the address", "Delete address?"],
                 "a name a crate gives one job says which of its arguments is the word "
                 "a person reads, so the English handed to it is found")
+
+    def test_a_test_doubles_method_decides_no_helpers_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn button(id: &str, label: &str) -> Widget {",
+                "    Button::new(id, label)",
+                "}",
+                "fn pane(&self) -> Node {",
+                '    Node::new(Role::Panel).with_child(button("demo.open", "Open settings"))',
+                "}",
+                "#[cfg(test)]",
+                "mod tests {",
+                "    struct Double;",
+                "    impl Clipboard for Double {",
+                "        fn button(&self, id: &str, label: &str) -> Widget {",
+                "            Widget::none()",
+                "        }",
+                "    }",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Open settings"],
+                "a method a test double only stubs says nothing about the job a name "
+                "has in the window code")
+
+    def test_the_name_a_reader_hears_is_copy_in_every_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn control(&self, hit: &Hit) -> Option<(String, String, Role, State)> {",
+                "    let (target, name, role, state) = match hit {",
+                '        Hit::Close => ("close".into(), "Done".into(), Role::Button,',
+                "                       State::new()),",
+                '        Hit::Nothing => ("none".into(), tr("demo-name"), Role::Group,',
+                "                          State::new()),",
+                "        Hit::Open => {",
+                "            let label = self.title();",
+                "            (",
+                '                "open".into(),',
+                '                format!("Open {}", label),',
+                "                Role::Button,",
+                "                State::new(),",
+                "            )",
+                "        }",
+                "        Hit::Other => return None,",
+                "    };",
+                "    Some((target, name, role, state))",
+                "}",
+                "fn node(&self) -> Node {",
+                "    let (target, name, role, state) = self.control(&Hit::Close)?;",
+                "    Node::new(role).with_name(name).with_action_target(target)",
+                "}",
+                "fn measured(&self) -> Node {",
+                "    let (width, height) = self.pane_size();",
+                "    Node::new(Role::Group).with_bounds(Rect::new(0.0, 0.0, width, height))",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Done", "Open {}"],
+                "a widget names each of its nodes from one element of the tuple it "
+                "projects, so that element is what a German reader hears \u2014 in the "
+                "arms the tuple is written in as well as the value it returns")
+
+    def test_a_value_interpolated_into_a_message_is_copy_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn status(filesystem: &str, count: usize, who: &str) -> String {",
+                '    let state = "Unavailable";',
+                '    CATALOG.t_args("demo-state", &[("state", ArgValue::Text("Error".to_owned()))]);',
+                '    CATALOG.t_args("demo-state", &[("state", ArgValue::Text(state.into()))]);',
+                '    CATALOG.t_args("demo-state", &[("state", ArgValue::Text(format!("Mounted {}", filesystem)))]);',
+                '    CATALOG.t_args("demo-state", &[("state", "Idle".into())]);',
+                '    CATALOG.t_args("demo-shared", &[("who", ArgValue::Text(who.to_owned()))]);',
+                '    CATALOG.t_args("demo-count", &[("count", ArgValue::Number(count as f64))]);',
+                '    crate::i18n::t("demo-name")',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Unavailable", "Error", "Mounted {}", "Idle"],
+                "a message's variables are the person's data: an English word "
+                "interpolated into the sentence, directly or through the local "
+                "it is stored in, reads in English in every language, so it is "
+                "copy; a name the person gave, a count, or a word the app "
+                "resolved through its catalogue is not")
+    def _root(self, files: dict[str, str]) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, root)
+        locales = root / "apps/demo/locales"
+        locales.mkdir(parents=True)
+        (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+        (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+        for name, text in files.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        return root
+
+    def test_a_constant_that_holds_words_is_copy_where_it_is_written(self):
+        root = self._root({
+            "apps/demo/src/lib.rs": "\n".join([
+                "const INSTALL_METHODS: [&str; 2] = [\"Erase disk\", \"Install alongside\"];",
+                "const BUTTON_IDS: [&str; 2] = [\"erase\", \"alongside\"];",
+                "fn choice() -> Bound {",
+                "    seg_choice(&INSTALL_METHODS, controls(), 0, \"method\")",
+                "}",
+                "fn ids() -> Bound {",
+                "    seg_choice(&BUTTON_IDS, controls(), 0, \"ids\")",
+                "}",
+                "fn seg_choice(labels: &[&str], controls: Vec<Control>, selected: usize,",
+                "              test_id: &str) -> Bound {",
+                "    let segments = labels.iter().map(|label| Segment::new(*label)).collect();",
+                "    Bound::new(Box::new(ToggleGroup::new(segments, selected)), None)",
+                "}",
+                "fn controls() -> Vec<Control> { Vec::new() }",
+            ]) + "\n",
+        })
+        self.assertEqual(
+            [text for _, _, text in copy.source_copy_literals(root)],
+            ["Erase disk", "Install alongside"],
+            "a label array reaches a segment through its name alone, so the words "
+            "are reported where the constant writes them, and a table of ids is not")
+
+    def test_a_sentence_behind_a_type_alias_still_hands_its_words_back(self):
+        root = self._root({
+            "apps/demo/src/lib.rs": "\n".join([
+                "type Blocked = Option<(&'static str, String)>;",
+                "fn off_step(step: Step, current: Step) -> Blocked {",
+                "    (step != current).then(|| {",
+                "        (",
+                '            "other_step",',
+                '            format!("This belongs to the {} step; the wizard is on {}.",',
+                "                    step_name(step), step_name(current)),",
+                "        )",
+                "    })",
+                "}",
+                "fn step_name(step: Step) -> &'static str { step.key() }",
+                "fn row(app: &App) -> Row {",
+                "    Row::new().with_description(",
+                "        off_step(Step::Disk, app.step)",
+                "            .map(|(_, reason)| reason)",
+                "            .unwrap_or_default(),",
+                "    )",
+                "}",
+            ]) + "\n",
+        })
+        found = [text for _, _, text in copy.source_copy_literals(root)]
+        self.assertEqual(
+            found,
+            ["This belongs to the {} step; the wizard is on {}."],
+            "a reason behind a type alias reaches the constructor it is painted "
+            "through, so the sentence is copy even though its signature names no "
+            "string type")
+
+    def test_a_label_table_the_crate_maps_to_keys_is_not_copy(self):
+        root = self._root({
+            "apps/demo/src/lib.rs": "\n".join([
+                "const TEXT_SIZES: &[(&str, f64)] = &[",
+                '    ("Small", 0.85),',
+                '    ("Large", 1.3),',
+                "];",
+                "fn text_size_ftl(english: &str) -> &'static str {",
+                "    match english {",
+                '        "Small" => "demo-text-small",',
+                '        _ => "demo-text-large",',
+                "    }",
+                "}",
+                "fn labels() -> Vec<String> {",
+                "    TEXT_SIZES.iter()",
+                "        .map(|(label, _)| crate::strings::t(text_size_ftl(label)))",
+                "        .collect()",
+                "}",
+                "fn row() -> Node {",
+                "    Node::new(Role::List).with_description(Segment::new(labels()[0].clone()))",
+                "}",
+            ]) + "\n",
+        })
+        self.assertEqual(
+            [text for _, _, text in copy.source_copy_literals(root)],
+            [],
+            "the words are keys into the catalogue through the crate's own "
+            "mapping, so the window paints a translation, not the table")
+
+    def test_a_refusal_reported_to_the_caller_is_not_copy(self):
+        root = self._root({
+            "apps/demo/src/lib.rs": "\n".join([
+                "fn answer(name: &str) -> Result<(), String> {",
+                "    let value = lookup(name).ok_or_else(|| {",
+                '        format!("`{name}` is not a name this panel has")',
+                "    })?;",
+                "    if value.stale {",
+                '        return Err("the panel has moved on".to_string());',
+                "    }",
+                "    Ok(())",
+                "}",
+                "fn caption() -> String {",
+                '    "Nothing is selected.".to_string()',
+                "}",
+                "fn row() -> Node {",
+                "    Node::new(Role::List).with_description(caption());",
+                "    Node::new(Role::List).with_hint(answer(\"x\"));",
+                "}",
+            ]) + "\n",
+        })
+        self.assertEqual(
+            [text for _, _, text in copy.source_copy_literals(root)],
+            ["Nothing is selected."],
+            "a refusal answers the code that asked, in the words that code "
+            "shows; the sentence a function keeps is what a window paints")
 
     def test_the_tree_passes(self):
         self.assertEqual(

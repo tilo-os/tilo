@@ -72,3 +72,15 @@ remote-trust-key-confirm = Trust key
 remote-forget-key-title = Forget the SSH key of { $connection }?
 remote-forget-key-detail = Only this device's saved key is removed. Reconnect to check and trust the new key.
 remote-forget-key-confirm = Forget key
+
+## Why a connection cannot open
+remote-state-ready = Remote can connect to this machine.
+remote-state-no-ssh = Remote can't open SSH sessions on this device.
+remote-state-no-vnc = Remote can't open VNC sessions on this device.
+remote-state-no-session = Remote can't open this kind of session on this device.
+remote-state-no-rdp = Remote opens SSH, VNC and Tilo devices, but not RDP.
+remote-state-invalid-profile = The saved address or sign-in method doesn't fit this protocol.
+remote-connection-deleted-message = Someone you share your connections with removed it.
+remote-empty-pinned-hint = Pin the machines you use most to keep them here.
+remote-empty-saved-hint = Save a machine to reach it over SSH, VNC or as a Tilo device.
+remote-rdp-unsupported-message = Choose SSH or VNC to keep using this machine.

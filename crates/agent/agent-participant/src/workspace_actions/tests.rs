@@ -168,8 +168,10 @@ fn a_request_waits_only_for_the_keys_of_what_it_reads() {
 
 /// A write answered pending ends as its save does: done once the host holds
 /// it, failed with the host's reason when it refuses it, and failed when the
-/// session ends before the host held it. Until then it cannot be cancelled:
-/// it ran.
+/// session ends before the host held it, and failed (not to be asked again
+/// blindly: it may still be saved) when the host says nothing in time, so
+/// whoever follows it always hears how it went. Until then it cannot be
+/// cancelled: it ran.
 #[test]
 fn a_pending_write_settles_as_its_save_does() {
     use std::sync::{Arc, Mutex, mpsc};
@@ -191,8 +193,10 @@ fn a_pending_write_settles_as_its_save_does() {
         appearance: None,
     };
     let ledger = Arc::new(Mutex::new(super::Ledger::default()));
-    // Each write: its save's outcome, sent or dropped, and how it settled.
-    let settle = |outcome: Option<Result<(), String>>| {
+    // Each write: its save's outcome, sent, dropped (`None`) or never said
+    // (`Some(None)` holds the answer back), and how it settled.
+    let mut kept = Vec::new();
+    let mut settle = |outcome: Option<Option<Result<(), String>>>| {
         let asked = request();
         let invocation = asked.invocation;
         {
@@ -203,14 +207,18 @@ fn a_pending_write_settles_as_its_save_does() {
         let (answer, saved) = tilo_session_client::answer();
         let (settled, heard) = mpsc::channel();
         let shared = Arc::clone(&ledger);
-        super::publish::Unsaved::waiting(saved).settle(move |saved| {
-            super::publish::settle_saved(&shared, invocation, ActionOutput::default(), saved);
-            let _ = settled.send(());
-        });
+        super::publish::Unsaved::waiting(saved).settle_within(
+            std::time::Duration::from_millis(200),
+            move |saved| {
+                super::publish::settle_saved(&shared, invocation, ActionOutput::default(), saved);
+                let _ = settled.send(());
+            },
+        );
         match outcome {
-            Some(outcome) => {
+            Some(Some(outcome)) => {
                 let _ = answer.send(outcome);
             }
+            Some(None) => kept.push(answer),
             None => drop(answer),
         }
         heard
@@ -228,10 +236,13 @@ fn a_pending_write_settles_as_its_save_does() {
     };
 
     assert!(
-        matches!(settle(Some(Ok(()))), InvocationUpdate::Succeeded { .. }),
+        matches!(
+            settle(Some(Some(Ok(())))),
+            InvocationUpdate::Succeeded { .. }
+        ),
         "a write the host holds is done"
     );
-    let refused = settle(Some(Err("workspace membership changed".into())));
+    let refused = settle(Some(Some(Err("workspace membership changed".into()))));
     assert!(
         matches!(&refused, InvocationUpdate::Failed { error, .. }
             if error.message.contains("workspace membership changed") && error.retryable),
@@ -242,5 +253,16 @@ fn a_pending_write_settles_as_its_save_does() {
         matches!(&ended, InvocationUpdate::Failed { error, .. }
             if error.message.contains("session ended")),
         "a write whose session ended unsaved fails: {ended:?}"
+    );
+    let silent = settle(Some(None));
+    assert!(
+        matches!(&silent, InvocationUpdate::Failed { error, .. }
+            if !error.retryable && error.message.contains("read the record")),
+        "a write the host never confirms fails in time, not to be made twice: {silent:?}"
+    );
+    assert_eq!(
+        kept.len(),
+        1,
+        "the silent save's answer stayed open throughout"
     );
 }

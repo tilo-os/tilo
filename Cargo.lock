@@ -2886,7 +2886,6 @@ dependencies = [
 name = "console-model"
 version = "0.1.0"
 dependencies = [
- "tilo-model-guest",
  "tilo-resource",
  "workspace-hack",
 ]
@@ -15211,7 +15210,9 @@ dependencies = [
  "tilo-oauth",
  "tilo-paths",
  "tilo-pc-keyboard-geometry",
+ "tilo-process",
  "tilo-relay-protocol",
+ "tilo-rt",
  "tilo-session-power",
  "tilo-test-env",
  "tilo-vello",
@@ -15261,6 +15262,7 @@ dependencies = [
  "tilo-files",
  "tilo-lock",
  "tilo-paths",
+ "tilo-platform-caps",
  "tilo-process",
  "tilo-resource",
  "tilo-rt",
@@ -16708,9 +16710,7 @@ dependencies = [
  "tasks",
  "tasks-model",
  "tilo-app",
- "tilo-model-host",
  "tilo-rich-text",
- "tilo-service",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -16723,7 +16723,6 @@ dependencies = [
  "serde_json",
  "tilo-actions",
  "tilo-document",
- "tilo-model-guest",
  "tilo-reference",
  "tilo-resource",
  "workspace-hack",
@@ -18196,8 +18195,6 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-console",
- "tilo-model-host",
- "tilo-service",
  "workspace-hack",
 ]
 
@@ -18377,7 +18374,7 @@ name = "tilo-delivery-protocol"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "ed25519-dalek 3.0.0",
+ "collab-types",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
  "iroh-base",
@@ -18513,6 +18510,7 @@ version = "0.1.0"
 dependencies = [
  "app-catalogue",
  "app-fleet",
+ "collaboration",
  "serde",
  "serde_json",
  "serial_test",
@@ -19795,15 +19793,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-model-abi"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-model-client"
 version = "0.1.0"
 dependencies = [
@@ -19861,46 +19850,6 @@ dependencies = [
  "wire-frame",
  "workspace-hack",
  "zeroize",
-]
-
-[[package]]
-name = "tilo-model-guest"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "getrandom 0.4.3",
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-automerge-fork",
- "tilo-clock",
- "tilo-model-abi",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-model-host"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "durable-store",
- "getrandom 0.4.3",
- "serde",
- "serde_json",
- "tasks-model",
- "thiserror 2.0.21",
- "tilo-actions",
- "tilo-app-state",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-model-abi",
- "tilo-resource",
- "tilo-service",
- "tilolang-runtime",
- "tracing",
- "tube-model",
- "workspace-hack",
 ]
 
 [[package]]
@@ -20484,6 +20433,7 @@ dependencies = [
  "durable-store",
  "ed25519-dalek 3.0.0",
  "fnv",
+ "futures",
  "getrandom 0.4.3",
  "hex",
  "iroh",
@@ -21541,9 +21491,7 @@ dependencies = [
  "tilo-liveness",
  "tilo-lock",
  "tilo-media",
- "tilo-model-abi",
  "tilo-model-client",
- "tilo-model-host",
  "tilo-native-media",
  "tilo-nearby-service",
  "tilo-net",
@@ -21642,6 +21590,7 @@ dependencies = [
  "neighbour-wire",
  "oneshot",
  "opus",
+ "pollster",
  "postcard",
  "rand 0.10.3",
  "rand_core 0.10.0",
@@ -22416,6 +22365,7 @@ name = "tilo-user-identity"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "collab-types",
  "data-encoding",
  "data-encoding-macro",
  "ed25519-dalek 3.0.0",
@@ -23781,10 +23731,8 @@ dependencies = [
  "tilo-files",
  "tilo-innertube",
  "tilo-media",
- "tilo-model-host",
  "tilo-net",
  "tilo-secrets",
- "tilo-service",
  "tilo-test-env",
  "tilo-vello",
  "tilo-vello-encoding",
@@ -23808,7 +23756,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "tilo-actions",
- "tilo-model-guest",
  "tilo-resource",
  "workspace-hack",
 ]
@@ -28492,11 +28439,8 @@ dependencies = [
  "tilo-messaging-protocol",
  "tilo-messaging-service",
  "tilo-mime",
- "tilo-model-abi",
  "tilo-model-client",
  "tilo-model-gateway",
- "tilo-model-guest",
- "tilo-model-host",
  "tilo-moderation",
  "tilo-native-media",
  "tilo-nearby-service",

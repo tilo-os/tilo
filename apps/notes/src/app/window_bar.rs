@@ -54,14 +54,17 @@ impl NotesApp {
     pub(super) fn sync_window_toolbar(&mut self) -> bool {
         let hosted = ui::window_toolbar::is_hosted();
         let adds = self.may_add_notes();
+        // New note heads the page tree it adds to, pressing the notebook's own
+        // action: the notebook's actions arrive after the shell is built.
+        let tree_new_note = adds && self.notebook_actions.is_some();
         let mut changed = false;
-        if hosted != self.header_in_bar || adds != self.offers_new_note {
+        if hosted != self.header_in_bar || tree_new_note != self.tree_offers_new_note {
             self.header_in_bar = hosted;
-            self.offers_new_note = adds;
+            self.tree_offers_new_note = tree_new_note;
             self.shell.set_sidebar_toggle_in_window_bar(hosted);
             // New note is the page tree's, hosted or not.
             let tree_actions = if adds {
-                Self::page_tree_header_actions(&self.header)
+                Self::page_tree_header_actions(self.notebook_actions.as_ref())
             } else {
                 Vec::new()
             };

@@ -356,8 +356,10 @@ invoke (accepted, and completed through `wait_ms`), throughput under
 concurrent clients and the same no-op through the MCP server. Give it
 `--socket PATH` for a running desktop, or `--spawn SHELL` to start a
 compositor through `spawn-headless.sh`. A spawned compositor is removed on
-exit. `spawn-headless.sh` runs `$TILO_HEADLESS_BINARY` when that is set. A
-release build serves the socket only with `--features dev-overrides`.
+exit. `spawn-headless.sh` runs `$TILO_HEADLESS_BINARY` when that is set, and
+takes its runtime directory from `dist/dev/nested-session.sh --print-runtime`
+(the scratch profile's state names it), so its sockets sit where a session's
+do. A release build serves the socket only with `--features dev-overrides`.
 `scripts/perf/agent_task.py` times a whole task the way an agent in the
 login runs it: a scripted, streamed fake model drives `tilo-runtime-mcp
 --connect` through the session's agent door, creates a note in Notes,

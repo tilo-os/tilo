@@ -7,7 +7,7 @@ use notes::actions::create_page_action;
 use notes::read;
 use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
-use ui::tilo_resource::Invoke;
+use ui::tilo_resource::{Invoke, Resource as _};
 
 fn fresh() -> TestApp<NotesShell> {
     ui::i18n::I18nManager::init("en-US");
@@ -49,6 +49,76 @@ fn numeric_order_notebook_reopens_through_the_saved_application_view() {
             Some((automerge::Value::Scalar(value), _))
                 if value.as_ref() == &automerge::ScalarValue::Int(12)));
     });
+}
+
+/// Every control that presses one of the notebook's actions says which one.
+/// That declared binding is what a presence marker lands on: an agent running
+/// the notebook's own action finds the control a person would have pressed
+/// (`ui::action_locus`), rather than a place it had to guess.
+#[test]
+fn the_controls_that_press_the_notebooks_actions_declare_them() {
+    fn pressed(app: &mut TestApp<NotesShell>) -> Vec<tilo_actions::ActionAddress> {
+        crate::framework_support::surface(app, |notes| {
+            ui::widget::controls::control_action_bindings(notes)
+                .into_iter()
+                .filter_map(|binding| match binding.kind {
+                    ui::widget::ControlBindingKind::Action(address) => Some(address),
+                    ui::widget::ControlBindingKind::CollaborativeDocument(_)
+                    | ui::widget::ControlBindingKind::SemanticAction(_) => None,
+                })
+                .collect()
+        })
+    }
+
+    let mut app = fresh();
+    app.settle();
+    let empty = pressed(&mut app);
+    assert!(
+        empty
+            .iter()
+            .any(|address| address.resource == "notes.notebook" && address.action == "new-note"),
+        "the page tree's + presses the notebook's New note: {empty:?}"
+    );
+
+    // The marker an agent's action draws rests on that control: the action
+    // resolves to the "+" and to nothing else.
+    let address = notes::notebook::Notebook::NEW_NOTE.on(notes::notebook::Notebook::KIND);
+    let routes = app.harness().action_ui_routes(&address);
+    let [route] = routes.as_slice() else {
+        panic!("the window binds one control to New note: {routes:?}");
+    };
+    let control = route.bounds.expect("the + is laid out");
+    let plus = app.harness().targets()["new-note"];
+    assert!(
+        control.contains(plus.center()) && plus.contains(control.center()),
+        "the agent's marker lands on the page tree's +: {control:?} vs {plus:?}"
+    );
+    // The window holds the notebook in its component, as the session's
+    // window does: the marker finds the + through the component's node.
+    let locus = app
+        .harness()
+        .semantic_locus(&ui::headless::agent_acting("notes.notebook", "new-note"))
+        .expect("the agent's invocation finds the control it presses");
+    assert!(
+        plus.contains(locus.center()),
+        "the agent acts at the +: {locus:?} in {plus:?}"
+    );
+
+    crate::framework_support::add_note(&mut app, "Inbox", "");
+    app.settle();
+    let with_a_row = pressed(&mut app);
+    assert!(
+        with_a_row
+            .iter()
+            .any(|address| address.resource == "notes.notebook" && address.action == "new-child"),
+        "a row's + presses the notebook's New child: {with_a_row:?}"
+    );
+    assert!(
+        with_a_row
+            .iter()
+            .any(|address| address.resource == "notes.notebook" && address.action == "new-note"),
+        "and the page tree's + still presses New note: {with_a_row:?}"
+    );
 }
 
 #[test]

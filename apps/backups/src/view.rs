@@ -137,12 +137,12 @@ pub enum JobKind {
 }
 
 impl JobKind {
-    /// What the job is, in the jobs band's words.
-    pub fn title(self) -> &'static str {
+    /// The catalogue message naming the job in the jobs band.
+    pub fn message(self) -> &'static str {
         match self {
-            JobKind::Backup => "Backing up",
-            JobKind::Verify => "Verifying",
-            JobKind::Restore => "Restoring",
+            JobKind::Backup => "backups-job-backing-up",
+            JobKind::Verify => "backups-job-verifying",
+            JobKind::Restore => "backups-job-restoring",
         }
     }
 
@@ -271,20 +271,35 @@ fn destination_icon(kind: DestKind) -> Icon {
 /// "Every day at 18:00".
 pub(crate) fn schedule_label(schedule: Schedule) -> String {
     match schedule {
-        Schedule::OnDemand => "When you back up".into(),
-        Schedule::Hourly { minute: 0 } => "Every hour, on the hour".into(),
-        Schedule::Hourly { minute } => format!("Every hour at {minute:02} past"),
-        Schedule::Daily { hour, minute } => {
-            format!("Every day at {}", ui::clock::hour_minute(hour, minute))
-        }
+        Schedule::OnDemand => i18n::t("backups-schedule-on-demand"),
+        Schedule::Hourly { minute: 0 } => i18n::t("backups-schedule-hourly"),
+        Schedule::Hourly { minute } => i18n::t_args(
+            "backups-schedule-hourly-at",
+            &[("minute", ui::i18n::ArgValue::Text(format!("{minute:02}")))],
+        ),
+        Schedule::Daily { hour, minute } => i18n::t_args(
+            "backups-schedule-daily",
+            &[(
+                "time",
+                ui::i18n::ArgValue::Text(ui::clock::hour_minute(hour, minute)),
+            )],
+        ),
         Schedule::Weekly {
             weekday,
             hour,
             minute,
-        } => format!(
-            "Every {} at {}",
-            ui::format::weekday_name(weekday),
-            ui::clock::hour_minute(hour, minute)
+        } => i18n::t_args(
+            "backups-schedule-weekly",
+            &[
+                (
+                    "weekday",
+                    ui::i18n::ArgValue::Text(ui::format::weekday_name(weekday)),
+                ),
+                (
+                    "time",
+                    ui::i18n::ArgValue::Text(ui::clock::hour_minute(hour, minute)),
+                ),
+            ],
         ),
     }
 }
@@ -313,7 +328,7 @@ fn snapshot_title(snapshot: &Snapshot, catalog: &Catalog) -> String {
     }
     catalog
         .source(&snapshot.source_id)
-        .map_or_else(|| "Snapshot".into(), |source| source.name.clone())
+        .map_or_else(|| i18n::t("backups-snapshot"), |source| source.name.clone())
 }
 
 /// What an unlabelled snapshot is, on a page that already names its source:
@@ -519,7 +534,7 @@ fn progress(job: &Job) -> Section {
             Row::new()
                 .no_wrap()
                 .push(Box::new(
-                    Text::new(job.kind.title())
+                    Text::new(&i18n::t(job.kind.message()))
                         .with_role(TextRole::Label)
                         .strong(),
                 ))
@@ -531,7 +546,7 @@ fn progress(job: &Job) -> Section {
                         .dimmed(),
                 )),
         ),
-        Box::new(ProgressBar::indeterminate().with_label(job.kind.title())),
+        Box::new(ProgressBar::indeterminate().with_label(i18n::t(job.kind.message()))),
     ])
 }
 
@@ -744,7 +759,7 @@ fn snapshot_list(model: &Model<'_>, intents: &Intents) -> Element {
         return Box::new(
             EmptyState::new("No snapshots yet")
                 .with_icon(Icon::History)
-                .with_message("Back up now to create the first one."),
+                .with_message(CATALOG.t("backups-empty-snapshots-hint")),
         );
     }
     if model.order == Order::OldestFirst {
@@ -1169,11 +1184,11 @@ pub fn setup(state: &Setup<'_>, intents: &Intents) -> Element {
     let state = match state {
         Setup::Start => EmptyState::new("Protect your important files")
             .with_icon(Icon::Archive)
-            .with_message("Choose a folder to keep a copy of every file in it, checked so you know it is intact.")
+            .with_message(CATALOG.t("backups-setup-start-hint"))
             .with_action("Choose folder…"),
         Setup::ChooseDestination => EmptyState::new("Choose where to keep backups")
             .with_icon(Icon::HardDrive)
-            .with_message("Pick a drive or a folder outside the one you are backing up.")
+            .with_message(CATALOG.t("backups-setup-destination-hint"))
             .with_action("Choose location…"),
         Setup::Running(status) => EmptyState::new("Creating your first backup")
             .with_icon(Icon::Archive)

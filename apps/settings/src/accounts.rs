@@ -499,7 +499,8 @@ impl AccountRoot {
     ) -> Result<(), String> {
         self.recover_mutation()?;
         let root = self.require()?;
-        let vault_ciphertext = std::fs::read(accounts::vault_dir_in(&root).join("vault.enc")).ok();
+        let vault_ciphertext =
+            read_file(&accounts::vault_dir_in(&root).join("vault.enc")).unwrap_or_default();
         let journal = AccountMutationJournal {
             store: previous_store.clone(),
             statuses: previous_statuses.clone(),
@@ -519,21 +520,8 @@ impl AccountRoot {
     ///
     /// Returns an error when the completed mutation journal cannot be removed.
     pub fn finish_mutation(&self) -> Result<(), String> {
-        let path = self.mutation_journal_path()?;
-        match std::fs::remove_file(&path) {
-            Ok(()) => {
-                if let Some(parent) = path.parent()
-                    && let Ok(directory) = std::fs::File::open(parent)
-                {
-                    let _ = directory.sync_all();
-                }
-                Ok(())
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!(
-                "could not clear account transaction intent: {error}"
-            )),
-        }
+        remove_file(&self.mutation_journal_path()?)
+            .map_err(|error| format!("could not clear account transaction intent: {error}"))
     }
 
     /// Roll back an interrupted metadata/vault/status mutation before
@@ -546,9 +534,9 @@ impl AccountRoot {
     /// or durably restored.
     pub fn recover_mutation(&self) -> Result<(), String> {
         let path = self.mutation_journal_path()?;
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        let bytes = match read_file(&path) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return Ok(()),
             Err(error) => {
                 return Err(format!(
                     "could not read account transaction intent: {error}"
@@ -571,11 +559,8 @@ impl AccountRoot {
                 )
                 .map_err(|error| format!("could not recover credential vault: {error}"))?;
             }
-            None => match std::fs::remove_file(&vault_path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(format!("could not recover credential vault: {error}")),
-            },
+            None => remove_file(&vault_path)
+                .map_err(|error| format!("could not recover credential vault: {error}"))?,
         }
         self.finish_mutation()
     }
@@ -615,6 +600,32 @@ pub enum AccountKind {
     OneDrive,
     Dropbox,
     ICloudDrive,
+}
+
+/// The bytes of the file at `path`, or `None` when there is none.
+fn read_file(path: &std::path::Path) -> Result<Option<Vec<u8>>, tilo_files::FsError> {
+    let (dir, file) = tilo_files::file_at(path)?;
+    match tilo_files::blocking::read(&dir, &file) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(tilo_files::FsError::NotFound) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Remove the file at `path`, durably: its directory is synced after. A file
+/// that is not there is already removed.
+fn remove_file(path: &std::path::Path) -> Result<(), tilo_files::FsError> {
+    let (dir, file) = tilo_files::file_at(path)?;
+    match tilo_files::blocking::remove(&dir, &file) {
+        Ok(()) => {
+            if let Some(parent) = path.parent() {
+                let _ = tilo_files::native::atomic::sync_directory(parent);
+            }
+            Ok(())
+        }
+        Err(tilo_files::FsError::NotFound) => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 impl AccountKind {

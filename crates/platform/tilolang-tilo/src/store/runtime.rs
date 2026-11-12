@@ -274,9 +274,13 @@ impl Store for TiloStore {
             }
             marked = true;
         }
-        let (Some(app), Some(kind)) = (state.app.clone(), state.kind.clone()) else {
+        let (Some(app), Some(written)) = (state.app.clone(), state.kind.clone()) else {
             return Ok(());
         };
+        // The kind the action is published on: its subject's, a task's for an action on a task
+        // the record holds, which the workspace decides the change against. An action on no
+        // resource of the app names the kind of what it wrote first.
+        let kind = subject_kind(&app, &note.args).unwrap_or(written);
         if state.edits.is_empty() {
             return Ok(());
         }
@@ -891,4 +895,12 @@ impl TiloStore {
         let (app, ty) = inner.locate(at)?;
         inner.read_mirror((&app, &ty), at, &field.id)
     }
+}
+
+/// The kind of the subject of an action of `app` invoked with `args` (as [`ChangeNote::args`]
+/// records them): the resource its first argument names, when that is one of the app's.
+fn subject_kind(app: &str, args: &Json) -> Option<String> {
+    let ty = args.get(0)?.get("ty")?.as_str()?;
+    let schema = lookup(ty).filter(|schema| schema.app == app)?;
+    Some(format!("tl.{app}.{}", schema.name))
 }

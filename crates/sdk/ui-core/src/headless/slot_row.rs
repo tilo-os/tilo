@@ -143,11 +143,11 @@ impl FrameHarness {
     /// ground moves the window. A browser page's row carries none: the
     /// browser has the window's own chrome.
     pub fn host_window_controls(&mut self) {
+        self.invalidate_local();
         let Some(hosted) = self.slot_row.as_mut() else {
             return;
         };
         hosted.row.set_window_controls(true);
-        self.invalidate_local();
         self.relayout();
     }
 

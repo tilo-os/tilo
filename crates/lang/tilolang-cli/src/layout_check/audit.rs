@@ -637,14 +637,19 @@ pub fn inspect(
 /// finger's target where the window is held in the hand, and nothing else. A heading names the
 /// rows under it, so no empty slot, padding or hidden row may stand between its band and the
 /// first of them, and a finger's taller band keeps the heading's line where the width does.
+/// The first band a list that heads its rows draws — the heading over its first run, or the first
+/// row where the list leaves that heading out — stands on the column's content gutter, where a
+/// page's first block stands: one closer to the box over the list hugs it, reading as that box's
+/// last line rather than as a band of the list's own.
 pub fn heading_rooms(
     root: &InspectionNode,
     theme: &ui::Theme,
     min_target: Option<f64>,
 ) -> Vec<Problem> {
     let band = band_height(theme).max(min_target.unwrap_or(0.0));
+    let inset = ui::chrome::column_gutter(theme);
     let mut out = Vec::new();
-    heading_rooms_in(root, &mut Vec::new(), band, &mut out);
+    heading_rooms_in(root, &mut Vec::new(), band, inset, &mut out);
     out
 }
 
@@ -652,6 +657,7 @@ fn heading_rooms_in(
     node: &InspectionNode,
     keys: &mut Vec<String>,
     band: f64,
+    inset: f64,
     out: &mut Vec<Problem>,
 ) {
     let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
@@ -706,8 +712,42 @@ fn heading_rooms_in(
             });
         }
     }
+    // A list that heads its rows starts its first band on the column's content gutter, where a
+    // page's first block stands: a heading drawn there, or the first row where the list leaves
+    // that heading out. One standing closer hugs the box over the list, reading as that block's
+    // last line rather than as a band of the list's own.
+    if let Some(ui::widget::LayoutInfo::List(list)) = node.layout
+        && list.heads_rows
+    {
+        // The band the person sees: the heading the list draws over its first run says where it
+        // stands; a list that draws none says the room it keeps over its first row.
+        let drawn = headings
+            .iter()
+            .find(|child| child.bounds.is_some())
+            .filter(|heading| {
+                heading
+                    .action_target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with(GROUP))
+            })
+            .and_then(|heading| heading.bounds)
+            .map(|bounds| bounds.y0 - rect(node.rect).y0);
+        let room = drawn.unwrap_or_else(|| f64::from(list.lead));
+        if room + 0.5 < inset {
+            out.push(Problem {
+                kind: Kind::HuggingRow,
+                keys: keys.iter().rev().cloned().collect(),
+                widget: node.widget.clone(),
+                id: node.test_id.clone(),
+                detail: format!(
+                    "the list keeps {room:.0} px over the first band it draws, where a page's \
+                     content gutter is {inset:.0}"
+                ),
+            });
+        }
+    }
     for child in &node.children {
-        heading_rooms_in(child, keys, band, out);
+        heading_rooms_in(child, keys, band, inset, out);
     }
     if pushed {
         keys.pop();
@@ -1858,8 +1898,8 @@ impl Walk<'_> {
             .map(|(at, _)| at)
             .collect();
         // Two groups tell the runs apart, and a heading says something the title does not. Where
-        // the list shows one band, it may head part of a longer list: the rows it heads must be
-        // the rows the list shows, so the count it reads is the count of the list.
+        // the list shows one band, it may head part of a longer list: the rows it stands over must
+        // be the rows the list shows, so the number it reads is the number of them left to do.
         let [at] = headings[..] else {
             return;
         };
@@ -1876,14 +1916,17 @@ impl Walk<'_> {
         ) else {
             return;
         };
-        let rows = access
+        // The rows still to do under the heading: a heading counts what is left, so a row the
+        // person has finished with stands under it without counting.
+        let left = access
             .children
             .iter()
             .skip(at.saturating_add(1))
             .take_while(|child| !heads_group(child))
             .filter(|child| child.role == ui::a11y::Role::ListItem)
+            .filter(|child| child.state.checked != Some(true))
             .count();
-        if rows != usize::try_from(count).unwrap_or(0) {
+        if left != usize::try_from(count).unwrap_or(0) {
             return;
         }
         self.group_headings.push(GroupHeading {

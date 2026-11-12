@@ -666,24 +666,15 @@ impl Disk {
             && (!self.wwn.is_empty() || !self.serial.is_empty())
     }
 
-    pub fn contents_summary(&self) -> String {
-        if self.partitions.is_empty() {
-            return "Empty disk".to_string();
-        }
-        let known = self
-            .partitions
+    /// The filesystems the disk's partitions carry, in partition order, for a
+    /// surface to name in the person's language. A partition without a
+    /// recognised filesystem adds none.
+    pub fn partition_filesystems(&self) -> Vec<&str> {
+        self.partitions
             .iter()
-            .filter_map(|p| (!p.filesystem.is_empty()).then_some(p.filesystem.as_str()))
-            .collect::<Vec<_>>();
-        if known.is_empty() {
-            format!("{} partition(s)", self.partitions.len())
-        } else {
-            format!(
-                "{} partition(s): {}",
-                self.partitions.len(),
-                known.join(", ")
-            )
-        }
+            .filter(|partition| !partition.filesystem.is_empty())
+            .map(|partition| partition.filesystem.as_str())
+            .collect()
     }
 }
 

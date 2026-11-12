@@ -40,3 +40,30 @@ disks-open-in-files = In Dateien öffnen
 disks-space-left = Wie viel Platz ist noch frei?
 disks-swap = Auslagerungsspeicher
 disks-filesystem-at = { $filesystem } unter { $path }
+disks-in-use = In Benutzung
+disks-not-in-use = Nicht in Benutzung
+disks-purpose-root = Laufendes System
+disks-purpose-home = Home-Ordner
+disks-purpose-boot = Startet dieses Gerät
+disks-partition-encrypted = verschlüsselt
+disks-partition-encrypted-locked = verschlüsselt und gesperrt
+disks-partition-free = { $room } frei
+disks-not-mounted = Nicht eingehängt
+disks-encryption-unlocked = { $scheme }, entsperrt
+disks-encryption-locked = { $scheme }, gesperrt
+
+disks-severity-warning = Warnung
+disks-severity-critical = Kritisch
+disks-severity-healthy = OK
+disks-empty-drives-hint = Schließe ein Laufwerk an und suche dann erneut.
+
+## Was das Formatieren eines Laufwerks oder einer Partition löscht, in der Frage davor
+disks-format-loses-drive = { $count ->
+    [0] Alles darauf wird endgültig gelöscht.
+    [one] Die Partition und alle Dateien darauf werden endgültig gelöscht.
+   *[other] Die { $count } Partitionen und alle Dateien darauf werden endgültig gelöscht.
+}
+disks-format-loses-files = Alle Dateien darauf werden endgültig gelöscht.
+disks-format-loses-files-on = Alle Dateien auf „{ $label }“ werden endgültig gelöscht.
+disks-format-loses-used = Die { $size } an Dateien darauf werden endgültig gelöscht.
+disks-format-loses-used-on = Die { $size } an Dateien auf „{ $label }“ werden endgültig gelöscht.

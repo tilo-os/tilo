@@ -32,7 +32,7 @@ glyph-join 6 apps/feeds/src/sample.rs
 glyph-join 1 apps/file-explorer/src/files_app/cloud_browse.rs
 glyph-join 1 apps/file-explorer/src/files_app/drives.rs
 glyph-join 3 apps/git-client/src/actions.rs
-glyph-join 5 apps/imager/src/app.rs
+glyph-join 4 apps/imager/src/app.rs
 glyph-join 7 apps/logs/src/journal.rs
 glyph-join 1 apps/mail/src/compose.rs
 glyph-join 1 apps/mail/src/html_text.rs
@@ -60,7 +60,6 @@ glyph-join 1 apps/terminal/src/scenarios.rs
 glyph-join 1 apps/totp/src/model.rs
 glyph-join 1 apps/totp/src/resource.rs
 glyph-join 1 apps/tube/src/actions.rs
-glyph-join 6 apps/tube/src/model.rs
 glyph-join 7 apps/tube/src/sample.rs
 glyph-join 1 apps/typst-editor/src/app.rs
 glyph-join 2 apps/typst-editor/src/samples.rs

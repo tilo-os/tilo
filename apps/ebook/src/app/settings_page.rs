@@ -482,17 +482,17 @@ impl BooksApp {
         y: f64,
     ) -> f64 {
         let theme = ctx.theme;
-        let title = "No folders yet";
-        let action = "Open a book";
+        let title = crate::resource::CATALOG.t("ebook-library-empty-title");
+        let action = crate::resource::CATALOG.t("ebook-library-empty-action");
         let area_h =
-            EmptyState::minimum_essential_height(ctx.text, theme, col.w, title, Some(action))
+            EmptyState::minimum_essential_height(ctx.text, theme, col.w, &title, Some(&action))
                 + 2.0 * self.header_h;
         let area = Rect::new(col.x, y, col.x1(), y + area_h);
         let content = EmptyStateContent {
             icon: Some(Icon::Folder),
-            message: Some("Open a book from a folder and the folder appears here."),
-            action_label: Some(action),
-            ..EmptyStateContent::new(title)
+            message: Some(&crate::resource::CATALOG.t("ebook-library-empty-message")),
+            action_label: Some(&action),
+            ..EmptyStateContent::new(&title)
         };
         if let Some(rect) = EmptyState::paint(ctx, area, &content, self.cursor) {
             self.push_hit(rect, Action::OpenViaPortal);
@@ -584,10 +584,17 @@ impl BooksApp {
 
         // The default font: a row whose trailing control is the list of
         // fonts.
-        let mut y = Self::draw_settings_section(ctx, col, y, "Default font", None);
+        let mut y = Self::draw_settings_section(
+            ctx,
+            col,
+            y,
+            &crate::resource::CATALOG.t("ebook-settings-default-font"),
+            None,
+        );
         let size = ControlSize::Regular;
+        let titles: Vec<String> = fonts.iter().map(FontEntry::title).collect();
         let control_w =
-            HostedDropdown::width(fonts.iter().map(|f| f.name.as_str()), size, ctx.text, theme);
+            HostedDropdown::width(titles.iter().map(String::as_str), size, ctx.text, theme);
         let row = Self::draw_settings_row(
             ctx,
             col.row_span(theme),
@@ -607,7 +614,8 @@ impl BooksApp {
         self.font_dropdown.set(
             fonts
                 .iter()
-                .map(|f| (f.id.clone(), f.name.clone()))
+                .zip(titles)
+                .map(|(f, title)| (f.id.clone(), title))
                 .collect(),
             &default_id,
         );
@@ -675,12 +683,13 @@ impl BooksApp {
         let renaming_this =
             matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Font(f.id.clone()));
         let family = crate::paginate::font_choice(&f.kind);
+        let title = f.title();
         let row = Self::draw_settings_row(
             ctx,
             col.row_span(theme),
             y,
             &SettingsRow {
-                title: &f.name,
+                title: &title,
                 secondary: Some(&kind),
                 trailing: controls_w + 2.0 * f64::from(spacing.s3),
                 separator,
@@ -694,7 +703,7 @@ impl BooksApp {
             ctx,
             Rect::new(row.x0, row.y0, controls_x0 - gap, row.y1),
             renaming_this,
-            &f.name,
+            &title,
             Action::BeginRenameFont(f.id.clone()),
         );
 
@@ -861,13 +870,13 @@ impl BooksApp {
         // The row's text follows the swatches; its own inset is the gap.
         let (span_x0, span_x1) = col.row_span(theme);
         let x0 = col.x + swatches_w;
-        let title = s.name.as_str();
+        let title = s.title();
         let row = Self::draw_settings_row(
             ctx,
             (x0, span_x1),
             y,
             &SettingsRow {
-                title,
+                title: &title,
                 secondary: Some(status),
                 trailing: controls_w + 2.0 * f64::from(spacing.s3),
                 separator: false,
@@ -901,7 +910,7 @@ impl BooksApp {
                 ctx,
                 name_slot,
                 renaming_this,
-                &s.name,
+                &title,
                 Action::BeginRenameScheme(s.id.clone()),
             );
             self.push_hit(
@@ -1037,13 +1046,15 @@ impl BooksApp {
             + sub
             + f64::from(rhythm.related)
             + preview_h;
-        let mut done = ModalAction::primary("Done");
+        let done_label = crate::resource::CATALOG.t("ebook-done");
+        let mut done = ModalAction::primary(&done_label);
         done.hovered = self
             .modal_actions
             .first()
             .is_some_and(|rect| rect.contains(self.cursor));
         let actions = [done];
-        let spec = ModalSpec::new("Edit scheme")
+        let title = crate::resource::CATALOG.t("ebook-edit-scheme-title");
+        let spec = ModalSpec::new(&title)
             .actions(&actions)
             .body_height(body_h)
             .max_width(f64::from(theme.tokens.metrics.panel_width_list) + f64::from(spacing.s16));
@@ -1117,16 +1128,12 @@ impl BooksApp {
                 );
             }
         } else {
-            let width = button_width(
-                panel,
-                &scheme.name,
-                Some(Icon::Pencil),
-                ControlSize::Regular,
-            );
+            let title = scheme.title();
+            let width = button_width(panel, &title, Some(Icon::Pencil), ControlSize::Regular);
             let rect = Rect::new(field.x0, field.y0, field.x0 + width, field.y1);
             self.button(
                 panel,
-                ButtonFace::new(rect, &scheme.name)
+                ButtonFace::new(rect, &title)
                     .icon(Icon::Pencil)
                     .accessible_name("Rename scheme")
                     .role(ButtonRole::Plain),
@@ -1203,7 +1210,8 @@ impl BooksApp {
             .collect();
         let row_h = ui::chrome::nav_row_height(theme);
         let wanted = fams.len() as f64 * row_h;
-        let spec = ModalSpec::new("Add a system font")
+        let title = crate::resource::CATALOG.t("ebook-add-font-title");
+        let spec = ModalSpec::new(&title)
             .body_height(wanted)
             .max_width(f64::from(theme.tokens.metrics.panel_width_list))
             .close_hovered(self.modal_close.contains(self.cursor));

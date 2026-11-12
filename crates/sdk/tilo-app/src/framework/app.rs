@@ -256,18 +256,6 @@ pub trait ResourceApp: 'static {
     /// platform without the runtime) says no.
     const ATTACHES_RUNTIME: bool = true;
 
-    /// Whether the session's document host keeps this app's record, so the
-    /// app's process opens none: its views read the readings the session
-    /// publishes and submit actions over its one connection
-    /// (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4). A
-    /// launch the session hosts joins no workspace of its own and holds no
-    /// key or transport.
-    ///
-    /// A launch the session does not host (one whose model no service of
-    /// the session runs, a device with the runtime compiled in, a capture, a
-    /// test) keeps the record here and joins its workspace, as before.
-    const HOSTED_BY_SESSION: bool = false;
-
     /// The app's message catalog, loaded before its view is built in every
     /// host that mounts the app, so the view's lookups find its messages.
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -563,31 +551,6 @@ fn icon(app: &AppHooks) -> IconDescriptor {
     )
 }
 
-/// Where the app's record lives: its window's own, or the session's document
-/// host's ([`ResourceApp::HOSTED_BY_SESSION`]).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Hosting {
-    /// The window opens its record and edits it here.
-    Own,
-    /// The session's document host keeps it: the view reads the session's
-    /// reading and submits its actions over the session's connection.
-    Session,
-}
-
-impl Hosting {
-    const fn of(hosted_by_session: bool) -> Self {
-        if hosted_by_session {
-            Self::Session
-        } else {
-            Self::Own
-        }
-    }
-
-    const fn in_session(self) -> bool {
-        matches!(self, Self::Session)
-    }
-}
-
 /// What the launch path, the window and History read of an app: its
 /// constants, and shims over the parts that need its types. One table per
 /// app; everything that reads it is compiled once for every app.
@@ -624,13 +587,6 @@ pub(crate) struct AppHooks {
     /// Read the record `context` opened, build the root over it and take
     /// the launch's actions on it; or why the record does not read.
     open: OpenRoot,
-    /// Build the root over a reading the session published, for the app
-    /// whose record the session's document host keeps
-    /// ([`ResourceApp::HOSTED_BY_SESSION`]): the view syncs from the
-    /// reading and submits over the connection.
-    open_hosted: OpenHosted,
-    /// [`ResourceApp::HOSTED_BY_SESSION`].
-    hosting: Hosting,
     /// [`ResourceApp::OPENS_BEFORE_RECORD`].
     opens_before_record: bool,
     /// [`ResourceApp::opening`].
@@ -647,15 +603,6 @@ type NewRecord = fn(
     Option<&ui_core::application::OpenFile>,
     &[ui_core::application::LaunchOption],
 ) -> Result<(), LaunchError>;
-
-/// [`AppHooks::open_hosted`] — the context, who edits, the connection to the
-/// session and the resource address it publishes at.
-type OpenHosted = fn(
-    &mut HostContext,
-    Editing,
-    super::Connection,
-    &str,
-) -> Result<Box<dyn ui_core::widget::AppWidget>, LaunchError>;
 
 /// [`AppHooks::open`] — the context, who edits, whether it is a capture and
 /// whether the launch created the record.
@@ -694,8 +641,6 @@ impl<A: ResourceApp> Hooks<A> {
         new_record: new_record::<A>,
         prepare_capture: prepare_capture::<A>,
         open: open_root::<A>,
-        open_hosted: open_hosted_root::<A>,
-        hosting: Hosting::of(A::HOSTED_BY_SESSION),
         opens_before_record: A::OPENS_BEFORE_RECORD && !A::WINDOW_RESOURCE,
         opening: A::opening,
         action_registry: action_registry::<A>,
@@ -800,17 +745,6 @@ impl RootShell {
     }
 }
 
-/// Build the framework root for a resource state: the live handle, the
-/// dispatcher, the published resource and the app's view.
-pub(crate) fn build_root<A: ResourceApp>(
-    reader: Reader<A::Resource>,
-    editing: Editing,
-    storage: AppStorage,
-    hosted: super::settings::Hosted,
-) -> ResourceRoot {
-    build_root_from::<A>(reader, editing, storage, hosted, super::Source::Document)
-}
-
 /// [`ResourceApp::label`] of `state`, the name the app gives the resource as
 /// it stands: what a root publishes whenever it publishes a state, so the
 /// name follows the resource (a library of one book is "1 book" as soon as
@@ -821,14 +755,13 @@ fn live_label<A: ResourceApp>(state: &dyn std::any::Any) -> String {
         .map_or_else(<A::Resource as Resource>::label, A::label)
 }
 
-/// [`build_root`] over `source`: the app's own document, or the session's
-/// document host over the app's one connection (`one-app-model.md` §4).
-pub(crate) fn build_root_from<A: ResourceApp>(
+/// Build the framework root for a resource state: the live handle, the
+/// dispatcher, the published resource and the app's view.
+pub(crate) fn build_root<A: ResourceApp>(
     reader: Reader<A::Resource>,
     editing: Editing,
     storage: AppStorage,
     hosted: super::settings::Hosted,
-    source: super::Source,
 ) -> ResourceRoot {
     let app = hooks::<A>();
     // History names this app's fields by their titles.
@@ -850,14 +783,12 @@ pub(crate) fn build_root_from<A: ResourceApp>(
     let published = tilo_resource::publish::<A::Resource>(app.kind, &label, reader.state());
     let live = Live::new(reader);
     let alive = Rc::new(());
-    let dispatch = Dispatcher::new(app.id(), app.kind, read_only, me.as_deref())
-        .on_record(
-            run.launched
-                .record
-                .as_ref()
-                .map_or("", |record| record.route()),
-        )
-        .over_source(source);
+    let dispatch = Dispatcher::new(app.id(), app.kind, read_only, me.as_deref()).on_record(
+        run.launched
+            .record
+            .as_ref()
+            .map_or("", |record| record.route()),
+    );
     let dispatch = if permissions.is_none() {
         dispatch.past()
     } else {
@@ -1132,72 +1063,6 @@ fn open_root<A: ResourceApp>(
     Ok(Ok(root.into_widget()))
 }
 
-/// The root over the session's reading, when this launch is the session's
-/// and the document host keeps the record: `None` when the app keeps its own
-/// record here, as on a device with the runtime compiled in, in a capture
-/// and in a test.
-fn session_reading(
-    app: &AppHooks,
-    context: &mut HostContext,
-    editing: &Editing,
-) -> Result<Option<Box<dyn ui_core::widget::AppWidget>>, LaunchError> {
-    if !app.hosting.in_session() || context.capture().is_some() {
-        return Ok(None);
-    }
-    let Some(resource) = context.hosted_resource().map(str::to_owned) else {
-        return Ok(None);
-    };
-    // The launcher made this launch its connection; a host that runs the app
-    // inside itself supplies its own (`HostContext::provide_connection`).
-    let connection = context
-        .supplied_connection::<super::Connection>()
-        .cloned()
-        .unwrap_or_else(super::Connection::launcher);
-    let editing = match editing {
-        Editing::Live {
-            permissions,
-            me,
-            run,
-        } => Editing::Live {
-            permissions: permissions.clone(),
-            me: me.clone(),
-            run: run.clone(),
-        },
-        Editing::ReadOnly => Editing::ReadOnly,
-    };
-    let root = (app.open_hosted)(context, editing, connection, &resource)?;
-    Ok(Some(root))
-}
-
-/// Build `A`'s root over the reading the session publishes at `resource`,
-/// for the app whose record the session's document host keeps: the view
-/// syncs from that reading and submits over `connection`
-/// (`docs/designs/app-language/one-app-model.md` §4). No record is opened
-/// here, and the launch's own actions are the app's to take on the record the
-/// session holds, so none is taken.
-///
-/// # Errors
-/// The session publishes no reading of the resource the caller may read.
-fn open_hosted_root<A: ResourceApp>(
-    context: &mut HostContext,
-    editing: Editing,
-    connection: super::Connection,
-    resource: &str,
-) -> Result<Box<dyn ui_core::widget::AppWidget>, LaunchError> {
-    let reading = connection.reading(resource).ok_or_else(|| {
-        LaunchError::Operation(format!(
-            "the session publishes no reading of {resource} that this app may read"
-        ))
-    })?;
-    let state = tilo_resource::state_from_reading::<A::Resource>(&reading)
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
-    let reader = Reader::<A::Resource>::with_state(state, None);
-    let source = super::Source::over(connection, resource);
-    let root = build_root_from::<A>(reader, editing, context.storage(), hosted(context), source)
-        .reading_from_source();
-    Ok(root.into_widget())
-}
-
 /// The component of a window shown before its record ([`ResourceApp::opening`]): it shows
 /// `view` until the record is had, then the window shows the component built as any launch
 /// builds it, which takes `view` over ([`super::Opened`]).
@@ -1437,20 +1302,13 @@ fn window(
         created,
         capture,
     } = starting;
-    let root = match session_reading(app, &mut context, &editing)? {
-        Some(hosted) => hosted,
-        None => match (app.open)(&mut context, editing, capture, created)? {
-            Ok(root) => root,
-            Err(reason) => return Ok(unopened(app, context, &reason)),
-        },
+    let root = match (app.open)(&mut context, editing, capture, created)? {
+        Ok(root) => root,
+        Err(reason) => return Ok(unopened(app, context, &reason)),
     };
-    let hosted = context.hosted();
     let mut component = AppComponent::new(context, root, (app.action_registry)());
     component.set_behaviour(app.behaviour);
-    // A window over the session's reading keeps no document here: its
-    // versions are the session's record's, shown by the session, so the
-    // component registers no document History (`one-app-model.md` §4).
-    if app.document_history && !hosted {
+    if app.document_history {
         let history = (app.history)();
         match files {
             Some(files) => component.register_document_and_file_history(history, files),

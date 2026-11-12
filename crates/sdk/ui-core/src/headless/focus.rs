@@ -22,6 +22,8 @@ impl FrameHarness {
     /// lost it keeps its fields' text and selection and paints no caret until it
     /// has it back. Returns whether that changed, so a host redraws the frame the
     /// caret was in.
+    /// Quiet: invalidates when the answer changed; a host sets it every frame, and an unchanged
+    /// one leaves nothing to bring back.
     pub fn set_keyboard_held(&mut self, held: bool) -> bool {
         if self.keyboard_held == held {
             return false;

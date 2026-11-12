@@ -227,8 +227,11 @@ fn idle_page(
 fn server_label(model: &Model) -> String {
     match model.readings.location.as_deref() {
         // A server that answered before: "Cloudflare at AMS".
-        Some(server) if !server.starts_with("Nearest") => format!("Measures against {server}"),
-        _ => "Measures against the nearest Cloudflare server".to_owned(),
+        Some(server) if !server.starts_with("Nearest") => CATALOG.t_args(
+            "speed-test-measures-against",
+            &[("server", ui::i18n::ArgValue::Text(server.to_owned()))],
+        ),
+        _ => CATALOG.t("speed-test-measures-nearest"),
     }
 }
 

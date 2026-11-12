@@ -820,7 +820,7 @@ fn a_retained_notice_can_reopen_its_application_after_its_window_closed() {
                 detail: String::new(),
             })
         }
-        fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+        fn launch(&mut self, _: &Workspace, id: TabId, app: &str, _: Option<TabId>) -> Option<Tab> {
             (app == "so.tilo.clocks").then(|| Tab {
                 id,
                 title: "Clocks".into(),

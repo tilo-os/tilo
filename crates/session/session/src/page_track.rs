@@ -287,7 +287,7 @@ mod over_the_plane {
     use channel_crypto::{ChannelGroup, MemberKey};
     use tilo_live::live::Track;
     use tilo_live::plane::{Join, Plane};
-    use tilo_live::relay::{Denied, Peer, Relay, RelayAuthority, SessionAuthorization};
+    use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
     use tilo_live::roster::Roster as LiveRoster;
     use tilo_live::scope::Scope;
     use ui::webview::paint::stream::wire::{Payload, Receiver};
@@ -308,12 +308,8 @@ mod over_the_plane {
     fn relay() -> Arc<Relay> {
         struct Nobody;
         impl RelayAuthority for Nobody {
-            fn admit(
-                &self,
-                _peer: Peer,
-                _proof: &[u8],
-            ) -> Result<Arc<dyn SessionAuthorization>, Denied> {
-                Err(Denied)
+            fn admit<'a>(&'a self, _peer: Peer, _proof: &'a [u8]) -> Admission<'a> {
+                Box::pin(std::future::ready(Err(Denied)))
             }
         }
         Arc::new(Relay::new(Arc::new(Nobody)))

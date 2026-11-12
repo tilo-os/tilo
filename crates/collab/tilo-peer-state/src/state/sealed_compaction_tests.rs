@@ -244,6 +244,16 @@ impl Author {
             .encode()
             .unwrap()
     }
+
+    /// [`Self::edit`] of a value held as bytes, as an app records what a file or a picture is.
+    fn edit_bytes(&mut self, key: &str, value: Vec<u8>) -> Vec<u8> {
+        let heads = self.0.get_heads();
+        self.0.put(ROOT, key, value).unwrap();
+        self.0.commit();
+        DocumentMutation::Incremental(self.0.save_after(&heads))
+            .encode()
+            .unwrap()
+    }
 }
 
 /// `key`'s next sealed write to `peer`'s record.
@@ -1582,6 +1592,60 @@ fn captured_history_folds_a_writer_sequence_written_twice() {
     assert_eq!(f.host.durable().unwrap(), before);
 }
 
+/// A late joiner is sent a record's whole sealed history, and a key holder's whole-record
+/// checkpoint re-states what it already holds: a record's history outgrows one capture of it.
+/// What a joiner reads is bounded by what its caller allows, as a record held in the clear is,
+/// and its history is bounded where it is admitted. A fixed bound of one capture's own left a
+/// joiner refused for good while every caller allowed several times the record's size.
+#[test]
+fn a_late_joiner_reads_a_sealed_history_past_one_capture() {
+    /// Incompressible: a sealed history is as large as what it carries.
+    const WRITE: usize = 1024 * 1024;
+    /// Past what one capture hands out, and what a session reading a record allows.
+    const WRITES: usize = 9;
+    const ROOM: usize = 32 * 1024 * 1024;
+    let mut f = fixture();
+    let keys = f.keys();
+    let now = f.now;
+    let mut author = Author::new(&f.host);
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut value = vec![0_u8; WRITE];
+    for byte in &mut value {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        *byte = state.to_le_bytes()[0];
+    }
+    for round in 0..WRITES {
+        let mut plaintext = value.clone();
+        plaintext[0] = u8::try_from(round).unwrap();
+        let edit = author.edit_bytes(&format!("value-{round}"), plaintext);
+        let message = write(&f.host, &f.owner, &keys, &edit, now);
+        admit(&mut f.host, &f.owner, message, now);
+    }
+    let joiner = f.restore(&f.host.durable().unwrap()).unwrap();
+    let read = |maximum: usize| {
+        let mut kept = KeptRecord::default();
+        joiner
+            .open_document(
+                f.authority.device_public_key,
+                (APP, RECORD),
+                now,
+                maximum,
+                Some(&mut |op| open(&keys, op)),
+                &mut kept,
+            )
+            .expect("a joiner reads its record")
+            .save()
+    };
+    let record = read(ROOM);
+    assert!(
+        record.len() > 8 * 1024 * 1024,
+        "the record outgrew one capture"
+    );
+    assert_eq!(read(ROOM), record, "the whole record either way");
+}
+
 #[test]
 fn captured_history_validates_route_signature_admission_and_watermarks() {
     let mut f = fixture();
@@ -2136,3 +2200,68 @@ fn a_checkpoint_founds_its_record_behind_sealed_changes_let_go() {
 
 #[path = "kept_open_tests.rs"]
 mod kept_open;
+
+/// A key holder's whole-record checkpoint written as a change re-states the record beside the
+/// writes it holds: a replica without the key cannot tell what it covers, so it keeps both, and
+/// a record a host checkpoints as often as it asks fills its bound with copies of itself long
+/// before what its members wrote does. What comes past the bound is refused, and only a key
+/// holder's compaction, which names the writes it covers, lets the record go on.
+#[test]
+fn checkpoints_written_as_changes_fill_a_sealed_history_with_copies_of_the_record() {
+    /// Incompressible: a sealed history is as large as what it carries.
+    const WRITE: usize = 128 * 1024;
+    let mut f = fixture();
+    let keys = f.keys();
+    let (now, owner, editor) = (f.now, f.owner.clone(), f.editor.clone());
+    let mut author = Author::new(&f.host);
+    let mut state = 0x2545_F491_4F6C_DD1D_u64;
+    let mut written = 0;
+    let refused = loop {
+        let value: Vec<u8> = (0..WRITE)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state.to_le_bytes()[0]
+            })
+            .collect();
+        let edit = author.edit_bytes(&format!("value-{written}"), value);
+        let sealed = write(&f.host, &editor, &keys, &edit, now);
+        if let Err(error) = f.host.receive_from_report(origin(&editor), sealed, now) {
+            break error.to_string();
+        }
+        written += 1;
+        // The host asks for a checkpoint, and a key holder writes the whole record as a change.
+        let snapshot = DocumentMutation::Snapshot(author.0.save())
+            .encode()
+            .unwrap();
+        let (metadata, ciphertext) = keys
+            .seal_content(artifact(), ContentRetention::Checkpoint, &snapshot)
+            .unwrap();
+        let checkpoint = message(signed(
+            &owner,
+            next_seq(&f.host, &owner),
+            OpKind::Change,
+            ciphertext,
+            Some(metadata),
+            now,
+        ));
+        if let Err(error) = f.host.receive_from_report(origin(&owner), checkpoint, now) {
+            break error.to_string();
+        }
+    };
+    let error = refused;
+    assert!(error.contains("sealed record history is full"), "{error}");
+    assert!(
+        written * WRITE < MAX_SEALED_BYTES / 4,
+        "copies of the record filled the bound after {written} writes of {WRITE} bytes"
+    );
+    // The key holder's compaction names what it covers, so the replica drops it all for one
+    // copy, and the record goes on.
+    let mut holder = f.host.clone();
+    let compaction = mint(&mut holder, &keys, &owner, now).unwrap();
+    admit(&mut f.host, &owner, compaction, now);
+    assert_eq!(held(&f.host).len(), 1);
+    let sealed = write(&f.host, &editor, &keys, &author.edit("value", "on"), now);
+    admit(&mut f.host, &editor, sealed, now);
+}

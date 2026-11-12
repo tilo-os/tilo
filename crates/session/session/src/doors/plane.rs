@@ -19,11 +19,12 @@ use crate::{
 };
 use tilo_desktop_surface::DesktopHandle;
 
-/// What a service answered, as a caller of the action protocol reads it.
+/// What a service answered, as a caller of the action protocol reads it. Work that answers later
+/// is taken: it goes on, and what it changes lands in the readings.
 pub(crate) fn answered(started: Started) -> ResourceOperationStart {
     match started {
         Started::Done(output) => ResourceOperationStart::Completed(output),
-        Started::Accepted => ResourceOperationStart::Accepted,
+        Started::Accepted | Started::Later(_) => ResourceOperationStart::Accepted,
     }
 }
 
@@ -89,9 +90,7 @@ impl Published for ServiceDoor {
             .borrow_mut()
             .invoke(&address.resource, &address.action, arguments)
         {
-            Some(Ok(Started::Done(output))) => Ok(ResourceOperationStart::Completed(output)),
-            Some(Ok(Started::Accepted)) => Ok(ResourceOperationStart::Accepted),
-            Some(Err(error)) => Err(error),
+            Some(started) => started.map(answered),
             None => Err(DoorError::Unknown(address.clone())),
         }
     }

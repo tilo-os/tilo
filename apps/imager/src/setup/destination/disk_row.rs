@@ -67,7 +67,11 @@ pub fn disk_row(disk: &Disk, control: &Control, selected: bool) -> Bound {
         model.to_string()
     };
     let notes = notes(disk);
-    let mut secondary = format!("{}, {}", disk.name.trim(), disk.contents_summary());
+    let mut secondary = crate::contents::drive_line(
+        disk.name.trim(),
+        disk.partitions.len(),
+        &disk.partition_filesystems(),
+    );
     for note in &notes {
         secondary.push_str(". ");
         secondary.push_str(note.trim_end_matches('.'));

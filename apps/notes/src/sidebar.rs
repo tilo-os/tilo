@@ -5,12 +5,14 @@
 //! rename, drag-and-drop, the row menu, hover row actions, scrolling,
 //! indentation and semantics. This module owns only what is specific to Notes:
 //! the model the list reads (every page may hold children), the page menu, and
-//! what its controls mean as the notebook's own
-//! [actions](crate::notebook::Notebook): every one of them is submitted
-//! through the notebook's dispatcher, the one door the palette, agents,
-//! history, undo and the permission check share. Which note is open is the
-//! person's view of the notebook, so choosing a row is kept as a view intent
-//! for the window ([`Wanted`]).
+//! what its controls press as the notebook's own
+//! [actions](crate::notebook::Notebook): each control carries the published
+//! action it presses ([`PageSidebar::attach_actions`]), so what a person
+//! clicks and what an agent invokes are the same action through the one door
+//! the palette, agents, history, undo and the permission check share. Keys and
+//! menu rows submit through the notebook's dispatcher. Which note is open is
+//! the person's view of the notebook, so choosing a row is kept as a view
+//! intent for the window ([`Wanted`]).
 //!
 //! Keyboard, while the tree holds focus (these keys otherwise belong to the
 //! editor): ↑ / ↓ select, ← / → collapse / expand (or move to the parent /
@@ -30,7 +32,7 @@ use ui::prelude::*;
 #[cfg(test)]
 use ui::widget::Edits;
 
-use ui::framework::Dispatcher;
+use ui::framework::{Actions, Dispatcher};
 use ui::icons::Icon;
 use ui::presence::PresenceKey;
 use ui::reorder::{DropPlacement, ReorderDrop};
@@ -46,6 +48,12 @@ use crate::resource::Notebook as NotebookResource;
 /// changes nothing.
 type SharedDoor = Rc<RefCell<Option<Dispatcher<NotebookResource>>>>;
 
+/// The notebook's published actions, once the window is hosted: what the
+/// tree's controls are bound to, so a press and an agent's invocation of the
+/// same action are one thing. A tree shown without them offers no bindable
+/// control.
+type SharedActions = Rc<RefCell<Option<Actions<NotebookResource>>>>;
+
 /// What the tree asked of its window, shared with the callbacks.
 type SharedWanted = Rc<RefCell<Wanted>>;
 
@@ -55,9 +63,11 @@ type SharedWanted = Rc<RefCell<Wanted>>;
 pub(crate) struct Wanted {
     /// Notes to show, in the order they were chosen.
     open: Vec<PageId>,
-    /// The note a create or a copy this tree submitted makes, opened once
-    /// that submission lands.
+    /// The note a create or a copy made, opened once the notebook shows it.
     made: Option<Made>,
+    /// Whether the note this window is making opens with its title taking
+    /// the keyboard first, as the press that asked for it said.
+    title_first: Option<bool>,
     /// What a deletion this tree submitted says, said once it lands.
     gone: Option<Gone>,
     /// A menu's "Rename": the field opens once the menu has closed.
@@ -66,25 +76,18 @@ pub(crate) struct Wanted {
     menu: Option<PageId>,
 }
 
-/// A note a submission will make: the landing revision it was submitted
-/// after, so only its own answer opens it, the action that makes it, and
-/// whether its title takes the keyboard first.
+/// The note a submission made, and whether its title takes the keyboard first:
+/// the window opens it once the notebook presents it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Made {
-    after: u64,
-    action: &'static str,
+    page: PageId,
     pub(crate) naming: bool,
 }
 
 impl Made {
-    /// The landing revision this make was submitted after.
-    pub(crate) fn after(self) -> u64 {
-        self.after
-    }
-
-    /// The action this make submitted.
-    pub(crate) fn action(self) -> &'static str {
-        self.action
+    /// The note that was made.
+    pub(crate) fn page(self) -> PageId {
+        self.page
     }
 }
 
@@ -131,33 +134,40 @@ impl Wanted {
     }
 }
 
-/// Make a note under `parent` (a top-level note when none), as the sidebar's
-/// "+" and the page menu's New note do; the window opens it once the
-/// notebook keeps it.
+/// The notebook's `new-child` on `page`, once the window's actions are here:
+/// what a row's "+" presses.
+fn new_child_binding(
+    actions: &SharedActions,
+    page: PageId,
+) -> Option<tilo_actions::ActionBinding<()>> {
+    actions
+        .borrow()
+        .as_ref()?
+        .invocation(Notebook::NEW_CHILD.with(notebook::notebook::NewChild {
+            page: notebook::page_id(page),
+            title: crate::notebook::UNTITLED.to_owned(),
+        }))
+}
+
+/// Make a note under `parent` (a top-level note when none), as the page menu's
+/// New note and the keys do; the window opens it once the notebook keeps it.
 fn make_note(door: &SharedDoor, wanted: &SharedWanted, parent: Option<PageId>, naming: bool) {
     let door = door.borrow();
     let Some(dispatcher) = door.as_ref() else {
         return;
     };
-    let after = dispatcher.landed().revision();
-    let action = if let Some(parent) = parent {
+    if let Some(parent) = parent {
         dispatcher.submit(Notebook::NEW_CHILD.with(notebook::notebook::NewChild {
             page: notebook::page_id(parent),
             title: crate::notebook::UNTITLED.to_owned(),
         }));
-        Notebook::NEW_CHILD.id()
     } else {
         dispatcher.submit(Notebook::NEW_NOTE.with(notebook::notebook::NewNote {
             title: crate::notebook::UNTITLED.to_owned(),
             parent: None,
         }));
-        Notebook::NEW_NOTE.id()
-    };
-    wanted.borrow_mut().made = Some(Made {
-        after,
-        action,
-        naming,
-    });
+    }
+    wanted.borrow_mut().title_first = Some(naming);
 }
 
 /// Give `page` a new title.
@@ -193,13 +203,8 @@ fn duplicate_page(door: &SharedDoor, wanted: &SharedWanted, page: PageId) {
     let Some(dispatcher) = door.as_ref() else {
         return;
     };
-    let after = dispatcher.landed().revision();
     dispatcher.submit(Notebook::DUPLICATE.with(notebook::page_id(page)));
-    wanted.borrow_mut().made = Some(Made {
-        after,
-        action: Notebook::DUPLICATE.id(),
-        naming: false,
-    });
+    wanted.borrow_mut().title_first = Some(false);
 }
 
 /// Put `page` under `parent` (top level when none), before `before` (last
@@ -516,15 +521,16 @@ impl ListModel for PageList {
     }
 }
 
-/// The notes sidebar: the page tree, the door its controls submit through,
-/// and what it asked of its window. Dereferences to the [`PageTreeView`] it
-/// hosts.
+/// The notes sidebar: the page tree, the notebook whose actions its controls
+/// press, and what it asked of its window. Dereferences to the
+/// [`PageTreeView`] it hosts.
 pub struct PageSidebar {
     tree: PageTreeView,
     /// Which notes have their notes folded away, kept by the list as it mounts
     /// rows so a fold survives every rebuild of the snapshot.
     marks: Rc<TreeMarks<PageId>>,
     door: SharedDoor,
+    actions: SharedActions,
     wanted: SharedWanted,
     /// The selection seen by the previous sync. When it changes, its
     /// ancestors unfold so the selected row is on screen (a `[[link]]`
@@ -560,6 +566,7 @@ impl PageSidebar {
     pub fn new() -> Self {
         crate::metadata::register_messages();
         let door = SharedDoor::default();
+        let actions = SharedActions::default();
         let wanted = SharedWanted::default();
         let marks = Rc::new(TreeMarks::default());
         let on_reorder = Rc::clone(&door);
@@ -567,7 +574,8 @@ impl PageSidebar {
         let on_delete = (Rc::clone(&door), Rc::clone(&wanted));
         let on_open = Rc::clone(&wanted);
         let on_menu = (Rc::clone(&door), Rc::clone(&wanted));
-        let rows = (Rc::clone(&door), Rc::clone(&wanted));
+        let row_actions = Rc::clone(&actions);
+        let row_wanted = Rc::clone(&wanted);
         let depths = Rc::clone(&marks);
         let tree = VirtualList::new(
             PageList::build(&Workspace::default()),
@@ -578,22 +586,26 @@ impl PageSidebar {
                 };
                 let title = row.title.as_str();
                 let page = *page;
-                let (plus_door, plus_wanted) = (Rc::clone(&rows.0), Rc::clone(&rows.1));
-                let more_wanted = Rc::clone(&rows.1);
-                let row = ListRow::new(format!("note-{page}"), title)
-                    .depth(depths.depth(&page))
-                    .action(
+                let more_wanted = Rc::clone(&row_wanted);
+                let mut list_row =
+                    ListRow::new(format!("note-{page}"), title).depth(depths.depth(&page));
+                // The row's "+" presses the notebook's `new-child` on this
+                // note: a person's press and an agent's invocation are the
+                // same action, so the presence marker lands on the control.
+                if let Some(binding) = new_child_binding(&row_actions, page) {
+                    list_row = list_row.action_binding(
                         Icon::Plus,
                         format!("{} {title}", CATALOG.t("notes-a11y-new-child-under")),
-                        move || make_note(&plus_door, &plus_wanted, Some(page), false),
-                    )
-                    .action(
-                        Icon::MoreHorizontal,
-                        format!("{} {title}", CATALOG.t("notes-a11y-more-actions-for")),
-                        // The list opens the page menu on the row once it has
-                        // the request: a row's control cannot reach it.
-                        move || more_wanted.borrow_mut().menu = Some(page),
+                        binding,
                     );
+                }
+                let row = list_row.action(
+                    Icon::MoreHorizontal,
+                    format!("{} {title}", CATALOG.t("notes-a11y-more-actions-for")),
+                    // The list opens the page menu on the row once it has
+                    // the request: a row's control cannot reach it.
+                    move || more_wanted.borrow_mut().menu = Some(page),
+                );
                 Box::new(row)
             },
         )
@@ -666,20 +678,45 @@ impl PageSidebar {
             tree,
             marks,
             door,
+            actions,
             wanted,
             last_selection: None,
         }
     }
 
-    /// Submit through `dispatcher` from now on: every control in the tree
-    /// reaches the notebook by the one door its actions are published at.
+    /// Submit what the tree's keys and menu rows ask for through `dispatcher`
+    /// from now on: the one door the notebook's actions are published at.
     pub(crate) fn attach_notebook(&self, dispatcher: Dispatcher<NotebookResource>) {
         *self.door.borrow_mut() = Some(dispatcher);
     }
 
-    /// Make a note, as the "+" and New note controls do: inside `parent`
-    /// when given, at the top level otherwise. `naming`: the note opens with
-    /// its title taking the keyboard.
+    /// Bind the tree's controls to the notebook's published `actions` from now
+    /// on: a press and an agent's invocation of the action it names are one
+    /// action, and the control is where that action stands.
+    pub(crate) fn attach_actions(&self, actions: Actions<NotebookResource>) {
+        *self.actions.borrow_mut() = Some(actions);
+    }
+
+    /// The note this window's action made, opened once the notebook presents
+    /// it.
+    pub(crate) fn note_made(&self, page: PageId, naming: bool) {
+        self.wanted.borrow_mut().made = Some(Made { page, naming });
+    }
+
+    /// Whether the note this window is making opens with its title taking the
+    /// keyboard, as the press that asked for it said. A press that says
+    /// nothing names the note only when it is the page tree's own New note.
+    pub(crate) fn take_title_first(&self, action: &'static str) -> bool {
+        self.wanted
+            .borrow_mut()
+            .title_first
+            .take()
+            .unwrap_or_else(|| action == Notebook::NEW_NOTE.id())
+    }
+
+    /// Make a note, as the keys and the page menu's New note do: inside
+    /// `parent` when given, at the top level otherwise. `naming`: the note
+    /// opens with its title taking the keyboard.
     pub(crate) fn new_note(&self, parent: Option<PageId>, naming: bool) {
         make_note(&self.door, &self.wanted, parent, naming);
     }
@@ -1424,33 +1461,20 @@ mod tests {
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn sidebar_page_menu_and_row_actions_submit_the_notebooks_actions() {
-        eprintln!("phase hover_row_actions_create_a_child_or_open_the_existing_note_menu");
+        eprintln!("phase hover_row_controls_offer_the_page_menu");
         {
             let mut workspace = Workspace::new();
             let page = workspace.create_page(None);
-            let (mut tree, door) = with_door();
+            let (mut tree, _door) = with_door();
             tree.sync_from_workspace(&workspace);
             place(&mut tree, Rect::new(0.0, 0.0, 240.0, 200.0), 1.0);
             let key = page;
             // The row's controls show under the pointer, as they do for a person.
             let row = tree.row_rect(&key).unwrap();
             event(&mut tree, &moved(row.center()));
-            let child = tree.row_action_rect(&key, 0).unwrap();
-            let more = tree.row_action_rect(&key, 1).unwrap();
-
-            event(&mut tree, &moved(child.center()));
-            assert!(event(&mut tree, &button(ElementState::Pressed)));
-            event(&mut tree, &button(ElementState::Released));
-            let created = asked(&door);
-            assert_eq!(created.len(), 1);
-            match &created[0].operation {
-                crate::notebook::NotebookAction::NewChild(new_child) => {
-                    assert_eq!(new_child.page, notebook::page_id(page));
-                }
-                other => panic!("expected the notebook's new-child, got {other:?}"),
-            }
-            let made = tree.take_made().expect("the made note opens once it lands");
-            assert!(!made.naming, "a row's plus leaves naming to the tree");
+            // A tree shown with no notebook actions offers no "new child"
+            // control: its only row control is the page menu.
+            let more = tree.row_action_rect(&key, 0).unwrap();
 
             event(&mut tree, &moved(more.center()));
             assert!(event(&mut tree, &button(ElementState::Pressed)));

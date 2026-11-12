@@ -149,7 +149,7 @@ impl ChatApp {
             None,
             &strong,
         );
-        ChatApp::push_hit(hits, Rect::new(x, y, x + retry_w, y + h), Hit::Send);
+        ChatApp::push_hit(hits, Rect::new(x, y, x + retry_w, y + h), Hit::RetrySend);
     }
 
     /// Whether the message the person just deleted was in the channel shown.
@@ -273,6 +273,13 @@ impl ChatApp {
             theme,
         } = paint;
         let btn = ButtonFace::height(ControlSize::Regular, theme);
+        // The thread has its own box and its own send button: a send from the
+        // conversation's box is found at that box, and nowhere else.
+        let send_hit = if matches!(focus_hit, Hit::FocusThread) {
+            Hit::ThreadSend
+        } else {
+            Hit::Send
+        };
         paint_field(scene, tf, theme, rect);
         if interactive {
             ChatApp::push_hit(hits, rect, focus_hit);
@@ -318,7 +325,7 @@ impl ChatApp {
                 send_face.disabled(true)
             },
         );
-        ChatApp::push_hit(hits, send, Hit::Send);
+        ChatApp::push_hit(hits, send, send_hit);
 
         let _ = draft;
         frame.editor

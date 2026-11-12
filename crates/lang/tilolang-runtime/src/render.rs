@@ -1545,6 +1545,11 @@ impl RowsOf {
         format!("{}/{}/{id}", self.key, coll.target.doc)
     }
 
+    /// The item of `coll` whose row is keyed `key`, as [`Self::coll_row_key`] wrote it.
+    pub fn coll_row_id<'k>(&self, coll: &crate::value::CollRef, key: &'k str) -> Option<&'k str> {
+        key.strip_prefix(format!("{}/{}/", self.key, coll.target.doc).as_str())
+    }
+
     /// The key of the row of `item`, the `index`th, and the row view's arguments.
     pub fn row(&self, item: &Value, index: usize) -> (String, Vec<Value>) {
         let item_key = item_key(item, index);

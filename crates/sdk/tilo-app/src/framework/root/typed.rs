@@ -101,11 +101,6 @@ pub(crate) trait TypedRoot {
     /// Bring the live state up to `doc`.
     fn sync(&self, doc: &AutoCommit) -> Result<bool, ModelError>;
 
-    /// Take `reading`, the state the session publishes for this resource, as
-    /// the live state — read through the type's own model form, with no
-    /// document here (`one-app-model.md` §4). Returns whether it moved.
-    fn adopt(&self, reading: &serde_json::Value) -> Result<bool, ModelError>;
-
     /// Whether the live state is `doc`'s.
     fn follows(&self, doc: &AutoCommit) -> bool;
 
@@ -284,9 +279,6 @@ pub(crate) trait TypedRoot {
 /// The handles of a root that name its resource type.
 pub(crate) struct Typed<R: Resource> {
     pub(crate) live: Live<R>,
-    /// The reading the live state was last adopted from, when the session
-    /// keeps the record: the same reading is no change.
-    pub(super) reading: std::cell::RefCell<Option<serde_json::Value>>,
     pub(super) updaters: Updaters<R>,
     pub(crate) dispatch: Dispatcher<R>,
     pub(super) bindings: Bindings<R>,
@@ -375,19 +367,6 @@ impl<R: Resource> TypedRoot for Typed<R> {
 
     fn sync(&self, doc: &AutoCommit) -> Result<bool, ModelError> {
         self.live.sync(doc)
-    }
-
-    fn adopt(&self, reading: &serde_json::Value) -> Result<bool, ModelError> {
-        // The reading is the state, so the same reading is no change: a
-        // frame that sees it again wakes nothing (`Resource::State` need
-        // not even be comparable).
-        if self.reading.borrow().as_ref() == Some(reading) {
-            return Ok(false);
-        }
-        let state: R::State = tilo_resource::state_from_reading::<R>(reading)?;
-        *self.reading.borrow_mut() = Some(reading.clone());
-        self.live.replace(state);
-        Ok(true)
     }
 
     fn follows(&self, doc: &AutoCommit) -> bool {

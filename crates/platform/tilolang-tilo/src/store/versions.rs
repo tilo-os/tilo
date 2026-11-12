@@ -28,9 +28,9 @@ pub(super) type NewestPage = (Vec<(String, Version)>, bool);
 /// A change that is no action of a package but someone's step on the record all the same (an
 /// undo, a revert from History) is a version too, of each resource it wrote, as `mirror` (which
 /// holds it) places what it wrote: who took back an agent's run has seen what they took back.
-pub(super) fn note_versions<'c>(
+pub(super) fn note_versions<C: idx::reflect::ChangeHead>(
     index: &mut Versions,
-    changes: impl IntoIterator<Item = &'c automerge::Change>,
+    changes: impl IntoIterator<Item = C>,
     mirror: &Doc,
     resources: &BTreeMap<DocId, (AppId, TypeId)>,
 ) -> Removed {
@@ -39,11 +39,11 @@ pub(super) fn note_versions<'c>(
         // What a change says is read once: its version, its action and its run answer what it
         // made, where it placed it and when, and reading the action again per question costs a
         // chunk's log a parse a change.
-        let read = idx::reflect::read_change(change);
+        let read = idx::reflect::read_change(&change);
         let stamp = read
             .as_ref()
             .map(|(stamp, _, _)| stamp.clone())
-            .or_else(|| idx::reflect::step_stamp(change));
+            .or_else(|| idx::reflect::step_stamp(&change));
         // A change a step took back is no version of what the record holds.
         let counts = !undone.contains(&change.hash().to_string());
         let placed: BTreeMap<String, Left> = read
@@ -57,7 +57,7 @@ pub(super) fn note_versions<'c>(
             idx::reflect::versions_of_action(stamp, action, run.as_ref())
         });
         let made = if made.is_empty() {
-            idx::reflect::stepped(change, mirror, resources)
+            idx::reflect::stepped(&change, mirror, resources)
         } else {
             made
         };

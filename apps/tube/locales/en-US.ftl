@@ -221,3 +221,27 @@ tube-queue-shared = Shared watch queue
 tube-video = Video
 tube-creator = Creator
 tube-playlist = Playlist
+
+## What the segment categories and the search types are called
+tube-category-sponsor = Sponsor
+tube-category-self-promo = Self-promo
+tube-category-interaction = Interaction reminder
+tube-category-intro = Intro
+tube-category-outro = Outro
+tube-category-preview = Preview
+tube-category-music-offtopic = Non-music section
+tube-category-filler = Filler
+tube-category-sponsor-blurb = Paid promotion, paid referrals and direct advertisements.
+tube-category-self-promo-blurb = Unpaid self-promotion, merch and donations.
+tube-category-interaction-blurb = Asking people to like and subscribe, without other content.
+tube-category-intro-blurb = An interval without actual content: a pause, an animation or an intro.
+tube-category-outro-blurb = Credits or the end of the video: endcards and outros.
+tube-category-preview-blurb = A quick recap of earlier episodes or a preview of what comes next.
+tube-category-music-offtopic-blurb = The parts of a music video without music, for listening to the music.
+tube-category-filler-blurb = Tangential scenes that only make the video longer.
+tube-skip-auto = Auto-skip
+tube-skip-show = Show
+tube-skip-off = Off
+tube-type-video = Video
+tube-type-playlist = Playlist
+tube-type-creator = Creator

@@ -1237,8 +1237,8 @@ fn an_agent_writing_wears_one_tag_at_its_caret() {
         .collect();
     assert_eq!(
         tags,
-        vec!["Ada: writing".to_owned()],
-        "one tag, saying who and what"
+        vec!["Ada: added text".to_owned()],
+        "one tag, saying who and what it did to the text"
     );
 }
 

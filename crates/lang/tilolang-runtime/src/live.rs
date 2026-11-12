@@ -792,7 +792,7 @@ impl Live {
             return;
         }
         self.state_clock = clock;
-        let mut hit = Vec::new();
+        let mut left: Vec<(BoundId, &StateKey)> = Vec::new();
         for (key, ids) in &self.index.states {
             let now = states.generation(key);
             for id in ids {
@@ -802,7 +802,7 @@ impl Live {
                         .any(|(k, seen)| k == key && *seen != now)
                 });
                 if moved {
-                    hit.push(*id);
+                    left.push((*id, key));
                 }
             }
         }
@@ -810,7 +810,9 @@ impl Live {
         // The state a view declares is what its rows stand in: moving it leaves that view, and
         // the rows the person kept for looking at it settle
         // ([`crate::live::virtual_rows`]).
-        self.settle_kept(&hit);
+        let settling = self.left_lists(core, &left);
+        let hit: Vec<BoundId> = left.into_iter().map(|(id, _)| id).collect();
+        self.settle_kept(&settling);
         self.dirty.extend(hit);
     }
 

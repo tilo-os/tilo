@@ -28,6 +28,7 @@
 //! | count | [`count`], [`items`] | `12,345`, `12 items` | `12.345`, `12 Objekte` |
 //! | money | [`money`] | `$5`, `$0.42`, `$1,250` | `$5`, `$0,42`, `$1.250` |
 //! | decimal | [`decimal`] | `3.14` | `3,14` |
+//! | value list | [`list`] | `Home folders, encrypted, 134 GB free` | `Home-Ordner, verschlüsselt, 134 GB frei` |
 //!
 //! [`size`] uses SI decimal units and [`memory`] IEC binary ones, the platform's rule shared with
 //! Files, Disks and the Storage pane: anything stored or transferred (files, downloads, caches,
@@ -525,6 +526,25 @@ pub fn range(start: &str, end: &str) -> String {
         "format-range",
         &[("start", start.into()), ("end", end.into())],
     )
+}
+
+/// Already-formatted values as this language writes a list: `Home folders,
+/// encrypted, 134 GB free`. The separator is the catalogue's, so a language
+/// that writes its lists another way gets its own; a single value is itself.
+#[must_use]
+pub fn list(values: &[String]) -> String {
+    let mut joined = String::new();
+    for value in values {
+        joined = if joined.is_empty() {
+            value.clone()
+        } else {
+            widget_format(
+                "format-list-join",
+                &[("head", joined.into()), ("tail", value.as_str().into())],
+            )
+        };
+    }
+    joined
 }
 
 /// A span of the calendar a view shows: one day, a run of days, or a

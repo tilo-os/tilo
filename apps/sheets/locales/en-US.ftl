@@ -102,3 +102,10 @@ sheets-a11y-column = Column { $letter }
 
 ## What the window shows
 sheets-no-replies = No replies
+
+sheets-comment-you = You
+sheets-comment-someone = Someone
+
+## The document settings sheet
+sheets-document-settings = Document settings
+sheets-done = Done

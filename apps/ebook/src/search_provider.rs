@@ -406,7 +406,7 @@ impl BookSearch {
             let (title, author) = book_metadata
                 .get(&annotation.doc_id)
                 .cloned()
-                .unwrap_or_else(|| ("Unknown book".into(), String::new()));
+                .unwrap_or_else(|| (CATALOG.t("ebook-annotation-unknown-book"), String::new()));
             let comment = annotation.kind == AnnoKind::Note
                 && groups.contains(&(annotation.doc_id.clone(), annotation.group));
             let result = SearchResult::new(
@@ -417,7 +417,7 @@ impl BookSearch {
             .with_subtitle(CATALOG.t_args(
                 "ebook-a11y-annotation-hit",
                 &[
-                    ("kind", ArgValue::Text(annotation.kind.label().to_owned())),
+                    ("kind", ArgValue::Text(CATALOG.t(annotation.kind.message()))),
                     (
                         "chapter",
                         ArgValue::Text((annotation.chapter + 1).to_string()),
@@ -431,9 +431,12 @@ impl BookSearch {
                 AnnoKind::Note => Icon::MessageSquare,
             });
             let kind = if comment {
-                format!("{} comment", annotation.kind.label())
+                CATALOG.t_args(
+                    "ebook-annotation-comment",
+                    &[("kind", ArgValue::Text(CATALOG.t(annotation.kind.message())))],
+                )
             } else {
-                annotation.kind.label().to_string()
+                CATALOG.t(annotation.kind.message())
             };
             if !add(
                 result,
@@ -527,7 +530,7 @@ impl BookSearch {
         };
         let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
         if collapsed.is_empty() {
-            annotation.kind.label().to_string()
+            CATALOG.t(annotation.kind.message())
         } else if collapsed.chars().count() > 72 {
             collapsed.chars().take(69).collect::<String>() + "…"
         } else {

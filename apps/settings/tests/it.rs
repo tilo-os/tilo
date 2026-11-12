@@ -233,3 +233,6 @@ mod perf_interaction;
 
 #[path = "action_keywords_tests.rs"]
 mod action_keywords_tests;
+
+#[path = "live_window_density.rs"]
+mod live_window_density;

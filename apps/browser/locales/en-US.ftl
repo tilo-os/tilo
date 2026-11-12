@@ -556,3 +556,9 @@ browser-settings-search-engine-detail = Searches from the address field go here.
 ## What the window shows
 browser-quit-keep-downloading = Keep downloading
 browser-quit-cancel-downloads = Cancel downloads and quit
+browser-open = Open { $address }
+browser-search-for = Search for { $query }
+browser-history-clear-failed = Couldn’t clear history because Browser could not save the change. Previous history was kept.
+browser-download-active-hint = Finish or cancel it in Downloads in the library, then close the tab.
+browser-history-paused-hint = Pages in this window are not saved to browsing history.
+browser-service-sign-in-hint = Sign in to finish connecting this account.

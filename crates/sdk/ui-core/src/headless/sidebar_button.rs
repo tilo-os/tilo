@@ -110,6 +110,7 @@ impl FrameHarness {
     /// # Errors
     /// When the bar shows no sidebar button, or the click runs nothing.
     pub fn click_window_sidebar_button(&mut self) -> Result<(), String> {
+        self.invalidate_local();
         let width = f64::from(self.viewport.0);
         let Some(button) = self.bar_sidebar_button() else {
             return Err(format!("the bar shows no sidebar button at {width} px"));
@@ -131,6 +132,9 @@ impl FrameHarness {
     /// Where the window's sidebar stands now: what the bar's button shows
     /// (hidden where the bar shows the way back in its place), what the
     /// window's shell holds and what its frame lays out.
+    ///
+    /// Quiet: reads the bar, the window's shell and its frame; paints a scratch bar and changes
+    /// nothing a frame reads.
     ///
     /// # Errors
     /// While no shell with a sidebar is laid out under the bar.
@@ -184,6 +188,7 @@ impl FrameHarness {
         &mut self,
         presses: usize,
     ) -> Result<Vec<SidebarShown>, String> {
+        self.invalidate_local();
         let _landed = crate::motion::testing::settled();
         self.relayout_until_still()?;
         let read = |harness: &mut Self| harness.window_sidebar_shown();
@@ -308,6 +313,7 @@ impl FrameHarness {
     /// # Errors
     /// What the clicks did instead, as a sentence naming each state.
     pub fn check_window_sidebar_button(&mut self) -> Result<bool, String> {
+        self.invalidate_local();
         let states = self.press_window_sidebar_button(3)?;
         if states.len() < 2 {
             return Err(format!(

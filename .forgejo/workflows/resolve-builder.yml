@@ -30,6 +30,8 @@ jobs:
           sparse-checkout: |
             tools/ci/resolve_builder.py
             tools/ci/images.toml
+            tools/ci/publish/ci-builder.sh
+            tools/ci/publish/build-lib.sh
           sparse-checkout-cone-mode: false
       - name: Resolve the CI builder
         id: resolve

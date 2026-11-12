@@ -38,9 +38,3 @@ pub trait Reading: Send + Sync {
     /// from.
     fn catalogue(&self, workspace: &str) -> Option<Held>;
 }
-
-/// The settings this host offers search, as the pages the person's own settings are on.
-pub trait Settings: Send + Sync {
-    /// The pages of `workspace`, with the settings among `published` changed where they are.
-    fn source(&self, workspace: &str, published: &[tilo_actions::ActionDescriptor]) -> Held;
-}

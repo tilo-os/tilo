@@ -247,8 +247,8 @@ impl FrameHarness {
             paint_key: None,
             semantics: None,
             children: vec![
-                collect_inspection(field, "caller-palette", &mut counts),
-                collect_inspection(results, "caller-palette", &mut counts),
+                collect_inspection(field, "caller-palette", &mut counts, None),
+                collect_inspection(results, "caller-palette", &mut counts, None),
             ],
         })
     }

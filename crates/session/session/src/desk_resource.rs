@@ -779,26 +779,34 @@ impl Desk {
                     "this session takes part in no transport, so no link can name it".to_owned(),
                 )
             })?;
-        let issued = engine
-            .issue_invitation(
-                &room.to_string(),
-                role,
-                invitee_name,
-                recipient,
-                expires_in_seconds.unwrap_or(DEFAULT_INVITE_SECONDS),
-                &endpoint,
-                std::time::SystemTime::now(),
-            )
-            .map_err(DoorError::Failed)?;
-        Ok(Started::Done(tilo_actions::ActionOutput {
-            value: Some(serde_json::json!({
-                "invite": issued.invite,
-                "link": issued.link,
-                "role": role_name(issued.role),
-                "expires_at_ns": issued.expires_at_ns,
-            })),
-            resources: Vec::new(),
-        }))
+        // The link is signed by this device's signer, which may answer only later: the asker hears
+        // it once signed, and the loop goes on meanwhile.
+        let engine = std::sync::Arc::clone(engine);
+        let room = room.to_string();
+        let expires_in = expires_in_seconds.unwrap_or(DEFAULT_INVITE_SECONDS);
+        Ok(Started::Later(crate::landing::off_loop(async move {
+            let issued = engine
+                .issue_invitation(
+                    &room,
+                    role,
+                    invitee_name,
+                    recipient,
+                    expires_in,
+                    &endpoint,
+                    std::time::SystemTime::now(),
+                )
+                .await
+                .map_err(DoorError::Failed)?;
+            Ok(tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({
+                    "invite": issued.invite,
+                    "link": issued.link,
+                    "role": role_name(issued.role),
+                    "expires_at_ns": issued.expires_at_ns,
+                })),
+                resources: Vec::new(),
+            })
+        })))
     }
 
     /// What an invitation verb answers, when `effect` is one of them: the links that still work,
@@ -827,9 +835,9 @@ impl Desk {
     }
 
     /// This device's engine: invitations are its record's, and a session without one has none.
-    fn engine(&self) -> Result<&crate::engine::Engine, DoorError> {
+    fn engine(&self) -> Result<&std::sync::Arc<crate::engine::Engine>, DoorError> {
         self.engine
-            .as_deref()
+            .as_ref()
             .ok_or_else(|| DoorError::Failed("this session holds no workspace's record".to_owned()))
     }
 }

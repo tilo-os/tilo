@@ -279,13 +279,12 @@ fn line_count(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
-/// The number a group's heading shows, when the number is worth reading. A
-/// group of one row saying "1" restates the row's own presence; a group of
-/// several says how many, and a group the list cut short says how many it
-/// left out. `None` leaves the heading to its name alone.
+/// The number a group's heading shows, when the number is worth reading
+/// ([`super::section::heading_count`]): a group of one row saying "1" restates the row's own
+/// presence; a group of several says how many, and a group the list cut short says how many it
+/// left out.
 fn heading_count(group: &SearchGroup) -> Option<usize> {
-    let total = group.total.unwrap_or(group.results.len());
-    (total > 1 || total > group.results.len()).then_some(total)
+    super::section::heading_count(group.results.len(), group.total)
 }
 
 /// A group's heading: its label on the band's bottom edge, and its count at

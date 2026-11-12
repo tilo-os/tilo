@@ -122,7 +122,13 @@ fn map(layout: &'static Layout) -> KeyboardMap {
             width,
             height: ui::num::f64_of_usize(space_row + 1),
         },
-        format!("{} keyboard layout", layout.display_name),
+        crate::setup::strings::t_args(
+            "installer-keyboard-map-name",
+            &[(
+                "layout",
+                ui::i18n::ArgValue::Text(layout.display_name.to_string()),
+            )],
+        ),
     )
     .with_configuration(layout.xkb_layout.to_string(), "pc105".to_string())
 }

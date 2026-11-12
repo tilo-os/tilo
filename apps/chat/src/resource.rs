@@ -266,6 +266,9 @@ impl ResourceApp for ChatShell {
         let app = ChatApp::new(identity, runtime, content)
             .with_models(models)
             .with_drafts(drafts)
+            // The window's actions: its composer's send button is where Chat's
+            // `send` lands, the action an agent's send runs too.
+            .with_send_action(&cx.actions())
             // The workspace's agents, as its own record of them names them: an agent is a
             // collaborator, and its name reads from the same record in every app of the workspace.
             .with_agents_record(
@@ -758,14 +761,20 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             to,
             attached,
             text,
+            parent,
+            body,
             opens,
         } => {
             let state = cx.live().get();
-            return chat.borrow().send_from_box(
-                to,
-                attached.clone(),
-                text,
-                opens.unwrap_or_default(),
+            return chat.borrow().send_message(
+                crate::direct::SendMessage {
+                    to,
+                    attached: attached.clone(),
+                    text,
+                    parent: parent.clone(),
+                    body: body.clone(),
+                    opens: opens.unwrap_or_default(),
+                },
                 &state,
             );
         }

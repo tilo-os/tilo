@@ -649,7 +649,7 @@ impl Store {
         self.job_kind = Some(kind);
         let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let job = ui::jobs::start(
-            ui::jobs::Spec::new(kind.title())
+            ui::jobs::Spec::new(crate::i18n::t(kind.message()))
                 .subject(ui::jobs::Subject::new(owner(), subject.to_owned()))
                 .unit(ui::jobs::Unit::Files)
                 .phase(kind.phase())
@@ -685,7 +685,7 @@ impl Store {
                 run.job.stopped();
                 ui::attention::publish(ui::attention::Notice::did(
                     owner(),
-                    format!("Stopped {}", kind.title().to_lowercase()),
+                    format!("Stopped {}", crate::i18n::t(kind.message()).to_lowercase()),
                 ));
             }
             Err(error) => run.job.failed(error.to_string()),

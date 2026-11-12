@@ -317,6 +317,7 @@ close-broker-disconnected = The save service disconnected. Your document is stil
 block-image-untitled = Picture
 # The title a row shows for an item nobody has named yet.
 list-row-untitled = Untitled
+list-row-check = Mark { $title } done
 block-image-missing = Not on this device yet
 notes-image-edit = Edit description
 notes-image-done = Done
@@ -554,6 +555,8 @@ format-day-heading-short = { $weekday }, { $month } { $day }
 format-day-range-in-month = { $month } { $start } – { $end }
 # Any span between two dates or times: "Jun 29 – Jul 5".
 format-range = { $start } – { $end }
+# Two already-formatted values in a list: "encrypted, 134 GB free".
+format-list-join = { $head }, { $tail }
 # The top of a month grid: "June 2026".
 format-month-heading = { $month } { $year }
 # The clock the language reads by default: 12 or 24 (here 12-hour).
@@ -603,6 +606,10 @@ interaction-agent = Agent
 interaction-collaborator = Collaborator
 # What an actor is doing: its name, then the action in the present tense.
 interaction-editing-field = editing { $field }
+# The text a write put in a note, a page or a field stands there: what the
+# person watching sees happen, where the action's own name only says which
+# place it acts on.
+interaction-added-text = added text
 interaction-working = working
 interaction-action-doing = { $name }: { $doing }
 # The same, with the phase said where only a person can settle it.
@@ -1246,6 +1253,7 @@ toast-reply-placeholder = Reply…
 ## Window furniture and widget chrome, named where a screen reader reads it
 floating-window-move-hint = Movable window. Hold Alt and use the arrow keys to move; hold Shift for larger steps.
 widget-dialog-close = Close
+widget-dialog-cancel = Cancel
 widget-dismiss = Dismiss
 widget-hand-to-agent = Hand to an agent
 widget-more = More

@@ -87,8 +87,9 @@ publications build from.
 
 - `check.yml` runs after every push to `main`, one window of commits at a time.
   Its first job (`tools/ci/push_window.py`, through the Forgejo API) hands the
-  window out, deciding once and in seconds: a run skips its jobs as a clean
-  success when an older run holds the window (its commits and this one's are the
+  window out, deciding once and in seconds: a run skips its jobs, and its
+  `untested` job ends it as cancelled (never green, since it tested nothing),
+  when an older run holds the window (its commits and this one's are the
   same next window) or when a newer run holds it (these commits are its
   business), and otherwise takes the window and cancels the older runs that never
   started. The run that holds the window keeps it until it finishes, so one

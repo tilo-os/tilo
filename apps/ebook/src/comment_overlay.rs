@@ -67,22 +67,25 @@ impl CommentOverlay {
             .iter()
             .filter_map(|hit| {
                 let (target, label): (String, String) = match hit.action {
-                    CommentAction::Close => {
-                        ("books.comments.close".into(), "Close comments".into())
-                    }
+                    CommentAction::Close => (
+                        "books.comments.close".into(),
+                        crate::resource::CATALOG.t("ebook-action-close-comments"),
+                    ),
                     CommentAction::DeleteHighlight(id) => (
                         format!("books.comments.delete-highlight:{id}"),
-                        "Delete highlight and comments".into(),
+                        crate::resource::CATALOG.t("ebook-action-delete-highlight-comments"),
                     ),
-                    CommentAction::Add(id) => {
-                        (format!("books.comments.add:{id}"), "Add comment".into())
-                    }
-                    CommentAction::Edit(id) => {
-                        (format!("books.comments.edit:{id}"), "Edit comment".into())
-                    }
+                    CommentAction::Add(id) => (
+                        format!("books.comments.add:{id}"),
+                        crate::resource::CATALOG.t("ebook-action-add-comment"),
+                    ),
+                    CommentAction::Edit(id) => (
+                        format!("books.comments.edit:{id}"),
+                        crate::resource::CATALOG.t("ebook-action-edit-comment"),
+                    ),
                     CommentAction::Delete(id) => (
                         format!("books.comments.delete:{id}"),
-                        "Delete comment".into(),
+                        crate::resource::CATALOG.t("ebook-action-delete-comment"),
                     ),
                     CommentAction::Swallow => return None,
                 };
@@ -266,7 +269,11 @@ impl CommentOverlay {
     /// Write comment `id` in the SDK editor; it shows the comment on the
     /// next sync.
     pub(crate) fn begin_editing(&mut self, id: Uuid, library: Option<&Dispatcher<Ebook>>) {
-        self.editor = Some(NoteEditor::new(id, "Write a comment", library));
+        self.editor = Some(NoteEditor::new(
+            id,
+            &crate::resource::CATALOG.t("ebook-write-comment"),
+            library,
+        ));
     }
 
     pub(crate) fn finish_editing(&mut self) {
@@ -515,7 +522,8 @@ impl CommentOverlay {
     ) {
         let theme = ctx.theme;
         let size = ControlSize::Small;
-        let face = ButtonFace::new(Rect::ZERO, "Add comment")
+        let label = crate::resource::CATALOG.t("ebook-action-add-comment");
+        let face = ButtonFace::new(Rect::ZERO, &label)
             .icon(Icon::Plus)
             .control_size(size);
         let width = face.intrinsic_width(ctx.text, theme);
@@ -525,7 +533,7 @@ impl CommentOverlay {
             layout.ix0() + width,
             y + size.height(theme),
         );
-        let face = ButtonFace::new(add, "Add comment")
+        let face = ButtonFace::new(add, &label)
             .icon(Icon::Plus)
             .control_size(size)
             .hovered(add.contains(cursor));

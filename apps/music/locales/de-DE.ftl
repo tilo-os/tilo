@@ -187,3 +187,5 @@ music-track-actions = Aktionen für den Titel
 music-empty-queue = Es sind keine Titel in der Warteschlange
 music-shuffle-off = Zufallswiedergabe ausschalten
 music-shuffle-on = Zufallswiedergabe einschalten
+music-show-in-sidebar = In der Seitenleiste anzeigen
+music-show-in-player = Im Player anzeigen

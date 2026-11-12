@@ -855,12 +855,9 @@ impl Board {
         if heard {
             // The same place said again: the pointer rests. It is still said,
             // though — a member restates what did not change on every
-            // keepalive, and a surface draws only a pointer said lately.
-            self.touch(from, |member| {
-                member.pointer.restated(now_ms);
-                false
-            });
-            return false;
+            // keepalive, and a surface draws only a pointer said lately. A
+            // pointer that was moving is drawn where it stopped from now on.
+            return self.touch(from, |member| member.pointer.restated(now_ms));
         }
         self.touch(from, |member| {
             // A pointer over a tile is the device saying it is here: it is

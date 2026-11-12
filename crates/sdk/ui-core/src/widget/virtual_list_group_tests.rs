@@ -9,6 +9,8 @@ use crate::widget::section::band_height;
 /// A list whose rows name their group, and which counts how often it is asked.
 struct Grouped {
     groups: Vec<Option<RowGroup>>,
+    /// The rows whose item the person has finished with.
+    finished: Vec<usize>,
     asked: Rc<Cell<usize>>,
 }
 
@@ -16,8 +18,15 @@ impl Grouped {
     fn new(groups: Vec<Option<RowGroup>>) -> Self {
         Self {
             groups,
+            finished: Vec::new(),
             asked: Rc::new(Cell::new(0)),
         }
+    }
+
+    /// The rows `rows`' items are done with, as a checked box leaves them.
+    fn finished(mut self, rows: &[usize]) -> Self {
+        self.finished = rows.to_vec();
+        self
     }
 }
 
@@ -43,6 +52,10 @@ impl ListModel for Grouped {
         self.groups.get(index).cloned().flatten()
     }
 
+    fn done(&self, index: usize) -> bool {
+        self.finished.contains(&index)
+    }
+
     fn discloses(&self) -> bool {
         self.groups.iter().any(Option::is_some)
     }
@@ -55,7 +68,18 @@ fn heading(name: &str) -> Option<RowGroup> {
 const ROW: f32 = 40.0;
 
 fn grouped(groups: Vec<Option<RowGroup>>) -> VirtualList<Grouped> {
-    VirtualList::new(Grouped::new(groups), ROW, |_, index, _| {
+    listed(Grouped::new(groups))
+}
+
+/// The rows `groups` name, the ones `finished` standing done with: a task checked off whose
+/// row stays where it stands.
+fn grouped_finished(groups: Vec<Option<RowGroup>>, finished: &[usize]) -> VirtualList<Grouped> {
+    listed(Grouped::new(groups).finished(finished))
+}
+
+/// A list of `model`'s rows, each a probe of its own.
+fn listed(model: Grouped) -> VirtualList<Grouped> {
+    VirtualList::new(model, ROW, |_, index, _| {
         Box::new(super::tests::ProbeRow::new(
             format!("row {index}"),
             ROW,
@@ -650,7 +674,9 @@ fn a_list_with_nothing_to_disclose_keeps_no_chevron_room() {
 fn a_view_titled_like_its_one_group_heads_nothing_over_the_rows() {
     // Two tasks due today, in a window whose title already says "Today 2": the heading over
     // them would say it again.
-    let mut list = grouped(vec![heading("Today"), heading("Today")]).in_view("Today", Some(2));
+    let mut list = grouped(vec![heading("Today"), heading("Today")])
+        .in_view("Today", Some(2))
+        .in_column();
     let _ = settle(&mut list);
     assert!(
         bands(&list).is_empty(),
@@ -659,18 +685,272 @@ fn a_view_titled_like_its_one_group_heads_nothing_over_the_rows() {
     );
     let row = f64::from(ROW);
     assert_eq!(mounted_indexes(&list), vec![0, 1], "both rows are built");
-    for index in 0..2 {
-        assert!(
-            (list.band_room(index) - 0.0).abs() < 0.5,
-            "the row {index} takes no band over it: {}",
-            list.band_room(index)
-        );
-    }
+    // A heading the list leaves out takes no room: the rows stand where a page's first block
+    // does, one content gutter below the list's top, and no ghost band stands empty over them.
+    let inset = crate::chrome::column_gutter(&Theme::dark());
+    assert!(
+        (list.band_room(0) - 0.0).abs() < 0.5,
+        "the list keeps no heading's room over its first row: {}",
+        list.band_room(0)
+    );
+    assert!(
+        (list.band_room(1) - 0.0).abs() < 0.5,
+        "the rows after it follow it: {}",
+        list.band_room(1)
+    );
     let first = list.row_box(0).expect("a mounted first row");
     assert!(
         (first.height() - row).abs() < 0.5,
         "the first row takes its own height, with no band over it: {}",
         first.height()
+    );
+    assert!(
+        (first.y0 - inset).abs() < 0.5,
+        "the row's box stands on the column's content gutter: {} of {inset}",
+        first.y0
+    );
+}
+
+#[test]
+fn a_heading_counts_only_where_the_number_says_something() {
+    // One row under "Today" says its own presence: the heading draws no number over it.
+    let mut one = grouped(vec![heading("Today")]);
+    let _ = settle(&mut one);
+    let band = one
+        .groups
+        .bands
+        .first()
+        .expect("the heading stands")
+        .clone();
+    assert_eq!(
+        one.shown_heading_count(&band),
+        None,
+        "a group of one counts nothing"
+    );
+    // Two say how many.
+    let mut two = grouped(vec![heading("Today"), heading("Today")]);
+    let _ = settle(&mut two);
+    let band = two
+        .groups
+        .bands
+        .first()
+        .expect("the heading stands")
+        .clone();
+    assert_eq!(
+        two.shown_heading_count(&band),
+        Some(2),
+        "two rows are a number worth reading"
+    );
+}
+
+/// The heading over the rows a figure stands beside: the first, which stands over them all.
+fn open_count(list: &mut VirtualList<Grouped>) -> Option<usize> {
+    let _ = settle(list);
+    let band = list
+        .groups
+        .bands
+        .first()
+        .expect("the heading stands")
+        .clone();
+    list.shown_heading_count(&band)
+}
+
+#[test]
+fn a_heading_counts_the_rows_left_to_do() {
+    // Two tasks due today, one of them just checked off and still standing struck through: the
+    // heading says what is left to do, which is the one task under it.
+    let mut one = grouped_finished(vec![heading("Today"), heading("Today")], &[1]);
+    assert_eq!(
+        open_count(&mut one),
+        None,
+        "one task is left: the number would restate the row under it"
+    );
+    // Three due today, two of them left: so the heading says.
+    let mut two = grouped_finished(
+        vec![heading("Today"), heading("Today"), heading("Today")],
+        &[2],
+    );
+    assert_eq!(open_count(&mut two), Some(2), "two tasks are left to do");
+    // The tail heads the rows done with: it counts them as they stand, never what is left of
+    // them, which is nothing.
+    let mut week = listed(
+        Grouped::new(vec![
+            heading("Monday"),
+            heading("Monday"),
+            Some(RowGroup::Tail),
+            Some(RowGroup::Tail),
+        ])
+        .finished(&[0, 2, 3]),
+    )
+    .with_tail_title("Done");
+    let _ = settle(&mut week);
+    let tail = week
+        .groups
+        .bands
+        .iter()
+        .find(|band| band.heading == "Done")
+        .expect("the tail's heading stands")
+        .clone();
+    assert_eq!(
+        week.shown_heading_count(&tail),
+        Some(2),
+        "the items done with are counted, both of them"
+    );
+    let monday = week
+        .groups
+        .bands
+        .iter()
+        .find(|band| band.heading == "Monday")
+        .expect("Monday's heading stands")
+        .clone();
+    assert_eq!(
+        week.shown_heading_count(&monday),
+        None,
+        "the one row left to do under Monday says itself"
+    );
+}
+
+#[test]
+fn a_heading_a_reader_hears_counts_the_rows_left_to_do() {
+    let mut list = grouped_finished(
+        vec![
+            heading("Today"),
+            heading("Today"),
+            heading("Tomorrow"),
+            None,
+        ],
+        &[0],
+    );
+    let _ = settle(&mut list);
+    let tree = Widget::accessibility(&list).expect("list semantics");
+    let headings: Vec<_> = tree
+        .children
+        .iter()
+        .filter(|child| child.role == crate::a11y::Role::Button)
+        .map(|child| (child.name.clone().unwrap_or_default(), child.value.clone()))
+        .collect();
+    assert_eq!(
+        headings,
+        [
+            ("Today".to_owned(), Some("1".to_owned())),
+            ("Tomorrow".to_owned(), Some("2".to_owned()))
+        ],
+        "the finished row is not read as one still to do, the row on its way is"
+    );
+}
+
+#[test]
+fn a_lone_group_heading_starts_the_rows_on_the_content_gutter() {
+    // Three tasks under two headings, and the same first two under a title that names their
+    // one group: either way the first band starts on the column's content gutter, which is the
+    // heading's own place where the list draws it and its first row's where it leaves it out.
+    let mut headed = grouped(vec![
+        heading("Today"),
+        heading("Today"),
+        heading("Tomorrow"),
+    ])
+    .in_column();
+    let _ = settle(&mut headed);
+    let inset = crate::chrome::column_gutter(&Theme::dark());
+    let band = band_height(&Theme::dark());
+    let headed_band = bands(&headed).first().expect("a heading leads the rows").1;
+    assert!(
+        (headed_band - inset).abs() < 0.5,
+        "the heading stands on the content gutter: {headed_band} of {inset}"
+    );
+    let headed_top = headed.row_box(0).expect("a mounted first row").y0;
+    assert!(
+        (headed_top - inset - band).abs() < 0.5,
+        "the row stands under the heading's band: {headed_top}"
+    );
+    let mut lone = grouped(vec![heading("Today"), heading("Today")])
+        .in_view("Today", Some(2))
+        .in_column();
+    let _ = settle(&mut lone);
+    let lone_top = lone.row_box(0).expect("a mounted first row").y0;
+    assert!(
+        (lone_top - inset).abs() < 0.5,
+        "with the heading left out the row stands on the content gutter: {lone_top} of {inset}"
+    );
+}
+
+/// A list of rows that name no groups keeps its rows against its own edge: its block is the
+/// list's, with nothing standing over it.
+#[test]
+fn a_list_of_rows_that_name_no_group_leads_with_them() {
+    let mut list = grouped(vec![None, None]);
+    let _ = settle(&mut list);
+    assert!(
+        (list.band_room(0) - 0.0).abs() < 0.5,
+        "nothing heads the list: {} over its first row",
+        list.band_room(0)
+    );
+}
+
+/// The room a list keeps over the first band it draws, as it states it to a layout audit: the
+/// column's content gutter where its rows name a group, whether or not the list draws the heading
+/// over them, and nothing where they are one block or the list stands outside a column.
+#[test]
+fn a_list_states_the_room_it_keeps_over_its_first_band() {
+    let inset = crate::chrome::column_gutter(&Theme::dark());
+    let stated = |list: &VirtualList<Grouped>| {
+        let Some(crate::widget::LayoutInfo::List(stated)) = Widget::layout_info(list) else {
+            panic!("a list states how it stands its rows");
+        };
+        stated
+    };
+    let mut headed = grouped(vec![heading("Today"), heading("Today")]).in_column();
+    let _ = settle(&mut headed);
+    let under_a_heading = stated(&headed);
+    assert!(under_a_heading.heads_rows);
+    assert!(
+        (f64::from(under_a_heading.lead) - inset).abs() < 0.5,
+        "the heading starts on the content gutter: {}",
+        under_a_heading.lead
+    );
+    // A title that names the rows' one group leaves the heading out: the audit reads the same
+    // room over the row no heading stands on.
+    let mut lone = grouped(vec![heading("Today"), heading("Today")])
+        .in_view("Today", Some(2))
+        .in_column();
+    let _ = settle(&mut lone);
+    let under_the_title = stated(&lone);
+    assert!(under_the_title.heads_rows);
+    assert!(
+        (f64::from(under_the_title.lead) - inset).abs() < 0.5,
+        "the row starts on the content gutter: {}",
+        under_the_title.lead
+    );
+    // Rows that name no group are one block: the list leads with them.
+    let mut plain = grouped(vec![None, None]);
+    let _ = settle(&mut plain);
+    let plain = stated(&plain);
+    assert!(!plain.heads_rows);
+    assert!(plain.lead.abs() < 0.5);
+    // A list that is no column's body brings its own spacing: it keeps nothing of the column's.
+    let mut alone = grouped(vec![heading("Today"), heading("Today")]);
+    let _ = settle(&mut alone);
+    assert!(stated(&alone).lead.abs() < 0.5);
+}
+
+#[test]
+fn the_room_over_a_lists_first_band_is_no_part_of_it() {
+    let mut list = grouped(vec![heading("Today"), heading("Today")])
+        .in_view("Today", Some(2))
+        .in_column();
+    let (taffy, node) = settle(&mut list);
+    let inset = crate::chrome::column_gutter(&Theme::dark());
+    let at = crate::synthetic_input::cursor_moved(20.0, inset / 2.0);
+    let _ = Dispatch::new().layout(&taffy, node).send(&mut list, &at);
+    assert_eq!(
+        list.key_at_point(vello::kurbo::Point::new(20.0, inset / 2.0)),
+        None,
+        "the room over the first row is the list's, not the row's"
+    );
+    assert_eq!(
+        list.key_at_point(vello::kurbo::Point::new(20.0, inset + 5.0)),
+        Some(0),
+        "the row itself takes the press below it"
     );
 }
 
@@ -756,4 +1036,32 @@ fn the_title_a_list_stands_under_takes_its_heading_away_and_gives_it_back() {
         vec!["Today"],
         "a title saying something else gives the heading back"
     );
+}
+
+#[test]
+fn the_title_counting_what_is_left_takes_the_heading_over_a_finished_row_too() {
+    // The window's title says "Today 1", counting the one task left: the heading over the task
+    // and the one just finished under it would say the same words and the same number.
+    let mut list =
+        grouped_finished(vec![heading("Today"), heading("Today")], &[1]).in_view("Today", Some(1));
+    let _ = settle(&mut list);
+    assert!(
+        bands(&list).is_empty(),
+        "the title says it: no heading stands over the rows ({:?})",
+        bands(&list)
+    );
+    // A title counting the finished row as well says something else: the heading comes back,
+    // with the number of what is left, which is one, and so with no number at all.
+    let mut list =
+        grouped_finished(vec![heading("Today"), heading("Today")], &[1]).in_view("Today", Some(2));
+    let _ = settle(&mut list);
+    assert_eq!(
+        bands(&list)
+            .iter()
+            .map(|(heading, _, _)| heading.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Today"],
+        "a title counting every row leaves the heading to count what is left"
+    );
+    assert_eq!(open_count(&mut list), None, "one row is left to do");
 }

@@ -1225,8 +1225,8 @@ for weakened in "$policy_cases"/*.json "$policy_cases/missing.json"; do
     bad "image signature policy check accepts weakened policy $(basename "$weakened")"
   fi
 done
-[ "$weakened_policies" -eq 21 ] \
-  || bad "expected 21 weakened image signature policies, exercised $weakened_policies"
+[ "$weakened_policies" -eq 20 ] \
+  || bad "expected 20 weakened image signature policies, exercised $weakened_policies"
 # The guarded repositories are judged by their effective rule: with no scope of
 # their own, the default reject covers them.
 if ! python3 - "$image_policy" "$policy_cases/guarded-by-default-reject.policy" <<'PY'

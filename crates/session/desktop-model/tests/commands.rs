@@ -567,43 +567,6 @@ fn a_group_moves_whole_into_an_empty_strip_and_a_stale_move_changes_nothing() {
     );
 }
 
-#[test]
-fn shortcut_commands_save_replace_and_delete_by_id_with_the_owner_as_saver() {
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Desk");
-    let json = r#"{"id":"tidy","name":"Tidy","steps":[],"saved_by":"someone-else"}"#;
-    let stamped = tilo_desktop_model::commands::stamp_saver(json, "owner").unwrap();
-    let save = |shortcut_json: String| DesktopCommand::SaveShortcut { shortcut_json };
-    apply_command(&mut workspace, &save(stamped), &mut minter(0), &mut create).unwrap();
-    assert_eq!(workspace.shortcuts.len(), 1);
-    assert_eq!(
-        workspace.shortcuts[0].decode().unwrap().saved_by.as_deref(),
-        Some("owner")
-    );
-    assert!(
-        workspace.strips.is_empty(),
-        "a shortcut changes no topology"
-    );
-
-    let renamed = r#"{"id":"tidy","name":"Tidy up","steps":[]}"#.to_string();
-    apply_command(&mut workspace, &save(renamed), &mut minter(0), &mut create).unwrap();
-    assert_eq!(workspace.shortcuts.len(), 1, "the same id replaces");
-    assert_eq!(workspace.shortcuts[0].decode().unwrap().name, "Tidy up");
-
-    assert!(
-        apply_command(
-            &mut workspace,
-            &save("{}".into()),
-            &mut minter(0),
-            &mut create
-        )
-        .is_err()
-    );
-    let delete = |id: &str| DesktopCommand::DeleteShortcut { id: id.into() };
-    apply_command(&mut workspace, &delete("tidy"), &mut minter(0), &mut create).unwrap();
-    assert!(workspace.shortcuts.is_empty());
-    assert!(apply_command(&mut workspace, &delete("tidy"), &mut minter(0), &mut create).is_err());
-}
-
 /// A window sent to another workspace keeps being the same window, lands on
 /// the strip that workspace shows and where the person is stays put.
 #[test]

@@ -221,6 +221,19 @@ pub fn agent_client(name: &str) -> &str {
         .trim()
 }
 
+/// The agent `participant`'s identity, with the run instance its admission gave it taken off:
+/// `agent:helper@host#2` is `helper@host`. One agent the person admits again wears the colour of
+/// what it is, not of the run that carried it; its name still numbers the runs apart.
+#[must_use]
+pub fn agent_identity(participant: &str) -> &str {
+    let bare = participant.strip_prefix("agent:").unwrap_or(participant);
+    bare.rsplit_once('#')
+        .filter(|(stem, instance)| {
+            !stem.is_empty() && !instance.is_empty() && instance.bytes().all(|b| b.is_ascii_digit())
+        })
+        .map_or(bare, |(stem, _)| stem)
+}
+
 impl PresenceHue {
     /// The hue every face of the agent `name` names wears ([`agent_client`]), so one client reads
     /// as itself at a glance wherever it shows: warm for Claude Code, cool for Codex. `None` for a
@@ -238,9 +251,11 @@ impl PresenceHue {
     }
 
     /// The hue the agent `name` names wears wherever it shows (presence, History): its client's
-    /// ([`Self::of_agent_client`]), else the one its name gives it, the same for each of its runs.
+    /// ([`Self::of_agent_client`]), else the one its name gives it, the same for each of its runs
+    /// ([`agent_identity`]).
     #[must_use]
     pub fn of_agent(name: &str) -> Self {
+        let name = agent_identity(name);
         Self::of_agent_client(name).unwrap_or_else(|| Self::of_identity(agent_client(name)))
     }
 }
@@ -338,7 +353,7 @@ pub fn assign_peer_colors(
 
 #[cfg(test)]
 mod agent_client_tests {
-    use super::{PresenceHue, agent_client};
+    use super::{PresenceHue, agent_client, agent_identity};
 
     #[test]
     fn a_run_is_its_clients_and_a_client_has_its_hue() {
@@ -359,6 +374,36 @@ mod agent_client_tests {
             PresenceHue::of_agent("Jane Doe's agent #2"),
             PresenceHue::of_agent("Jane Doe's agent"),
             "every run of an agent wears one colour"
+        );
+    }
+
+    /// The id an agent's admission gives it ends in the instance number it was
+    /// admitted as, and that number is not part of what the agent is: the same
+    /// agent admitted again wears the same colour.
+    #[test]
+    fn an_admitted_agent_wears_one_colour_however_often_it_comes() {
+        assert_eq!(agent_identity("agent:helper@host#1"), "helper@host");
+        assert_eq!(agent_identity("agent:helper@host#2"), "helper@host");
+        assert_eq!(agent_identity("helper@host"), "helper@host");
+        assert_eq!(
+            agent_identity("agent:claude-code@env#12"),
+            "claude-code@env"
+        );
+        assert_eq!(agent_identity("agent:helper@host"), "helper@host");
+        assert_eq!(
+            agent_identity("#3"),
+            "#3",
+            "no stem before the number: nothing to take off"
+        );
+        assert_eq!(
+            PresenceHue::of_agent(agent_identity("agent:helper@host#1")),
+            PresenceHue::of_agent(agent_identity("agent:helper@host#4")),
+            "one agent, one colour"
+        );
+        assert_eq!(
+            PresenceHue::of_agent(agent_identity("agent:claude-code@host#9")),
+            PresenceHue::Orange,
+            "a known client keeps the colour it is known by"
         );
     }
 

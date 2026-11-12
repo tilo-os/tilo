@@ -197,6 +197,18 @@ impl<P: Resource> WorkspaceRecord<P> {
         permissions: Option<LivePermissions>,
         wake: Option<WakeHandle>,
     ) -> Option<Self> {
+        Self::try_open(records, owner, app, permissions, wake).ok()
+    }
+
+    /// [`Self::open`], saying why nothing opened: [`Unopened::Arriving`] for a record the
+    /// workspace has not delivered yet, whose store wakes its readers once it does.
+    pub(crate) fn try_open(
+        records: &WorkspaceRecords,
+        owner: &'static str,
+        app: (&'static str, &'static str),
+        permissions: Option<LivePermissions>,
+        wake: Option<WakeHandle>,
+    ) -> Result<Self, Unopened> {
         let opened = records.open_record(owner, P::KIND, &|doc| {
             P::initialize(doc).map_err(|error| error.to_string())
         });
@@ -223,6 +235,18 @@ impl<P: Resource> WorkspaceRecord<P> {
         permissions: Option<LivePermissions>,
         wake: Option<WakeHandle>,
     ) -> Option<Self> {
+        Self::try_open_at(records, owner, id, app, permissions, wake).ok()
+    }
+
+    /// [`Self::open_at`], saying why nothing opened, as [`Self::try_open`].
+    pub(crate) fn try_open_at(
+        records: &WorkspaceRecords,
+        owner: &'static str,
+        id: &str,
+        app: (&'static str, &'static str),
+        permissions: Option<LivePermissions>,
+        wake: Option<WakeHandle>,
+    ) -> Result<Self, Unopened> {
         let opened = records.open_record_at(owner, id, P::KIND, &|doc| {
             P::initialize(doc).map_err(|error| error.to_string())
         });
@@ -260,6 +284,7 @@ impl<P: Resource> WorkspaceRecord<P> {
             wake,
             records.author().0.clone(),
         )
+        .ok()
     }
 
     /// [`Self::open`]'s record, opened (or not) by the store it is kept in:
@@ -272,11 +297,19 @@ impl<P: Resource> WorkspaceRecord<P> {
         permissions: Option<LivePermissions>,
         wake: Option<WakeHandle>,
         me: String,
-    ) -> Option<Self> {
-        let record = opened
-            .map_err(|error| tracing::warn!(kind = P::KIND, %error, "workspace record unavailable"))
-            .ok()?;
-        if record.read(tilo_resource::evolution::needs_migrate::<P>)?
+    ) -> Result<Self, Unopened> {
+        let record = match opened {
+            Ok(record) => record,
+            // Nothing is wrong: the store wakes the window once it is here.
+            Err(ui_core::record::RecordOpenError::Arriving) => return Err(Unopened::Arriving),
+            Err(error) => {
+                tracing::warn!(kind = P::KIND, %error, "workspace record unavailable");
+                return Err(Unopened::Failed);
+            }
+        };
+        if record
+            .read(tilo_resource::evolution::needs_migrate::<P>)
+            .ok_or(Unopened::Failed)?
             && let Err(error) = record.edit(false, |doc| {
                 tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
             })
@@ -284,14 +317,17 @@ impl<P: Resource> WorkspaceRecord<P> {
             tracing::warn!(kind = P::KIND, %error, "workspace record not migrated");
         }
         let reader = record
-            .read(tilo_resource::Reader::<P>::read)?
-            .map_err(|error| tracing::warn!(kind = P::KIND, %error, "workspace record unreadable"))
-            .ok()?;
+            .read(tilo_resource::Reader::<P>::read)
+            .ok_or(Unopened::Failed)?
+            .map_err(|error| {
+                tracing::warn!(kind = P::KIND, %error, "workspace record unreadable");
+                Unopened::Failed
+            })?;
         if let Some(wake) = &wake {
             record.wake_on_arrival(wake.clone());
         }
         let live = Live::new(reader);
-        Some(Self {
+        Ok(Self {
             shared: Rc::new(Shared::<P> {
                 record,
                 owner,
@@ -517,6 +553,16 @@ impl WorkspaceHandle {
 /// (the workspace's one of the kind, or a pair's).
 type OpenKey = (&'static str, &'static str, String);
 
+/// Why a workspace record did not open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unopened {
+    /// The workspace has not delivered it yet: its store wakes the window once it has, or once
+    /// the workspace answers that it holds none.
+    Arriving,
+    /// It cannot be opened, as the warning logged says.
+    Failed,
+}
+
 /// The records every app of the workspace opens that a window's views opened:
 /// one [`WorkspaceRecord`] per kind.
 pub(crate) struct WorkspaceState {
@@ -527,6 +573,10 @@ pub(crate) struct WorkspaceState {
     /// Wakes the window when another replica's change arrives.
     wake: Option<WakeHandle>,
     opened: RefCell<HashMap<OpenKey, Rc<dyn Any>>>,
+    /// Records still on their way from the workspace when a view asked for them, with what had
+    /// arrived in their stores then ([`Self::arrivals`]): each is tried again once something
+    /// arrives, not on every draw that asks for it.
+    unopened: RefCell<HashMap<OpenKey, u64>>,
     /// The chains kept beside the opened records (a chat's message parts,
     /// [`WorkspaceHandle::chain_beside`]).
     chains: super::chain::Chains,
@@ -549,6 +599,7 @@ impl WorkspaceState {
             permissions,
             wake,
             opened: RefCell::default(),
+            unopened: RefCell::default(),
             chains: super::chain::Chains::default(),
             owners: RefCell::default(),
             refreshers: RefCell::default(),
@@ -587,7 +638,7 @@ impl WorkspaceState {
     pub(crate) fn open<P: Resource>(&self, owner: &'static str) -> Option<WorkspaceRecord<P>> {
         let id = ui_core::record::workspace::record_id(P::KIND);
         self.open_with::<P>(owner, &id, |records| {
-            WorkspaceRecord::open(
+            WorkspaceRecord::try_open(
                 records,
                 owner,
                 (self.app_id, self.app_title),
@@ -606,7 +657,7 @@ impl WorkspaceState {
         id: &str,
     ) -> Option<WorkspaceRecord<P>> {
         self.open_with::<P>(owner, id, |records| {
-            WorkspaceRecord::open_at(
+            WorkspaceRecord::try_open_at(
                 records,
                 owner,
                 id,
@@ -623,7 +674,7 @@ impl WorkspaceState {
         &self,
         owner: &'static str,
         id: &str,
-        open: impl FnOnce(&WorkspaceRecords) -> Option<WorkspaceRecord<P>>,
+        open: impl FnOnce(&WorkspaceRecords) -> Result<WorkspaceRecord<P>, Unopened>,
     ) -> Option<WorkspaceRecord<P>> {
         let key = (owner, P::KIND, id.to_owned());
         if let Some(open) = self.opened.borrow().get(&key) {
@@ -637,8 +688,37 @@ impl WorkspaceState {
         if owner == self.app_id {
             super::controls::opened_record::<P>();
         }
-        let opened = open(&self.records);
-        self.held(key, opened)
+        let arrived = self.arrivals(owner);
+        if self.unopened.borrow().get(&key) == Some(&arrived) {
+            return None;
+        }
+        match open(&self.records) {
+            Ok(opened) => {
+                self.unopened.borrow_mut().remove(&key);
+                self.held(key, Some(opened))
+            }
+            Err(Unopened::Arriving) => {
+                self.unopened.borrow_mut().insert(key, arrived);
+                None
+            }
+            Err(Unopened::Failed) => None,
+        }
+    }
+
+    /// What arrived so far in the stores a record of `owner` opens in, the owner's and this
+    /// app's: it moves whenever the workspace delivers a record to either, or answers that it
+    /// holds none of one asked for ([`ui_core::record::RecordStore::kept_revision`]).
+    fn arrivals(&self, owner: &str) -> u64 {
+        let kept = |owner: &str| {
+            self.records
+                .store_of(owner)
+                .map_or(0, |store| store.kept_revision())
+        };
+        let own = kept(owner);
+        if owner == self.app_id {
+            return own;
+        }
+        own.wrapping_add(kept(self.app_id).rotate_left(32))
     }
 
     /// The chain of `P` kept beside one of the workspace's records

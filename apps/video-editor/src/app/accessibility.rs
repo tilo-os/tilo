@@ -287,9 +287,10 @@ impl VideoEditorApp {
     /// A clip's accessible name: the media it places, so the reader says
     /// "Interview" rather than a UUID the user has never seen.
     pub(super) fn a11y_clip_name(&self, clip: &Clip) -> String {
-        self.project
-            .media(clip.media)
-            .map_or_else(|| "Missing media".into(), |m| m.name.clone())
+        self.project.media(clip.media).map_or_else(
+            || crate::resource::CATALOG.t("video-clip-missing-media"),
+            |m| m.name.clone(),
+        )
     }
 
     /// What a reader says about a clip beyond its name: where it sits, how long
@@ -702,33 +703,40 @@ impl VideoEditorApp {
     /// group when it is one of a set, a plain button when it stands alone —
     /// and, either way, whether it is the one in force.
     pub(super) fn a11y_pick_node(&self, pk: PickField, focused: bool) -> AccessNode {
-        let (name, role, selected) = match pk {
-            PickField::Frame(i) => {
-                let Some((label, w, h)) = FRAME_PRESETS.get(i) else {
-                    return AccessNode::new(Role::Unknown).with_key(pk.a11y_key());
-                };
-                (
-                    // The dimensions, not only the shorthand: "9:16" alone
-                    // does not say what a reader is choosing.
-                    format!("{label}, {w} by {h}"),
-                    Role::RadioButton,
-                    *w == self.project.width && *h == self.project.height,
-                )
-            }
-            PickField::Rate(i) => {
-                let Some(rate) = RATE_PRESETS.get(i) else {
-                    return AccessNode::new(Role::Unknown).with_key(pk.a11y_key());
-                };
-                (
-                    format!("{} fps", rate_words(*rate)),
-                    Role::RadioButton,
-                    (rate - self.project.fps).abs() < 1e-6,
-                )
-            }
+        let Some((name, role, selected)) = self.pick_semantics(pk) else {
+            return AccessNode::new(Role::Unknown).with_key(pk.a11y_key());
+        };
+        // `checked` is what accesskit turns into a radio's or a checkbox's
+        // "toggled": `selected` alone reads as a highlighted list row, which
+        // is not what a reader needs to hear about a picker.
+        let checkable = role != Role::Button;
+        AccessNode::new(role)
+            .with_name(name)
+            .with_hashed_key(pk.tag())
+            .with_state(AccessState {
+                focusable: true,
+                focused,
+                selected,
+                checked: checkable.then_some(selected),
+                ..Default::default()
+            })
+    }
+
+    /// What a reader hears for one picker segment or switch, what it is, and
+    /// whether it is the one in force; `None` when the picker no longer offers
+    /// that choice.
+    fn pick_semantics(&self, pk: PickField) -> Option<(String, Role, bool)> {
+        let semantics = match pk {
+            PickField::Frame(_) | PickField::Rate(_) => self.preset_semantics(pk)?,
             PickField::MatchFormat => (
                 self.format_source().map_or_else(
-                    || "Match media".to_string(),
-                    |m| format!("Match the shape of {}", m.name),
+                    || crate::resource::CATALOG.t("video-editor-a11y-match-media"),
+                    |m| {
+                        crate::resource::CATALOG.t_args(
+                            "video-editor-match",
+                            &[("effect", ui::i18n::ArgValue::Text(m.name.clone()))],
+                        )
+                    },
                 ),
                 Role::Button,
                 false,
@@ -739,17 +747,25 @@ impl VideoEditorApp {
                     // The name says what pressing it will do now, the way the
                     // play button does — a switch whose name never changes
                     // leaves a reader guessing which way it is.
-                    if on {
-                        "Switch chroma key off".to_string()
-                    } else {
-                        "Switch chroma key on".to_string()
-                    },
+                    crate::resource::CATALOG.t_args(
+                        "video-editor-a11y-chroma-key",
+                        &[(
+                            "on",
+                            ui::i18n::ArgValue::from(if on { "true" } else { "false" }),
+                        )],
+                    ),
                     Role::Checkbox,
                     on,
                 )
             }
             PickField::MaskShape(shape) => (
-                format!("Mask shape {}", shape.label().to_lowercase()),
+                crate::resource::CATALOG.t_args(
+                    "video-editor-a11y-mask-shape",
+                    &[(
+                        "shape",
+                        ui::i18n::ArgValue::Text(shape.label().to_lowercase()),
+                    )],
+                ),
                 Role::RadioButton,
                 self.selected_clip().is_some_and(|c| c.mask.shape == shape),
             ),
@@ -799,20 +815,30 @@ impl VideoEditorApp {
                 false,
             ),
         };
-        // `checked` is what accesskit turns into a radio's or a checkbox's
-        // "toggled": `selected` alone reads as a highlighted list row, which
-        // is not what a reader needs to hear about a picker.
-        let checkable = role != Role::Button;
-        AccessNode::new(role)
-            .with_name(name)
-            .with_hashed_key(pk.tag())
-            .with_state(AccessState {
-                focusable: true,
-                focused,
-                selected,
-                checked: checkable.then_some(selected),
-                ..Default::default()
-            })
+        Some(semantics)
+    }
+
+    /// What a reader hears of a frame or a rate, with a frame's dimensions
+    /// spelt out: "9:16" alone does not say what they are choosing.
+    fn preset_semantics(&self, pk: PickField) -> Option<(String, Role, bool)> {
+        let (name, selected) = match pk {
+            PickField::Frame(i) => {
+                let (label, w, h) = FRAME_PRESETS.get(i)?;
+                (
+                    format!("{label}, {w} by {h}"),
+                    *w == self.project.width && *h == self.project.height,
+                )
+            }
+            PickField::Rate(i) => {
+                let rate = RATE_PRESETS.get(i)?;
+                (
+                    format!("{} fps", rate_words(*rate)),
+                    (rate - self.project.fps).abs() < 1e-6,
+                )
+            }
+            _ => return None,
+        };
+        Some((name, Role::RadioButton, selected))
     }
 
     /// Run whatever a pick row does — the same call the pointer runs on that
@@ -1181,7 +1207,7 @@ impl VideoEditorApp {
             );
         }
         AccessNode::new(Role::Dialog)
-            .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-dialog"))
+            .with_name(crate::resource::CATALOG.t("video-editor-export-title"))
             .with_key(ui::a11y::hash_key(&"export"))
             .with_state(AccessState::new().modal(true))
             .with_children(kids)
@@ -1235,7 +1261,7 @@ impl VideoEditorApp {
                 .with_state(AccessState::new().focusable(true)),
         );
         AccessNode::new(Role::Dialog)
-            .with_name(crate::resource::CATALOG.t("video-editor-a11y-shortcuts"))
+            .with_name(crate::resource::CATALOG.t("video-editor-shortcuts-title"))
             .with_key(ui::a11y::hash_key(&"help"))
             .with_state(AccessState::new().modal(true))
             .with_children(kids)

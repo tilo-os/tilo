@@ -657,3 +657,28 @@ fn a_day_and_its_time_read_as_one_fact_in_english_and_german() {
         );
     }
 }
+
+#[test]
+fn a_list_joins_with_its_languages_own_separator() {
+    let facts = |items: &[&str]| {
+        items
+            .iter()
+            .map(|item| String::from(*item))
+            .collect::<Vec<_>>()
+    };
+    for locale in ["en-US", "de-DE"] {
+        speak(locale);
+        assert_eq!(list(&facts(&["Home folders"])), "Home folders", "{locale}");
+        assert_eq!(
+            list(&facts(&["Home folders", "encrypted"])),
+            "Home folders, encrypted",
+            "{locale}"
+        );
+        assert_eq!(
+            list(&facts(&["Home folders", "encrypted", "134 GB free"])),
+            "Home folders, encrypted, 134 GB free",
+            "{locale}"
+        );
+        assert_eq!(list(&[]), "", "{locale}");
+    }
+}

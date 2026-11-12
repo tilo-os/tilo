@@ -96,26 +96,6 @@ def control_binary() -> Path:
     return BUILD / "bin/tilo-control"
 
 
-def host_runtime() -> Path:
-    """The directory the session makes its private runtime under, which it
-    needs set before it does anything.
-
-    Its sockets sit at paths a unix socket can hold (under 108 bytes), which a
-    state directory of any depth does not: the session appends its own
-    subdirectory and a service path. A container's exec leaves
-    `XDG_RUNTIME_DIR` unset even though the user's `/run/user/<uid>` is there,
-    so that comes next, and a short directory under the home last."""
-    given = os.environ.get("XDG_RUNTIME_DIR")
-    if given and Path(given).is_dir():
-        return Path(given)
-    seat = Path(f"/run/user/{os.getuid()}")
-    if seat.is_dir() and os.access(seat, os.W_OK):
-        return seat
-    fallback = Path.home() / ".run" / "tilo-headless"
-    fallback.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return fallback
-
-
 def build(*, apps: str = APPS, remote: str | None = None) -> None:
     """Build the session, its programs and `apps` into BUILD.
 
@@ -144,8 +124,7 @@ def prepare(state: Path, *, apps: str = APPS, built: bool = False, remote=None) 
             "machine has no toolchain)"
         )
     run([str(SESSION), "--no-build", "--prepare-only", "--headless", "--apps", apps,
-         "--state", str(state)], cwd=REPO,
-        env={**os.environ, "XDG_RUNTIME_DIR": str(host_runtime())})
+         "--state", str(state)], cwd=REPO)
 
 
 class Agent:
@@ -272,13 +251,13 @@ class Session:
             argv += ["--", *session_args]
         print(f"==> starting the headless session ({tag}, lavapipe only)", file=sys.stderr)
         log = open(out / f"session-{tag}.log", "w")
-        # The session script makes its own private runtime directory inside
-        # `XDG_RUNTIME_DIR`, which a container leaves unset: give it one of
-        # the user's own, so nothing here needs a logged-in seat.
-        runtime = host_runtime()
+        # The session script picks its own private runtime directory (a login's
+        # XDG_RUNTIME_DIR, or a short one of its own where a container's exec
+        # leaves that unset): its sockets never sit under the state, whose depth
+        # is this caller's.
         self.proc = subprocess.Popen(
             argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-            env={**os.environ, "XDG_RUNTIME_DIR": str(runtime),
+            env={**os.environ,
                  "RUST_LOG": os.environ.get(
                      "RUST_LOG", "warn,tilo::launch_latency=info"), **(env or {})},
         )
@@ -352,14 +331,16 @@ class Session:
         return env
 
     def control_socket(self) -> str:
-        if self.ready is not None:
-            return self.ready["control"]
-        return str(self.state / "runtime/control.sock")
+        """The test control socket this session answers on, from its ready file."""
+        if self.ready is None:
+            raise Failed("the session is not running")
+        return self.ready["control"]
 
     def runtime_directory(self) -> str:
-        if self.ready is not None:
-            return self.ready["runtime"]
-        return str(self.state / "runtime")
+        """The private runtime directory this session made, from its ready file."""
+        if self.ready is None:
+            raise Failed("the session is not running")
+        return self.ready["runtime"]
 
     def control(self, payload: dict | str, timeout: float = 30.0) -> dict:
         """One request on the test control socket and its reply, whose one key

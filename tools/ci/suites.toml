@@ -747,6 +747,7 @@ package = "tilolang-app"
 inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/letters/"]
 readers = [
   "apps/tilolang/src/packages.rs",
+  "apps/tilolang/src/window/tests/names.rs",
   "apps/tilolang/tests/board.rs",
   "apps/tilolang/tests/history_undo.rs",
   "apps/tilolang/tests/opening.rs",
@@ -1131,6 +1132,9 @@ inputs = [
   "tools/with-test-environment.sh",
   "scripts/headless-examples/startup-frame-timeline.py",
   "scripts/headless-examples/_control.py",
+  # The one place that picks a session's private runtime directory, which the
+  # timeline asks for where its sockets go.
+  "dist/dev/nested-session.sh",
   # The NetHost grant vectors apps must answer like environments do.
   "crates/collab/collab-types/tests/net_host_vectors.txt",
   # The session script that starts the compositor without huge pages.
@@ -1510,11 +1514,6 @@ inputs = [
   # fails if the list grows.
   "apps/*/Cargo.toml",
   "crates/session/session/tests/baselines/app-side-records.txt",
-  # The app's model, its module and the ABI the host answers: the fixture the record test runs
-  # is that model built for wasm32, so a change to any of them is a change to what it proves.
-  "crates/sdk/tilo-model-abi/",
-  "crates/sdk/tilo-model-guest/",
-  "crates/sdk/tilo-model-host/",
   # The catalogues the locale-leak test reads words of: the toolkit's, which
   # every window carries, and the Settings index's, which every window offers.
   "crates/sdk/ui-core/locales/en-US.ftl",

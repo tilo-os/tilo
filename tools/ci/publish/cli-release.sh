@@ -367,24 +367,36 @@ site_root() {
   cp "$repo_root/dist/install/tilo.sh" "$root/install.sh"
 }
 
-# Serve ROOT at https://127.0.0.1:$1 with CERT and KEY as the site's: the installer fetches over
-# https alone, so a rehearsal's site is https too, and curl is told to trust this certificate.
+# Serve ROOT with CERT and KEY as the site's at https://127.0.0.1:$port, the port the kernel picks:
+# the installer fetches over https alone, so a rehearsal's site is https too, and curl is told to
+# trust this certificate. The site writes the port it bound to $5 as soon as it listens.
 serve() {
-  local port=$1 root=$2 cert=$3 key=$4 log=$5
-  python3 - "$port" "$root" "$cert" "$key" >"$log" 2>&1 <<'PY' &
+  local root=$1 cert=$2 key=$3 log=$4 portfile=$5
+  python3 - "$root" "$cert" "$key" "$portfile" >"$log" 2>&1 <<'PY' &
 import functools, http.server, ssl, sys
-port, root, cert, key = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
-site = http.server.HTTPServer(("127.0.0.1", port), functools.partial(http.server.SimpleHTTPRequestHandler, directory=root))
+root, cert, key, portfile = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+site = http.server.HTTPServer(("127.0.0.1", 0), functools.partial(http.server.SimpleHTTPRequestHandler, directory=root))
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(cert, key)
 site.socket = context.wrap_socket(site.socket, server_side=True)
+with open(portfile, "w") as written:
+  written.write(f"{site.server_address[1]}\n")
 site.serve_forever()
 PY
 }
 
-# A port nothing listens on, for the rehearsal's site.
-free_port() {
-  python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+# The port the site serving beside $1 wrote there, once it listens.
+site_port() {
+  local portfile=$1 waited=0
+  while (( waited < 300 )); do
+    if [[ -s $portfile ]]; then
+      cat "$portfile"
+      return 0
+    fi
+    sleep 0.1
+    (( waited += 1 ))
+  done
+  return 1
 }
 
 # Install the release the site at $1 serves, as a person does: the installer is what `curl` gets
@@ -416,15 +428,18 @@ cmd_rehearse() {
     -subj /CN=cli-rehearsal -addext subjectAltName=IP:127.0.0.1 \
     -keyout "$dir/site.key" -out "$dir/site.pem" >/dev/null 2>&1 \
     || die 'could not make the rehearsal site a certificate'
-  port=$(free_port)
-  serve "$port" "$site" "$dir/site.pem" "$dir/site.key" "$scratch/cli-rehearsal-site.log"
+  site_port_file=$scratch/cli-rehearsal-site.port
+  rm -f "$site_port_file"
+  serve "$site" "$dir/site.pem" "$dir/site.key" "$scratch/cli-rehearsal-site.log" "$site_port_file"
   server=$!
   trail() {
     kill "$server" 2>/dev/null || true
     rm -rf "$site" "$dir" "$scratch/cli-rehearsal-home" "$scratch/cli-rehearsal-tools" \
-      "$scratch/cli-rehearsal-site.log"
+      "$scratch/cli-rehearsal-site.log" "$site_port_file"
   }
   trap trail EXIT
+  port=$(site_port "$site_port_file") \
+    || die "the rehearsal's site did not come up: $(cat "$scratch/cli-rehearsal-site.log" 2>/dev/null)"
   local url=https://127.0.0.1:$port
   curl -fsS --retry 30 --retry-connrefused --retry-delay 1 --cacert "$dir/site.pem" -o /dev/null "$url/install.sh" \
     || die "the rehearsal's site did not come up: $(cat "$scratch/cli-rehearsal-site.log" 2>/dev/null)"

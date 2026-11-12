@@ -54,8 +54,9 @@ pub const MAP_ZOOM_MAX: f64 = 2.5;
 const ZOOM_PER_DETENT: f64 = 1.1;
 
 /// The room a place that arrives keeps from the viewport's edges when the camera shows it: a
-/// window's frame at the very edge of the canvas reads as cut off, so the pan leaves a gap.
-const ARRIVAL_MARGIN: f64 = 16.0;
+/// window's frame at the very edge of the canvas reads as cut off, so the pan leaves a gap of
+/// one section step.
+const ARRIVAL_MARGIN: f64 = crate::tokens::Spacing::BASE.rhythm.section as f64;
 
 /// A pin's place, in canvas pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]

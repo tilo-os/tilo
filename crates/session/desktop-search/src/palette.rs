@@ -1962,32 +1962,28 @@ mod tests {
         assert!(search.is_open());
     }
 
+    /// A published action with nothing to act on now takes no row at all: a card offers what it
+    /// can do, so Enter always does it — the name of an action that cannot run does not bring back
+    /// a row that could only say why not.
     #[test]
-    fn a_published_action_with_nothing_to_act_on_answers_only_its_name() {
+    fn a_published_action_with_nothing_to_act_on_takes_no_row() {
         let mut search = DesktopSearch::new();
         search.open(SearchData {
             published: published(),
             ..data()
         });
         settled(&mut search);
-        search.set_query("stop proj");
-        settled(&mut search);
-        assert!(
-            search
-                .results()
-                .iter()
-                .all(|hit| hit.title != "Stop projecting"),
-            "it takes no row from one that would do something"
-        );
-        search.set_query("Stop projecting");
-        settled(&mut search);
-        assert!(
-            search
-                .results()
-                .iter()
-                .any(|hit| hit.title == "Stop projecting"),
-            "named exactly, it is offered, and running it says why not"
-        );
+        for query in ["stop proj", "Stop projecting"] {
+            search.set_query(query);
+            settled(&mut search);
+            assert!(
+                search
+                    .results()
+                    .iter()
+                    .all(|hit| hit.title != "Stop projecting"),
+                "{query}: it takes no row"
+            );
+        }
     }
 
     /// A host's own source, named as a person knows it: the notes a notes

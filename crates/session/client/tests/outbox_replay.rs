@@ -1,6 +1,7 @@
 //! Edits a browser makes over HTTPS while its host is down stay in its
-//! replica's persisted custody and are replayed once the host is back on the
-//! same address; a peer that joins afterwards receives them from the host.
+//! replica's persisted custody, however many there are, and are replayed once
+//! the host is back on the same address; a peer that joins afterwards receives
+//! them from the host.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -27,7 +28,7 @@ use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{
-    admitted, enrol, holds, ready, route, say, start_host, start_host_at, start_peer, wait_for,
+    admitted, enrol, holds, ready, restart_host, route, say, start_host, start_peer, wait_for,
 };
 
 /// How many of `peer`'s writes to the workspace its replica's custody still holds.
@@ -88,6 +89,9 @@ async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
     host.relay.shutdown().await;
 }
 
+/// Edits made while the host is down: past twice what custody keeps in its record.
+const OFFLINE: usize = 150;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn outbox_survives_a_host_restart_and_is_replayed() {
     let (root, _) = UserIdentity::generate("Ada", 1);
@@ -95,20 +99,16 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let observer = enrol(&root, "phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    // The restarted host answers at the same web and iroh addresses, as a
-    // host that kept its place does.
-    let iroh_listen = "127.0.0.1:0".parse().unwrap();
-    let host = start_host_at(
+    // The restarted host comes up at the ports the kernel picks, its
+    // identity the one its pages hold.
+    let host = start_host(
         &root,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
-        iroh_listen,
     )
     .await;
     let mut laptop = participant::Participant::start(&host.relay, &root).await;
-    let listen = host.web.addr;
-    let iroh_listen = host.iroh_listen();
 
     let store = Arc::new(MemoryPeerStore::default());
     let peer = tilo_session_client::start_session(
@@ -129,21 +129,27 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
 
     drop(host.web);
     host.relay.shutdown().await;
+    // Far more edits than custody keeps in its record: every one is taken.
     let mut offline = AutoCommit::new();
-    for text in ["written while offline", "typed while offline"] {
-        peer.write(route(), &say(&mut offline, text)).unwrap();
+    for typed in 0..OFFLINE {
+        peer.write(
+            route(),
+            &say(&mut offline, &format!("typed while offline {typed}")),
+        )
+        .unwrap();
     }
     // The outbox persists an edit before the link to the stopped host has
     // reported its end, so wait for the peer to see the host gone as well.
-    wait_for("both edits in the persisted outbox, the host gone", || {
-        let queued = unadmitted(&peer) == 2 && peer.status().phase != TransportPhase::Connected;
+    wait_for("every edit in the persisted outbox, the host gone", || {
+        let queued =
+            unadmitted(&peer) == OFFLINE && peer.status().phase != TransportPhase::Connected;
         async move { queued.then_some(()) }
     })
     .await;
     assert_ne!(peer.status().phase, TransportPhase::Connected);
     assert_eq!(peer.snapshot().synchronization, "pending");
 
-    let host = start_host_at(&root, &host_device, state.path(), listen, iroh_listen).await;
+    let host = restart_host(&root, &host_device, state.path()).await;
     laptop.reconnect(&host.relay, &root).await;
     peer.send(Cmd::Reconnect).unwrap();
     let receipt = peer.barrier().unwrap();

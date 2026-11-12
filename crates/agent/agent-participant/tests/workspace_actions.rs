@@ -757,7 +757,30 @@ async fn a_page_whose_keys_have_not_arrived_holds_back_no_other() {
         InvokeArgument::None,
     );
     let opening = open.invocation;
-    let opened = browser.invoke(open).await;
+    // Asked as `tilo mcp` asks, through the session's remote actions, whose
+    // caller stops waiting once it is answered pending and only asks how it
+    // went later, as `tilo_status` does.
+    let actions = tilo_session_core::remote::SessionActions::new(
+        &browser.peer,
+        browser.workspace,
+        host.cert.device_public_key,
+    );
+    let caller = tilo_actions::remote::Caller::local_person("ada");
+    let opened = {
+        use tilo_actions::remote::ActionHost as _;
+        let (actions, caller) = (actions.clone(), caller.clone());
+        tokio::task::spawn_blocking(move || {
+            actions
+                .invoke(&caller, open)
+                .wait_timeout(Duration::from_secs(60))
+                .ok()
+                .flatten()
+                .expect("the host answers the open")
+                .expect("the host takes the open")
+        })
+        .await
+        .unwrap()
+    };
     eprintln!(
         "workspace actions latency: an open answered while the page held no keys: {:?}",
         started.elapsed()
@@ -780,7 +803,28 @@ async fn a_page_whose_keys_have_not_arrived_holds_back_no_other() {
     // The keys arrive: the held write is saved, and the open is answered
     // done, naming the record it made.
     drop(held);
-    let settled = browser.settled(opening).await;
+    let settled = {
+        use tilo_actions::remote::ActionHost as _;
+        tokio::task::spawn_blocking(move || {
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                let state = actions
+                    .observe(&caller, &opening)
+                    .expect("the host remembers the open it answered pending");
+                if state.update.is_terminal() {
+                    return state.update;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the open never read as settled: {:?}",
+                    state.update
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        })
+        .await
+        .unwrap()
+    };
     let tilo_actions::InvocationUpdate::Succeeded { output, .. } = &settled else {
         panic!("the open is done once its record is saved: {settled:?}");
     };

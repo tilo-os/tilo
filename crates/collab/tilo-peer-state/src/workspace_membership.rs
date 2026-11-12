@@ -264,7 +264,7 @@ pub enum RetiredAgentPreset {
     Custom,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum WorkspaceMembershipCommand {
     /// Retired with admission by preset: an agent works in a workspace because
     /// the workspace's `chat.agent` record names it and its keeper is a
@@ -350,9 +350,9 @@ pub enum WorkspaceMembershipCommand {
 }
 
 /// A change to the workspace's own settings: its name, its saved grant sets and
-/// their assignment, the actions its apps may use of each other and its
-/// apps' sandbox capabilities.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// their assignment, the actions its apps may use of each other, its apps'
+/// sandbox capabilities and its saved shortcuts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum SettingsChange {
     /// Name the workspace `name`.
     Rename { name: String },
@@ -375,6 +375,9 @@ pub enum SettingsChange {
     },
     /// Take back the sandbox capability with this id.
     RevokeSandbox { capability: String },
+    /// Save a shortcut of the workspace, or remove the one with this id, as its
+    /// saver's own device signed it ([`tilo_automation::ShortcutChange`]).
+    Shortcuts(tilo_automation::ShortcutChange),
 }
 
 /// The action an app-action grant is about: `action` on `target_app`'s
@@ -533,9 +536,14 @@ impl WorkspaceMembershipCommand {
                     &action.action,
                 )
                 .map(drop),
+                // Each is checked where it is written: a preset and a sandbox
+                // capability against the writer's own grants, and a shortcut
+                // against what the broker offers its saver, held to the proof
+                // of who saved it that its workspace's admission asks for.
                 SettingsChange::AssignPreset { .. }
                 | SettingsChange::GrantSandbox { .. }
-                | SettingsChange::RevokeSandbox { .. } => Ok(()),
+                | SettingsChange::RevokeSandbox { .. }
+                | SettingsChange::Shortcuts(_) => Ok(()),
             };
         }
         if let Self::GrantAppAuthorship { app } = self {

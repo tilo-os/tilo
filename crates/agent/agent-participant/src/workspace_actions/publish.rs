@@ -49,9 +49,11 @@ fn document(
 /// saved. A write the host saves at once (most) is answered done directly.
 const SAVE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// How long a write waits to be saved before the host logs that it is not
-/// yet. It goes on waiting: a write held for its record's keys is saved once
-/// they arrive, however late.
+/// How long a write answered pending may wait to be saved before it is
+/// answered failed: whoever follows it hears how it went within this,
+/// whatever holds the save up. The host goes on watching it and logs
+/// whether it is saved after all (a write held for its record's keys is
+/// saved once they arrive, however late).
 const SAVE_WATCH: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// One write the host handed to the session, as its log names it.
@@ -138,32 +140,45 @@ impl Unsaved {
 
     /// Wait, off the service's thread, until the host holds the writes or
     /// refuses them, then `settled` hears which: `Ok` once saved, or why
-    /// not. A write still unsaved after [`SAVE_WATCH`] is logged and waited
-    /// for on.
-    pub(super) fn settle(self, settled: impl FnOnce(Result<(), String>) + Send + 'static) {
+    /// not. Writes still unsaved after [`SAVE_WATCH`] are answered failed
+    /// then, and logged as and when they are saved after all.
+    pub(super) fn settle(self, settled: impl FnOnce(Result<(), ActionFailure>) + Send + 'static) {
+        self.settle_within(SAVE_WATCH, settled);
+    }
+
+    /// [`Self::settle`], answered failed once `bound` passed unsaved.
+    pub(super) fn settle_within(
+        self,
+        bound: std::time::Duration,
+        settled: impl FnOnce(Result<(), ActionFailure>) + Send + 'static,
+    ) {
         let Self { saved, written } = self;
         let watching = std::thread::Builder::new()
             .name("write-saved".into())
             .spawn(move || {
-                let outcome = match saved.recv_timeout(SAVE_WATCH) {
-                    Ok(outcome) => Some(outcome),
+                let outcome = match saved.recv_timeout(bound) {
+                    Ok(outcome) => outcome,
                     Err(tilo_session_client::RecvTimeoutError::Timeout) => {
                         for write in &written {
                             write.unsaved(
                                 "not saved yet: it waits for its record's keys or the host",
                             );
                         }
-                        saved.recv().ok()
+                        settled(Err(unconfirmed_failure()));
+                        let outcome = saved.recv().unwrap_or_else(|_| {
+                            Err("the session ended before the host saved the change".into())
+                        });
+                        log_saved(&written, &outcome);
+                        return;
                     }
-                    Err(tilo_session_client::RecvTimeoutError::Disconnected) => None,
+                    Err(tilo_session_client::RecvTimeoutError::Disconnected) => {
+                        Err("the session ended before the host saved the change".into())
+                    }
                 };
-                let outcome = outcome.unwrap_or_else(|| {
-                    Err("the session ended before the host saved the change".into())
-                });
                 log_saved(&written, &outcome);
-                settled(
-                    outcome.map_err(|reason| format!("the host did not save the change: {reason}")),
-                );
+                settled(outcome.map_err(|reason| {
+                    unsaved_failure(format!("the host did not save the change: {reason}"))
+                }));
             });
         if let Err(error) = watching {
             tracing::warn!(%error, "workspace actions: whether a write was saved is not watched");
@@ -514,23 +529,35 @@ impl Worker {
 
 /// `invocation`, answered pending while what it wrote was on its way, ends
 /// as the save did: done with `output` once the host holds it, or failed
-/// with why it does not.
+/// with why it does not, or that it was not confirmed in time.
 pub(super) fn settle_saved(
     ledger: &Mutex<Ledger>,
     invocation: InvocationId,
     output: ActionOutput,
-    saved: Result<(), String>,
+    saved: Result<(), ActionFailure>,
 ) {
     let mut ledger = ledger.lock_recover();
     if let Some(entry) = ledger.entries.get_mut(&invocation) {
         entry.saving = false;
         entry.update = match saved {
             Ok(()) => InvocationUpdate::Succeeded { invocation, output },
-            Err(message) => InvocationUpdate::Failed {
-                invocation,
-                error: unsaved_failure(message),
-            },
+            Err(error) => InvocationUpdate::Failed { invocation, error },
         };
+    }
+}
+
+/// Why an action whose change the host has not confirmed saving within
+/// [`SAVE_WATCH`] failed. The change may still be saved (it may wait for its
+/// record's keys), so asking again could make it twice: not retryable, the
+/// caller reads the record first.
+fn unconfirmed_failure() -> ActionFailure {
+    ActionFailure {
+        code: "save_unconfirmed".into(),
+        message: "the host has not confirmed saving the change within a minute; it may still \
+                  be saved, so read the record before making the change again"
+            .into(),
+        details: None,
+        retryable: false,
     }
 }
 

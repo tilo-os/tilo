@@ -1019,6 +1019,7 @@ async function connect({
       return peer.preAdmit(identity, JSON.stringify(options));
     },
     list: () => rooms('list', {workspace}),
+    mayInvite: () => rooms('mayInvite', {workspace}),
     waitList: () => rooms('waitList', {workspace}),
     unlist: requestId => rooms('unlist', {workspace, requestId}),
     mailInvite: (requestId, link) => rooms('mailInvite', {workspace, requestId, link: String(link)}),

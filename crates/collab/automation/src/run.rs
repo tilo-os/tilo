@@ -2073,7 +2073,10 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     }
 
     /// The row offering `action` on `app_id` at `target`, fetched now so the
-    /// run acts on what the person is offered at this moment.
+    /// run acts on what the person is offered at this moment. An exact
+    /// resource is resolved where it stands; a kind is looked for as the
+    /// catalogue lists it, a level at a time, from the top down into each
+    /// resource that holds more.
     async fn find(
         &self,
         key: &ActionKey,
@@ -2084,31 +2087,53 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             action: key.action.clone(),
             reason,
         };
-        let mut query = CatalogueQuery {
-            target: match target {
-                ResourceTarget::Id(id) => Some(ActionAddress::new(id, key.action.as_str())),
-                ResourceTarget::Kind(_) | ResourceTarget::Any => None,
-            },
-            max_results: MAX_CATALOGUE_PAGE,
-            ..CatalogueQuery::default()
+        let exact = match target {
+            ResourceTarget::Id(id) => Some(ActionAddress::new(id, key.action.as_str())),
+            ResourceTarget::Kind(_) | ResourceTarget::Any => None,
         };
-        for _ in 0..MAX_CATALOGUE_PAGES {
-            let page = self
-                .host
-                .query(&self.caller, query.clone())
-                .await
-                .ok_or(StepFailure::Abandoned)?
-                .map_err(|error| StepFailure::Host {
-                    error: Box::new(error),
-                })?;
-            if let Some(row) = find_row(&page.rows, key, target) {
-                return Ok(row.clone());
+        let descend = exact.is_none();
+        let mut levels = std::collections::VecDeque::from([None::<String>]);
+        let mut entered = BTreeSet::new();
+        let mut pages = 0usize;
+        'levels: while let Some(parent) = levels.pop_front() {
+            let mut query = CatalogueQuery {
+                app_id: Some(key.app.clone()),
+                parent_resource: parent,
+                target: exact.clone(),
+                max_results: MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            };
+            loop {
+                if pages == MAX_CATALOGUE_PAGES {
+                    break 'levels;
+                }
+                pages = pages.saturating_add(1);
+                let page = self
+                    .host
+                    .query(&self.caller, query.clone())
+                    .await
+                    .ok_or(StepFailure::Abandoned)?
+                    .map_err(|error| StepFailure::Host {
+                        error: Box::new(error),
+                    })?;
+                if let Some(row) = find_row(&page.rows, key, target) {
+                    return Ok(row.clone());
+                }
+                if descend {
+                    levels.extend(
+                        page.rows
+                            .iter()
+                            .filter(|row| row.has_children)
+                            .filter(|row| entered.insert(row.resource.id.clone()))
+                            .map(|row| Some(row.resource.id.clone())),
+                    );
+                }
+                if page.exhausted || page.next_cursor.is_empty() {
+                    break;
+                }
+                query.cursor = page.next_cursor;
+                query.revision = Some(page.revision);
             }
-            if page.exhausted || page.next_cursor.is_empty() {
-                break;
-            }
-            query.cursor = page.next_cursor;
-            query.revision = Some(page.revision);
         }
         Err(unresolved(match target {
             ResourceTarget::Id(id) => format!("`{id}` is not offered"),

@@ -239,6 +239,7 @@ pub mod invite;
 pub mod keyboard;
 mod keyboard_shortcuts;
 mod keys;
+mod landing;
 #[cfg(target_os = "linux")]
 mod launches;
 #[cfg(target_os = "linux")]

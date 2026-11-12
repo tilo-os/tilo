@@ -130,10 +130,7 @@ fn detail(core: &Core, requests: &Requests, actions_in_bar: bool) -> Element {
                 EmptyState::new("Nothing saved yet")
                     .with_id("passwords.content.empty")
                     .with_icon(Icon::Shield)
-                    .with_message(
-                        "Logins, secure notes, Wi-Fi passwords and API keys you save are \
-                         encrypted and kept here. Choose New item to add the first one.",
-                    ),
+                    .with_message(CATALOG.t("passwords-empty-content-message")),
             );
         }
         if core.visible().is_empty() {
@@ -179,12 +176,13 @@ fn copy_label(kind: SecretItemKind) -> String {
 }
 
 /// The name of the favorite toggle, by whether the item is one.
-pub(crate) fn favorite_label(favorite: bool) -> &'static str {
-    if favorite {
-        "Remove from favorites"
+pub(crate) fn favorite_label(favorite: bool) -> String {
+    let message = if favorite {
+        "passwords-unfavorite"
     } else {
-        "Add to favorites"
-    }
+        "passwords-favorite"
+    };
+    crate::CATALOG.t(message)
 }
 
 fn detail_header(item: &SecretItem, requests: &Requests, actions_in_bar: bool) -> Vec<Element> {
@@ -200,7 +198,8 @@ fn detail_header(item: &SecretItem, requests: &Requests, actions_in_bar: bool) -
     let star = {
         let requests = Rc::clone(requests);
         let id = item.id.clone();
-        Button::icon_only("passwords.favorite", Icon::Star, favorite_label(favorite))
+        let favorite_label = favorite_label(favorite);
+        Button::icon_only("passwords.favorite", Icon::Star, &favorite_label)
             .toggled(favorite)
             .on_own_device_effect(move || {
                 requests
@@ -348,16 +347,18 @@ fn input(shared: &Shared, field: DraftField, value: &str) -> TextInput {
         .on_change_view(move |value| core.borrow_mut().set_draft(field, value))
 }
 
-fn field_label(kind: SecretItemKind, field: DraftField) -> &'static str {
+fn field_label(kind: SecretItemKind, field: DraftField) -> String {
     match field {
-        DraftField::Name => "Name",
+        DraftField::Name => crate::CATALOG.t("passwords-field-name"),
         DraftField::Username => identity_label(kind),
         DraftField::Origin => origin_label(kind, 2),
-        DraftField::Password => secret_label(kind),
-        DraftField::Notes if kind == SecretItemKind::SecureNote => "Note",
-        DraftField::Notes => "Notes",
-        DraftField::Tags => "Tags",
-        DraftField::CustomFields => "Custom fields",
+        DraftField::Password => secret_label(kind).to_owned(),
+        DraftField::Notes if kind == SecretItemKind::SecureNote => {
+            crate::CATALOG.t("passwords-field-note")
+        }
+        DraftField::Notes => crate::CATALOG.t("passwords-field-notes"),
+        DraftField::Tags => crate::CATALOG.t("passwords-field-tags"),
+        DraftField::CustomFields => crate::CATALOG.t("passwords-field-custom"),
     }
 }
 
@@ -518,7 +519,7 @@ fn review(core: &Core) -> Element {
     if health.total == 0 {
         groups.push(Box::new(
             Section::new(vec![text(
-                "Save a password and the review checks it for reuse, weakness and age.",
+                &CATALOG.t("passwords-review-nothing-to-check"),
                 TextRole::Body,
             )])
             .with_header(SectionHeader::group(CATALOG.t("passwords-review-empty"))),
@@ -526,7 +527,7 @@ fn review(core: &Core) -> Element {
     } else if rows.is_empty() {
         groups.push(Box::new(
             Section::new(vec![text(
-                "Every saved password is unique, strong and recent.",
+                &CATALOG.t("passwords-review-all-well"),
                 TextRole::Body,
             )])
             .with_header(SectionHeader::group(CATALOG.t("passwords-review-done"))),
@@ -718,10 +719,7 @@ fn transfer(requests: &Requests) -> Element {
             Box::new(group(
                 &CATALOG.t("passwords-encrypted-backup"),
                 vec![
-                    text(
-                        "A backup keeps every item, note and custom field, encrypted with a password you choose.",
-                        TextRole::Body,
-                    ),
+                    text(&CATALOG.t("passwords-backup-lead"), TextRole::Body),
                     pair(
                         button(
                             "passwords.backup",
@@ -743,10 +741,7 @@ fn transfer(requests: &Requests) -> Element {
             Box::new(group(
                 &CATALOG.t("passwords-browser-passwords"),
                 vec![
-                    text(
-                        "Move logins between Passwords and a web browser with a CSV file.",
-                        TextRole::Body,
-                    ),
+                    text(&CATALOG.t("passwords-csv-lead"), TextRole::Body),
                     pair(
                         button(
                             "passwords.import",
@@ -835,16 +830,19 @@ fn import_dialog(
     match known.as_slice() {
         [] => {}
         [(row, _)] => children.push(text(
-            &format!(
-                "{} is already in your vault and will be skipped.",
-                *row.title
+            &CATALOG.t_args(
+                "passwords-import-skipped-one",
+                &[("login", ui::i18n::ArgValue::Text((*row.title).clone()))],
             ),
             TextRole::Body,
         )),
         more => children.push(text(
-            &format!(
-                "{} logins are already in your vault and will be skipped.",
-                more.len()
+            &CATALOG.t_args(
+                "passwords-import-skipped-count",
+                &[(
+                    "count",
+                    ui::i18n::ArgValue::from(u32::try_from(more.len()).unwrap_or(u32::MAX)),
+                )],
             ),
             TextRole::Body,
         )),
@@ -901,10 +899,7 @@ fn export_dialog(acknowledged: bool, reminded: bool, requests: &Requests) -> Mod
             })
     };
     let mut children: Vec<Element> = vec![
-        text(
-            "Anyone who can open the file can read every password in it. Delete it once your passwords are moved.",
-            TextRole::Body,
-        ),
+        text(&CATALOG.t("passwords-export-warning"), TextRole::Body),
         Box::new(ack),
     ];
     if reminded {
@@ -961,7 +956,7 @@ fn dialog(core: &Core, shared: &Shared, requests: &Requests) -> Option<Element> 
         Dialog::DeleteConfirm { title, .. } => ModalDialog::new(
             format!("Delete “{title}”?"),
             body(vec![text(
-                "The item is removed from your vault and cannot be restored.",
+                &CATALOG.t("passwords-delete-lead"),
                 TextRole::Body,
             )]),
         )

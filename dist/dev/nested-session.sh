@@ -56,6 +56,10 @@
 #                      socket, the runtime directory and the state directory to
 #                      FILE as JSON (also kept as session.json in the runtime
 #                      directory)
+#   --print-runtime    print the private runtime directory a session on
+#                      --state uses, and exit: a tool that has to reach into a
+#                      session (its mounts, its sockets) asks here instead of
+#                      deriving the path a second time
 #
 # The window opens at 1280x800 logical pixels; set TILO_WINIT_SIZE=WxH
 # (physical pixels) to choose another size. A headless session renders a
@@ -81,6 +85,7 @@ reset_identity=0
 fresh_desktop=0
 headless=0
 software=0
+print_runtime=0
 community=
 model_provider=
 install_tapps=()
@@ -102,6 +107,7 @@ while (($#)); do
         --fresh-desktop) fresh_desktop=1; shift ;;
         --headless) headless=1; shift ;;
         --software) software=1; shift ;;
+        --print-runtime) print_runtime=1; shift ;;
         --community) community=${2:?--community needs a site}; shift 2 ;;
         --model-provider) model_provider=${2:?--model-provider needs PRESET:MODEL or host}; shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
@@ -110,12 +116,10 @@ while (($#)); do
     esac
 done
 
-for tool in jq bwrap readelf python3 sha256sum; do
-    command -v "$tool" >/dev/null || die "$tool is required on PATH"
-done
 host_runtime=${XDG_RUNTIME_DIR:-}
 host_display=
-if ((!headless)); then
+# --print-runtime starts nothing, so it asks for no display.
+if ((!headless && !print_runtime)); then
     [[ -n $host_runtime ]] || die "XDG_RUNTIME_DIR is unset"
     [[ -n ${WAYLAND_DISPLAY:-} ]] || die "run this from a Wayland desktop session (WAYLAND_DISPLAY is unset), or pass --headless"
     case $WAYLAND_DISPLAY in
@@ -134,6 +138,41 @@ if ((!headless)); then
     fi
 fi
 
+state=$(realpath -m "$state")
+[[ $state != "$HOME" && $state != / ]] || die "refusing state directory $state"
+# The compositor's own runtime directory: private sockets, services and the
+# control socket, under a login runtime directory so it stays on tmpfs and
+# per-user. Never under the state directory: a unix socket's path holds 108
+# bytes, and a state directory sits as deep as its caller's output directory
+# (a worktree's own target/session-e2e is already too deep for it). A login
+# session's own XDG_RUNTIME_DIR comes first; a container's exec leaves it
+# unset even though the user's /run/user/<uid> is there, so that comes next,
+# and a directory this user owns in /tmp last.
+runtime_base=$host_runtime
+own_runtime_base=0
+if [[ -z $runtime_base ]]; then
+    seat=/run/user/$(id -u)
+    if [[ -d $seat && -w $seat ]]; then
+        runtime_base=$seat
+    else
+        # A directory of this user's own in /tmp: the shortest place that exists
+        # without a login seat, and the same one on every run, so a tool that
+        # asks for it (--print-runtime) finds the session.
+        runtime_base=/tmp/tilo-runtime-$(id -u)
+        own_runtime_base=1
+    fi
+    say "no XDG_RUNTIME_DIR: the session's runtime directory is under $runtime_base"
+fi
+runtime=$runtime_base/tilo-nested-$(printf '%s' "$state" | sha256sum | cut -c1-12)
+# Where the session's sockets go is a pure answer, so asking it takes no
+# tools, no build, no display and no state: a tool that reaches into a session
+# asks here and gets the same path the session itself will use.
+((print_runtime)) && { printf '%s\n' "$runtime"; exit 0; }
+
+for tool in jq bwrap readelf python3 sha256sum; do
+    command -v "$tool" >/dev/null || die "$tool is required on PATH"
+done
+
 selected=()
 for app in $apps; do
     [[ $app == files ]] && app=file-explorer
@@ -145,23 +184,8 @@ for app in $apps; do
     selected+=("$app")
 done
 
-state=$(realpath -m "$state")
-[[ $state != "$HOME" && $state != / ]] || die "refusing state directory $state"
 mkdir -p "$state"
 chmod 700 "$state"
-# A headless session in a container has no login runtime directory of its
-# own: its sockets live in the session's state, with the same private mode a
-# login gives them.
-if [[ -z $host_runtime ]]; then
-    host_runtime=$state/run
-    mkdir -p "$host_runtime"
-    chmod 700 "$host_runtime"
-    say "no XDG_RUNTIME_DIR: the session's runtime directory is $host_runtime"
-fi
-# The compositor's own runtime directory: private sockets, services and the
-# control socket, under the host's runtime directory so it stays on tmpfs and
-# per-user.
-runtime=$host_runtime/tilo-nested-$(printf '%s' "$state" | sha256sum | cut -c1-12)
 pidfile=$state/session.pid
 if [[ -f $pidfile ]] && kill -0 "$(<"$pidfile")" 2>/dev/null; then
     die "a nested session for $state is already running (pid $(<"$pidfile"))"
@@ -554,6 +578,15 @@ unset provider_record provider_key
 ((prepare_only)) && { say "prepared $state"; exit 0; }
 
 # --- 8. Run ---------------------------------------------------------------------
+if ((own_runtime_base)); then
+    # This user's own directory, and never one planted at its name: everything
+    # the session serves lives under it.
+    [[ -L $runtime_base ]] && die "refusing runtime directory $runtime_base: it is a symlink"
+    if [[ -e $runtime_base && ! -O $runtime_base ]]; then
+        die "refusing runtime directory $runtime_base: it is not this user's"
+    fi
+    mkdir -p -m 700 "$runtime_base"
+fi
 rm -rf "$runtime"
 mkdir -m 700 "$runtime"
 export XDG_RUNTIME_DIR=$runtime
@@ -588,6 +621,8 @@ cleanup() {
     # A session ends by unmounting the files it served for apps, and one that
     # was killed outright leaves a process of its own that does it for it.
     rm -rf "$runtime" 2>/dev/null || true
+    # A runtime base this script made in /tmp goes with it.
+    if ((own_runtime_base)); then rmdir "$runtime_base" 2>/dev/null || true; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP

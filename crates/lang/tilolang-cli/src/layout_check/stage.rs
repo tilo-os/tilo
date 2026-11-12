@@ -760,6 +760,17 @@ impl Staged {
         self.settle()
     }
 
+    /// Press the control `target` a widget of `id` publishes as a semantic child, as assistive
+    /// technology activates it: the box beside a row's title, which a person presses by its own
+    /// words rather than by the row's.
+    pub fn press_child(&mut self, id: &str, target: &str) -> Result<(), String> {
+        self.harness
+            .perform_semantic_named(id, Some(target), &ui::a11y::Action::Activate)
+            .map_err(|error| format!("pressing {target:?}: {error}"))?;
+        self.exchange();
+        self.settle()
+    }
+
     /// Run the toolkit's clock until nothing in the window moves.
     ///
     /// The wall clock is the capture's (pinned by [`ui::clock::freeze_for_capture`]), and a

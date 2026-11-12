@@ -15,7 +15,7 @@ use crate::ids::Principal;
 use crate::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 use crate::registry::Package;
 use crate::render::Offer;
-use crate::runtime::Reading;
+use crate::runtime::{Presentation, Reading};
 use crate::seen::SeenMark;
 use crate::value::{ActionRef, EnumValue, RefValue, ResourceRef, Value};
 use crate::view_state::StateKey;
@@ -2257,17 +2257,14 @@ impl Core {
             && let Some(view) = &action.present
             && let Some(node) = self.present(view, subject)?
         {
-            if let Some(Value::Text(text)) = node.props.get("label") {
-                label.clone_from(text);
+            let presented = presentation_of(&node);
+            if let Some(text) = presented.label {
+                label = text;
             }
-            if let Some(Value::Text(name)) = node.props.get("icon") {
-                icon = Some(name.clone());
+            if let Some(name) = presented.icon {
+                icon = Some(name);
             }
-            on = match node.props.get("on") {
-                Some(Value::Bool(flag)) => Some(*flag),
-                Some(Value::Int(flag)) => Some(*flag != 0),
-                _ => None,
-            };
+            on = presented.on;
         }
         // Whether it applies to the item where the view offers it at all, and whether it can
         // run on it now, as the conditions its subject and place decide say: a menu leaves out
@@ -2395,6 +2392,51 @@ impl Core {
         )
     }
 
+    /// What the action `action` shows offered on `subject` now: the label, icon and toggled
+    /// state its presentation gives it, with what reading them read. `None` for an action whose
+    /// app presents nothing of it there.
+    pub(crate) fn presentation_reading(
+        &self,
+        action: &str,
+        subject: &RefValue,
+        viewer: &Principal,
+    ) -> HResult<(Option<Presentation>, Reading)> {
+        let (pkg, presents) = {
+            let registry = self.registry.borrow();
+            let Some(pkg) = registry.action_package(action) else {
+                return Ok((None, Reading::default()));
+            };
+            let presents = pkg.action(action).and_then(|meta| meta.present.clone());
+            (pkg, presents)
+        };
+        let Some(view) = presents else {
+            return Ok((None, Reading::default()));
+        };
+        self.frames.borrow_mut().push(
+            pkg.hash.clone(),
+            FrameKind::View(ViewState {
+                viewer: viewer.clone(),
+                decides: true,
+                ..ViewState::default()
+            }),
+        );
+        // The presentation runs in a frame of its own, as a requirement does, so a failure
+        // leaves nothing behind and what it read is taken with the rest.
+        let node = self.present(&view, subject);
+        let frame = self.frames.borrow_mut().pop();
+        let Some(FrameKind::View(reads)) = frame.map(|f| f.kind) else {
+            return trap("the presentation frame vanished");
+        };
+        let mut at = reads.reads.clone();
+        at.sort_unstable();
+        at.dedup();
+        let beyond = reads.changes_at.is_some()
+            || !reads.state_reads.is_empty()
+            || !reads.space_reads.is_empty();
+        let shown = node?.as_ref().map(presentation_of);
+        Ok((shown, Reading { reads: at, beyond }))
+    }
+
     /// What a condition of `action` is decided on: its subject, and the places after it left to
     /// their own.
     fn subject_args(&self, action: &str, subject: &RefValue) -> Vec<Value> {
@@ -2448,6 +2490,7 @@ impl Core {
             pkg.hash.clone(),
             FrameKind::View(ViewState {
                 viewer: viewer.clone(),
+                decides: true,
                 ..ViewState::default()
             }),
         );
@@ -2539,6 +2582,24 @@ impl Core {
             }
         }
         Ok(Some(rendered.root))
+    }
+}
+
+/// What the presentation `node` says of the action it presents: the label it is called there,
+/// the icon beside it, and whether the state it toggles is on.
+fn presentation_of(node: &crate::view::UiNode) -> Presentation {
+    let text = |prop: &str| match node.props.get(prop) {
+        Some(Value::Text(text)) => Some(text.clone()),
+        _ => None,
+    };
+    Presentation {
+        label: text("label"),
+        icon: text("icon"),
+        on: match node.props.get("on") {
+            Some(Value::Bool(flag)) => Some(*flag),
+            Some(Value::Int(flag)) => Some(*flag != 0),
+            _ => None,
+        },
     }
 }
 

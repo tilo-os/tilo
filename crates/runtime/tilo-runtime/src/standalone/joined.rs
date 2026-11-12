@@ -182,9 +182,9 @@ impl Joined {
         Self::open(profile, custody, endpoint, refused, broker)
     }
 
-    /// This device's signing key, as its plane signs every request it makes.
-    pub(in crate::standalone) fn device_key(&self) -> Result<ed25519_dalek::SigningKey, String> {
-        self.custody.signing_key()
+    /// What signs as this device, as its plane signs every request it makes.
+    pub(in crate::standalone) fn signer(&self) -> Arc<dyn collab_types::signer::DeviceSigner> {
+        Arc::clone(&self.custody.signer)
     }
 
     /// The device certificate this profile's custody holds.
@@ -216,7 +216,7 @@ impl Joined {
         let plane = {
             let _entered = runtime.enter();
             tilo_peer_state::actions::ActionPlane::over(
-                self.custody.signing_key().ok()?,
+                self.signer(),
                 Arc::new(tilo_peer_state::actions::NoActions),
                 Arc::new(self.owner.clone()),
             )
@@ -303,7 +303,7 @@ impl Joined {
             .material_for(workspace_topic(workspace).map_err(io::Error::other)?);
         tilo_fs::identity::PeerCredentials::certified(
             cert,
-            self.custody.signing_key().map_err(io::Error::other)?,
+            self.signer(),
             tilo_clock::unix_now_ns(),
         )
         .map_err(io::Error::other)
@@ -695,17 +695,9 @@ impl Joined {
                 tracing::debug!(%error, "joined workspace sealed history stays uncompacted");
             }
         }
-        let Some(keys) = self.keys.get() else {
-            return;
-        };
         if let Err(error) = self
             .owner
-            .renew_outgoing(
-                workspace,
-                signer,
-                |sealed| keys.renew_sealed(workspace, sealed),
-                SystemTime::now(),
-            )
+            .renew_outgoing(workspace, signer, SystemTime::now())
             .await
         {
             tracing::warn!(%workspace, %error, "native sealed write renewal blocked");

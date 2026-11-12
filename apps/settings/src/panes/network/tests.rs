@@ -14,6 +14,7 @@ use super::enterprise::{ENTERPRISE_JOIN, enterprise_arguments};
 use super::vpn::VpnEffect;
 use super::*;
 
+mod absent;
 mod device_vpn;
 mod enterprise;
 mod vpn_kill_switch;
@@ -274,6 +275,9 @@ fn completed_network_read_wakes_the_owner_and_updates_the_pane() -> Result<(), S
 #[derive(Default)]
 struct FakeNetwork {
     networks: Mutex<Vec<WifiNetworkInfo>>,
+    /// Whether the device runs a network service; `None` leaves the
+    /// snapshot as one read from a service says nothing of.
+    service_present: Mutex<Option<bool>>,
     unreadable: Mutex<Option<String>>,
     refuse: Mutex<Option<String>>,
     shared_password: Mutex<Option<String>>,
@@ -452,6 +456,7 @@ impl NetworkService for FakeNetwork {
             }
             return NetworkSnapshot {
                 networks: Err(reason.clone()),
+                service_present: *self.service_present.lock().unwrap(),
                 wifi_enabled: Some(failed(&reason)),
                 wired: Some(failed(&reason)),
                 radios: Some(failed(&reason)),
@@ -468,6 +473,7 @@ impl NetworkService for FakeNetwork {
             };
         }
         let mut snapshot = NetworkSnapshot::of_networks(self.networks.lock().unwrap().clone());
+        snapshot.service_present = Some(self.service_present.lock().unwrap().unwrap_or(true));
         snapshot.vpns = Some(Ok(self.vpns.lock().unwrap().clone()));
         snapshot.profiles = Some(Ok(self.profiles.lock().unwrap().clone()));
         snapshot.profile_settings = self.settings.lock().unwrap().clone();
@@ -487,6 +493,7 @@ impl NetworkService for FakeNetwork {
         self.status_reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut snapshot = NetworkSnapshot::of_networks(self.networks.lock().unwrap().clone());
+        snapshot.service_present = Some(self.service_present.lock().unwrap().unwrap_or(true));
         snapshot.vpns = Some(Ok(self.vpns.lock().unwrap().clone()));
         snapshot.profiles = None;
         snapshot.profile_list = Some(Ok(self.profiles.lock().unwrap().clone()));

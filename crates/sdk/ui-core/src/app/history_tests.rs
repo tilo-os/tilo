@@ -4120,7 +4120,6 @@ fn component_control_root(
             host_person: crate::permissions::UserId("component-control-author".into()),
             records: records.clone(),
             checkout,
-            hosted: false,
             permissions: crate::permissions::SharedPermissions::new(
                 crate::permissions::PermissionContext::permissive(),
             ),

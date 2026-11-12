@@ -188,11 +188,16 @@ video-editor-a11y-start-export = Export starten
 video-editor-a11y-close-export = Export schließen
 video-editor-a11y-export-details = Details zum Exportfehler
 video-editor-a11y-export-blocked = Warum der Export nicht laufen kann
-video-editor-a11y-export-dialog = Video exportieren
 video-editor-a11y-close-shortcuts = Kürzel schließen
-video-editor-a11y-shortcuts = Tastenkürzel
+video-editor-a11y-chroma-key = { $on ->
+    [true] Chroma-Key ausschalten
+   *[false] Chroma-Key einschalten
+}
+video-editor-a11y-mask-shape = Maskenform { $shape }
+video-editor-a11y-match-media = An die Medien anpassen
 
 ## Das Blatt der Tastenkürzel
+video-editor-shortcuts-title = Tastenkürzel
 video-editor-shortcut-project = Projekt
 video-editor-shortcut-playback = Wiedergabe
 video-editor-shortcut-editing = Schneiden
@@ -283,3 +288,12 @@ video-editor-split-off-audio = Ton abtrennen
 video-editor-link-state-linked = Ton und Bild verknüpft
 video-editor-link-state-unlinked = Nicht verknüpft
 video-editor-link-state-no-audio = Kein verknüpfter Ton-Clip
+video-clip-missing-media = Fehlendes Medium
+
+## Der Exportdialog
+video-editor-export-title = Video exportieren
+
+## Die Schaltflächen des Exportdialogs
+video-editor-start-export = Exportieren
+video-editor-close-export = Schließen
+video-editor-cancel-export = Abbrechen

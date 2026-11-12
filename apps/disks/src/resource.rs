@@ -14,11 +14,13 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use ui::framework::{EffectStatus, Fixture, LiveRow, Publishes, ResourceApp, ViewCx};
+use ui::i18n::ArgValue;
 use ui::tilo_actions::ConfirmationPolicy;
 use ui::tilo_resource::{self, Atom, Effect, Invoke, Model, Refusal, resource};
 use ui::widget::Element;
 
 use crate::app::{ActionKind, DisksApp, Store};
+use crate::locales::CATALOG;
 use crate::model::{Drive, Partition, Topology};
 use crate::offer::{self, Offer};
 
@@ -195,27 +197,40 @@ pub(crate) fn partition_row_id(leaf: &str) -> String {
 /// person would lose, never only the action's name.
 fn format_loses(drive: &Drive, part: Option<&Partition>) -> String {
     let Some(part) = part else {
-        return match drive.partitions.len() {
-            0 => "Everything on it is erased for good.".to_owned(),
-            1 => "Its partition and every file on it are erased for good.".to_owned(),
-            n => format!("Its {n} partitions and every file on them are erased for good."),
-        };
+        let count = drive.partitions.len();
+        return CATALOG.t_args(
+            "disks-format-loses-drive",
+            &[(
+                "count",
+                ArgValue::Number(f64::from(u32::try_from(count).unwrap_or(u32::MAX))),
+            )],
+        );
     };
-    let on = part
+    let label = part
         .label
         .as_deref()
         .map(str::trim)
-        .filter(|label| !label.is_empty())
-        .map_or_else(
-            || "it".to_owned(),
-            |label| format!("\u{201c}{label}\u{201d}"),
-        );
-    match part.used.filter(|used| *used > 0) {
-        Some(used) => format!(
-            "The {} of files on {on} are erased for good.",
-            ui::format::size(used)
+        .filter(|label| !label.is_empty());
+    match (part.used.filter(|used| *used > 0), label) {
+        (Some(used), label) => CATALOG.t_args(
+            if label.is_some() {
+                "disks-format-loses-used-on"
+            } else {
+                "disks-format-loses-used"
+            },
+            &[
+                ("size", ArgValue::Text(ui::format::size(used))),
+                (
+                    "label",
+                    ArgValue::Text(label.unwrap_or_default().to_owned()),
+                ),
+            ],
         ),
-        None => format!("Every file on {on} is erased for good."),
+        (None, Some(label)) => CATALOG.t_args(
+            "disks-format-loses-files-on",
+            &[("label", ArgValue::Text(label.to_owned()))],
+        ),
+        (None, None) => CATALOG.t("disks-format-loses-files"),
     }
 }
 
@@ -580,6 +595,77 @@ mod tests {
             .filter(|row| row.actions.iter().any(|action| action.id == "eject"))
             .count();
         assert_eq!(removable, 1, "only the removable drive ejects");
+    }
+
+    /// What formatting erases is a sentence a person reads in their own
+    /// language, every device and scheme the sample machine has included.
+    #[test]
+    fn the_format_question_reads_in_the_persons_language() {
+        let drive = Drive {
+            name: "sdb".into(),
+            model: "Sample".into(),
+            serial: Some("SAMPLE".into()),
+            size: 2_000_000_000_000,
+            kind: crate::model::DriveKind::Usb,
+            tran: Some("usb".into()),
+            removable: true,
+            partitions: vec![
+                Partition {
+                    name: "sdb1".into(),
+                    size: 2_000_000_000_000,
+                    fstype: Some("exfat".into()),
+                    label: Some("Media".into()),
+                    mountpoint: None,
+                    used: Some(1_500_000_000_000),
+                    uuid: None,
+                    encryption: None,
+                    part_type: None,
+                    part_type_name: None,
+                },
+                Partition {
+                    name: "sdb2".into(),
+                    size: 1_000_000,
+                    fstype: None,
+                    label: None,
+                    mountpoint: None,
+                    used: None,
+                    uuid: None,
+                    encryption: None,
+                    part_type: None,
+                    part_type_name: None,
+                },
+            ],
+            smart: None,
+        };
+        let media = &drive.partitions[0];
+        let bare = &drive.partitions[1];
+        CATALOG.set_locale("de-DE");
+        assert_eq!(
+            format_loses(&drive, None),
+            "Die 2 Partitionen und alle Dateien darauf werden endgültig gelöscht.",
+            "the drive's question names what erasing it loses, in German"
+        );
+        assert_eq!(
+            format_loses(&drive, Some(media)),
+            "Die 1,5 TB an Dateien auf „Media“ werden endgültig gelöscht."
+        );
+        assert_eq!(
+            format_loses(&drive, Some(bare)),
+            "Alle Dateien darauf werden endgültig gelöscht."
+        );
+        CATALOG.set_locale("en-US");
+        assert_eq!(
+            format_loses(&drive, None),
+            "Its 2 partitions and every file on them are erased for good."
+        );
+        assert_eq!(
+            format_loses(&drive, Some(media)),
+            "The 1.5 TB of files on \u{201c}Media\u{201d} are erased for good."
+        );
+        assert_eq!(
+            format_loses(&drive, Some(bare)),
+            "Every file on it is erased for good."
+        );
     }
 
     #[test]

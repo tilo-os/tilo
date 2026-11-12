@@ -304,7 +304,7 @@ pub(crate) fn unavailable(detail: Option<&str>, intents: &Intents) -> Element {
     let state = match detail {
         Some(detail) => EmptyState::error("Firewall service unavailable", detail),
         None => EmptyState::new("Firewall service unavailable")
-            .with_message("Start firewalld, then try again. No rules were changed."),
+            .with_message(CATALOG.t("firewall-service-unavailable-hint")),
     };
     Box::new(
         state
@@ -425,14 +425,15 @@ pub(crate) fn zone_page(
 fn banners(config: &FirewallConfig) -> Vec<Element> {
     let mut out: Vec<Element> = Vec::new();
     if config.panic_mode {
-        out.push(Box::new(Banner::error("Panic mode is on").with_message(
-            "All incoming and outgoing network traffic is dropped.",
-        )));
+        out.push(Box::new(
+            Banner::error("Panic mode is on")
+                .with_message(CATALOG.t("firewall-panic-mode-message")),
+        ));
     }
     if !config.enabled {
         out.push(Box::new(
             Banner::warning("The firewall is stopped")
-                .with_message("No rules are enforced until you turn it on."),
+                .with_message(CATALOG.t("firewall-stopped-message")),
         ));
     }
     out
@@ -454,7 +455,7 @@ fn zone_status(model: &PageModel<'_>, intents: &Intents) -> Column {
         ));
     }
     column.push(Box::new(
-        Text::new(model.zone.kind.description())
+        Text::new(&crate::locales::CATALOG.t(model.zone.kind.description_message()))
             .with_role(TextRole::Body)
             .dimmed(),
     ))
@@ -911,9 +912,12 @@ fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
         page = page.push(Box::new(
             EmptyState::new("Nothing was dropped")
                 .with_icon(Icon::Shield)
-                .with_message(format!(
-                    "The kernel logged no dropped or rejected packets in the last {} minutes.",
-                    report.window_minutes
+                .with_message(CATALOG.t_args(
+                    "firewall-nothing-dropped-message",
+                    &[(
+                        "minutes",
+                        ui::i18n::ArgValue::Number(f64::from(report.window_minutes)),
+                    )],
                 )),
         ));
         return Box::new(page);

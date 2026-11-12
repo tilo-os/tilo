@@ -232,10 +232,7 @@ pub(crate) fn vault_empty_state(requests: &Requests) -> EmptyState {
     let requests = Rc::clone(requests);
     EmptyState::new("Your vault is empty")
         .with_icon(Icon::Shield)
-        .with_message(
-            "Logins, secure notes, Wi-Fi passwords and API keys you save are encrypted and \
-             kept here.",
-        )
+        .with_message(CATALOG.t("passwords-empty-vault-message"))
         .with_action("New item")
         .with_action_id("passwords.empty.new")
         .on_own_device_effect(move || requests.borrow_mut().push(Request::NewItem))

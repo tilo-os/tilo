@@ -126,6 +126,60 @@ fn session_over(
     })
 }
 
+/// Settings' pages are the session's own search source, so every desktop a session runs finds
+/// them — the web page's, which offers the pages its own Settings has. "dark mode" is the Theme
+/// setting on the Appearance page, and Enter opens Settings at it.
+#[test]
+fn settings_search_finds_the_appearance_theme_and_enter_opens_it() {
+    let _settled = ui::motion::testing::settled();
+    let host = Rc::new(Host::default());
+    let mut session = session(Rc::clone(&host));
+    session.step(Duration::from_millis(1)).unwrap();
+    let workspace = session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.id().to_string())
+            .expect("workspace")
+    });
+    // The tour's own query: a person typing "settings" finds where the settings are.
+    search_for(&mut session, "settings");
+    assert!(
+        rows(&session).iter().any(|row| row.kind == SEARCH_ROW_KIND),
+        "settings finds its pages: {:?}",
+        rows(&session)
+            .into_iter()
+            .map(|row| row.label)
+            .collect::<Vec<_>>()
+    );
+    search_for(&mut session, "dark mode");
+    let theme = row(&session, "Theme").unwrap_or_else(|| {
+        panic!(
+            "dark mode is the Appearance page's theme: {:?}",
+            rows(&session)
+                .into_iter()
+                .map(|row| row.label)
+                .collect::<Vec<_>>()
+        )
+    });
+    invoke(
+        &mut session,
+        theme.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    until(&mut session, |_| !host.invoked.borrow().is_empty());
+    let (target, arguments) = host.invoked.borrow()[0].clone();
+    assert_eq!(
+        target,
+        application_action_target(
+            &workspace,
+            SETTINGS_APP,
+            "settings.setting:appearance.style",
+            "open"
+        )
+    );
+    assert_eq!(arguments["anchor"], "settings.setting:appearance.style");
+}
+
 /// Run frames until `done` holds.
 fn until(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
     common::wait_for(session, "what the test asked for", |session| {

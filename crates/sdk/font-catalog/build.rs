@@ -39,6 +39,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let python = std::env::var_os("PYTHON").unwrap_or_else(|| python_with_tomllib().into());
         let mut command = Command::new(&python);
         command
+            // Isolated, as the CI helpers in `tools/ci` are run: without it Python puts the
+            // script's directory on `sys.path` and lists it looking its imports up, so this
+            // build would read the whole `tools/` tree — and an edit to any file in it would
+            // rebuild every package below this one. The tool imports nothing of its own.
+            .arg("-I")
             .arg(&tool)
             .arg("root")
             .arg(&source)

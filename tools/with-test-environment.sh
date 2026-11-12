@@ -105,6 +105,8 @@ trap 'exit 143' TERM
 
 mkdir -p "$root"/{home,config,data,state,cache,runtime}
 chmod 700 "$root" "$root/runtime"
+# The tests run as the test user where the run started as root.
+bash "$(dirname -- "${BASH_SOURCE[0]}")/as-test-user.sh" --own "$root" "$root"/{home,config,data,state,cache,runtime}
 
 export TILO_TEST_ENVIRONMENT="$root"
 export HOME="$root/home"

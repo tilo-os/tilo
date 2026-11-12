@@ -417,3 +417,4 @@ chat-channel-composer-placeholder = Message #{ $channel }
 
 ## What the window shows
 chat-writing = Writing…
+chat-voice-channel-unnamed = The voice channel could not be named

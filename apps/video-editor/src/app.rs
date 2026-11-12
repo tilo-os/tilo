@@ -5538,8 +5538,9 @@ impl VideoEditorApp {
         let groups_h = 3.0 * (line_xs + s1 + seg_target + s3);
         let footer_h = s1 + line_sm + s2 + status_h + notice_h;
         let body_h = header_h + groups_h + footer_h;
-        let actions = self.export_actions();
-        let spec = ModalSpec::new("Export project")
+        let labels = ExportLabels::new();
+        let actions = self.export_actions(&labels);
+        let spec = ModalSpec::new(&labels.title)
             .actions(&actions)
             .max_width(EXPORT_CARD_W);
         let modal = modal_layout_with_stacking_actions(self.rect, &spec, body_h, tr, theme);
@@ -8116,7 +8117,8 @@ impl VideoEditorApp {
     ) {
         let l = self.help_layout(tr, theme);
         let hit = l.modal.hit(self.last_mouse);
-        let spec = ModalSpec::new("Keyboard shortcuts").close_hovered(hit == Some(ModalHit::Close));
+        let title = crate::resource::CATALOG.t("video-editor-shortcuts-title");
+        let spec = ModalSpec::new(&title).close_hovered(hit == Some(ModalHit::Close));
         modal_dialog::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
         let (ink, dim) = modal_dialog::ink(theme);
         let ty = &l.type_sizes;
@@ -8276,11 +8278,12 @@ impl VideoEditorApp {
     ) {
         let l = self.export_layout(tr, theme);
         let hit = l.modal.hit(self.last_mouse);
-        let mut actions = self.export_actions();
+        let labels = ExportLabels::new();
+        let mut actions = self.export_actions(&labels);
         for (i, action) in actions.iter_mut().enumerate() {
             action.hovered = hit == Some(ModalHit::Action(i));
         }
-        let spec = ModalSpec::new("Export project")
+        let spec = ModalSpec::new(&labels.title)
             .actions(&actions)
             .max_width(EXPORT_CARD_W)
             .close_hovered(hit == Some(ModalHit::Close));
@@ -8520,7 +8523,8 @@ impl VideoEditorApp {
         let two_col = self.rect.width() / scale >= HELP_TWO_COLUMN_MIN_W;
         let (split, tallest) = help_columns(two_col, m);
         let content_h = line_sm + s3 + tallest;
-        let mut spec = ModalSpec::new("Keyboard shortcuts").body_height(content_h);
+        let title = crate::resource::CATALOG.t("video-editor-shortcuts-title");
+        let mut spec = ModalSpec::new(&title).body_height(content_h);
         if two_col {
             spec = spec.max_width(HELP_CARD_W);
         }
@@ -8626,19 +8630,39 @@ impl VideoEditorApp {
     }
 }
 
+/// What the export dialog's buttons say, in the window's language.
+struct ExportLabels {
+    title: String,
+    cancel: String,
+    close: String,
+    export: String,
+}
+
+impl ExportLabels {
+    fn new() -> Self {
+        let catalog = &crate::resource::CATALOG;
+        Self {
+            title: catalog.t("video-editor-export-title"),
+            cancel: catalog.t("video-editor-cancel-export"),
+            close: catalog.t("video-editor-close-export"),
+            export: catalog.t("video-editor-start-export"),
+        }
+    }
+}
+
 impl VideoEditorApp {
-    fn export_actions(&self) -> Vec<ModalAction<'static>> {
+    fn export_actions<'a>(&self, labels: &'a ExportLabels) -> Vec<ModalAction<'a>> {
         if self.export_running() {
             // A render in flight: Cancel, the only way to stop it, and
             // nothing else. The progress bar above says how far it has got.
-            return vec![ModalAction::secondary("Cancel")];
+            return vec![ModalAction::secondary(&labels.cancel)];
         }
         vec![
-            ModalAction::secondary("Close"),
+            ModalAction::secondary(&labels.close),
             // Export is offered only when it can actually happen. The dialog
             // used to say "Export needs the GStreamer build" and put a
             // bright, enabled Export button directly underneath it.
-            ModalAction::primary("Export").enabled(self.export_is_offered()),
+            ModalAction::primary(&labels.export).enabled(self.export_is_offered()),
         ]
     }
 }

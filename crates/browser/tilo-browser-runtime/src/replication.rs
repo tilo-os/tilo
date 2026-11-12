@@ -44,6 +44,7 @@ use neighbour_wire::content::ContentWants;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session::sync::{Cmd, Event, Outbox};
+use tilo_session_client::engine::RecordReading;
 use tilo_session_client::{Events, Link};
 use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
 use ui::collaboration::record_content::ContentLane;
@@ -272,13 +273,6 @@ pub(crate) fn authored(id: u32) -> u64 {
 /// The certified device key (hex) of peer `id`, if it replicates a workspace.
 pub(crate) fn device_of(id: u32) -> Option<String> {
     replica_of(id).map(|joined| joined.borrow().device.clone())
-}
-
-/// The heads of the saved document `bytes`, when it holds any change: the
-/// host's empty document for a record a member is creating holds none.
-fn heads_of(bytes: &[u8]) -> Option<Vec<ui::automerge::ChangeHash>> {
-    let heads = AutoCommit::load(bytes).ok()?.get_heads();
-    (!heads.is_empty()).then_some(heads)
 }
 
 /// Whether peer `id`'s workspace holds record `record` (wire form) of `app`:
@@ -975,19 +969,29 @@ impl Joined {
         let mut landed: Vec<DocumentRoute> = landed.into_iter().collect();
         landed.compact_sort_by_key(|route| route.app_id == DESKTOP_APP);
         for route in landed {
-            match self
-                .peer
-                .engine()
-                .record(&route.cluster_id, &route.app_id, &route.record)
-            {
-                Ok(Some(bytes)) => {
-                    if let Err(error) = self.apply(&route, bytes, &mut woken) {
-                        warn(&format!("{}/{}: {error}", route.app_id, route.record));
-                    }
+            // A record kept for whoever opens it is read as what changed since the store took
+            // it last: a record that lands a write at a time (a sealed chat's history, written
+            // by many) would otherwise be read, loaded and saved whole once per write.
+            let kept = self.kept_heads(&route);
+            let read = self.peer.engine().record_update(
+                &route.cluster_id,
+                &route.app_id,
+                &route.record,
+                kept.as_deref(),
+            );
+            let applied = match read {
+                Ok(RecordReading::Captured { bytes, heads, .. }) => {
+                    self.apply(&route, (bytes, &heads), &mut woken)
+                }
+                Ok(RecordReading::Changes { bytes, heads, .. }) => {
+                    self.apply_kept_changes(&route, bytes, &heads, &mut woken)
                 }
                 // Still arriving (its keys, or the checkpoint it builds on): it lands again.
-                Ok(None) => {}
-                Err(error) => warn(&format!("{}/{}: {error}", route.app_id, route.record)),
+                Ok(RecordReading::Unchanged(_) | RecordReading::Pending) => Ok(()),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = applied {
+                warn(&format!("{}/{}: {error}", route.app_id, route.record));
             }
         }
         for route in opened {
@@ -1192,12 +1196,12 @@ impl Joined {
         }
     }
 
-    /// Merge `bytes`, the replica's whole document of `route`, into the open record, the
-    /// desktop, or the record's stored document for whoever opens it.
+    /// Merge `bytes`, the replica's whole document of `route`, standing at `heads`, into the
+    /// open record, the desktop, or the record's stored document for whoever opens it.
     fn apply(
         &mut self,
         route: &DocumentRoute,
-        bytes: Vec<u8>,
+        (bytes, heads): (Vec<u8>, &[[u8; 32]]),
         woken: &mut HashSet<u64>,
     ) -> Result<(), String> {
         if route.app_id == DESKTOP_APP {
@@ -1235,10 +1239,80 @@ impl Joined {
         // The host takes up a record a member created with an empty
         // document of its own before the member's content arrives: no
         // record yet, which a page opening it would refuse.
-        let Some(heads) = self.store_unopened(&app, &record, bytes)? else {
+        let Some(heads) = self.store_unopened(&app, &record, bytes, heads)? else {
             return Ok(());
         };
-        self.delivered.insert((app.clone(), record), heads);
+        self.kept_for_opening(&app, record, heads, woken);
+        Ok(())
+    }
+
+    /// The heads the store holds `route` at for whoever opens it, when no mount has it open
+    /// and the store took it from the replica: what a read of it need only bring the changes
+    /// since. `None` for the desktop, an open record, or one the store does not hold.
+    fn kept_heads(&self, route: &DocumentRoute) -> Option<Vec<[u8; 32]>> {
+        if route.app_id == DESKTOP_APP || self.is_open(&route.app_id, &route.record) {
+            return None;
+        }
+        let heads = self
+            .delivered
+            .get(&(route.app_id.clone(), route.record.clone()))?;
+        let mut heads: Vec<[u8; 32]> = heads.iter().map(|head| head.0).collect();
+        heads.sort_unstable();
+        Some(heads)
+    }
+
+    /// Whether a mount has `record` of `app` open.
+    fn is_open(&self, app: &str, record: &str) -> bool {
+        self.mounts.values().any(|mounted| {
+            mounted.attachment.stores.borrow().iter().any(|store| {
+                store.package_and_home().0 == app
+                    && store.open_records().into_iter().any(|checkout| {
+                        tilo_desktop_surface::host::records::wire_record(&checkout.id) == record
+                    })
+            })
+        })
+    }
+
+    /// Keep `changes`, what changed of `route` since the heads the store held it at
+    /// ([`Self::kept_heads`]), after what the store holds: the record then stands at `heads`
+    /// for whoever opens it, and nothing of it is loaded to get there.
+    fn apply_kept_changes(
+        &mut self,
+        route: &DocumentRoute,
+        changes: Vec<u8>,
+        heads: &[[u8; 32]],
+        woken: &mut HashSet<u64>,
+    ) -> Result<(), String> {
+        let (app, record) = (route.app_id.clone(), route.record.clone());
+        self.changes.note(&self.uuid, &app, &record, !self.ready);
+        let key = storage_key(&app, &self.uuid, &record)?;
+        let writer = self
+            .store
+            .read(&key)
+            .map_err(|error| error.to_string())?
+            .and_then(|stored| stored.writer);
+        self.store
+            .write(&key, WriteOp::Append(changes), writer.as_deref())
+            .map_err(|error| error.to_string())?;
+        let heads = heads
+            .iter()
+            .copied()
+            .map(ui::automerge::ChangeHash)
+            .collect();
+        self.kept_for_opening(&app, record, heads, woken);
+        Ok(())
+    }
+
+    /// The store holds `record` of `app` at `heads` for whoever opens it: the mounts look
+    /// again.
+    fn kept_for_opening(
+        &mut self,
+        app: &str,
+        record: String,
+        heads: Vec<ui::automerge::ChangeHash>,
+        woken: &mut HashSet<u64>,
+    ) {
+        self.delivered.insert((app.to_owned(), record), heads);
         // A window of the app that follows what its store keeps (a chain's
         // newer head) takes it up at its next frame.
         for mounted in self.mounts.values() {
@@ -1257,18 +1331,18 @@ impl Joined {
             }
             woken.insert(id);
         }
-        Ok(())
     }
 
-    /// Merge the replica's document `bytes` into the record's stored document for whoever
-    /// opens it next, and answer its heads once it holds any change. Into an empty store it
-    /// is kept as it came: opening the record loads and checks it once. A document with no
-    /// change in it is no record yet and is not kept.
+    /// Merge the replica's document `bytes`, which stands at `heads`, into the record's stored
+    /// document for whoever opens it next, and answer its heads once it holds any change. Into
+    /// an empty store it is kept as it came, unloaded: opening the record loads and checks it
+    /// once. A document with no change in it is no record yet and is not kept.
     fn store_unopened(
         &self,
         app: &str,
         record: &str,
         bytes: Vec<u8>,
+        heads: &[[u8; 32]],
     ) -> Result<Option<Vec<ui::automerge::ChangeHash>>, String> {
         let key = storage_key(app, &self.uuid, record)?;
         let stored = self.store.read(&key).map_err(|error| error.to_string())?;
@@ -1277,9 +1351,14 @@ impl Joined {
             .map(|stored| stored.bytes)
             .filter(|bytes| !bytes.is_empty());
         let Some(stored) = stored else {
-            let Some(heads) = heads_of(&bytes) else {
+            if heads.is_empty() {
                 return Ok(None);
-            };
+            }
+            let heads = heads
+                .iter()
+                .copied()
+                .map(ui::automerge::ChangeHash)
+                .collect();
             return self
                 .store
                 .write(&key, WriteOp::Replace(bytes), writer.as_deref())
@@ -1314,6 +1393,12 @@ impl Joined {
         self.desktop
             .merge_snapshot(bytes)
             .map_err(|error| error.to_string())?;
+        // The workspace holds its desktop: what this page sends of it from now on is
+        // what this page changed, never the whole document. A whole document carries
+        // every member's changes, and the workspace decides each change it does not
+        // hold yet as this page's person's own: a window someone else opened would
+        // read as one this person attributed to them.
+        self.desktop_sending = DesktopSending::Changes;
         let Some(value) = desktop_value(self.desktop.document()) else {
             return Ok(());
         };

@@ -1,8 +1,10 @@
 //! The workspace's own settings: its name, its saved grant sets and their
-//! assignment, the actions its apps may use of each other and its apps'
-//! sandbox capabilities, which every member reads from the workspace's
-//! governance document ([`tilo_desktop_model::projection::workspace_presets_of`],
-//! [`tilo_desktop_model::projection::workspace_sandbox_of`]).
+//! assignment, the actions its apps may use of each other, its apps' sandbox
+//! capabilities and its saved shortcuts, which every member reads from the
+//! workspace's governance document
+//! ([`tilo_desktop_model::projection::workspace_presets_of`],
+//! [`tilo_desktop_model::projection::workspace_sandbox_of`],
+//! [`tilo_desktop_model::projection::workspace_shortcuts_of`]).
 //!
 //! A member's device writes a change to them itself, signed with its own
 //! key; the workspace's admission decides it against the writer's own grants
@@ -118,6 +120,9 @@ impl StatePeer {
                 self.governance_mut()
                     .put_governed_sandbox(&workspace.sandbox, key, now)
             }
+            SettingsChange::Shortcuts(change) => self
+                .workspace_mut()
+                .apply_shortcut_change(caller, change, key, now),
         }
     }
 

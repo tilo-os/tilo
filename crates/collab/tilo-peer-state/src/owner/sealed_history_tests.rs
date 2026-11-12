@@ -32,6 +32,17 @@ impl SealedHistoryKeys for Held {
             )
             .map_err(|error| error.to_string())
     }
+
+    fn renew(
+        &self,
+        _: WorkspaceId,
+        write: &SignedOp,
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        let plaintext = open(&self.0, write)?;
+        self.0
+            .seal_content(write.artifact, ContentRetention::Delta, &plaintext)
+            .map_err(|error| error.to_string())
+    }
 }
 
 fn open(keys: &ChannelContentKeys, write: &SignedOp) -> Result<Vec<u8>, String> {
@@ -70,8 +81,12 @@ impl Typist {
     }
 
     fn change(&mut self, key: &str) -> Vec<u8> {
+        self.put(key, key)
+    }
+
+    fn put(&mut self, key: &str, value: &str) -> Vec<u8> {
         let before: Vec<ChangeHash> = self.0.get_heads();
-        self.0.put(ROOT, key, key).unwrap();
+        self.0.put(ROOT, key, value).unwrap();
         self.0.commit_edit("fixture", "topic");
         self.0.save_after(&before)
     }
@@ -117,7 +132,7 @@ async fn write(
         }])
     };
     owner
-        .write(workspace, draft, &member_key(), true, now)
+        .write(workspace, draft, &member_key(), now)
         .await
         .map(|committed| committed.len())
 }
@@ -155,6 +170,53 @@ fn answer(
         .collect();
     owner.retire_answered(workspace, &answers).unwrap();
     held.into_iter().map(|(_, message)| message).collect()
+}
+
+/// Five changes another member writes at `host` over `base`.
+fn written_at(
+    host: &mut crate::StatePeer,
+    base: &[u8],
+    keys: &ChannelContentKeys,
+    governor_key: &ed25519_dalek::SigningKey,
+    now: SystemTime,
+) -> Vec<NeighbourMsg> {
+    let mut peer = Typist::over(base, 2);
+    keys_typed('b', 5)
+        .map(|key| {
+            host.publication_mut()
+                .publish_sealed_incremental(
+                    APP,
+                    "",
+                    peer.change(&key),
+                    &mut seal_delta(keys),
+                    governor_key,
+                    now,
+                )
+                .unwrap()
+        })
+        .collect()
+}
+
+/// Everything custody holds, as the host takes it from its head until it owes nothing: the
+/// device drafts what it sends next before each pass, as its session does.
+async fn drain(
+    owner: &NativeWorkspaceOwner,
+    workspace: WorkspaceId,
+    now: SystemTime,
+    order: &mut u64,
+) -> Vec<NeighbourMsg> {
+    let mut sent = Vec::new();
+    loop {
+        owner
+            .compact_outgoing(workspace, &member_key(), now)
+            .await
+            .unwrap();
+        let more = answer(owner, workspace, now, order);
+        if more.is_empty() {
+            return sent;
+        }
+        sent.extend(more);
+    }
 }
 
 fn opened(
@@ -275,31 +337,22 @@ async fn a_device_that_compacted_offline_converges_with_a_peer_that_wrote_meanwh
             "{key} is taken offline"
         );
     }
-    let owed = custody(owner, workspace, now);
+    // Meanwhile the peer writes at the host.
+    let peers = written_at(
+        &mut host,
+        &base(owner, workspace),
+        &keys,
+        &governor_key,
+        now,
+    );
+
+    // Linked again: what each side holds reaches the other.
+    let sent = drain(owner, workspace, now, &mut order).await;
     assert!(
-        owed.iter().any(|(_, message)| matches!(message,
+        sent.iter().any(|message| matches!(message,
             NeighbourMsg::AppDocument { envelope, .. } if envelope.kind == OpKind::Compaction)),
         "the device compacted while offline"
     );
-    // Meanwhile the peer writes at the host.
-    let mut peer = Typist::over(&base(owner, workspace), 2);
-    let peers: Vec<NeighbourMsg> = keys_typed('b', 5)
-        .map(|key| {
-            host.publication_mut()
-                .publish_sealed_incremental(
-                    APP,
-                    "",
-                    peer.change(&key),
-                    &mut seal_delta(&keys),
-                    &governor_key,
-                    now,
-                )
-                .unwrap()
-        })
-        .collect();
-
-    // Linked again: what each side holds reaches the other.
-    let sent = answer(owner, workspace, now, &mut order);
     for message in sent.clone() {
         host.receive_from(TransportOrigin::RelayDelta(member), message, now)
             .unwrap();
@@ -331,6 +384,130 @@ async fn a_device_that_compacted_offline_converges_with_a_peer_that_wrote_meanwh
     );
 
     joins_after(&late, &sent, peers, &keys, &everything);
+}
+
+/// Writes a device makes while its host is away: custody keeps every one of them, past what
+/// it keeps in its record (eight writes here) and the record's sealed history bound many times.
+const AWAY: usize = 2_000;
+
+#[tokio::test]
+async fn a_device_away_keeps_every_write_through_a_restart_and_all_converge_on_return() {
+    let (fixture, mut host, governor_key) = governed_fixture_at(tilo_clock::wall());
+    let other = enrolled_with(fixture.clone());
+    let joined = enrolled_with(fixture);
+    let (workspace, now, path) = (joined.workspace, joined.now, joined.path.clone());
+    let member = member_key().verifying_key().to_bytes();
+    let governor = governor_key.verifying_key().to_bytes();
+    let (_, keys) = rotated_channel();
+    joined
+        .owner
+        .keep_sealed_histories(Arc::new(Held(keys.clone())));
+    let mut typist = Typist::over(&base(&joined.owner, workspace), 1);
+    let mut order = 0;
+    // What the host took from the device, in its order.
+    let mut relayed = Vec::new();
+    for key in keys_typed('k', LINKED) {
+        let changes = typist.change(&key);
+        assert_eq!(
+            write(&joined.owner, workspace, &keys, changes, now).await,
+            Ok(1)
+        );
+        for message in answer(&joined.owner, workspace, now, &mut order) {
+            host.receive_from(TransportOrigin::RelayDelta(member), message.clone(), now)
+                .unwrap();
+            relayed.push(message);
+        }
+    }
+    // Away: every write is taken, and kept as it is taken.
+    for key in keys_typed('k', LINKED + AWAY).skip(LINKED) {
+        let changes = typist.change(&key);
+        assert_eq!(
+            write(&joined.owner, workspace, &keys, changes, now).await,
+            Ok(1),
+            "{key} is taken while the host is away"
+        );
+    }
+    let owed = joined.owner.unadmitted_writes(workspace).unwrap();
+    assert!(owed >= AWAY, "custody owes every write: {owed}");
+    drop(joined.owner);
+    let owner = open_file(&path).unwrap();
+    owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
+    assert_eq!(
+        owner.unadmitted_writes(workspace).unwrap(),
+        owed,
+        "custody keeps them all through a restart"
+    );
+    // Meanwhile another member writes at the host.
+    let peers = written_at(
+        &mut host,
+        &base(&owner, workspace),
+        &keys,
+        &governor_key,
+        now,
+    );
+
+    // Back: custody goes to the host in its order until it owes nothing.
+    for message in drain(&owner, workspace, now, &mut order).await {
+        host.receive_from(TransportOrigin::RelayDelta(member), message.clone(), now)
+            .unwrap();
+        relayed.push(message);
+    }
+    assert_eq!(owner.unadmitted_writes(workspace).unwrap(), 0);
+    for message in peers.clone() {
+        owner
+            .receive(
+                workspace,
+                TransportOrigin::RelayDelta(governor),
+                message,
+                now,
+            )
+            .unwrap();
+    }
+    // Another device of the workspace takes what the host relays.
+    relay(&other, relayed.into_iter().chain(peers));
+    let everything: BTreeSet<String> = keys_typed('k', LINKED + AWAY)
+        .chain(keys_typed('b', 5))
+        .collect();
+    converge(
+        [
+            ("the device", opened(&owner, workspace, &keys)),
+            ("the host", opened_in(&host, &keys)),
+            (
+                "the other device",
+                opened(&other.owner, other.workspace, &keys),
+            ),
+        ],
+        &everything,
+    );
+}
+
+/// `member` takes `messages` as its host relays them.
+fn relay(member: &Enrolled, messages: impl IntoIterator<Item = NeighbourMsg>) {
+    for message in messages {
+        let NeighbourMsg::AppDocument { envelope, .. } = &message else {
+            panic!("a document write");
+        };
+        let author = TransportOrigin::RetainedRelayDelta(*envelope.author.as_bytes());
+        member
+            .owner
+            .receive(member.workspace, author, message, member.now)
+            .unwrap();
+    }
+}
+
+/// Every one of `documents` holds every change of `everything`, and all are one document.
+fn converge<const N: usize>(documents: [(&str, AutoCommit); N], everything: &BTreeSet<String>) {
+    let mut heads = Vec::new();
+    for (holder, mut document) in documents {
+        assert_eq!(typed(&document), *everything, "{holder} holds every change");
+        let mut held = document.get_heads();
+        held.sort();
+        heads.push(held);
+    }
+    assert!(
+        heads.windows(2).all(|pair| pair[0] == pair[1]),
+        "all converge on one document"
+    );
 }
 
 /// A member that joins after the compaction is handed the compacted history,
@@ -369,4 +546,452 @@ fn joins_after(
         *everything,
         "a member joining after the compaction reads the whole record"
     );
+}
+
+/// The record's writers' compaction of `host`'s history, as the workspace's governor
+/// compacts it at the host.
+fn compacted_at(
+    host: &mut crate::StatePeer,
+    keys: &ChannelContentKeys,
+    governor_key: &ed25519_dalek::SigningKey,
+    now: SystemTime,
+) -> NeighbourMsg {
+    let held = Held(keys.clone());
+    let mut op = host
+        .publication()
+        .draft_sealed_compaction(
+            (APP, ""),
+            None,
+            &mut |write| open(keys, write),
+            &mut |snapshot| {
+                held.seal_checkpoint(WorkspaceId::parse(WORKSPACE).unwrap(), APP, "", snapshot)
+            },
+            governor_key.verifying_key().to_bytes(),
+            now,
+        )
+        .unwrap();
+    collab_types::sign_op(&mut op, governor_key).unwrap();
+    host.publication_mut()
+        .admit_sealed_compaction(APP, "", op, now)
+        .unwrap()
+}
+
+/// The host's side of the link: the history it holds, what it relayed in its order, the most
+/// writes its history of the chat ever held, and the most runs the device kept what it knows of
+/// that history in.
+struct Host {
+    peer: crate::StatePeer,
+    relayed: Vec<NeighbourMsg>,
+    longest: usize,
+    mirrored_runs: usize,
+}
+
+impl Host {
+    fn new(peer: crate::StatePeer) -> Self {
+        Self {
+            peer,
+            relayed: Vec::new(),
+            longest: 0,
+            mirrored_runs: 0,
+        }
+    }
+
+    /// Take `message` as the host does, or refuse it.
+    fn take(&mut self, message: &NeighbourMsg, now: SystemTime) -> bool {
+        let NeighbourMsg::AppDocument { envelope, .. } = message else {
+            panic!("a document write");
+        };
+        let origin = TransportOrigin::RelayDelta(*envelope.author.as_bytes());
+        let taken = self.peer.receive_from(origin, message.clone(), now).is_ok();
+        if taken {
+            self.relayed.push(message.clone());
+            self.longest = self
+                .longest
+                .max(self.peer.publication().sealed_history(APP, "").len());
+        }
+        taken
+    }
+}
+
+/// Custody goes to the host one write at a time, each answered as the host took it, until it
+/// owes nothing; the device drafts what it sends next before each, as its session does, and
+/// `refuse` picks writes the host refuses whatever they are. Answers what the host refused;
+/// with `until_refused`, as soon as it refused one.
+async fn delivered(
+    owner: &NativeWorkspaceOwner,
+    workspace: WorkspaceId,
+    host: &mut Host,
+    (now, order, until_refused): (SystemTime, &mut u64, bool),
+    mut refuse: impl FnMut(&NeighbourMsg) -> bool,
+) -> Vec<NeighbourMsg> {
+    let mut refused = Vec::new();
+    for _ in 0..4096 {
+        owner
+            .compact_outgoing(workspace, &member_key(), now)
+            .await
+            .unwrap();
+        let Some((id, message)) = custody(owner, workspace, now).into_iter().next() else {
+            return refused;
+        };
+        let answer = if !refuse(&message) && host.take(&message, now) {
+            *order = order.checked_add(1).unwrap();
+            HostAnswer::Durable(*order)
+        } else {
+            refused.push(message);
+            HostAnswer::Refused
+        };
+        owner
+            .retire_answered(workspace, &BTreeMap::from([(id, answer)]))
+            .unwrap();
+        let (in_record, runs) = owner
+            .with_current(workspace, |view| {
+                Ok(crate::owner::publication::hosted_in_record(view))
+            })
+            .unwrap();
+        assert!(
+            in_record < crate::owner::publication::MAX_ENTRIES,
+            "the record holds {in_record} of the host's writes itself"
+        );
+        host.mirrored_runs = host.mirrored_runs.max(runs);
+        if until_refused && !refused.is_empty() {
+            return refused;
+        }
+    }
+    panic!(
+        "custody still owes {} writes, {} refused",
+        owner.unadmitted_writes(workspace).unwrap(),
+        refused.len()
+    );
+}
+
+fn is_compaction(message: &NeighbourMsg) -> bool {
+    matches!(message,
+        NeighbourMsg::AppDocument { envelope, .. } if envelope.kind == OpKind::Compaction)
+}
+
+/// The device reads every key of `written`, with no write of its history left out.
+fn holds_every_write(
+    owner: &NativeWorkspaceOwner,
+    workspace: WorkspaceId,
+    keys: &ChannelContentKeys,
+    written: &BTreeSet<String>,
+    when: &str,
+) {
+    let record = owner
+        .with_current(workspace, |view| {
+            Ok(view
+                .peer()
+                .publication()
+                .opened_document(APP, "", &mut |write| open(keys, write))
+                .unwrap()
+                .unwrap())
+        })
+        .unwrap();
+    assert!(
+        record.unmerged.is_empty(),
+        "{when}: {} writes left out, first {:?}",
+        record.unmerged.len(),
+        record.unmerged.first().map(ToString::to_string)
+    );
+    let held = typed(&AutoCommit::load(&record.document).unwrap());
+    let lost: Vec<&String> = written.difference(&held).collect();
+    assert!(lost.is_empty(), "{when}: the device lost {lost:?}");
+}
+
+/// The compactions the host refused, and the most runs the host's writes took beside the record.
+type Returned = (Vec<NeighbourMsg>, usize);
+
+/// How a device's time away from its host goes.
+struct Away {
+    /// Writes it makes while away.
+    writes: usize,
+    /// Whether another member compacts the host's history meanwhile.
+    peer_compacts: bool,
+    /// Whether the peer's writes and compaction reach the device before it sends again; else
+    /// they reach it once the host refused something it sent.
+    peers_first: bool,
+}
+
+/// A device writes linked, then `away.writes` while its host is away, while a peer writes (and
+/// compacts) at the host; back, it sends everything, `refuse` picking writes the host refuses
+/// whatever they are, then writes linked past the record's bound. Every member ends up reading
+/// every change, and the host never refuses one of the device's writes nor holds more than the
+/// record's bound, nor does the device's record hold the host's writes it keeps beside it. Answers
+/// the compactions the host refused, and the most runs those writes took.
+async fn returns(away: Away, mut refuse: impl FnMut(&NeighbourMsg) -> bool) -> Returned {
+    let (fixture, host, governor_key) = governed_fixture_at(tilo_clock::wall());
+    let mut host = Host::new(host);
+    let other = enrolled_with(fixture.clone());
+    let joined = enrolled_with(fixture);
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let governor = governor_key.verifying_key().to_bytes();
+    let (_, keys) = rotated_channel();
+    owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
+    let mut typist = Typist::over(&base(owner, workspace), 1);
+    let mut order = 0;
+    let mut written = BTreeSet::new();
+    let mut refused = Vec::new();
+    let mut deliver = async |host: &mut Host, order: &mut u64, until_refused: bool| {
+        let back = delivered(
+            owner,
+            workspace,
+            host,
+            (now, order, until_refused),
+            &mut refuse,
+        )
+        .await;
+        assert!(
+            back.iter().all(is_compaction),
+            "the host refuses none of the device's writes"
+        );
+        back
+    };
+    let after = LINKED.checked_add(away.writes).unwrap();
+    for (index, key) in keys_typed('k', after.checked_add(2 * 256).unwrap()).enumerate() {
+        if index == after {
+            // Meanwhile a peer writes at the host, and compacts its history.
+            let mut peers = written_at(
+                &mut host.peer,
+                &base(owner, workspace),
+                &keys,
+                &governor_key,
+                now,
+            );
+            if away.peer_compacts {
+                peers.push(compacted_at(&mut host.peer, &keys, &governor_key, now));
+            }
+            host.relayed.extend(peers.iter().cloned());
+            let peers_reach = |owner: &NativeWorkspaceOwner, peers: Vec<NeighbourMsg>| {
+                for message in peers {
+                    owner
+                        .receive(
+                            workspace,
+                            TransportOrigin::RelayDelta(governor),
+                            message,
+                            now,
+                        )
+                        .unwrap();
+                }
+            };
+            if !away.peers_first {
+                refused.extend(deliver(&mut host, &mut order, true).await);
+            }
+            peers_reach(owner, peers);
+            refused.extend(deliver(&mut host, &mut order, false).await);
+            written.extend(keys_typed('b', 5));
+            holds_every_write(owner, workspace, &keys, &written, "back");
+        }
+        let changes = typist.change(&key);
+        assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+        written.insert(key);
+        if !(LINKED..after).contains(&index) {
+            refused.extend(deliver(&mut host, &mut order, false).await);
+        }
+    }
+    assert!(
+        host.longest < 256,
+        "the host's history stays within its bound: {}",
+        host.longest
+    );
+    relay(&other, host.relayed.clone());
+    converge(
+        [
+            ("the device", opened(owner, workspace, &keys)),
+            ("the host", opened_in(&host.peer, &keys)),
+            (
+                "the other device",
+                opened(&other.owner, other.workspace, &keys),
+            ),
+        ],
+        &written,
+    );
+    let path = joined.path.clone();
+    drop(joined.owner);
+    let reopened = open_file(&path).unwrap();
+    assert_eq!(
+        typed(&opened(&reopened, workspace, &keys)),
+        written,
+        "the device reads every change after a restart"
+    );
+    (refused, host.mirrored_runs)
+}
+
+/// Writes a device makes offline in the time a peer compacts the host's history: enough for
+/// the device to compact its own copy meanwhile.
+const OVERTAKEN: usize = 200;
+
+#[tokio::test]
+async fn a_device_whose_offline_compactions_a_peers_compaction_overtook_sends_them_drafted_anew() {
+    let away = Away {
+        writes: OVERTAKEN,
+        peer_compacts: true,
+        peers_first: true,
+    };
+    assert!(
+        returns(away, |_| false).await.0.is_empty(),
+        "the host takes every compaction"
+    );
+}
+
+#[tokio::test]
+async fn a_backlog_past_the_bound_after_a_peers_compaction_reaches_the_host_whole() {
+    let away = Away {
+        writes: 3 * 256,
+        peer_compacts: true,
+        peers_first: true,
+    };
+    assert!(
+        returns(away, |_| false).await.0.is_empty(),
+        "the host takes every compaction"
+    );
+}
+
+#[tokio::test]
+async fn a_compaction_refused_amid_a_backlog_goes_again_before_the_hosts_history_fills() {
+    // The host refuses the second compaction of a backlog several times the record's bound:
+    // the device's next one would come most of a bound later.
+    let mut compactions = 0;
+    let away = Away {
+        writes: 3 * 256,
+        peer_compacts: false,
+        peers_first: true,
+    };
+    let (refused, _) = returns(away, |message| {
+        is_compaction(message) && {
+            compactions += 1;
+            compactions == 2
+        }
+    })
+    .await;
+    assert_eq!(refused.len(), 1, "the host refused one compaction");
+}
+
+#[tokio::test]
+async fn what_a_device_knows_of_its_hosts_history_stays_beside_its_record() {
+    // The peer's writes at the host, before the device folded them, are what the device knows
+    // of the host's history while its backlog drains.
+    let away = Away {
+        writes: 3 * 256,
+        peer_compacts: false,
+        peers_first: true,
+    };
+    let (refused, runs) = returns(away, |_| false).await;
+    assert!(refused.is_empty(), "the host takes every compaction");
+    assert!(runs > 0, "the host's writes went to runs beside the record");
+}
+
+#[tokio::test]
+async fn a_compaction_the_host_refused_leaves_the_device_in_step() {
+    // The peer's compaction reaches the device only after the device sent its own, drafted
+    // against the history before it: the host refuses that one.
+    let away = Away {
+        writes: OVERTAKEN,
+        peer_compacts: true,
+        peers_first: false,
+    };
+    let (raced, _) = returns(away, |_| false).await;
+    assert!(
+        !raced.is_empty(),
+        "the host refused a compaction drafted before the peer's"
+    );
+    // The host refuses the device's first compaction whatever it is.
+    let mut first = true;
+    let away = Away {
+        writes: 0,
+        peer_compacts: false,
+        peers_first: true,
+    };
+    let (refused, _) = returns(away, |message| {
+        is_compaction(message) && std::mem::take(&mut first)
+    })
+    .await;
+    assert_eq!(refused.len(), 1, "the host refused one compaction");
+}
+
+/// A record's history holds one checkpoint however often its host asks for one: the member it
+/// asks compacts the history, and every replica takes that in place of exactly the writes it
+/// covers. Edited well past the bound of a sealed history, the host's stored copy stays a
+/// fraction of it, takes every write, and a member that joins late reads the record with every
+/// change ever made to it.
+#[tokio::test]
+async fn a_record_its_host_checkpoints_stays_bounded_past_its_bound_of_writes() {
+    /// What a sealed history may hold where it is admitted.
+    const BOUND: usize = 16 * 1024 * 1024;
+    /// Writes of a value an app keeps rewriting, as a document's body is.
+    const WRITES: usize = 1100;
+    const VALUE: usize = 16 * 1024;
+    /// Writes between two checkpoints the host asks for.
+    const ASKED: usize = 50;
+    let (fixture, mut host, _) = governed_fixture_at(tilo_clock::wall());
+    let late = enrolled_with(fixture.clone());
+    let joined = enrolled_with(fixture);
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let member = member_key().verifying_key().to_bytes();
+    let (_, keys) = rotated_channel();
+    owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
+    let mut typist = Typist::over(&base(owner, workspace), 1);
+    let (mut order, mut written, mut stored) = (0, 0, 0);
+    // What the host serves a member joining: its last checkpoint and the writes since.
+    let mut served: Vec<NeighbourMsg> = Vec::new();
+    for index in 0..WRITES {
+        let value = format!("{index:08}").repeat(VALUE / 8);
+        let changes = typist.put(&format!("k{}", index % 8), &value);
+        written += changes.len();
+        assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+        let asked = index % ASKED == ASKED - 1;
+        if asked {
+            assert_eq!(
+                owner
+                    .compact_record(workspace, (APP, ""), &member_key(), now)
+                    .await,
+                Ok(1),
+                "a member holding the keys compacts the record"
+            );
+        }
+        for message in answer(owner, workspace, now, &mut order) {
+            host.receive_from(TransportOrigin::RelayDelta(member), message.clone(), now)
+                .unwrap_or_else(|error| panic!("the host takes write {index}: {error}"));
+            if matches!(&message,
+                NeighbourMsg::AppDocument { envelope, .. } if envelope.kind == OpKind::Compaction)
+            {
+                served.clear();
+            }
+            served.push(message);
+        }
+        if asked {
+            stored = stored.max(host.durable().unwrap().len());
+        }
+    }
+    assert!(written > BOUND, "{written} bytes written");
+    assert!(
+        stored < BOUND / 4,
+        "the host stores {stored} bytes of a record written {written} bytes"
+    );
+    assert!(history(&host, &keys).len() <= ASKED + 1);
+    for message in served {
+        let NeighbourMsg::AppDocument { envelope, .. } = &message else {
+            panic!("a document write");
+        };
+        let author = TransportOrigin::RetainedRelayDelta(*envelope.author.as_bytes());
+        late.owner
+            .receive(late.workspace, author, message, late.now)
+            .unwrap();
+    }
+    let mut read = opened(&late.owner, late.workspace, &keys);
+    let held: BTreeSet<ChangeHash> = read
+        .get_changes(&[])
+        .iter()
+        .map(automerge::Change::hash)
+        .collect();
+    let every: BTreeSet<ChangeHash> = typist
+        .0
+        .get_changes(&[])
+        .iter()
+        .map(automerge::Change::hash)
+        .collect();
+    assert!(
+        every.is_subset(&held),
+        "a member joining late holds every change ever made"
+    );
+    assert_eq!(read.get_heads(), typist.0.get_heads());
 }

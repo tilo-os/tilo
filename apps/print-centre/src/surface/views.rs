@@ -771,7 +771,7 @@ pub(super) fn queue_view(snapshot: &Snapshot, tx: &Door, pending_cancel: Option<
     if pending_cancel.is_some() {
         items.push(Box::new(
             Banner::warning("Cancel this document?")
-                .with_message("It will be removed from the printer. This cannot be undone."),
+                .with_message(CATALOG.t("print-centre-cancel-pending-message")),
         ));
     }
     if jobs.is_empty() && snapshot.jobs.is_ok() {

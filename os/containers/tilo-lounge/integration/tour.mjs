@@ -280,6 +280,10 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     await tab.waitFor('!!globalThis.tiloMount?.state()?.searchOpen', {timeout: 60_000});
     await type(query);
     await waits.settleSearch(tab, {sleep, timeoutMs: 30_000});
+    // A source answers on a worker, so the card may still be filling in when the frames moved:
+    // wait for it to say it owes nothing, which is when it has the rows a person presses.
+    await tab.waitFor('globalThis.tiloMount?.state()?.searchSearching !== true', {timeout: 30_000})
+      .catch(() => {});
     await sleep(800);
     if (pick === null) return;
     await opened();
@@ -287,10 +291,12 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   // Enter on the row the search offers, and wait for what it opens: the
   // search stays up until an app's window has arrived, which on a page
   // includes fetching the app's code.
-  const opened = async () => {
+  const opened = async (press = true) => {
     // What Enter is about to choose, for the log: the card's own rows and the query it holds.
     const before = await card();
     console.log(`  card: ${before}`);
+    // A card kept for the log alone says what it offered and presses nothing.
+    if (!press) return;
     // A card that found nothing has no row for Enter to open, and pressing it would only leave the
     // search standing: the step says what it could not find instead.
     const shown = typeof before === 'string' ? JSON.parse(before) : null;
@@ -424,9 +430,17 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     await quiet(1500); await shoot('own-card');
     await key('Escape'); await quiet(500);
   });
-  // The workspace's own verb: "invite" alone leads with an app's invitation to one of its own
-  // things (a calendar event, a contact), which is not what the page's invite sheet is.
-  await step('invite', async () => { await search('invite people'); await shoot('search-invite'); await opened(); await quiet(); await shoot('invite'); });
+  // What "invite" alone offers is kept as the card's own record: an app's invitation to one of
+  // its own things (a calendar event, a contact) takes a row only where it can run now, so the
+  // workspace's own verb stands where Enter would carry it out.
+  await step('invite', async () => {
+    await search('invite'); await quiet();
+    await opened(false);
+    await shoot('search-invite');
+    await key('Escape'); await quiet(500);
+  });
+  // And Enter on the workspace's verb opens the invite sheet.
+  await step('invite-people', async () => { await search('invite people'); await shoot('search-invite-people'); await opened(); await quiet(); await shoot('invite'); });
   agent?.stop();
   await tab.close().catch(() => {});
 };

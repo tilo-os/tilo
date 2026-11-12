@@ -46,3 +46,4 @@ monitor-cpu-core = Core { $core }
 monitor-memory-swap = Swap
 monitor-section-network = Network
 monitor-section-disk = Disk
+monitor-usage-unavailable-message = This computer's processor, memory, network and disk use couldn't be read.

@@ -428,10 +428,12 @@ impl CataloguePage {
 
 impl CatalogueQuery {
     /// Whether `row` is one this query lists: under the parent asked for,
-    /// of the app, view, words, name and action it names.
+    /// of the app, view, words, name and action it names. An exact action
+    /// is found wherever it stands, since its address names it alone.
     #[must_use]
     pub fn admits(&self, row: &CatalogueRow) -> bool {
-        row.parent_resource == self.parent_resource.as_deref().unwrap_or("")
+        (self.target.is_some()
+            || row.parent_resource == self.parent_resource.as_deref().unwrap_or(""))
             && self.app_id.as_deref().is_none_or(|app| row.app_id == app)
             && self.view_resource.as_ref().is_none_or(|wanted| {
                 row.resource.id == wanted.id
@@ -599,6 +601,21 @@ mod tests {
             exact.rows[0].target().map(|target| target.address),
             Some(ActionAddress::new("note:2", "archive"))
         );
+    }
+
+    #[test]
+    fn an_exact_action_is_found_below_the_top_level() {
+        let rows = vec![
+            row("folder:a", None, ""),
+            row("note:a1", Some("open"), "folder:a"),
+        ];
+        let target = RemoteActionTarget {
+            provider: "7".into(),
+            address: ActionAddress::new("note:a1", "open"),
+        };
+        let page =
+            CataloguePage::from_rows("r1".into(), rows, &CatalogueQuery::resolve(&target, "r1"));
+        assert_eq!(page.rows.len(), 1);
     }
 
     /// The row `resource` of application `app`, with a `run` action.

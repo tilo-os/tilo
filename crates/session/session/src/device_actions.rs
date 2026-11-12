@@ -66,10 +66,10 @@ impl DeviceActions {
         identity: &tilo_network_actor::HostIdentity,
         endpoint: Endpoint,
         engine: Option<Arc<Engine>>,
-    ) -> Option<Self> {
+    ) -> Self {
         let dispatch = DeviceDispatch::for_user(identity.device_cert.user_public_key);
         let plane = ActionPlane::over(
-            identity.signing_key().ok()?,
+            Arc::clone(&identity.signer),
             Arc::new(dispatch.clone()),
             Arc::new(HeldWorkspaces(engine)),
         );
@@ -77,7 +77,7 @@ impl DeviceActions {
         // answers with what it knows of itself.
         let offering = SessionOffering::default();
         plane.offering(offering.clone());
-        Some(Self(Arc::new(Inner {
+        Self(Arc::new(Inner {
             plane,
             endpoint,
             addresses: Mutex::default(),
@@ -85,7 +85,7 @@ impl DeviceActions {
             dispatch,
             offering,
             runtime: tokio::runtime::Handle::current(),
-        })))
+        }))
     }
 
     /// The plane the collaboration endpoint serves.
@@ -572,8 +572,7 @@ mod tests {
             }
         }
         let endpoint = endpoint(key).await;
-        let actions =
-            DeviceActions::start(&id, endpoint.clone(), Some(engine)).expect("a native key");
+        let actions = DeviceActions::start(&id, endpoint.clone(), Some(engine));
         actions.install(host);
         let router = Router::builder(endpoint.clone())
             .accept(tilo_peer_state::actions::ACTIONS_ALPN, actions.plane())
@@ -589,8 +588,7 @@ mod tests {
         there: EndpointAddr,
     ) -> (Endpoint, DeviceActions) {
         let endpoint = endpoint(key).await;
-        let actions = DeviceActions::start(&identity(cert.clone(), key), endpoint.clone(), None)
-            .expect("a native key");
+        let actions = DeviceActions::start(&identity(cert.clone(), key), endpoint.clone(), None);
         actions.learn(there);
         (endpoint, actions)
     }
@@ -1082,8 +1080,7 @@ mod tests {
         let endpoint = endpoint(&here.0).await;
         // This session holds no workspace, so its round asks nobody.
         let actions =
-            DeviceActions::start(&identity(here.1.clone(), &here.0), endpoint.clone(), None)
-                .expect("a native key");
+            DeviceActions::start(&identity(here.1.clone(), &here.0), endpoint.clone(), None);
         let content = crate::content::Plane::open(None);
         let photograph = photograph();
         let input = hash_bytes(&photograph);

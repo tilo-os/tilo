@@ -56,15 +56,16 @@ impl Folder {
         Folder::Trash,
     ];
 
-    pub fn title(self) -> &'static str {
+    /// The catalogue message naming this folder.
+    pub fn message(self) -> &'static str {
         match self {
-            Folder::Inbox => "Inbox",
-            Folder::Starred => "Starred",
-            Folder::Sent => "Sent",
-            Folder::Drafts => "Drafts",
-            Folder::Archive => "Archive",
-            Folder::Trash => "Trash",
-            Folder::Junk => "Junk",
+            Folder::Inbox => "mail-folder-inbox",
+            Folder::Starred => "mail-folder-starred",
+            Folder::Sent => "mail-folder-sent",
+            Folder::Drafts => "mail-folder-drafts",
+            Folder::Archive => "mail-folder-archive",
+            Folder::Trash => "mail-folder-trash",
+            Folder::Junk => "mail-folder-junk",
         }
     }
 

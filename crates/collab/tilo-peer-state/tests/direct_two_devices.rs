@@ -38,9 +38,9 @@ fn edit(peer: &DirectSync, key: &SigningKey, value: &str) -> Option<Vec<automerg
     edit.put(ROOT, "value", value).unwrap();
     edit.commit_edit("fixture", "value");
     let change = edit.save_after(&heads);
-    peer.publish(|peer, key, now| {
+    peer.publish(|peer| {
         peer.publication_mut()
-            .publish_incremental(APP, RECORD, change, key, now)
+            .publish_incremental(APP, RECORD, change, key, SystemTime::now())
     })
     .unwrap();
     peer.read(|peer| peer.document_heads(APP, RECORD))

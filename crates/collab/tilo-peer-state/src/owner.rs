@@ -27,20 +27,21 @@ pub(crate) mod fixture;
 mod history_content;
 #[cfg(not(target_arch = "wasm32"))]
 mod join_service;
+#[cfg(not(target_arch = "wasm32"))]
+mod journal;
 mod limits;
 mod publication;
 mod record;
 pub mod renewal;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod session;
-mod shortcuts;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(test)]
 mod tests;
 mod vouched;
 mod workspace_membership;
-mod write;
+pub(crate) mod write;
 
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 pub use document_read::{
@@ -54,8 +55,8 @@ pub use history_content::HistoryContent;
 pub use join_service::OwnerJoinWorkspaces;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use publication::{
-    CUSTODY_FULL, HostAnswer, NativeOutgoing, NativeOutgoingEntry, RecordWrites, SealedHistoryKeys,
-    validate_file_layout,
+    HostAnswer, NativeOutgoing, NativeOutgoingEntry, RecordWrites, SealedHistoryKeys,
+    custody_run_name, outgoing_bytes, validate_file_layout,
 };
 pub use record::{
     EnrollmentTarget, NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus,
@@ -126,6 +127,16 @@ pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
     /// Read and verify a retained history block. Absence is an error, not UUID absence.
     fn read_history(&self, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
         Err("native owner history content is unavailable".into())
+    }
+    /// Durably keep `bytes`, a run of `workspace`'s outgoing custody waiting behind its head,
+    /// beside the record, and answer the hash it is named by. The store keeps it while the
+    /// record names it.
+    fn put_custody(&self, _workspace: WorkspaceId, _bytes: &[u8]) -> Result<[u8; 32], String> {
+        Err("native outgoing custody runs are unavailable".into())
+    }
+    /// Read a run of custody [`Self::put_custody`] kept.
+    fn read_custody(&self, _workspace: WorkspaceId, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        Err("native outgoing custody runs are unavailable".into())
     }
     /// False once a publication may or may not have reached disk; the owner
     /// then stays fenced until it is reopened from what the disk holds.
@@ -726,7 +737,7 @@ impl NativeWorkspaceOwner {
         let durable = {
             let live = view.live();
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            live.durable()?
+            record::DurablePeer::from(live.durable_parts()?)
         };
         if durable == record.peer && record.publication == previous {
             return Ok(());
@@ -833,9 +844,18 @@ impl NativeWorkspaceOwner {
         // ([`publication::retire_member_changes`]), which a device that
         // published none (a page entering a workspace) never has.
         let mut governed: Vec<Vec<Vec<u8>>> = Vec::new();
+        // Custody, as the host's compactions of records this device compacted ahead of it
+        // leave it.
+        let mut publication = candidate.record.publication.clone();
         for (origin, message) in inputs {
             let received = Self::received_changes(origin, &message).cloned();
-            let report = Self::admit_input(&candidate, origin, message, now);
+            let report = match publication
+                .as_mut()
+                .and_then(|publication| self.receive_hosted(&candidate, publication, &message, now))
+            {
+                Some(report) => report,
+                None => Self::admit_input(&candidate, origin, message, now),
+            };
             if report.is_ok()
                 && let Some(changes) = received
             {
@@ -848,15 +868,17 @@ impl NativeWorkspaceOwner {
             return Ok(reports);
         }
         let mut record = candidate.record.clone();
+        record.publication = publication;
         // One snapshot under the replica's lock, as [`Self::publish`] takes
         // it: the durable bytes that show whether anything changed are the
         // ones published, encoded once.
         let snapshot = {
             let live = replica.lock();
             publication::retire(&live, &mut record)?;
+            publication::settle(&mut record, self.0.store.as_ref())?;
             publication::retire_member_changes(&live, &mut record, &governed)?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            let durable = live.durable()?;
+            let durable = record::DurablePeer::from(live.durable_parts()?);
             // Authentication and causal admission still run for every replay.
             // Reuse the actual committed barrier only when both durable peer
             // state and outgoing custody are byte-for-byte unchanged. In
@@ -994,8 +1016,9 @@ impl NativeWorkspaceOwner {
         // link admitted after it.
         let snapshot = {
             let live = replica.lock();
+            publication::settle(&mut record, self.0.store.as_ref())?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            record.peer = live.durable()?;
+            record.peer = live.durable_parts()?.into();
             Self::snapshot(&live, &mut record)?
         };
         self.install_snapshot(workspace, replica, record, snapshot, enrollment)

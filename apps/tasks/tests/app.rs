@@ -1220,3 +1220,24 @@ fn a_german_window_reads_the_tasks_catalogue() {
     catalog.set_locale("en-US");
     assert_eq!(catalog.t("tasks-title"), "Tasks");
 }
+
+#[test]
+fn an_agents_create_is_shown_at_new_issue() {
+    let mut app = open();
+    app.call("create", json!({ "title": "Write the launch notes" }))
+        .expect("create");
+    app.settle();
+    let targets = app.harness().targets();
+    let (_, button) = targets
+        .iter()
+        .find(|(name, _)| name.ends_with("-create"))
+        .expect("the list's New issue button");
+    let locus = app
+        .harness()
+        .semantic_locus(&ui::headless::agent_acting("tasks.tracker", "create"))
+        .expect("an agent's create finds New issue");
+    assert!(
+        button.contains(locus.center()),
+        "the agent acts at New issue: {locus:?} in {button:?}"
+    );
+}

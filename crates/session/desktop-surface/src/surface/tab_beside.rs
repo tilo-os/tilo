@@ -27,7 +27,7 @@ pub(super) fn open_tab_beside(
         .workspaces
         .iter()
         .find(|workspace| workspace.slot == ids.workspace)?;
-    let tab = tiles.launch(workspace, tab_id, app)?;
+    let tab = tiles.launch(workspace, tab_id, app, Some(ids.tab))?;
     let group = shared
         .tree
         .workspaces

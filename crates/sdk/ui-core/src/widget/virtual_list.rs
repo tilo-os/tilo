@@ -205,6 +205,17 @@ pub trait ListModel {
         None
     }
 
+    /// Whether the row `index` is one the person is done with: its item checked off, or removed
+    /// and not yet seen go — though its row may still stand in the list until they leave the
+    /// place. A heading counts what is left to do, so it does not count this row
+    /// ([`heading_count`]). `false` for a row that is still to do, which is every row of a model
+    /// that says nothing.
+    ///
+    /// [`heading_count`]: super::section::heading_count
+    fn done(&self, _index: usize) -> bool {
+        false
+    }
+
     /// What the row stands as in a tree ([`VirtualList::with_tree`]): the row it is under, and
     /// what the list shows of its subtasks. `None` for a row outside a tree, or a model that
     /// holds none.
@@ -528,6 +539,11 @@ pub struct VirtualList<M: ListModel> {
     stance: RowStance,
     /// The space above the first row and below the last ([`Self::with_edges`]).
     edges: Option<Box<dyn ListEdges>>,
+    /// The room the list keeps over its first band when it is a column's whole body
+    /// ([`Self::in_column`]): the column's content gutter, so its first heading or row stands on
+    /// the column's content edge, where a page's first block stands. Nothing for a list anywhere
+    /// else, which brings its own spacing.
+    content_gutter: f64,
     /// Whether the rows were last laid out beside a scroll bar.
     rows_beside_bar: bool,
     /// The list takes its parent's height, and its viewport follows it.
@@ -762,6 +778,7 @@ impl<M: ListModel> VirtualList<M> {
             row_line: f64::from(crate::tokens::Metrics::BASE.row_single),
             stance: RowStance::Bleed,
             edges: None,
+            content_gutter: 0.0,
             rows_beside_bar: false,
             fill_height: false,
             fit_rows: false,
@@ -909,9 +926,11 @@ impl<M: ListModel> VirtualList<M> {
 
     /// The list is a column's whole body, edge to edge in it: its rows' text starts on the
     /// column's content edge ([`crate::chrome::column_gutter`]), where the column's header
-    /// starts its title, and their lift bleeds [`crate::chrome::row_bleed`] past it, as HIG's
-    /// one content edge has every list in a column do. The scroll bar stays on the column's
-    /// edge. Rows lift themselves, as a [`ListRow`](crate::widget::ListRow) does.
+    /// starts its title, and so does its first band — the heading over the first run, or the
+    /// first row where the list leaves that heading out — one content gutter below its top, where
+    /// a page's first block stands. Their lift bleeds [`crate::chrome::row_bleed`] past that
+    /// edge, as HIG's one content edge has every list in a column do. The scroll bar stays on
+    /// the column's edge. Rows lift themselves, as a [`ListRow`](crate::widget::ListRow) does.
     #[must_use]
     pub const fn in_column(mut self) -> Self {
         self.stance = RowStance::Column;
@@ -919,7 +938,9 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// Leave the space `edges` asks for above the first row and below the
-    /// last. It scrolls with the rows, as a page's spacing does.
+    /// last, instead of the column's content gutter a list in a column keeps
+    /// over its first band. It scrolls with the rows, as a page's spacing
+    /// does.
     #[must_use]
     pub fn with_edges(mut self, edges: impl ListEdges + 'static) -> Self {
         self.edges = Some(Box::new(edges));
@@ -931,7 +952,7 @@ impl<M: ListModel> VirtualList<M> {
     fn update_edges(&mut self) -> bool {
         let width = (self.rect.width() - self.lead - self.trailing_inset()).max(0.0);
         let Some(edges) = self.edges.as_mut() else {
-            return false;
+            return self.viewport.set_edges(self.content_gutter, 0.0);
         };
         let (lead, trail) = edges.edges(width);
         self.viewport.set_edges(lead, trail)
@@ -1331,13 +1352,20 @@ impl<M: ListModel> VirtualList<M> {
             .collect()
     }
 
-    /// The headings the list draws, each with the rows it counts and whether
-    /// its group is folded, as [`ListShown::headings`] holds them.
-    fn headings_drawn(&self) -> Vec<(String, usize, bool)> {
+    /// The headings the list draws, each with the number it shows over its rows
+    /// and whether its group is folded, as [`ListShown::headings`] holds
+    /// them.
+    fn headings_drawn(&self) -> Vec<(String, Option<usize>, bool)> {
         self.groups
             .bands
             .iter()
-            .map(|band| (band.heading.clone(), self.heading_rows(band), band.closed))
+            .map(|band| {
+                (
+                    band.heading.clone(),
+                    self.shown_heading_count(band),
+                    band.closed,
+                )
+            })
             .collect()
     }
 
@@ -1426,6 +1454,13 @@ impl<M: ListModel> VirtualList<M> {
         let index = self
             .viewport
             .hit_test(cursor.y - self.rect.y0 - self.end_slack())?;
+        // The room a band takes over its row is the list's and the heading's: the row stands
+        // below it, and a press up there is no press on the row, as one on the room the list
+        // keeps over its first row is none either.
+        let row = self.row_box(index)?;
+        if cursor.y < row.y0 || cursor.y >= row.y1 {
+            return None;
+        }
         matches!(self.model.row_state(index), Arrival::Ready(()))
             .then(|| self.model.key_at(index).map(|key| (index, key)))
             .flatten()
@@ -1911,6 +1946,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             RowStance::Column => crate::chrome::column_gutter(theme),
         };
         self.lift = crate::chrome::row_bleed(theme);
+        // A list that is a column's whole body starts its first band on the column's content
+        // edge, where the column's header starts its title and every page's first block stands.
+        self.content_gutter = match self.stance {
+            RowStance::Column => crate::chrome::column_gutter(theme),
+            RowStance::Bleed | RowStance::Flush => 0.0,
+        };
         let disclosure = crate::chrome::disclosure_gutter(theme);
         if (disclosure - self.disclosure).abs() > 0.5 {
             // A row that is a view of the app's own is built with the step its tree indents by,
@@ -2778,6 +2819,17 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 .mounted
                 .iter()
                 .any(|row| row.widget.layout_needs_measure())
+    }
+
+    /// Whether the list's first row names a group, and the room the list keeps over the first
+    /// band it draws — the heading over that row, or the row itself where the list leaves the
+    /// heading out: what holds a list that heads its rows to starting them on the column's
+    /// content gutter rather than against the box over it.
+    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
+        Some(crate::widget::LayoutInfo::List(crate::widget::ListLayout {
+            heads_rows: groups::group_of(&self.model, 0, self.tail_title.as_deref()).is_some(),
+            lead: crate::num::f32_of_f64(self.viewport.edges().0),
+        }))
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

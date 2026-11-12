@@ -243,8 +243,10 @@ impl Toggle {
     /// changes, not to keep the model in sync.
     pub fn from_state(state: &crate::LocalState<bool>) -> Self {
         let mut toggle = Self::new("toggle", "");
-        toggle.control =
-            BoolControl::local(state, Some(crate::widget::humanize_control_id("toggle")));
+        // A switch built over state alone says nothing of itself: the kind it
+        // is ("Toggle") is what its role already says, so what holds it (a
+        // row's caption) names it instead.
+        toggle.control = BoolControl::local(state, None);
         toggle
     }
 

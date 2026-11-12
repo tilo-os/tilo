@@ -48,6 +48,12 @@ mod chunks;
 #[path = "hosted/cost.rs"]
 mod cost;
 
+#[path = "hosted/menus.rs"]
+mod menus;
+
+#[path = "hosted/offers.rs"]
+mod offers;
+
 #[path = "hosted/typing.rs"]
 mod typing;
 
@@ -421,6 +427,13 @@ impl Window {
         match self {
             Self::Harness(window) => window,
             Self::Live(_) => panic!("the window is the live one"),
+        }
+    }
+
+    fn app(&mut self) -> &mut ui::App {
+        match self {
+            Self::Live(app) => app,
+            Self::Harness(_) => panic!("the window is the harness"),
         }
     }
 }
@@ -2747,4 +2760,155 @@ fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
         session.titles().is_empty(),
         "the bar's New task makes no task nobody typed"
     );
+}
+
+/// The node a tool names `name` in what the live window describes: its id, role, bounds and
+/// whether it reads checked.
+fn described(
+    app: &mut ui::App,
+    name: &str,
+) -> Option<(ui::accesskit::NodeId, ui::accesskit::Node)> {
+    app.build_a11y_tree_update(1.0)
+        .nodes
+        .into_iter()
+        .find(|(_, node)| node.label().map(str::trim) == Some(name))
+}
+
+/// The names of the controls the live window offers a tool, as it hands them to the desk.
+fn controls_of(app: &mut ui::App) -> Vec<String> {
+    app.window_controls()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// A task typed into the live Tasks window's entry, from its palette's New task.
+fn live_task(title: &str) -> Session {
+    let mut session = Session::live_tasks();
+    choose(&mut session, "New task");
+    session.window.type_text(title);
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Enter);
+    session.settle();
+    session
+}
+
+/// A task's box is a checkbox of its own, named for what pressing it does, and a click where it
+/// is drawn marks the task done: a change the workspace takes, decided against the package's
+/// surface as a session's workspace decides it.
+#[test]
+fn a_click_on_a_tasks_box_marks_it_done() {
+    let _settled = ui::motion::testing::settled();
+    let surface = package(package_of(TASKS))
+        .surface()
+        .expect("the package has a surface");
+    collaboration::app_surface::register_package(TASKS, &surface);
+    let mut session = live_task("Water the plants");
+    let (_, shown) =
+        described(session.window.app(), "Mark Water the plants done").expect("the row's box");
+    assert_eq!(shown.role(), ui::accesskit::Role::CheckBox);
+    assert_eq!(
+        shown.toggled(),
+        Some(ui::accesskit::Toggled::False),
+        "it starts open"
+    );
+    let rect = shown.bounds().expect("the box is laid out");
+    session.window.click_at(
+        f64::midpoint(rect.x0, rect.x1),
+        f64::midpoint(rect.y0, rect.y1),
+    );
+    session.settle();
+    assert!(
+        task_in_record(&session, "Water the plants", true),
+        "the click marked the task done in the workspace"
+    );
+}
+
+/// What a tool and a screen reader reach of a task by name in the window a window process runs,
+/// as the desk lists its controls: its row's menu, and its box, which marks it done.
+#[test]
+fn a_tool_opens_a_tasks_menu_and_marks_it_done_by_its_box() {
+    use ui::winit::keyboard::NamedKey;
+    let _settled = ui::motion::testing::settled();
+    let mut session = live_task("Water the plants");
+    let offered_now = controls_of(session.window.app());
+    assert!(
+        offered_now
+            .iter()
+            .any(|name| name == "Mark Water the plants done"),
+        "the window offers the task's box by name: {offered_now:?}"
+    );
+
+    let (row, _) = described(session.window.app(), "Water the plants").expect("the row");
+    session
+        .window
+        .app()
+        .dispatch_a11y_action(row, &ui::a11y::Action::ShowContextMenu);
+    session.settle();
+    let menu = controls_of(session.window.app());
+    assert!(
+        menu.iter().any(|name| name == "Open as page"),
+        "the row's menu opens where the row stands: {menu:?}"
+    );
+    session.window.press_key(NamedKey::Escape);
+    session.settle();
+
+    let (check, _) =
+        described(session.window.app(), "Mark Water the plants done").expect("the box");
+    assert_eq!(
+        session
+            .window
+            .app()
+            .dispatch_a11y_action(check, &ui::a11y::Action::Activate),
+        None,
+        "the box takes the press itself"
+    );
+    session.settle();
+    assert!(
+        task_in_record(&session, "Water the plants", true),
+        "the box marked the task done"
+    );
+}
+
+/// Whether the workspace's record holds a task titled `title`, done when `done` says so, as the
+/// window's instance runs it: the list shows only the rows on screen, so it is read off the
+/// record's chunks.
+fn task_in_record(session: &Session, title: &str, done: bool) -> bool {
+    use tilolang_tilo::DynValue;
+    let chunks = session
+        .host
+        .instances()
+        .next()
+        .expect("the window's instance")
+        .record()
+        .chunks()
+        .clone();
+    let Some(record) = chunks.first() else {
+        return false;
+    };
+    let has = |item: &tilolang_tilo::DynRecord, wanted: &dyn Fn(&DynValue) -> bool| {
+        item.schema()
+            .fields
+            .iter()
+            .any(|field| item.get(&field.id).is_some_and(wanted))
+    };
+    let the_task = |item: &tilolang_tilo::DynRecord| {
+        has(
+            item,
+            &|value| matches!(value, DynValue::Text(text) if text == title),
+        ) && (!done
+            || has(item, &|value| {
+                matches!(value, DynValue::Register(serde_json::Value::Bool(true)))
+            }))
+    };
+    tilolang_tilo::action::resource_ids(record, TASKS)
+        .into_iter()
+        .filter_map(|id| tilolang_tilo::action::read_resource(&chunks, TASKS, &id).ok())
+        .any(|record| {
+            has(&record, &|value| match value {
+                DynValue::Collection(items) => items.iter().any(|(_, item)| the_task(item)),
+                _ => false,
+            })
+        })
 }

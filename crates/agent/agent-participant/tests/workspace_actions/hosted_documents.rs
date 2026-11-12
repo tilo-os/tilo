@@ -400,6 +400,23 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
     let pdf = pdf.expect("the import names the PDF's record");
     let (text, _) = act(&server, "pdf-viewer#read-text", json!({})).await;
     assert!(text.contains("Schengen Visa"), "{text}");
+    // The form reads by its path too, as an SDK's `document.load()` reads the
+    // record it just imported: what the record holds, with no window open.
+    let form = tool(
+        &server,
+        "tilo_read",
+        json!({"path": "pdf-viewer/application.pdf"}),
+    )
+    .await;
+    // The record's own fields, not one of its pages: its name, its pages and
+    // the values its form holds.
+    for wanted in [
+        "\"source_name\":\"application.pdf\"",
+        "\"form_values\"",
+        "\"pages\"",
+    ] {
+        assert!(form.contains(wanted), "the form reads {wanted}: {form}");
+    }
     let fields = form_fields(&server).await;
     assert_eq!(
         fields.keys().map(String::as_str).collect::<Vec<_>>(),

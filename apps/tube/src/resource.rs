@@ -72,10 +72,6 @@ impl ResourceApp for TubeShell {
     const ICON: Option<&'static str> = Some("tube");
     /// A launch may name a search (`tube:search?q=cats`).
     const ARGUMENTS: usize = 1;
-    /// The session's document host runs the library's model where the session serves it: a
-    /// launch it hosts opens no record and joins no workspace of its own.
-    const HOSTED_BY_SESSION: bool = true;
-
     #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
@@ -237,14 +233,12 @@ mod tests {
         click(&mut app, "switch_autoplay");
         app.settle();
         assert_eq!(preferences.get().autoplay, !autoplay);
-        let category = app
-            .harness()
-            .a11y_node_named(Category::Sponsor.label())
-            .unwrap();
+        let sponsor = crate::i18n::t(Category::Sponsor.message());
+        let category = app.harness().a11y_node_named(&sponsor).unwrap();
         app.harness()
             .perform_a11y_action(
                 category,
-                &ui::a11y::Action::SetValue(SkipMode::Show.label().into()),
+                &ui::a11y::Action::SetValue(crate::i18n::t(SkipMode::Show.message())),
             )
             .unwrap();
         app.settle();

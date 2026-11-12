@@ -201,6 +201,11 @@ label = "Trust-bearing crates read time through tilo_clock"
 run = "python3 tools/policy/check_clock_contract.py"
 
 [[step]]
+name = "loop-never-blocks"
+label = "The session's loop never waits on async work"
+run = "python3 tools/policy/check_loop_never_blocks.py"
+
+[[step]]
 name = "no-transient-cards"
 label = "Transient notices are the window bar's"
 run = "python3 tools/policy/check_no_transient_cards.py"

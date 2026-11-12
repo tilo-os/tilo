@@ -1606,8 +1606,14 @@ impl crate::TileSource for PeerTiles {
         self.inner.tile(workspace, tab)
     }
 
-    fn launch(&mut self, workspace: &Workspace, id: TabId, app: &str) -> Option<Tab> {
-        self.inner.launch(workspace, id, app)
+    fn launch(
+        &mut self,
+        workspace: &Workspace,
+        id: TabId,
+        app: &str,
+        beside: Option<TabId>,
+    ) -> Option<Tab> {
+        self.inner.launch(workspace, id, app, beside)
     }
 
     fn reopened(&mut self, workspace: &Workspace, tab: &Tab) {

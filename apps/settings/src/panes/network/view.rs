@@ -281,13 +281,32 @@ impl Page<'_> {
     /// The first page: each connection (Wi-Fi, mobile data, the cable),
     /// then the controls. A connection's details are its own page.
     fn first_page(&self) -> Vec<SettingsSection> {
-        let mut cards = vec![self.wifi_card()];
+        let mut cards = Vec::new();
+        if !self.wifi_unavailable() {
+            cards.push(self.wifi_card());
+        }
         cards.extend(self.mobile_card().unwrap_or_default());
-        if self.wired.device.is_some() || self.read_errors.wired.is_some() {
+        if !self.network_absent()
+            && (self.wired.device.is_some() || self.read_errors.wired.is_some())
+        {
             cards.push(self.wired_card());
+        }
+        if cards.is_empty() {
+            cards.push(self.no_network_card());
         }
         cards.push(self.controls_card());
         cards
+    }
+
+    /// What the page says when it has no network card to show: one quiet
+    /// line naming what is missing, so the page does not read as a fault.
+    fn no_network_card(&self) -> SettingsSection {
+        let line = t(if self.network_absent() {
+            "net-no-service"
+        } else {
+            "net-no-wifi-adapter"
+        });
+        provider_settings_ui::widgets::untitled(rows(vec![note(&line)]))
     }
 
     /// Wi-Fi: the switch says whether the radio is on (the machine's state,
@@ -462,14 +481,17 @@ impl Page<'_> {
     /// row that opens a page has a chevron; a row with a switch also opens
     /// its page.
     fn controls_card(&self) -> SettingsSection {
-        let mut lines: Vec<El> = vec![Box::new(self.drill_row(
-            "settings.network.vpn",
-            Icon::Shield,
-            &t("net-vpn"),
-            Some(self.vpn_summary()),
-            super::vpn::VpnEffect::ShowVpns,
-        ))];
-        if !self.wifi_absent() {
+        let mut lines: Vec<El> = Vec::new();
+        if !self.network_absent() {
+            lines.push(Box::new(self.drill_row(
+                "settings.network.vpn",
+                Icon::Shield,
+                &t("net-vpn"),
+                Some(self.vpn_summary()),
+                super::vpn::VpnEffect::ShowVpns,
+            )));
+        }
+        if !self.wifi_unavailable() {
             lines.push(Box::new(
                 self.drill_row(
                     "settings.network.hotspot",
@@ -485,23 +507,25 @@ impl Page<'_> {
                 ))),
             ));
         }
-        lines.push(Box::new(
-            ListRow::new("settings.network.airplane", t("net-airplane"))
-                .icon(Icon::Plane)
-                .trailing(Box::new({
-                    let toggle = self.switch_control(
-                        "network.airplane",
-                        self.radios.airplane_mode,
-                        NetworkEffect::SET_AIRPLANE_MODE,
-                    );
-                    // An unread radio state is not offered as a position.
-                    if self.read_errors.radios.is_none() {
-                        toggle
-                    } else {
-                        toggle.with_enabled(false)
-                    }
-                })),
-        ));
+        if self.airplane_switchable() {
+            lines.push(Box::new(
+                ListRow::new("settings.network.airplane", t("net-airplane"))
+                    .icon(Icon::Plane)
+                    .trailing(Box::new({
+                        let toggle = self.switch_control(
+                            "network.airplane",
+                            self.radios.airplane_mode,
+                            NetworkEffect::SET_AIRPLANE_MODE,
+                        );
+                        // An unread radio state is not offered as a position.
+                        if self.read_errors.radios.is_none() {
+                            toggle
+                        } else {
+                            toggle.with_enabled(false)
+                        }
+                    })),
+            ));
+        }
         lines.push(Box::new(self.drill_row(
             "settings.network.usage",
             Icon::BarChart,
@@ -517,7 +541,9 @@ impl Page<'_> {
             NetworkEffect::ShowAdvancedNetworkSettings,
         )));
         let mut content = Vec::new();
-        if let Some(error) = &self.read_errors.radios {
+        if !self.network_absent()
+            && let Some(error) = &self.read_errors.radios
+        {
             content.push(row(error_caption(&t_args(
                 "net-radios-error",
                 &[("error", error.as_str().into())],

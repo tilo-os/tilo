@@ -145,7 +145,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
             )
         # Chat's acceptance starts the app, the launcher that starts it and the
         # runtime host the app runs on, so the run that drives it builds the
-        # three packages of other crates first.
+        # three packages of other crates first; a branched device runs that
+        # same acceptance, with its host away.
         chat = scripts.pop("chat-siblings")
         self.assertEqual(chat["command"][:2], ["bash", "tools/build-sibling-binaries.sh"])
         self.assertEqual(chat["command"][2:], ["chat:chat", "launcher:tilo-launcher",
@@ -155,9 +156,23 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "chat-siblings"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-session) and binary(chat_2x2)",
+                [("package(tilo-session) and (binary(chat_2x2) or binary(device_branch))",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds Chat and its launcher for the acceptance",
+            )
+        # A closed Tasks starts its app and the launcher the session starts it
+        # through, so the run that drives it builds both first.
+        tasks = scripts.pop("tasks-siblings")
+        self.assertEqual(tasks["command"], ["bash", "tools/build-sibling-binaries.sh",
+                                            "tasks:tasks", "launcher:tilo-launcher"])
+        for profile in ("default", "ci"):
+            rules = [rule for rule in config["profile"][profile]["scripts"]
+                     if rule["setup"] == "tasks-siblings"]
+            self.assertEqual(
+                [(rule["filter"], rule["platform"]) for rule in rules],
+                [("package(tilo-session) and binary(closed_tasks)",
+                  {"host": 'cfg(target_os = "linux")'})],
+                f"the {profile} profile builds Tasks and its launcher for the closed app",
             )
         # The lounge's end-to-end tests start a persistent relay room, a program
         # of another package that only its `agents` feature builds: the
@@ -197,7 +212,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["ci"]["scripts"]}
         # `ci` inherits `default`'s rules, so it names only what it adds.
         self.assertEqual(rules, {"all()": ["test-runtime", "headless-audio"],
-                                 "package(tilo-session) and binary(chat_2x2)": "chat-siblings",
+                                 "package(tilo-session) and (binary(chat_2x2) or "
+                                 "binary(device_branch))": "chat-siblings",
+                                 "package(tilo-session) and binary(closed_tasks)": "tasks-siblings",
                                  "package(tilo-session) and binary(lounge_e2e)": "lounge-siblings",
                                  "package(tilo-session-client) and binary(lounge_fresh_page)":
                                      "lounge-siblings",

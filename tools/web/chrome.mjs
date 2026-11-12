@@ -226,6 +226,13 @@ export async function launch({args = []} = {}) {
     '--disable-background-timer-throttling',
     '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows',
+    // No crash reporter. In a job container its handler cannot trace the
+    // browser's processes ("no ptrace"), and a renderer that asked it for a
+    // report then died: about one reload in four in the agent-setup check
+    // crashed its tab, none in eight runs without it. A renderer that does
+    // crash still prints its signal and stack on stderr without it.
+    '--disable-crash-reporter',
+    '--disable-breakpad',
     ...args,
     ...(process.env.TILO_CHROME_ARGS ?? '').split(/\s+/).filter(Boolean),
     'about:blank',
@@ -251,7 +258,7 @@ export async function launch({args = []} = {}) {
   const endpoint = await new Promise((resolve, reject) => {
     let buffered = '';
     child.stderr.on('data', chunk => {
-      said = (said + chunk).slice(-4000);
+      said = (said + chunk).slice(-64000);
       if (buffered === null) return;
       buffered += chunk;
       const match = buffered.match(/DevTools listening on (ws:\/\/\S+)/);
@@ -384,6 +391,11 @@ export async function launch({args = []} = {}) {
     tab,
     /** Recent browser-process diagnostics, including GPU-process failures. */
     diagnostics: () => shutdownLines(),
+    /** The end of what the browser said, without its routine noise: with
+     * `--enable-logging=stderr` Chromium's own log, which tells why a process died. */
+    crashLines: () => said.split('\n')
+      .filter(line => line.trim() && !/registration_request|DEPRECATED_ENDPOINT|adjust OOM score/.test(line))
+      .slice(-80).join('\n'),
     /** A fresh browser context: storage, cookies and Web Locks of its own, as
      * another person's browser profile would have. Resolves to its id. */
     context: async () => (await send('Target.createBrowserContext', {disposeOnDetach: true})).result.browserContextId,

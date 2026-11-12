@@ -276,75 +276,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
-    /// The app as its owner opens it over `answers`, the session's document
-    /// host: no record is opened here, the view reads the reading `answers`
-    /// publishes at `resource`, and everything it submits goes back to
-    /// `answers` (`one-app-model.md` §4).
-    pub fn hosted(
-        resource: &str,
-        answers: impl super::Answers + 'static,
-    ) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
-        let person = AUTHOR.to_owned();
-        let author = UserId(person.clone());
-        let permissions = role_permissions(&person, Role::Owner);
-        let (mut host, instance) = profile_host(
-            &Profile::Temporary(
-                Rc::clone(&profile),
-                TEST_WORKSPACE.to_owned(),
-                TEST_DEVICE.to_owned(),
-            ),
-            author,
-            &permissions,
-        )?;
-        let definition = super::app::definition::<A>();
-        let records = host.records_for(definition)?;
-        let mut context = ui_core::application::HostContext::prepare_session_hosted(
-            definition,
-            ui_core::application::HostContextInputs {
-                records: records.clone(),
-                views: host.views().clone(),
-                device_id: TEST_DEVICE.to_owned(),
-                instance_id: instance,
-                permissions: permissions.clone(),
-                author: UserId(person.clone()),
-                action_context: tilo_actions::ActionContext::default(),
-            },
-            resource,
-        )?;
-        context.provide_content(super::app::profile_content(profile.path()));
-        context.provide_connection(super::Connection::in_process(answers));
-        let target = ui_core::application::LaunchTarget::Record {
-            checkout: RecordCheckout::new(
-                RecordId::package_primary(),
-                definition.record_kind.clone(),
-            ),
-            reveal: None,
-        };
-        let component =
-            definition.instantiate(context, target, ui_core::application::RestoreInput::None)?;
-        let inputs = ui_core::application::ComponentRunnerInputs::from_native_process();
-        let harness = FrameHarness::from_component(component, (1280, 800), inputs)?;
-        Ok(Self {
-            harness,
-            closed: false,
-            records,
-            checkout: RecordCheckout::new(
-                RecordId::package_primary(),
-                definition.record_kind.clone(),
-            ),
-            instance,
-            profile: Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
-            role: Role::Owner,
-            author: person,
-            last_effect: None,
-            workspace: None,
-            permissions,
-            _settled: None,
-            marker: std::marker::PhantomData,
-        })
-    }
-
     /// The app as `person` (the hex of a root public key) opens it on a
     /// fresh profile: one of that person's devices, whose shared records
     /// ([`RecordEnv::shared_person`](super::RecordEnv::shared_person)) are
@@ -1629,10 +1560,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Run the frame the app runs after an event: edits the views and
-    /// effects submitted are applied, and what they change is drawn.
+    /// effects submitted are applied, and what they change is drawn. Every
+    /// component syncs and settles, as after an event that reached it: a
+    /// test may have changed what its views read past the framework
+    /// ([`ui_core::component_inputs`]).
     pub fn settle(&mut self) {
-        self.harness()
-            .wait_until(ui_core::time::Duration::ZERO, |_| true);
+        ui_core::component_inputs::forcing(|| {
+            self.harness()
+                .wait_until(ui_core::time::Duration::ZERO, |_| true);
+        });
     }
 
     /// What the live window does once input stops, and no more: what its

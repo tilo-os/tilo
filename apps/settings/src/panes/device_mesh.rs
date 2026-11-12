@@ -651,6 +651,21 @@ fn home_server_row(peer: &tilo_relay_protocol::HomePeerRegistration) -> LiveRow 
     .operation(SettingsEffect::from(DeviceMeshEffect::RemoveHomeServer { device }).bound())
 }
 
+/// How a home server answered Settings' last command, as the pane keeps it:
+/// a state, so its rows word it in the person's language and read the tone
+/// off it rather than off painted text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HomePeerHealth {
+    /// A command is with it.
+    Connecting,
+    /// It answered; `files_ready` says whether its file copies finished.
+    Online { files_ready: bool },
+    /// It reported the home server removed.
+    Removed,
+    /// It did not answer, or Settings could not reach it.
+    Unreachable,
+}
+
 /// Editor for the daemon's real device-mesh configuration.
 #[expect(
     clippy::struct_excessive_bools,
@@ -664,9 +679,8 @@ pub struct DeviceMeshModel {
     devices: bool,
     changed: bool,
     runtime_status: RelayRuntimeStatus,
-    registered_home_peers: usize,
     home_peers: Vec<tilo_relay_protocol::HomePeerRegistration>,
-    home_peer_health: HashMap<String, String>,
+    home_peer_health: HashMap<String, HomePeerHealth>,
     home_peer_last_seen: HashMap<String, u64>,
     personal_devices: Vec<crate::device_fleet::DeviceView>,
     personal_device_error: Option<String>,
@@ -680,9 +694,10 @@ pub struct DeviceMeshModel {
     roaming_provenance_status: Option<String>,
     management_child: Option<bounded_command::AsyncCommand>,
     management_device: Option<String>,
-    /// A home-server removal the host runs for this pane, and the server:
-    /// it signs with the root key, so it never runs here.
-    management_call: Option<(ui::InvocationCall, String)>,
+    /// A home-server removal the host runs for this pane, and the server it
+    /// is for (none for the removals still to deliver): it signs with the
+    /// root key, so it never runs here.
+    management_call: Option<(ui::InvocationCall, Option<String>)>,
     /// The host's answer to the device list, while it is asked.
     devices_call: Option<ui::InvocationCall>,
     next_peer_health: usize,
@@ -728,10 +743,6 @@ enum PairingTarget {
     #[default]
     HomePeer,
     PersonalDevice,
-}
-
-fn registered_home_peer_count() -> usize {
-    registered_home_peers().len()
 }
 
 fn registered_home_peers() -> Vec<tilo_relay_protocol::HomePeerRegistration> {
@@ -892,18 +903,26 @@ fn last_seen_label(last_seen_ms: u64) -> String {
     }
 }
 
-fn peer_health_badge(health: &str) -> String {
-    if health.starts_with("Online") && health.contains("Syncing") {
-        t("mesh-badge-syncing")
-    } else if health.starts_with("Online") {
-        t("mesh-badge-online")
-    } else if health == "Checking…" || health == "Connecting…" || health == t("mesh-checking") {
-        t("mesh-badge-checking")
-    } else if health == "Removed" {
-        t("mesh-badge-removed")
-    } else {
-        t("mesh-badge-offline")
-    }
+fn peer_health_badge(health: HomePeerHealth) -> String {
+    t(match health {
+        HomePeerHealth::Connecting => "mesh-badge-checking",
+        HomePeerHealth::Online { files_ready: true } => "mesh-badge-online",
+        HomePeerHealth::Online { files_ready: false } => "mesh-badge-syncing",
+        HomePeerHealth::Removed => "mesh-badge-removed",
+        HomePeerHealth::Unreachable => "mesh-badge-offline",
+    })
+}
+
+/// What a home server's availability line says beside that badge: the fact
+/// the badge leaves out, in the person's words.
+fn peer_health_detail(health: HomePeerHealth) -> String {
+    t(match health {
+        HomePeerHealth::Connecting => "mesh-health-connecting",
+        HomePeerHealth::Online { files_ready: true } => "mesh-health-ready",
+        HomePeerHealth::Online { files_ready: false } => "mesh-health-syncing",
+        HomePeerHealth::Removed => "mesh-badge-removed",
+        HomePeerHealth::Unreachable => "mesh-health-unreachable",
+    })
 }
 
 pub(crate) fn identity_root() -> PathBuf {
@@ -1049,7 +1068,6 @@ impl DeviceMeshModel {
             devices,
             changed: false,
             runtime_status: read.runtime_status,
-            registered_home_peers: read.home_peers.len(),
             home_peers: read.home_peers,
             home_peer_health: HashMap::new(),
             home_peer_last_seen: read.home_peer_last_seen,
@@ -1242,17 +1260,18 @@ impl DeviceMeshModel {
             InvokeArgument::Json(arguments),
             Some(Confirmation::Confirmed),
         );
-        self.management_call = Some((call, peer.device_node_id.clone()));
+        self.management_call = Some((call, Some(peer.device_node_id.clone())));
         self.home_peer_health
-            .insert(peer.device_node_id.clone(), "Connecting…".into());
+            .insert(peer.device_node_id.clone(), HomePeerHealth::Connecting);
         self.changed = true;
     }
 
-    /// Take in how a home-server command for `device` ended: the response
-    /// it reported, nothing, or why it failed.
+    /// Take in how a home server command ended — for `device`, or for the
+    /// removals still to deliver when there is none: the response it
+    /// reported, nothing, or that it failed.
     fn take_management_answer(
         &mut self,
-        device: String,
+        device: Option<String>,
         answer: Result<Option<serde_json::Value>, String>,
     ) {
         match answer {
@@ -1265,29 +1284,32 @@ impl DeviceMeshModel {
                     .get("decommissioned")
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
-                self.home_peer_health.insert(
-                    device.clone(),
-                    if removed {
-                        "Removed".into()
-                    } else if ready {
-                        "Online. Files ready".into()
-                    } else {
-                        "Online. Syncing files".into()
-                    },
-                );
-                let now_ms = ui::time::unix_now_ms();
-                self.home_peer_last_seen.insert(device, now_ms);
-                save_home_peer_last_seen(&self.home_peer_last_seen);
+                if let Some(device) = device {
+                    self.home_peer_health.insert(
+                        device.clone(),
+                        if removed {
+                            HomePeerHealth::Removed
+                        } else {
+                            HomePeerHealth::Online { files_ready: ready }
+                        },
+                    );
+                    self.home_peer_last_seen
+                        .insert(device, ui::time::unix_now_ms());
+                    save_home_peer_last_seen(&self.home_peer_last_seen);
+                }
                 self.home_peers = registered_home_peers();
-                self.registered_home_peers = self.home_peers.len();
             }
             Ok(None) => {}
             Err(detail) => {
-                let label = self.home_peer_last_seen.get(&device).map_or_else(
-                    || format!("Offline: {detail}"),
-                    |last_seen| last_seen_label(*last_seen),
+                tracing::warn!(
+                    target: "tilo::settings",
+                    %detail,
+                    "the home server did not answer"
                 );
-                self.home_peer_health.insert(device, label);
+                if let Some(device) = device {
+                    self.home_peer_health
+                        .insert(device, HomePeerHealth::Unreachable);
+                }
             }
         }
         self.changed = true;
@@ -1454,11 +1476,8 @@ impl Page<'_> {
         ];
         if self.load_status.starts_with("Configuration could not")
             || self.load_status.starts_with("Not saved")
-            || self.load_status.starts_with("Could not start pairing")
         {
             continuation_rows.push(row(error_caption(&mesh_status_shown(&self.load_status))));
-        } else if self.load_status.starts_with("Waiting") {
-            continuation_rows.push(note(&mesh_status_shown(&self.load_status)));
         }
 
         let target_name = self
@@ -1795,7 +1814,6 @@ impl DeviceMeshModel {
             }
             return;
         }
-        self.registered_home_peers = registered_home_peer_count();
         self.refresh_runtime_status();
         self.load_status = match self.pairing_target {
             PairingTarget::HomePeer => "Home server paired".into(),
@@ -1836,11 +1854,17 @@ impl DeviceMeshModel {
                 self.management_child = Some(child);
                 self.management_device = Some(peer.device_node_id.clone());
                 self.home_peer_health
-                    .insert(peer.device_node_id.clone(), "Connecting…".into());
+                    .insert(peer.device_node_id.clone(), HomePeerHealth::Connecting);
             }
             Err(error) => {
+                tracing::warn!(
+                    target: "tilo::settings",
+                    %error,
+                    action,
+                    "the home server command did not start"
+                );
                 self.home_peer_health
-                    .insert(peer.device_node_id.clone(), format!("Offline: {error}"));
+                    .insert(peer.device_node_id.clone(), HomePeerHealth::Unreachable);
             }
         }
         self.changed = true;
@@ -1863,7 +1887,7 @@ impl DeviceMeshModel {
                 InvokeArgument::None,
                 None,
             );
-            self.management_call = Some((call, "__pending__".into()));
+            self.management_call = Some((call, None));
             return;
         }
         if self.home_peers.is_empty() {
@@ -1920,7 +1944,7 @@ impl DeviceMeshModel {
         match management_result {
             Some(Ok(output)) => {
                 self.management_child = None;
-                let device = self.management_device.take().unwrap_or_default();
+                let device = self.management_device.take();
                 let answer = if output.status.success() {
                     Ok(serde_json::from_slice::<serde_json::Value>(&output.stdout).ok())
                 } else {
@@ -1930,9 +1954,14 @@ impl DeviceMeshModel {
             }
             Some(Err(error)) => {
                 self.management_child = None;
+                tracing::warn!(
+                    target: "tilo::settings",
+                    %error,
+                    "the home server command did not finish"
+                );
                 if let Some(device) = self.management_device.take() {
                     self.home_peer_health
-                        .insert(device, format!("Offline: {error}"));
+                        .insert(device, HomePeerHealth::Unreachable);
                 }
                 self.changed = true;
             }
@@ -2526,10 +2555,20 @@ mod tests {
     fn device_health_and_workspace_status_reflect_fresh_facts() {
         // Case `peer_health_is_a_compact_visual_state_with_detail_beside_it`.
         {
-            assert_eq!(peer_health_badge("Online. Files ready"), "Online");
-            assert_eq!(peer_health_badge("Online. Syncing files"), "Syncing");
-            assert_eq!(peer_health_badge("Offline: Last seen 4 h ago"), "Offline");
-            assert_eq!(peer_health_badge("Checking…"), "Checking");
+            assert_eq!(
+                peer_health_badge(HomePeerHealth::Online { files_ready: true }),
+                "Online"
+            );
+            assert_eq!(
+                peer_health_badge(HomePeerHealth::Online { files_ready: false }),
+                "Syncing"
+            );
+            assert_eq!(peer_health_badge(HomePeerHealth::Unreachable), "Offline");
+            assert_eq!(peer_health_badge(HomePeerHealth::Connecting), "Checking");
+            assert_eq!(
+                peer_health_detail(HomePeerHealth::Unreachable),
+                "Offline. Check that it is on and connected"
+            );
         }
 
         // Case `fresh_daemon_metrics_drive_online_status`.
@@ -2981,10 +3020,30 @@ mod tests {
             )
         );
         assert_eq!(
-            pane.home_peer_health.get(NEARBY_DEVICE).map(String::as_str),
-            Some("Removed")
+            pane.home_peer_health.get(NEARBY_DEVICE),
+            Some(&HomePeerHealth::Removed)
         );
         assert!(pane.management_call.is_none(), "the removal has answered");
+    }
+
+    /// A home server that does not answer is a state the pane keeps, not the
+    /// host's own words: its row says it in the person's language.
+    #[test]
+    fn a_home_server_that_does_not_answer_is_offline_not_the_hosts_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+        pane.take_management_answer(
+            Some(NEARBY_DEVICE.into()),
+            Err("the home server was not reachable".into()),
+        );
+        assert_eq!(
+            pane.home_peer_health.get(NEARBY_DEVICE),
+            Some(&HomePeerHealth::Unreachable)
+        );
+        assert_eq!(
+            peer_health_detail(HomePeerHealth::Unreachable),
+            "Offline. Check that it is on and connected"
+        );
     }
 
     /// Pairing runs on the host behind its actions: discovering asks the
@@ -3104,5 +3163,31 @@ mod tests {
         assert_eq!(here.load_status, there.load_status);
         assert_eq!(here.config.device_role, there.config.device_role);
         assert_eq!(here.runtime_status, there.runtime_status);
+    }
+
+    /// A workspace's home-relay switch is named by its row, so a reader
+    /// hears which workspace it puts on the relay and how it stands.
+    #[test]
+    fn a_home_relay_switch_is_named_by_its_workspace_row() {
+        use ui::tilo_actions::remote::Caller;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut model = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+        model.remote = ui::RemoteActions::with_host(
+            Arc::new(PairingHost::default()),
+            Caller::local_person("owner"),
+        );
+        let mut app = window_on(model);
+        // The window's model asks the host which workspaces it hosts.
+        change_model(&mut app, |model| {
+            model.refresh_home_relay();
+            model.poll_background_tasks();
+        });
+        let switch = crate::testing::switch_named(&mut app, "Personal");
+        assert_eq!(
+            switch.toggled(),
+            Some(ui::accesskit::Toggled::True),
+            "the workspace is hosted on the relay"
+        );
     }
 }

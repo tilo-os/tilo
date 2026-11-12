@@ -8381,6 +8381,25 @@ mod tests {
         }
     }
 
+    /// A tab's accessible name is the label its pill reads: a reader hears exactly what the strip
+    /// says, so two windows of one app are told apart the same way by everyone.
+    #[test]
+    fn a_tabs_accessible_name_is_the_label_the_pill_shows() {
+        let mut b = bar();
+        b.set_active(2);
+        b.tabs_mut()[1].title = "Inbox".to_owned();
+        let labels: Vec<String> = b.tabs().iter().map(|tab| tab.title.clone()).collect();
+        let node = Widget::accessibility(&b).expect("tab bar is not presentational");
+        let names: Vec<String> = node
+            .children
+            .into_iter()
+            .filter(|child| child.role == crate::a11y::Role::Tab)
+            .filter_map(|child| child.name)
+            .collect();
+        assert_eq!(names, labels, "a reader hears what the strip reads");
+        assert!(labels.contains(&"Inbox".to_owned()));
+    }
+
     #[test]
     fn keyboard_and_programmatic_selection_track_stable_tab_identity() {
         {

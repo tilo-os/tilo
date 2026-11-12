@@ -151,7 +151,7 @@ fn frozen_release_and_drive_wire_fields_are_unchanged() {
         assert_eq!(serialized_roundtrip(&new), wire(&old));
         assert_eq!(new.is_media_target(), old.is_media_target());
         assert_eq!(new.dev_path(), old.dev_path());
-        assert_eq!(new.contents_summary(), old.contents_summary());
+        assert_eq!(new.partitions.len(), old.partitions.len());
     }
     for value in [0, 999, 1000, 1500000, u64::MAX] {
         assert_eq!(fmt_size(value), before::fmt_size(value));

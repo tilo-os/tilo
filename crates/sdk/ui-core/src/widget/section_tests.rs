@@ -508,3 +508,28 @@ fn a_header_in_a_taller_box_keeps_its_line_at_the_box_s_foot() {
         above_foot(taller)
     );
 }
+
+/// A heading counts its rows where the number says something they do not: one row restates
+/// itself with "1", while two say how many and a run cut short says how many it left out.
+#[test]
+fn a_heading_counts_one_row_as_nothing() {
+    assert_eq!(heading_count(1, None), None, "one row says nothing");
+    assert_eq!(heading_count(0, None), None, "no rows say nothing");
+    assert_eq!(heading_count(2, None), Some(2), "two rows say how many");
+    assert_eq!(heading_count(9, None), Some(9));
+    assert_eq!(
+        heading_count(1, Some(1)),
+        None,
+        "a run of one, all shown, says nothing"
+    );
+    assert_eq!(
+        heading_count(0, Some(1)),
+        Some(1),
+        "a run cut short says how many it left out, even at one"
+    );
+    assert_eq!(
+        heading_count(3, Some(20)),
+        Some(20),
+        "and how many it holds"
+    );
+}

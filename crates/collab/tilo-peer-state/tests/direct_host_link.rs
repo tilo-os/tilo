@@ -56,9 +56,9 @@ fn edit(peer: &DirectSync, key: &SigningKey, value: &str) {
     edit.put(ROOT, "value", value).unwrap();
     edit.commit_edit("fixture", "value");
     let change = edit.save_after(&heads);
-    peer.publish(|peer, key, now| {
+    peer.publish(|peer| {
         peer.publication_mut()
-            .publish_incremental(APP, RECORD, change, key, now)
+            .publish_incremental(APP, RECORD, change, key, SystemTime::now())
     })
     .unwrap();
 }
@@ -242,7 +242,7 @@ async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_stor
         .content_keys()
         .unwrap();
     let kept = sealed(&a_key, &keys, "member history");
-    a.publish(|_, _, _| Ok(kept.clone())).unwrap();
+    a.publish(|_| Ok(kept.clone())).unwrap();
     let retained = || {
         store
             .replay(workspace_number(), &[], Budget::default())
@@ -788,11 +788,11 @@ async fn what_the_host_wrote_long_ago_reaches_a_member_that_links_later() {
     );
     // The host holds it as one of its own sealed publications, which its catch-up carries.
     let host_device = host_key.verifying_key().to_bytes();
-    host.publish(|peer, _, now| {
+    host.publish(|peer| {
         peer.receive_from_report(
             tilo_peer_state::TransportOrigin::RetainedRelayDelta(host_device),
             old.clone(),
-            now,
+            SystemTime::now(),
         )
         .map_err(|error| format!("{error:?}"))?;
         Ok(old.clone())

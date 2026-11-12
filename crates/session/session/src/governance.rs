@@ -1,5 +1,6 @@
-//! The desktop's half of a workspace's governance: the people and bots the desk's workspaces show,
-//! projected from the governance this device holds, and the desk the grants are written into.
+//! The desktop's half of a workspace's governance: the people, bots and saved shortcuts the desk's
+//! workspaces show, projected from the governance this device holds, and the desk the grants are
+//! written into.
 
 use tilo_desktop_model::Workspace;
 use tilo_session_client::membership::{self, Workspaces};
@@ -22,13 +23,14 @@ impl Workspaces for Desk<'_> {
 }
 
 impl crate::Shared {
-    /// Who each workspace on the desk has in it and which bots it runs, as the workspace's own
-    /// governance here says: who it was shared with, in what part, when each was admitted, and the
-    /// bots it runs or asks its host for. The desk keeps no roster of its own — its workspaces
-    /// carry the governance's people and bots as a projection, which is what the People and Agents
-    /// tabs, the broker and every other reader of the roster read. Nothing of a workspace's state
-    /// reaches this device without the engine admitting it, so a revision that has not moved has
-    /// nothing to show.
+    /// Who each workspace on the desk has in it, which bots it runs and which shortcuts it saved,
+    /// as the workspace's own governance here says: who it was shared with, in what part, when each
+    /// was admitted, the bots it runs or asks its host for, and its shortcuts as each saver's own
+    /// device wrote them. The desk keeps no roster of its own — its workspaces carry the
+    /// governance's people, bots and shortcuts as a projection, which is what the People, Agents and
+    /// Shortcuts surfaces, the broker, the trigger host and every other reader of them read.
+    /// Nothing of a workspace's state reaches this device without the engine admitting it, so a
+    /// revision that has not moved has nothing to show.
     pub(crate) fn project_governance(&self) {
         let Some(engine) = &self.engine else {
             return;
@@ -43,18 +45,27 @@ impl crate::Shared {
             let mut changed = false;
             for workspace in workspaces {
                 let Ok(policy) = engine.policy(&workspace.id().to_string()) else {
-                    // A workspace whose governance this device does not hold keeps the people and
-                    // bots the desk has of it.
+                    // A workspace whose governance this device does not hold keeps the people,
+                    // bots and shortcuts the desk has of it.
                     continue;
                 };
                 changed |= membership::project(workspace, &policy);
-                let Ok(bots) = engine.owner().with_current(workspace.id(), |view| {
-                    Ok(view.peer().governance().workspace_bots())
+                let Ok((bots, shortcuts)) = engine.owner().with_current(workspace.id(), |view| {
+                    Ok((
+                        view.peer().governance().workspace_bots(),
+                        view.peer().workspace().workspace_shortcuts(),
+                    ))
                 }) else {
                     continue;
                 };
                 if workspace.bots != bots {
                     workspace.bots = bots;
+                    changed = true;
+                }
+                // A shortcut deleted in the workspace is absent from what it holds, so the desk's
+                // list is the workspace's, never the two merged.
+                if workspace.shortcuts != shortcuts {
+                    workspace.shortcuts = shortcuts;
                     changed = true;
                 }
             }

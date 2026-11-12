@@ -86,12 +86,6 @@ impl AppBrokerState {
             tracing::warn!("opening an app was refused: the caller names no workspace");
             return Err(ActionHostError::UnknownAction);
         }
-        // An app whose model this session runs has no window to open: answer its `open` at
-        // once, naming the resource the session places
-        // (`docs/designs/app-language/one-app-model.md` §3).
-        if let Some(reason) = self.served_open_refusal(app_id) {
-            return Err(ActionHostError::Unavailable { reason });
-        }
         if !policy.may_in(
             &workspace,
             &app_node(&workspace, app_id),

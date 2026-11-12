@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location('resolver', ROOT / 'tools/ci/resolve_builder.py')
 resolver = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(resolver)
+# The checkout's own inputs name the image every request below asks for.
+MANIFEST_URL = resolver.manifest_url(resolver.builder_tag())
 
 
 class BuilderResolutionTests(unittest.TestCase):
@@ -36,9 +38,12 @@ class BuilderResolutionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertEqual(result.stderr, '::error::CI builder resolution failed (ValueError)\n')
             self.assertNotIn('Traceback', result.stderr)
-        with self.subTest(phase='index is read anonymously from the registry without a redirect'):
-            self.assertEqual(resolver.MANIFEST_URL,
-                             'https://registry.tilo.so/v2/tilo/tilo-builder/manifests/latest')
+        with self.subTest(phase='the index read is the one this checkout\'s inputs name'):
+            tag = subprocess.run(['bash', str(ROOT / 'tools/ci/publish/ci-builder.sh'), 'tag'],
+                                 capture_output=True, text=True, check=True).stdout.strip()
+            self.assertRegex(tag, r'^inputs-[0-9a-f]{32}$')
+            self.assertEqual(MANIFEST_URL,
+                             'https://registry.tilo.so/v2/tilo/tilo-builder/manifests/' + tag)
             self.assertEqual(resolver.IMAGE, 'registry.tilo.so/tilo/tilo-builder')
         with self.subTest(phase='digest is the hash of the served index'):
             payload = json.dumps(self.index()).encode()
@@ -58,10 +63,10 @@ class BuilderResolutionTests(unittest.TestCase):
             for payload in (b'{', b'\xff', 'text'):
                 with self.subTest(payload=payload), self.assertRaises(ValueError):
                     resolver.resolve(fetch=lambda: payload)
-        with self.subTest(phase='manual override never calls latest api'):
+        with self.subTest(phase='manual override never calls the registry'):
             image = resolver.IMAGE + '@sha256:' + 'b' * 64
             def unexpected_fetch():
-                self.fail('manual immutable override queried mutable latest')
+                self.fail('manual immutable override queried the registry')
             self.assertEqual(resolver.resolve(image, fetch=unexpected_fetch), image)
 
     @staticmethod
@@ -85,7 +90,7 @@ class MetadataTransportTests(unittest.TestCase):
     def challenge(self, realm='https://registry.tilo.so/token',
                   scope='repository:tilo/tilo-builder:pull'):
         header = f'Bearer realm="{realm}",service="registry.tilo.so",scope="{scope}"'
-        return HTTPError(resolver.MANIFEST_URL, 401, 'Unauthorized', {'WWW-Authenticate': header},
+        return HTTPError(MANIFEST_URL, 401, 'Unauthorized', {'WWW-Authenticate': header},
                          io.BytesIO(b''))
 
     def test_write_endpoint_challenge_takes_an_anonymous_pull_token(self):
@@ -98,7 +103,7 @@ class MetadataTransportTests(unittest.TestCase):
         self.assertEqual(token_request.full_url, 'https://registry.tilo.so/token?service=registry.tilo.so'
                          '&scope=repository%3Atilo%2Ftilo-builder%3Apull')
         self.assertIsNone(token_request.get_header('Authorization'))
-        self.assertEqual(retry.full_url, resolver.MANIFEST_URL)
+        self.assertEqual(retry.full_url, MANIFEST_URL)
         self.assertEqual(retry.get_header('Authorization'), 'Bearer pull-token')
 
     def test_foreign_token_realm_or_scope_is_refused(self):
@@ -133,7 +138,7 @@ class MetadataTransportTests(unittest.TestCase):
                     requests = [call.args[0] for call in opener.open.call_args_list]
                     self.assertEqual([(r.full_url, r.header_items()) for r in requests[:1]],
                                      [(r.full_url, r.header_items()) for r in requests[1:]])
-                    self.assertEqual(requests[0].full_url, resolver.MANIFEST_URL)
+                    self.assertEqual(requests[0].full_url, MANIFEST_URL)
                     self.assertIsNone(requests[0].get_header('Authorization'))
                     self.assertEqual(requests[0].get_method(), 'GET')
                     self.assertIsNone(requests[0].data)

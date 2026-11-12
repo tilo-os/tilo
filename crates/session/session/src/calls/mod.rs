@@ -900,7 +900,7 @@ impl Shared {
             let handle = format!("call-microphone:{}", self.call);
             let question = tilo_portal::consent::AccessQuestion {
                 capability: MICROPHONE.to_owned(),
-                reason: Some("to be heard in the call".to_owned()),
+                reason: Some(crate::i18n::t("call-microphone-reason")),
                 may_remember: false,
                 text: None,
             };
@@ -998,7 +998,7 @@ impl Shared {
             self.side.lock_recover().camera = None;
             return Ok(());
         }
-        if !self.ask(CAMERA, "call-camera", "to be seen in the call") {
+        if !self.ask(CAMERA, "call-camera", &crate::i18n::t("call-camera-reason")) {
             return Err(Issue::PermissionDenied);
         }
         let device = self.camera.device().ok_or(Issue::CameraLost)?;
@@ -1047,7 +1047,7 @@ impl Shared {
             self.screen.set_sharing(false);
             return Ok(());
         }
-        if !self.ask(SCREEN, "call-screen", "to share this screen in the call") {
+        if !self.ask(SCREEN, "call-screen", &crate::i18n::t("call-screen-reason")) {
             return Err(Issue::PermissionDenied);
         }
         let sending = Arc::new(
@@ -1060,8 +1060,9 @@ impl Shared {
     }
 
     /// Ask the person through the session's own prompt for `capability` : whether they already
-    /// allowed it for this call. A question that was not answered yet is not asked again; the
-    /// service refuses the second.
+    /// allowed it for this call. `reason` is what the sheet says the call wants it for, in the
+    /// person's language. A question that was not answered yet is not asked again; the service
+    /// refuses the second.
     fn ask(&self, capability: &str, handle: &str, reason: &str) -> bool {
         let Some(consents) = &self.consents else {
             return true;

@@ -1310,7 +1310,9 @@ enum DoorAsk {
         slot: Option<String>,
         /// The run the step is one of, as its invocation names it.
         run: Option<tilo_actions::WorkGroup>,
-        done: tilo_actions::remote::Completer<Result<Option<tilo_actions::ActionOutput>, String>>,
+        done: tilo_actions::remote::Completer<
+            Result<Option<tilo_actions::ActionOutput>, ActionHostError>,
+        >,
     },
     /// The record of the package the session runs itself, by its app (`so.tilo.shell`): its
     /// document and the packages a program reading it loads, or `None` for one no service keeps a
@@ -1390,7 +1392,9 @@ impl crate::platform::steps::SessionSteps for SessionDoors {
         address: tilo_actions::ActionAddress,
         slot: Option<String>,
         run: Option<tilo_actions::WorkGroup>,
-        done: tilo_actions::remote::Completer<Result<Option<tilo_actions::ActionOutput>, String>>,
+        done: tilo_actions::remote::Completer<
+            Result<Option<tilo_actions::ActionOutput>, ActionHostError>,
+        >,
     ) {
         self.ask(DoorAsk::Step {
             actor,
@@ -1593,46 +1597,37 @@ impl SessionDoors {
                     slot,
                     run,
                     done,
-                } => {
-                    let ran = match arguments_of(slot.as_deref()) {
-                        Ok(arguments) => {
-                            // A step a service publishes runs there, on the record the service
-                            // keeps — Chat's `record-work` on a turn's summons is the session's
-                            // Chat service's, not the arrangement's. Every other step is the
-                            // session's own doors': the arrangement, the windows and the notices.
-                            // Any resource a service publishes, at any depth: a note in a
-                            // notebook the session keeps is the service's as its notebook is.
-                            let served = tilo_actions::door::resolve(
-                                &services.borrow().resources(),
-                                &address,
-                            )
-                            .is_some();
-                            if served {
-                                invoke_service_step(
-                                    services,
-                                    &actor,
-                                    run.as_ref(),
-                                    &address,
-                                    &arguments,
-                                )
-                            } else {
-                                doors
-                                    .invoke_as(&actor, &address, &arguments, look)
-                                    .map(|started| match started {
-                                        ui::host_operation::ResourceOperationStart::Completed(
-                                            output,
-                                        ) => Some(output),
-                                        ui::host_operation::ResourceOperationStart::Accepted => {
-                                            None
-                                        }
-                                    })
-                                    .map_err(|error| error.to_string())
-                            }
-                        }
-                        Err(why) => Err(why),
-                    };
-                    done.complete(ran);
-                }
+                } => match arguments_of(slot.as_deref()) {
+                    // A step a service publishes runs there, on the record the service keeps —
+                    // Chat's `record-work` on a turn's summons is the session's Chat service's,
+                    // not the arrangement's. Every other step is the session's own doors': the
+                    // arrangement, the windows and the notices. Any resource a service publishes,
+                    // at any depth: a note in a notebook the session keeps is the service's as
+                    // its notebook is.
+                    Ok(arguments)
+                        if tilo_actions::door::resolve(
+                            &services.borrow().resources(),
+                            &address,
+                        )
+                        .is_some() =>
+                    {
+                        invoke_service_step(
+                            services,
+                            &actor,
+                            run.as_ref(),
+                            &address,
+                            &arguments,
+                            done,
+                        );
+                    }
+                    Ok(arguments) => done.complete(
+                        doors
+                            .invoke_as(&actor, &address, &arguments, look)
+                            .map(ui::host_operation::ResourceOperationStart::completed)
+                            .map_err(|error| crate::surfaces::refusal(&error)),
+                    ),
+                    Err(why) => done.complete(Err(why)),
+                },
                 DoorAsk::Record { app, done } => {
                     done.complete(services.borrow().record(&app));
                 }
@@ -1980,9 +1975,7 @@ impl Host {
             let status = match ran {
                 Ok(Some(output)) => ReceiptStatus::Completed { output },
                 Ok(None) => ReceiptStatus::Accepted,
-                Err(reason) => ReceiptStatus::Rejected {
-                    error: ActionHostError::Refused { reason },
-                },
+                Err(error) => ReceiptStatus::Rejected { error },
             };
             // The connection reads its own step back by its invocation id, as it reads any
             // other action it took.

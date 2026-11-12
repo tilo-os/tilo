@@ -111,7 +111,7 @@ pub(crate) fn connect_spec(connection: &Connection) -> ActionSpec {
         "remote-action-open-session",
         &[(
             "detail",
-            ArgValue::Text(readiness.detail(connection.kind).to_owned()),
+            ArgValue::Text(CATALOG.t(readiness.detail_message(connection.kind))),
         )],
     ));
     spec.type_mut().contract.tags = vec!["network".into(), "session".into()];
@@ -121,11 +121,12 @@ pub(crate) fn connect_spec(connection: &Connection) -> ActionSpec {
         spec.unavailable(
             readiness.code(),
             if readiness == crate::session::TransportReadiness::InvalidProfile {
-                connection
-                    .profile_issue()
-                    .unwrap_or_else(|| readiness.detail(connection.kind))
+                connection.profile_issue().map_or_else(
+                    || CATALOG.t(readiness.detail_message(connection.kind)),
+                    str::to_owned,
+                )
             } else {
-                readiness.detail(connection.kind)
+                CATALOG.t(readiness.detail_message(connection.kind))
             },
         )
     }

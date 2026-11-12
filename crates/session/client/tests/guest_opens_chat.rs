@@ -10,8 +10,12 @@
 //! and refused, and nothing read it again, so the chat stayed empty.
 //!
 //! The workspace here is the Lounge's shape: 300 members who came through
-//! its door, one of whom wrote the chat. Each guest opens the chat's head
-//! with its entry, and every landing of the chat must read.
+//! its door, one of whom wrote the chat's 200 messages, each a write of its
+//! own. Each guest opens the chat's head with its entry, and every landing of
+//! the chat must read. The chat reaches the guest in the one exchange its
+//! opening starts: nothing about it waits on a timer or a retry, so it reads
+//! whole within [`OPENED_TO_READ`] of the guest asking for it, however many
+//! writes it is.
 
 #![allow(
     clippy::unwrap_used,
@@ -56,6 +60,15 @@ const CHAT_CHAIN: &str = "messages";
 
 /// How many people come through the door at once while the crowd is made.
 const ARRIVING: usize = 16;
+
+/// The messages the chat holds, each written on its own as a member posts it.
+const MESSAGES: usize = 200;
+
+/// The longest a guest's page may take to read the chat whole after it opens it, on a host in
+/// the same process: the host sending what it holds and the page taking it in. A refused read
+/// waiting for the next landing, or a write let go and asked for again, costs a timer or a
+/// round trip each, and many of those over the chat's writes exceed it.
+const OPENED_TO_READ: Duration = Duration::from_secs(3);
 
 /// A page of `name` entering `workspace` through its door.
 async fn arrive(
@@ -138,11 +151,12 @@ async fn through_the_door(
 /// guest opens the chat's head and its newest part's route as it enters, as
 /// a Chat window on the desk does, and the chat must read whole by the
 /// landing after which nothing more arrives.
-async fn chat_read_by_guest(page: &Link, workspace_id: u64, chat: &DocumentRoute) {
+async fn chat_read_by_guest(page: &Link, workspace_id: u64, chat: &DocumentRoute) -> Duration {
     let head = DocumentRoute {
         record: neighbour_wire::chain_head(CHAT_CHAIN),
         ..chat.clone()
     };
+    let opened = Instant::now();
     page.send(Cmd::Join(workspace_id)).unwrap();
     page.send(Cmd::OpenRoute(chat.clone())).unwrap();
     page.send(Cmd::OpenRecordAt(workspace_id, head.clone()))
@@ -159,7 +173,7 @@ async fn chat_read_by_guest(page: &Link, workspace_id: u64, chat: &DocumentRoute
                         .engine()
                         .record(&chat.cluster_id, &chat.app_id, &chat.record)
                     {
-                        Ok(Some(_)) => shown = true,
+                        Ok(Some(bytes)) => shown = holds_every_message(&bytes),
                         // Still arriving (its keys): it lands again.
                         Ok(None) => {}
                         Err(error) => refusals.push(error),
@@ -172,7 +186,7 @@ async fn chat_read_by_guest(page: &Link, workspace_id: u64, chat: &DocumentRoute
             }
         }
         if shown {
-            return;
+            return opened.elapsed();
         }
         // The host sent everything of the chat, and nothing of it landed for
         // a while: what the page shows is final.
@@ -187,6 +201,13 @@ async fn chat_read_by_guest(page: &Link, workspace_id: u64, chat: &DocumentRoute
         );
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
+}
+
+/// Whether `bytes`, the chat as the guest's page reads it, holds every message.
+fn holds_every_message(bytes: &[u8]) -> bool {
+    use automerge::ReadDoc as _;
+    automerge::AutoCommit::load(bytes)
+        .is_ok_and(|doc| doc.keys(automerge::ROOT).count() >= MESSAGES)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -234,15 +255,20 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
     .await;
     author.send(Cmd::Join(lounge.workspace_id)).unwrap();
     let mut history = automerge::AutoCommit::new();
-    {
+    for message in 0..MESSAGES {
         use automerge::transaction::Transactable as _;
-        for message in 0..200 {
-            history
-                .put(automerge::ROOT, format!("message-{message}"), "hello")
-                .unwrap();
-        }
+        let before = history.get_heads();
+        history
+            .put(automerge::ROOT, format!("message-{message}"), "hello")
+            .unwrap();
+        history.commit();
+        let post = if before.is_empty() {
+            DocumentMutation::Snapshot(history.save())
+        } else {
+            DocumentMutation::Incremental(history.save_after(&before))
+        };
+        written(&author, &chat, &post).await;
     }
-    written(&author, &chat, &DocumentMutation::Snapshot(history.save())).await;
     wait_keyed(&author, &chat).await;
     let mut arriving = tokio::task::JoinSet::new();
     for n in 1..members {
@@ -267,8 +293,15 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
             &format!("Guest {guest}"),
         )
         .await;
-        chat_read_by_guest(&page, lounge.workspace_id, &chat).await;
-        eprintln!("guest {guest} read the chat after {:?}", started.elapsed());
+        let read = chat_read_by_guest(&page, lounge.workspace_id, &chat).await;
+        eprintln!(
+            "guest {guest} read the chat {read:?} after opening it, {:?} after arriving",
+            started.elapsed()
+        );
+        assert!(
+            read < OPENED_TO_READ,
+            "guest {guest} read the chat only {read:?} after opening it"
+        );
         page.close();
     }
     author.close();

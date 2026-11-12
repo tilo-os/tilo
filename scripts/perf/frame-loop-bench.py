@@ -61,6 +61,27 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+# The one place that picks a session's private runtime directory.
+SESSION_LAUNCHER = REPO / "dist" / "dev" / "nested-session.sh"
+
+
+def runtime_directory(state: Path) -> Path:
+    """The private runtime directory a session on `state` uses.
+
+    The launcher picks it (a login's XDG_RUNTIME_DIR, the user's /run/user
+    seat, or a short directory of its own) and prints it, so the rule lives in
+    one place. A socket path must fit the kernel's limit, which is why it is
+    never left to whatever depth the caller's state sits at."""
+    printed = subprocess.run(
+        [str(SESSION_LAUNCHER), "--print-runtime", "--state", str(state)],
+        capture_output=True, text=True, check=True,
+    )
+    runtime = printed.stdout.strip()
+    if not runtime:
+        raise SystemExit("the session launcher named no runtime directory")
+    runtime = Path(runtime)
+    runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return runtime
 
 
 def required_load_client(
@@ -614,12 +635,16 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
         )
     required_load_client(session_bin, args.load, args.load_client)
     session_root = Path(tempfile.mkdtemp(prefix="tilo-frame-bench-"))
+    runtime = None
     try:
-        return run_session(args, out_dir, session_root)
+        runtime = runtime_directory(session_root)
+        return run_session(args, out_dir, session_root, runtime)
     finally:
         if args.keep_session_root:
-            print(f"[bench] retained session root: {session_root}")
+            print(f"[bench] retained session root: {session_root} (runtime: {runtime})")
         else:
+            if runtime is not None:
+                shutil.rmtree(runtime, ignore_errors=True)
             shutil.rmtree(session_root, ignore_errors=True)
 
 
@@ -627,7 +652,8 @@ def default_session_bin(args: argparse.Namespace) -> Path:
     return Path(args.session_bin) if args.session_bin else REPO / "target/release/tilo-session"
 
 
-def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> dict:
+def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path,
+                runtime: Path) -> dict:
     session_bin = default_session_bin(args)
     load_client = required_load_client(session_bin, args.load, args.load_client)
     label = args.label or f"{args.backend}-{args.load}"
@@ -637,14 +663,13 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> 
     # A failed launch must never reuse evidence from an earlier run with this label.
     for artifact in (trace, summary, out_dir / f"{label}.stats.json"):
         artifact.unlink(missing_ok=True)
-    (session_root / "run").mkdir(mode=0o700)
     # The session trusts settings only below an existing login home.
     (session_root / "home").mkdir(mode=0o700)
     # Keep the control socket inside the same private runtime directory passed
     # to the compositor.  Choosing it from the caller's XDG_RUNTIME_DIR first
     # and then replacing XDG_RUNTIME_DIR below makes the driver wait on a path
     # the child can never create.
-    ctl_path = session_root / "run" / f"tilo-bench-{os.getpid()}.sock"
+    ctl_path = runtime / f"tilo-bench-{os.getpid()}.sock"
     env = dict(os.environ)
     env["TILO_FRAME_TRACE"] = str(trace)
     env["TILO_FRAME_SUMMARY"] = str(summary)
@@ -660,7 +685,7 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> 
     env["XDG_DATA_HOME"] = str(session_root / "data")
     env["XDG_CACHE_HOME"] = str(session_root / "cache")
     env["XDG_STATE_HOME"] = str(session_root / "state")
-    env["XDG_RUNTIME_DIR"] = str(session_root / "run")
+    env["XDG_RUNTIME_DIR"] = str(runtime)
     env["TILO_STATE_PATH"] = str(session_root / "config" / "state.json")
     env["TILO_IDENTITY_ROOT"] = str(session_root / "identity-root")
     env["TILO_PEER_KEY_PATH"] = str(session_root / "keys" / "peer-key")
@@ -764,7 +789,7 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> 
                         # disposable compositor, not to the operator's live
                         # desktop. Pointing at the caller runtime silently
                         # makes the load test exercise nothing.
-                        cenv["XDG_RUNTIME_DIR"] = str(session_root / "run")
+                        cenv["XDG_RUNTIME_DIR"] = str(runtime)
                         ccmd = [
                             str(load_client),
                             "--size",

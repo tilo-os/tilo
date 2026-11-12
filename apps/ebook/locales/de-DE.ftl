@@ -124,6 +124,44 @@ ebook-reading-theme = { $theme ->
 }
 ebook-use-scheme = Farbthema { $scheme } verwenden
 ebook-untitled = Ohne Titel
+ebook-annotation-bookmark = Lesezeichen
+ebook-annotation-highlight = Markierung
+ebook-annotation-note = Notiz
+ebook-annotation-comment = { $kind }-Kommentar
+ebook-annotation-unknown-book = Unbekanntes Buch
+ebook-annotation-locator = Kapitel { $chapter }, Absatz { $paragraph }
+ebook-search-title = Suche
+ebook-search-results = { $count ->
+    [one] 1 Treffer
+   *[other] { $count } Treffer
+}
+ebook-font-default = Standard
+ebook-font-mono = Mono
+ebook-scheme-light = Hell
+ebook-scheme-sepia = Sepia
+ebook-scheme-dark = Dunkel
+ebook-scheme-high-contrast = Hoher Kontrast
+ebook-scheme-new = Farbschema { $number }
+ebook-scheme-copy = { $scheme } (Kopie)
+ebook-mode-paged = Seiten
+ebook-mode-continuous = Scrollen
+ebook-mode-two-pages = Zwei Seiten
+ebook-composition-justified = Blocksatz
+ebook-composition-ragged = Flatterrand
+
+## Die Leseerscheinungs-Leiste
+ebook-appearance-text-size = Textgröße
+ebook-appearance-line-spacing = Zeilenabstand
+ebook-appearance-layout = Seitenlayout
+ebook-appearance-alignment = Ausrichtung
+ebook-appearance-typeface = Schrift
+ebook-appearance-colours = Farben
+ebook-appearance-manage = Schriften und Farben
+
+## Die Bibliothekseinstellungen, solange kein Ordner beobachtet wird
+ebook-library-empty-title = Noch keine Ordner
+ebook-library-empty-message = Öffne ein Buch aus einem Ordner, um dessen Bücher zusammenzuhalten.
+ebook-library-empty-action = Buch öffnen
 
 ebook-get = Holen
 
@@ -171,6 +209,7 @@ ebook-action-annotation = { $action }: { $text }
 ebook-action-open-comments = Kommentare zur Markierung öffnen
 ebook-action-close-comments = Kommentare schließen
 ebook-action-delete-highlight = Markierung löschen
+ebook-action-delete-highlight-comments = Markierung und Kommentare löschen
 ebook-action-add-comment = Kommentar hinzufügen
 ebook-action-edit-comment = Kommentar bearbeiten
 ebook-action-delete-comment = Kommentar löschen
@@ -206,3 +245,15 @@ ebook-action-open-result = Treffer öffnen
 ebook-action-get-book = Buch holen
 ebook-action-back = Zurück
 ebook-empty-comment = Leerer Kommentar
+
+## Wie die Einstellungsseite und der Notiz-Editor heißen
+ebook-settings-default-font = Standardschrift
+ebook-write-comment = Kommentar schreiben
+ebook-write-note = Notiz schreiben
+
+## Wie die Blätter der Einstellungen heißen
+ebook-edit-scheme-title = Farbschema bearbeiten
+ebook-add-font-title = Eine Systemschriftart hinzufügen
+
+## Die Schaltflächen der Einstellungsblätter
+ebook-done = Fertig

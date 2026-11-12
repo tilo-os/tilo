@@ -1102,7 +1102,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 let (provider, id) = (profile.id.clone(), model.id.clone());
                 let toggle = Toggle::from_state(&ui::LocalState::new(on))
                     .with_id(&format!("agent-model-{name}-{widget_id}"))
-                    .with_resolved_accessible_name(t(label))
                     .with_enabled(can_admin);
                 body.push(widgets::setting_row(
                     &t(label),

@@ -93,6 +93,7 @@ default = []
 toolkit = []
 
 [dev-dependencies]
+pollster.workspace = true
 # A workspace whose governance admits a newcomer after a record reached it.
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 web-time = { version = "1", features = ["serde"] }

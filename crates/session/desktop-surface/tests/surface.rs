@@ -34,7 +34,7 @@ impl TileSource for Notices {
         })
     }
 
-    fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, id: u64, app: &str, _: Option<u64>) -> Option<Tab> {
         if app.starts_with(NODE_APP) {
             // Opened on the node; its window arrives from there.
             NODE_LAUNCHES.with(|launches| launches.borrow_mut().push(app.into()));

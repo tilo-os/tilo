@@ -139,7 +139,6 @@ async fn through_door(
         .address
         .ok_or("the workspace's host takes no device sessions")?;
     let (cert, _) = identity.current_material(topic)?;
-    let key = identity.signing_key()?;
     let mut request_id = [0; 32];
     getrandom::fill(&mut request_id).map_err(|error| error.to_string())?;
     let entering = Entering {
@@ -158,7 +157,7 @@ async fn through_door(
         Some(info.host_cert.device_public_key),
         tilo_relay_session::ClientCredentials {
             cert,
-            signer: &key,
+            signer: identity.signer.as_ref(),
             revocations: tilo_user_identity::RevocationList::new(),
             entering: Some(tilo_relay_session::Entry {
                 entering,

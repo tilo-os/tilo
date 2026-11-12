@@ -474,6 +474,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     );
     // Every part the sheet offers makes a link of its own, and every link's code is that invitation
     // the same way.
+    let mut shown = made.code;
     for part in 0..seat.invite().roles.len() {
         app.harness()
             .perform_named(
@@ -486,11 +487,18 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
             .perform_named("invite-create", &A11yAction::Activate)
             .expect("the create button is pressed");
         app.settle();
-        settle(&mut session);
+        // The link is signed off the loop and shows once it landed.
+        common::until(&mut session, "the sheet shows the part's link", |session| {
+            session
+                .invite_sheet()
+                .and_then(|seat| seat.invite().created)
+                .is_some_and(|made| made.code != shown)
+        });
         let made = session
             .invite_sheet()
             .and_then(|seat| seat.invite().created)
             .expect("a link for the part");
+        shown.clone_from(&made.code);
         assert_eq!(
             scanned_back(&made),
             Ok(made.code.clone()),

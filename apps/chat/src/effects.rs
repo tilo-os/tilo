@@ -113,7 +113,8 @@ pub enum ChatEffect {
     /// there — and answers the conversation it landed in, as the item that
     /// names it. Sent from a person's box, the conversation opens as a
     /// window of the desk where the box stood; sent by anyone else, nothing
-    /// opens.
+    /// opens. The composer's send button runs this same action, so what it
+    /// does and what an agent's send does cannot drift apart.
     #[effect(returns, kind = "undoable")]
     Send {
         #[param("Who the message goes to")]
@@ -122,6 +123,10 @@ pub enum ChatEffect {
         attached: Vec<tilo_reference::Attached>,
         #[param("The message")]
         text: String,
+        #[param("The message it answers, when it answers one in a thread")]
+        parent: Option<String>,
+        #[param("Its paragraphs as written, with their formatting")]
+        body: Option<Vec<tilo_document::ClipBlock>>,
         #[param("Open the conversation as a window where the box that sent it stood")]
         opens: Option<bool>,
     },
@@ -460,7 +465,7 @@ impl ChatApp {
                 );
             }
             let name = ui::tilo_resource::NonBlank::parse("Voice")
-                .ok_or_else(|| "The voice channel could not be named".to_owned())?;
+                .ok_or_else(|| crate::i18n::t("chat-voice-channel-unnamed"))?;
             let Some(doc) = doc else {
                 if self.dispatch.is_none() {
                     return Err("Chat is open to view only".into());

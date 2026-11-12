@@ -29,7 +29,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
-use ui::record::{RecordId, RecordOwners, RecordStore};
+use ui::record::{RecordCheckout, RecordOwners, RecordStore};
 use ui::state::State;
 use ui::widget::TileHost;
 
@@ -117,9 +117,11 @@ pub struct DemoDesk {
     )]
     pub handle: DesktopHandle,
     /// Each window's record, as the store the app reads it through holds it.
-    records: Vec<(&'static str, RecordId, RecordStore)>,
+    records: Vec<(&'static str, RecordCheckout, RecordStore)>,
     /// The note's tab: the window a person types into.
     note_tab: TabId,
+    /// A window woke since the host last ran the frame a wake asks for.
+    woken: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl DemoDesk {
@@ -143,7 +145,7 @@ impl DemoDesk {
                 definition.record_kind.clone(),
             );
             store.create_record(&checkout).unwrap();
-            records.push((app_key, checkout.id.clone(), store));
+            records.push((app_key, checkout, store));
             tabs.push(Tab {
                 id,
                 title: title.to_owned(),
@@ -159,7 +161,14 @@ impl DemoDesk {
         }
         let note_tab = tabs.first().expect("the note is the first window").id;
         let tree = seed_tree(&mut minter, "Work", tabs);
-        let wake: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(|| {});
+        // What wakes a window (a worker's reply, another replica's change
+        // arriving) asks the host for a frame, as the live desk's event loop
+        // is asked for one.
+        let woken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let wake: std::sync::Arc<dyn Fn() + Send + Sync> = {
+            let woken = std::sync::Arc::clone(&woken);
+            std::sync::Arc::new(move || woken.store(true, std::sync::atomic::Ordering::Release))
+        };
         let (surface, handle) = DesktopSurface::new(
             tree,
             7,
@@ -190,6 +199,7 @@ impl DemoDesk {
             handle,
             records,
             note_tab,
+            woken,
         }
     }
 
@@ -197,9 +207,9 @@ impl DemoDesk {
     pub fn heads(&self) -> Vec<(&'static str, usize)> {
         self.records
             .iter()
-            .map(|(app, id, store)| {
+            .map(|(app, checkout, store)| {
                 let heads = store
-                    .with(id, ui::automerge::AutoCommit::get_heads)
+                    .with(&checkout.id, ui::automerge::AutoCommit::get_heads)
                     .map_or(0, |heads| heads.len());
                 (*app, heads)
             })
@@ -216,13 +226,13 @@ impl DemoDesk {
     /// The note's record as its committed heads stand: what typing into the
     /// note changes.
     pub fn note_heads(&self) -> Vec<ui::automerge::ChangeHash> {
-        let (_, id, store) = self
+        let (_, checkout, store) = self
             .records
             .iter()
             .find(|(owner, _, _)| *owner == TYPED_INTO)
             .expect("the note is open");
         store
-            .with(id, ui::automerge::AutoCommit::get_heads)
+            .with(&checkout.id, ui::automerge::AutoCommit::get_heads)
             .expect("the note's record is open")
     }
 
@@ -232,20 +242,28 @@ impl DemoDesk {
     }
 
     /// Change `app`'s record from outside its window, as another participant's
-    /// edit reaches it: the document moves under the app that shows it.
+    /// edit reaches it: their copy of the record, with their change, merges
+    /// into this one, and the document moves under the app that shows it.
     pub fn change_elsewhere(&self, app: &str) {
-        let (_, id, store) = self
+        use ui::automerge::transaction::Transactable as _;
+        let (_, checkout, store) = self
             .records
             .iter()
             .find(|(owner, _, _)| *owner == app)
             .expect("the desk has that app open");
-        store
-            .with(id, |doc| {
-                use ui::automerge::transaction::Transactable as _;
-                doc.put(ui::automerge::ROOT, "changed-elsewhere", "yes")
-                    .expect("the record takes another person's change");
-            })
+        let mut theirs = store
+            .with(&checkout.id, ui::automerge::AutoCommit::fork)
             .expect("the record is open");
+        theirs.set_actor(ui::automerge::ActorId::random());
+        theirs
+            .put(ui::automerge::ROOT, "changed-elsewhere", "yes")
+            .expect("their copy takes their change");
+        assert!(
+            store
+                .merge_peer_document(checkout, theirs.save())
+                .expect("their change merges"),
+            "their change is new here"
+        );
     }
 
     /// Put the keyboard in the note's editor, where a person typing has it:
@@ -321,6 +339,9 @@ pub struct KeyCost {
     /// How many times an app built the edits its views bound: the actions
     /// themselves, which a table or a calendar builds for every row it shows.
     pub declarations: usize,
+    /// How many times a window's app synced its view
+    /// ([`COMPONENT_SYNC`]): a window nothing reached rests.
+    pub syncs: usize,
 }
 
 /// The phase an app names while it refreshes the actions its controls look
@@ -328,6 +349,9 @@ pub struct KeyCost {
 pub const ACTION_PASS: &str = "framework.action_bindings";
 /// The phase an app names while it builds the edits its views bound.
 pub const BOUND_DECLARATIONS: &str = "framework.bound_declarations";
+/// The phase a window's app runs its view's sync under, once a sync: a
+/// window whose inputs stood still skips it.
+pub const COMPONENT_SYNC: &str = "ui.component.sync";
 
 impl DemoDesk {
     /// Type `key` and answer what it cost, from the roles an app names as it
@@ -351,6 +375,37 @@ impl DemoDesk {
             cpu_us,
             passes: calls(ACTION_PASS),
             declarations: calls(BOUND_DECLARATIONS),
+            syncs: calls(COMPONENT_SYNC),
         }
+    }
+
+    /// How many window syncs `step` ran.
+    pub fn syncs_during(&mut self, step: impl FnOnce(&mut Self)) -> usize {
+        let ((), samples) = tilo_resource::profiling::observe(|| step(self));
+        samples
+            .iter()
+            .filter(|sample| sample.phase == COMPONENT_SYNC)
+            .map(|sample| sample.calls)
+            .sum()
+    }
+
+    /// Idle until no window syncs on a frame of its own: the windows' arrival
+    /// is motion, and a window in motion syncs every frame until it lands,
+    /// however fast the frames come.
+    pub fn rest(&mut self) {
+        tilo_test_env::wait_until("every window of the desk at rest", || {
+            self.syncs_during(|desk| {
+                desk.idle();
+                desk.idle();
+            }) == 0
+        });
+    }
+
+    /// Run the frames the host runs while nothing new reaches the desk.
+    pub fn idle(&mut self) {
+        if self.woken.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            self.harness.woken();
+        }
+        self.harness.idle();
     }
 }

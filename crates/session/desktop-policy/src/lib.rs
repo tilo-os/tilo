@@ -34,22 +34,15 @@ const LAUNCH_PREFIX: &str = "window:";
 /// The launch id a crashed app's notice tab is opened under.
 const CRASHED_PREFIX: &str = "crashed:";
 
-/// The launch id a tab held for an app's next window is opened under, in
-/// front and behind.
-const HELD_PREFIX: &str = "held:";
-const HELD_BEHIND_PREFIX: &str = "held-behind:";
+/// The launch id a tab held for a window an app asked its session for is opened under: the session
+/// planned that window and starts it in the tab when the desk asks back, the tab being what the
+/// window is known by ([`DesktopPolicy::hold`]).
+pub const HELD_PREFIX: &str = "held:";
 
 /// The name of a launch whose place the desk holds for a window the session
 /// starts itself.
-fn held_name(app: &str, background: bool) -> String {
-    format!(
-        "{}{app}",
-        if background {
-            HELD_BEHIND_PREFIX
-        } else {
-            HELD_PREFIX
-        }
-    )
+fn held_name(app: &str) -> String {
+    format!("{HELD_PREFIX}{app}")
 }
 
 /// What the policy learns about a window.
@@ -105,30 +98,24 @@ type Arriving = Rc<RefCell<BTreeMap<u64, Window>>>;
 /// and the tab the desk holds for the window it opens, when it made one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaunchAsk {
-    /// The launch command, as the desk was asked for it.
+    /// The launch command, as the desk was asked for it. A window an app asked
+    /// its session for is named by [`HELD_PREFIX`] and its app: the session
+    /// starts the window it planned in the tab, whatever else the command names.
     pub app: String,
     /// The tab the window takes when it maps. It is the window's instance:
     /// what the app's own continuation reports are addressed by.
     pub tab: Option<TabId>,
+    /// Whether the tab was made for a window of the app's own, beside one it
+    /// shows: the launch opens a window of its own there, as the app's own ask
+    /// for another window does, rather than coming forward in the one the app
+    /// has. A launch in a place of its own opens the window the desk named and
+    /// raises the app's window where it already shows one.
+    pub beside: bool,
 }
 
 /// The launches the desktop asked for and no window is behind: the session
 /// starts each one ([`DesktopPolicy::take_launches`]).
 type Launches = Rc<RefCell<Vec<LaunchAsk>>>;
-
-/// A tab the desk made for a window whose app asked for it: the session starts
-/// that window beside it, so the window takes the tab as its instance.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HeldLaunch {
-    /// The app whose window the tab waits for.
-    pub app: String,
-    /// The tab the window takes when it maps.
-    pub tab: TabId,
-}
-
-/// The tabs the desk made for the windows apps asked it for, oldest first: the
-/// session starts each one ([`DesktopPolicy::take_held_launches`]).
-type HeldLaunches = Rc<RefCell<Vec<HeldLaunch>>>;
 
 /// What each window on this desk shows, as its app holds the record: the
 /// record it is on and the kind of resource that record keeps.
@@ -253,8 +240,6 @@ struct Windows {
     names: AppNames,
     /// The tabs held for the apps' coming windows.
     held: Held,
-    /// The tabs the desk made for the windows apps asked it for.
-    held_launches: HeldLaunches,
     /// The tabs the person carried to another workspace, which only the
     /// session can move.
     carried: Carried,
@@ -320,12 +305,14 @@ impl TileSource for Windows {
         )))
     }
 
-    fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
-        let held = app
-            .strip_prefix(HELD_BEHIND_PREFIX)
-            .map(|app| (app, true))
-            .or_else(|| app.strip_prefix(HELD_PREFIX).map(|app| (app, false)));
-        if let Some((app, background)) = held {
+    fn launch(
+        &mut self,
+        _: &Workspace,
+        id: TabId,
+        app: &str,
+        beside: Option<TabId>,
+    ) -> Option<Tab> {
+        if let Some(app) = app.strip_prefix(HELD_PREFIX) {
             // A window of the app is on its way and may take a while: its
             // tab holds the place it lands in from this frame, showing the
             // app's name, and the window fills it when it maps.
@@ -336,14 +323,15 @@ impl TileSource for Windows {
                 .entry(app.to_owned())
                 .or_default()
                 .iter_mut()
-                .find(|record| record.tab.is_none() && record.background == background)?;
+                .find(|record| record.tab.is_none())?;
             record.tab = Some(id);
             drop(held);
-            // The tab is the window's instance: the session starts it now
-            // that the desk holds the place it takes.
-            self.held_launches.borrow_mut().push(HeldLaunch {
-                app: app.to_owned(),
-                tab: id,
+            // The tab is the window's instance: the session starts the window it planned for it
+            // now that the desk holds the place it takes.
+            self.launches.borrow_mut().push(LaunchAsk {
+                app: held_name(app),
+                tab: Some(id),
+                beside: true,
             });
             let tab = self.place(id, app);
             self.titles
@@ -377,7 +365,10 @@ impl TileSource for Windows {
             // A Tilo package or one of the machine's apps: this session starts it, and its
             // window takes the tab the desk holds for it. The tab is what the window is known
             // by — an app's continuation reports are addressed by its id — so the launch names
-            // it.
+            // it. A launch that opens a record or content of an app is a window of that app: its
+            // tab is the app's, and the window takes it as every window of the app does.
+            let asked = app;
+            let app = launch_app(asked);
             self.held
                 .borrow_mut()
                 .entry(app.to_owned())
@@ -387,8 +378,9 @@ impl TileSource for Windows {
                     background: false,
                 });
             self.launches.borrow_mut().push(LaunchAsk {
-                app: app.to_owned(),
+                app: asked.to_owned(),
                 tab: Some(id),
+                beside: beside.is_some(),
             });
             Some(self.place(id, app))
         }
@@ -416,6 +408,7 @@ impl TileSource for Windows {
         self.launches.borrow_mut().push(LaunchAsk {
             app: app_id.clone(),
             tab: Some(tab.id),
+            beside: false,
         });
     }
 
@@ -470,9 +463,6 @@ pub struct DesktopPolicy {
     names: AppNames,
     /// The tabs held for the apps' coming windows.
     held: Held,
-    /// The tabs the desk made for the windows apps asked it for, waiting for
-    /// the session.
-    held_launches: HeldLaunches,
     /// The tabs the person carried to another workspace, waiting for the
     /// session.
     carried: Carried,
@@ -524,7 +514,6 @@ impl DesktopPolicy {
         let titles = Titles::default();
         let names = AppNames::default();
         let held = Held::default();
-        let held_launches = HeldLaunches::default();
         let carried = Carried::default();
         let notes = Notes::default();
         let devices = DeviceNames::default();
@@ -539,7 +528,6 @@ impl DesktopPolicy {
                 titles: Rc::clone(&titles),
                 names: Rc::clone(&names),
                 held: Rc::clone(&held),
-                held_launches: Rc::clone(&held_launches),
                 carried: Rc::clone(&carried),
                 notes: Rc::clone(&notes),
                 devices: Rc::clone(&devices),
@@ -554,7 +542,6 @@ impl DesktopPolicy {
             titles,
             names,
             held,
-            held_launches,
             carried,
             notes,
             devices,
@@ -575,13 +562,6 @@ impl DesktopPolicy {
     /// a repeated notice tab.
     pub fn take_launches(&mut self) -> Vec<LaunchAsk> {
         std::mem::take(&mut *self.launches.borrow_mut())
-    }
-
-    /// The tabs the desk made for windows apps asked for, oldest first: the
-    /// session starts each window beside the tab it takes, so the window is
-    /// that tab's instance.
-    pub fn take_held_launches(&mut self) -> Vec<HeldLaunch> {
-        std::mem::take(&mut *self.held_launches.borrow_mut())
     }
 
     /// Read what each window shows from `notes`, the session's: the desk asks
@@ -929,8 +909,7 @@ impl DesktopPolicy {
     }
 
     /// The tab of `app` the window `instance` runs in, when the desk shows it:
-    /// the tab a window is given is the window's instance
-    /// ([`HeldLaunch`], [`LaunchAsk::tab`]).
+    /// the tab a window is given is the window's instance ([`LaunchAsk::tab`]).
     #[must_use]
     pub fn tab_of_instance(&self, app: &str, instance: u64) -> Option<TabId> {
         self.handle.read(|tree| {
@@ -1023,36 +1002,35 @@ impl DesktopPolicy {
         self.handle.dispatch(command).is_ok()
     }
 
-    /// Hold a tab for the next window of `app`, right after `anchor` (the tab
-    /// [`Self::anchor_for`] finds when none is named), taking focus there unless
-    /// `background`. False when the desktop holds no tab of `app` to open beside.
-    pub fn hold_beside(&mut self, app: &str, anchor: Option<TabId>, background: bool) -> bool {
-        let Some(tab) = anchor.or_else(|| self.anchor_for(app).map(|(tab, ..)| tab)) else {
-            return false;
-        };
-        let Some(beside) = self.handle.read(|tree| route_of(tree, tab)) else {
-            return false;
+    /// Hold a tab for the next window of `app`, in a window of its own, taking focus there unless
+    /// `background`. It lands right after `anchor` (the tab [`Self::anchor_for`] finds when none is
+    /// named), and — `floated` — stands over the desk beside it instead: the window a send landed
+    /// in, which the desk gives the strip's room to so the card it draws at stands beside the window
+    /// that sent rather than over it. The session starts that window when the desk asks back for the
+    /// tab ([`Self::take_launches`]). False when the desktop holds no tab of `app` to open beside.
+    pub fn hold(
+        &mut self,
+        app: &str,
+        anchor: Option<TabId>,
+        background: bool,
+        floated: bool,
+    ) -> bool {
+        let beside = if floated {
+            None
+        } else {
+            let Some(tab) = anchor.or_else(|| self.anchor_for(app).map(|(tab, ..)| tab)) else {
+                return false;
+            };
+            let Some(beside) = self.handle.read(|tree| route_of(tree, tab)) else {
+                return false;
+            };
+            Some(beside.tab.to_string())
         };
         let command = ChromeEffect::OpenApp {
-            app: held_name(app, background),
-            beside: Some(beside.tab.to_string()),
+            app: held_name(app),
+            beside,
             background: Some(background),
-            float: None,
-        };
-        self.hold_launch(app, command, background)
-    }
-
-    /// Hold a tab for the next window of `app` in a window of its own, right
-    /// after the one in front and standing over the desk beside it: the window
-    /// a send landed in, which the desk gives the strip's room to so the card
-    /// it draws at stands beside the window that sent rather than over it.
-    /// Taking focus there unless `background`.
-    pub fn hold_window(&mut self, app: &str, background: bool) -> bool {
-        let command = ChromeEffect::OpenApp {
-            app: held_name(app, background),
-            beside: None,
-            background: Some(background),
-            float: Some(true),
+            float: floated.then_some(true),
         };
         self.hold_launch(app, command, background)
     }
@@ -1682,7 +1660,19 @@ fn ask_again(
     launches.borrow_mut().push(LaunchAsk {
         app: app.to_owned(),
         tab: Some(tab),
+        beside: false,
     });
+}
+
+/// The app a launch string opens a window of: a launch that opens a record or content of an app
+/// names that app first, and every other launch names the app itself.
+fn launch_app(launch: &str) -> &str {
+    if let Some((app, _)) = tilo_desktop_search::launched_record(launch)
+        .or_else(|| tilo_desktop_surface::session::launched_content(launch))
+    {
+        return app;
+    }
+    launch
 }
 
 /// What the app `app_id` is called to the person. Never the id: an app no

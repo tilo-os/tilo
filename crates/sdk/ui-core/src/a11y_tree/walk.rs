@@ -35,7 +35,9 @@ pub(crate) trait A11yVisitor: Sized {
     type SyntheticPending;
 
     /// `slot` is the widget's parent and its index there when the parent
-    /// walks it as its own child ([`Widget::accessibility_child_description`]).
+    /// walks it as its own child ([`Widget::accessibility_child_name`],
+    /// [`Widget::accessibility_child_description`]), also through a wrapper
+    /// that exports no node of its own and holds only this child.
     fn open(
         &mut self,
         w: &dyn Widget,
@@ -76,6 +78,28 @@ pub(crate) trait A11yVisitor: Sized {
     );
 }
 
+/// The words a parent holds for the child at `index` of its
+/// [`children`](Widget::children) ([`Widget::accessibility_child_name`],
+/// [`Widget::accessibility_child_description`]), said of `access`: its name
+/// where the child has none of its own (or only found one, the value it
+/// shows), its description where the child describes nothing. Every view of
+/// the tree resolves a child the same way, so what a screen reader hears is
+/// what an agent reads and what the audit certifies.
+pub(crate) fn with_slot_words(access: &mut AccessNode, slot: Option<&(&dyn Widget, usize)>) {
+    let Some((parent, index)) = slot else {
+        return;
+    };
+    if access.name.is_none() || access.name_found {
+        if let Some(name) = parent.accessibility_child_name(*index) {
+            access.name = Some(name);
+            access.name_found = false;
+        }
+    }
+    if access.description.is_none() {
+        access.description = parent.accessibility_child_description(*index);
+    }
+}
+
 /// Walk `w` and everything under it into `parent`.
 pub(crate) fn walk<const BOUND: bool, V: A11yVisitor>(
     v: &mut V,
@@ -89,8 +113,14 @@ pub(crate) fn walk<const BOUND: bool, V: A11yVisitor>(
     match v.open(w, slot, parent) {
         Visit::Skip => {}
         Visit::Collapse => {
-            for child in w.children() {
-                walk::<BOUND, V>(v, child, None, parent);
+            let children = w.children();
+            // A widget with no node of its own that holds one child stands
+            // for that child (a container around a row's slider): the words
+            // its parent holds for it are the child's, and reach the child
+            // through it rather than stopping at a wrapper nobody hears.
+            let slot = (children.len() == 1).then_some(slot).flatten();
+            for child in children {
+                walk::<BOUND, V>(v, child, slot, parent);
             }
         }
         Visit::Node(pending, mut scope) => {

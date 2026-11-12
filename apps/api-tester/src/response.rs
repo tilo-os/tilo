@@ -26,7 +26,7 @@ pub(crate) fn empty(_sink: &Sink) -> Element {
     Box::new(
         EmptyState::new("No response yet")
             .with_icon(Icon::Globe)
-            .with_message("Send the request to see what comes back.")
+            .with_message(crate::locales::CATALOG.t("api-tester-no-response-hint"))
             .into_scrollable(),
     )
 }
@@ -35,7 +35,7 @@ pub(crate) fn empty(_sink: &Sink) -> Element {
 pub(crate) fn sending(sink: &Sink) -> Element {
     let waiting = EmptyState::new("Sending request")
         .with_icon(Icon::Send)
-        .with_message("Waiting for the server to respond.")
+        .with_message(crate::locales::CATALOG.t("api-tester-waiting-response"))
         .with_action("Cancel request")
         .with_action_id("api.response.cancel");
     Box::new(

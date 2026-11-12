@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Resolve the published builder tag to its immutable index digest."""
+"""Resolve the builder this commit's inputs build to its immutable index digest.
+
+The tag names the inputs (tools/ci/publish/ci-builder.sh tag), and
+.forgejo/workflows/build-ci-builder.yml publishes it when they change: a job never
+runs in an image older than its commit asks for, and fails where that image is not
+published yet instead of running in a stale one.
+"""
 import errno
 import hashlib
 import http.client
@@ -9,6 +15,7 @@ from pathlib import Path
 import re
 import socket
 import ssl
+import subprocess
 import sys
 import time
 import tomllib
@@ -34,7 +41,6 @@ def registry_settings(environ=os.environ):
 
 REGISTRY, REPOSITORY, TOKEN_REALM = registry_settings()
 IMAGE = REGISTRY + "/" + REPOSITORY
-MANIFEST_URL = "https://" + REGISTRY + "/v2/" + REPOSITORY + "/manifests/latest"
 # The builder is always a multi-architecture index; asking for index types
 # only means a registry can never answer with one platform's manifest.
 INDEX_TYPES = ("application/vnd.oci.image.index.v1+json",
@@ -111,10 +117,24 @@ def anonymous_bearer(opener, challenge):
     return token
 
 
-def read_manifest(opener):
+def builder_tag():
+    """The tag of the image this checkout's inputs build."""
+    script = Path(__file__).resolve().parent / "publish" / "ci-builder.sh"
+    tag = subprocess.run(["bash", str(script), "tag"], check=True, capture_output=True,
+                         text=True).stdout.strip()
+    if not re.fullmatch(r"inputs-[0-9a-f]{32}", tag):
+        raise ValueError("invalid builder tag")
+    return tag
+
+
+def manifest_url(tag):
+    return "https://" + REGISTRY + "/v2/" + REPOSITORY + "/manifests/" + tag
+
+
+def read_manifest(opener, url):
     headers = {"Accept": ", ".join(INDEX_TYPES)}
     try:
-        with opener.open(Request(MANIFEST_URL, headers=headers), timeout=30) as response:
+        with opener.open(Request(url, headers=headers), timeout=30) as response:
             return bounded(response)
     except HTTPError as error:
         if error.code != 401:
@@ -122,7 +142,7 @@ def read_manifest(opener):
         challenge = error.headers.get("WWW-Authenticate") if error.headers else None
         error.close()
     bearer = anonymous_bearer(opener, challenge)
-    authorized = Request(MANIFEST_URL, headers={**headers, "Authorization": "Bearer " + bearer})
+    authorized = Request(url, headers={**headers, "Authorization": "Bearer " + bearer})
     with opener.open(authorized, timeout=30) as response:
         return bounded(response)
 
@@ -130,11 +150,12 @@ def read_manifest(opener):
 def fetch_manifest():
     # No credential ever reaches these requests.
     opener = build_opener(NoRedirect())
+    url = manifest_url(builder_tag())
     # Only this fixed-origin metadata read is retried. Each attempt retains the
     # 30-second socket timeout and 1 MiB response bound; backoff is 1s then 2s.
     for attempt in range(ATTEMPTS):
         try:
-            return read_manifest(opener)
+            return read_manifest(opener, url)
         except Exception as error:
             category, transient = failure(error)
             if isinstance(error, HTTPError):
@@ -152,7 +173,7 @@ def resolve(requested="", fetch=fetch_manifest):
         return requested
     payload = fetch()
     # The digest of the exact bytes served is the registry's content address.
-    # Reject anything but a non-empty index instead of silently using latest.
+    # Reject anything but a non-empty index.
     if not isinstance(payload, bytes):
         raise ValueError("builder manifest is not raw bytes")
     document = json.loads(payload)

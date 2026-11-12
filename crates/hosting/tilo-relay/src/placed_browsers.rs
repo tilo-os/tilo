@@ -293,6 +293,10 @@ impl super::hosted_browser::BrowserSessions for PlacedBrowsers {
             tracing::warn!(%workspace, %words, "a browser session did not stop");
         }
     }
+
+    fn ask_from(&self, plane: ActionPlane, endpoint: iroh::Endpoint) {
+        PlacedBrowsers::ask_from(self, plane, endpoint);
+    }
 }
 
 impl std::fmt::Debug for PlacedBrowsers {

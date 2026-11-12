@@ -2,9 +2,9 @@
 //! development builds only): notes, tasks, chat, mail and the video app.
 //!
 //! Each is an **installed package**, as it is on a person's device: the app's `.tapp` is
-//! installed into the session's own package store (`dist/dev/shell-run.sh` builds and installs
-//! them), the session reads each app's payload from its store row, and the app runs through the
-//! launcher like any other. Loading it here publishes the records it keeps: the app's root made
+//! installed into the session's own package store (`tilolang run` builds and installs them), the
+//! session reads each app's payload from its store row, and the app runs through the launcher
+//! like any other. Loading it here publishes the records it keeps: the app's root made
 //! and filled by its first scenario (the seed data its shots and tests start from), published as
 //! the session publishes a room's records ([`tilolang_tilo::records_service::RecordService`]), so
 //! every note, task, channel and mailbox is a resource the session's `find` finds, an

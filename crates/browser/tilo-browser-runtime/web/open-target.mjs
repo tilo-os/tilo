@@ -85,15 +85,28 @@ const VIEWABLE_WAIT_MS = 10_000;
  * joining a desktop of forty windows took 16 s for a frame) is waited for.
  */
 export async function untilViewable(mount, target, options,
-  {timers = globalThis, waitMs = VIEWABLE_WAIT_MS, frames = () => Infinity} = {}) {
-  const from = frames();
-  for (let waited = 0; ; waited += VIEWABLE_POLL_MS) {
+  {timers = globalThis, waitMs = VIEWABLE_WAIT_MS, frames = () => Infinity, loading = () => false} = {}) {
+  let from = frames();
+  let waited = 0;
+  for (;;) {
     try {
       return viewInvocation(mount.actions(target.resource.id, options), target.resource, target.view);
     } catch (error) {
-      if (error.message !== UNAVAILABLE || (waited >= waitMs && !(frames() - from < FRAMES_TO_SHOW))) throw error;
+      if (error.message !== UNAVAILABLE) throw error;
+      // The app's window offers its views once its code is in, and that code
+      // is a download of its own (tens of megabytes for the largest apps, the
+      // page allows minutes for it): the wait for the views starts when it
+      // arrived, not when the link asked. The desk drawing meanwhile says
+      // nothing about the app.
+      if (loading()) {
+        waited = 0;
+        from = frames();
+      } else if (waited >= waitMs && !(frames() - from < FRAMES_TO_SHOW)) {
+        throw error;
+      }
     }
     await new Promise(done => timers.setTimeout(done, VIEWABLE_POLL_MS));
+    waited += VIEWABLE_POLL_MS;
   }
 }
 
@@ -116,7 +129,8 @@ export async function openTarget({mount, navigation, target, mode, timers}) {
   }
   if (!target.resource) return;
   const options = window === undefined ? undefined : {window};
-  const {action, args} = await untilViewable(mount, target, options, {timers, frames});
+  const loading = () => (mount.state?.()?.appsLoading ?? []).includes(target.app);
+  const {action, args} = await untilViewable(mount, target, options, {timers, frames, loading});
   let result;
   try {
     result = mount.invokeAction(target.resource.id, action, args, options);

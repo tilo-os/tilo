@@ -18,8 +18,8 @@ lazy-search = []
 # The session's on-disk indexes: what apps publish of their content, and
 # the bodies of the person's files. Native only.
 indexes = ["dep:tilo-action-policy", "dep:tilo-files", "dep:tilo-lock", "dep:tilo-paths", "dep:tilo-reference", "dep:tempfile", "dep:tilo-search", "dep:tracing", "dep:walkdir"]
-# Settings' pages and the settings on them, from Settings' own index.
-# Native only.
+# Settings' pages and the settings on them, from Settings' own index: the page
+# finds the pages its own Settings shows.
 settings = ["dep:settings-store"]
 # The apps a person can get, from the catalogue the Store reads. Native
 # only.
@@ -35,6 +35,9 @@ lazy-engine = ["ui/lazy-engine"]
 app-fleet = { version = "0.1.0", path = "../../packaging/app-fleet" }
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+# An app id written as words for a person, the one spelling every surface naming an app or a
+# participant uses.
+collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
 app-catalogue = { version = "0.1.0", path = "../../packaging/app-catalogue", optional = true }
 settings-store = { version = "0.1.0", path = "../../system/settings-store", optional = true }
 serde = { workspace = true }

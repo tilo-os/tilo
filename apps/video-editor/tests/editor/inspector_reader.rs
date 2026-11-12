@@ -166,7 +166,12 @@ fn an_unmeasured_mix_says_so_and_c_has_nowhere_to_go() {
     let mut app = open(&sample_project());
     let words = value(&mut app, "Mix level");
     assert!(!words.contains("clipped"), "{words}");
-    assert!(words.to_lowercase().contains("not measured"), "{words}");
+    assert!(
+        words
+            .to_lowercase()
+            .contains("play the timeline to measure"),
+        "{words}"
+    );
 
     go_to(&mut app, "0:07");
     app.harness().key("c");

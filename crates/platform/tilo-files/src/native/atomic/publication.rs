@@ -150,6 +150,60 @@ pub fn replace(path: &Path, bytes: &[u8], privacy: Privacy) -> Result<(), Public
     publish_path(path, bytes, PublishMode::Replace, privacy, None)
 }
 
+/// Durably append `bytes` to the file at `path`: written and synced before
+/// this returns. The file is one a publication made, so its name is durable
+/// already, and so is every byte appended before.
+///
+/// # Errors
+///
+/// `NotPublished` when nothing was written; `PublicationUnknown` when some
+/// of `bytes` may have reached the file.
+pub fn append(path: &Path, bytes: &[u8]) -> Result<(), PublicationError> {
+    use std::io::Write as _;
+    let not_written = |error| PublicationError::new(PublicationState::NotPublished, error);
+    let unknown = |error| PublicationError::new(PublicationState::PublicationUnknown, error);
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(not_written)?;
+    append_checkpoint(AppendCheckpoint::BeforeWrite).map_err(not_written)?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_data())
+        .map_err(unknown)?;
+    append_checkpoint(AppendCheckpoint::Written).map_err(unknown)
+}
+
+/// Where an append can be made to fail in a test: before anything is
+/// written ([`test_support::Checkpoint::BeforePublish`]), or once it is
+/// written and synced but not acknowledged
+/// ([`test_support::Checkpoint::AfterPublish`]).
+#[derive(Clone, Copy)]
+enum AppendCheckpoint {
+    BeforeWrite,
+    Written,
+}
+
+#[cfg(feature = "test-support")]
+fn append_checkpoint(at: AppendCheckpoint) -> io::Result<()> {
+    use crate::native::atomic::test_support::{self, Checkpoint, CheckpointEvent};
+    test_support::checkpoint(&CheckpointEvent {
+        checkpoint: match at {
+            AppendCheckpoint::BeforeWrite => Checkpoint::BeforePublish,
+            AppendCheckpoint::Written => Checkpoint::AfterPublish,
+        },
+        stage: None,
+    })
+}
+
+#[cfg(not(feature = "test-support"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the test-support build injects failures through the same signature"
+)]
+const fn append_checkpoint(_at: AppendCheckpoint) -> io::Result<()> {
+    Ok(())
+}
+
 /// Durably publish `path` only when the target name is absent.
 ///
 /// # Errors

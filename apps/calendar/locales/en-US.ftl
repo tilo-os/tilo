@@ -163,6 +163,11 @@ calendar-quick-field = What to add
 calendar-quick-add = Add
 calendar-quick-cancel = Cancel
 
+## The title of the sheet that edits an event or a task
+
+calendar-event-detail-title = Event
+calendar-task-detail-title = Task
+
 ## The keys this window answers to
 
 calendar-help-title = Keyboard shortcuts
@@ -195,6 +200,9 @@ calendar-location-placeholder = Add location
 ## Window and accessibility copy
 calendar-a11y-task-due = Task due date
 
+## The editor sheet's answer
+calendar-done = Done
+
 ## What a control reads out
 calendar-a11y-today = Go to today
 calendar-a11y-previous = Previous period
@@ -222,3 +230,21 @@ calendar-a11y-due-previous-month = Previous due-date month
 calendar-a11y-due-next-month = Next due-date month
 calendar-a11y-clear-due = Clear task due date
 calendar-a11y-set-due = Set task due date to { $day }
+calendar-a11y-move-event-to = Move event to { $day }
+calendar-a11y-show-tasks-in = Show tasks in { $list }
+calendar-a11y-show-calendar = Show calendar { $calendar }
+calendar-a11y-account-calendars = { $account } calendars
+calendar-a11y-open-event = Open event { $title }
+calendar-a11y-open-task = Open task { $title }
+calendar-a11y-toggle-task = { $done ->
+    [true] Reopen task { $title }
+   *[false] Mark task { $title } complete
+}
+calendar-a11y-delete-event = Delete event
+
+## What the editor's dropdowns are called
+calendar-editor-calendar = Calendar
+calendar-editor-repeat = Repeat
+calendar-editor-alert = Alert
+calendar-editor-time-zone = Time zone
+calendar-editor-priority = Priority

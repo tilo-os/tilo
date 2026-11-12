@@ -1526,6 +1526,25 @@ impl ChannelEncryption {
         }
     }
 
+    /// Write every channel's state a frame taken in left unwritten, now
+    /// rather than once it has waited [`DEFERRED_SAVE`]: the state carries the
+    /// keys a write seals under, and it is written before such a write leaves
+    /// this device ([`ChannelPeer::save_deferred`]).
+    pub fn save_pending(&mut self) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        for entry in self.peers.values_mut() {
+            if !entry.peer.has_unsaved() {
+                continue;
+            }
+            entry.unsaved_since = None;
+            if let Err(error) = entry.peer.save_deferred(&store.vault) {
+                tracing::warn!(%error, workspace = %entry.workspace, "channel state could not be written");
+            }
+        }
+    }
+
     /// Write what taking in a frame left unwritten in `channel`'s state once
     /// it has waited [`DEFERRED_SAVE`].
     fn save_deferred(&mut self, channel: ChannelId, now: Instant) {
@@ -2525,6 +2544,12 @@ impl ChannelKeyAccess {
         self.run(|service| service.signing()).unwrap_or(false)
     }
 
+    /// See [`ChannelEncryption::save_pending`]: the state a frame taken in
+    /// left unwritten, written before a write sealed under its keys leaves.
+    pub fn save_pending(&self) {
+        self.run(ChannelEncryption::save_pending);
+    }
+
     /// See [`ChannelEncryption::access_record`]; also returns the service's
     /// generation, as [`Self::access`] does.
     pub fn access_record(
@@ -2620,6 +2645,9 @@ impl ChannelKeyAccess {
         if metadata.epoch == keys.epoch() {
             return Ok((metadata, envelope.payload.clone()));
         }
+        // The state carrying the epoch's key is written before the write
+        // sealed under it goes out ([`ChannelEncryption::save_pending`]).
+        self.save_pending();
         keys.seal_content(envelope.artifact, retention, &plaintext)
             .map_err(|error| error.to_string())
     }

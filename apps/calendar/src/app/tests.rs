@@ -6,6 +6,8 @@ use ui::headless::Framed;
 use ui::widget::DrawChild;
 use ui::widget::{Edits, ExternalDatePickerHit};
 
+#[path = "tests/accessibility.rs"]
+mod accessibility;
 #[path = "tests/caldav_sync.rs"]
 mod caldav_sync;
 #[path = "tests/platform_history.rs"]
@@ -1722,7 +1724,11 @@ fn the_editor_sheet_floats_over_the_calendar_at_every_width() {
                 _ => None,
             })
             .expect("at least one event chip");
+        // A chip opens its event when the press is let go on it, as every
+        // control does: a drag of the same press moves the event instead.
         h.click(rect.center());
+        h.mouse_button(ElementState::Released);
+        h.relayout();
         assert_eq!(h.app.selection, Some(Sel::Event(id)));
         assert!(h.app.detail_open);
     }
@@ -2109,17 +2115,20 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
 
 #[test]
 fn keyboard_focus_and_shortcuts_route_between_editor_and_calendar() {
-    // Case `escape_blurs_notes_before_dismissing_the_editor`.
+    // Case `escape_dismisses_the_editor_whatever_field_holds_the_keyboard`.
     {
         let mut h = Harness::new(1280, 800);
         h.app.title_input.set_focus(false);
         h.app.location_input.set_focus(false);
         h.app.notes_editor.set_focus(true);
         h.press_named(NamedKey::Escape);
-        assert!(h.app.detail_open, "first Escape keeps the editor open");
+        assert!(
+            !h.app.detail_open,
+            "Escape dismisses the sheet, not only the field it was in"
+        );
         assert!(
             !h.app.notes_editor.is_focused(),
-            "first Escape returns focus from notes instead of unexpectedly closing the editor"
+            "the notes gave up the caret"
         );
     }
     // Case `keyboard_shortcuts_switch_views_navigate_and_act`.
@@ -3349,4 +3358,121 @@ fn a_new_event_starts_at_the_next_quarter_hour_not_at_noon() {
         "the next quarter hour after 14:07"
     );
     assert_eq!(draft.end - draft.start, Duration::hours(1));
+}
+
+/// Escape dismisses the event sheet, whatever field inside it holds the
+/// keyboard: a sheet is the top transient surface, and every sheet in every
+/// app leaves on Escape the way the toolkit's own dialogs do. A new event
+/// nothing was written into goes with it.
+#[test]
+fn escape_dismisses_the_event_sheet_even_with_a_field_focused() {
+    let mut h = Harness::new(1280, 800);
+    let (app, doc) = h.parts();
+    app.apply_action(Action::CloseDetail, &mut Edits::lend(doc));
+    app.apply_action(Action::NewEvent, &mut Edits::lend(doc));
+    h.relayout();
+    assert!(h.app.detail_open, "a new event opens its sheet");
+    assert!(
+        h.app.title_input.is_focused(),
+        "the sheet starts in its title"
+    );
+    let before = h.app.model.events.len();
+
+    h.press_named(winit::keyboard::NamedKey::Escape);
+    assert!(
+        !h.app.detail_open,
+        "Escape closes the sheet rather than only leaving the field"
+    );
+    assert_eq!(
+        h.app.model.events.len(),
+        before - 1,
+        "the untouched draft went with the sheet"
+    );
+}
+
+/// Dragging an event's chip from one day of the month grid to another moves
+/// the event there: the day changes, the time of day and the length stay, and
+/// the write is the published reschedule History records.
+#[test]
+fn dragging_an_event_chip_to_another_day_moves_it() {
+    let mut h = Harness::new(1280, 900);
+    h.app.detail_open = false;
+    h.app.view = View::Month;
+    h.relayout();
+
+    let before = h
+        .app
+        .model
+        .events
+        .iter()
+        .find(|event| !event.all_day)
+        .expect("the sample holds a timed event")
+        .clone();
+    let from = h
+        .app
+        .hits
+        .iter()
+        .rev()
+        .find_map(|(rect, action)| {
+            matches!(action, Action::OpenEvent(id) if *id == before.id).then_some(rect.center())
+        })
+        .expect("the event's chip is drawn in the month grid");
+    let day = before.start.date();
+    let target = day + Duration::days(2);
+    let to = h
+        .app
+        .hits
+        .iter()
+        .rev()
+        .find_map(|(rect, action)| {
+            matches!(action, Action::PickDate(d) if *d == target).then_some(rect.center())
+        })
+        .expect("the grid shows the day two days on");
+
+    h.mouse_move(from);
+    assert!(
+        h.mouse_button(ElementState::Pressed),
+        "the event's chip takes the press"
+    );
+    for step in 1..=4 {
+        let point = Point::new(
+            from.x + (to.x - from.x) * f64::from(step) / 4.0,
+            from.y + (to.y - from.y) * f64::from(step) / 4.0,
+        );
+        h.mouse_move(point);
+    }
+    h.relayout();
+    assert!(
+        !h.app.detail_open,
+        "a drag does not open the event behind it"
+    );
+    assert!(
+        h.mouse_button(ElementState::Released),
+        "the chip takes the release"
+    );
+    h.relayout();
+
+    let saved = crate::resource::read_doc(h.doc());
+    let moved = saved.event(before.id).expect("the event stays itself");
+    assert_eq!(
+        moved.start.date(),
+        target,
+        "the event moved to the day it was dropped on"
+    );
+    assert_eq!(
+        moved.start.time(),
+        before.start.time(),
+        "the time of day it was made for stays"
+    );
+    assert_eq!(
+        moved.end - moved.start,
+        before.end - before.start,
+        "and so does its length"
+    );
+    let submitted = h.app.last_dispatched().expect("the move was submitted");
+    assert_eq!(
+        submitted.id,
+        Calendar::RESCHEDULE.id(),
+        "the drag writes the published reschedule, so History undoes it"
+    );
 }

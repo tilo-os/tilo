@@ -5,7 +5,9 @@ use automerge::transaction::Transactable as _;
 use automerge::{Automerge, ChangeHash};
 use collab_types::{Ed25519PublicKey, OpKind, SealedCompaction, SignedOp};
 
-/// The most bytes one capture hands out, whatever the caller allows.
+/// The most bytes one whole-record capture hands out, whatever the caller allows: a reader that
+/// keeps the record opened reads it under its own [`StatePeer::open_document`] allowance, which
+/// is the caller's.
 const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Opens one sealed operation of an encrypted record into its plaintext,
@@ -97,9 +99,28 @@ impl PeerDocumentCapture {
     fn from_document(document: &Automerge, maximum: usize) -> Result<Self, PeerDocumentReadError> {
         Ok(Self {
             heads: document.get_heads(),
-            bytes: changes_since(document, &[], maximum)?,
+            bytes: saved_whole(document, maximum)?,
         })
     }
+}
+
+/// `document` whole, as a reader loads it: saved compressed, at most `maximum` bytes. A record's
+/// history handed out change by change loads by applying each change in turn, several times
+/// slower than a saved document (whose columns load at once) and many times its size, and
+/// every reader of a whole record (an app opening it, the person's mentions, the page keeping it
+/// for whoever opens it) loads it. The save keeps every change and who made it.
+///
+/// # Errors
+/// The document misses a change one it holds depends on, or its save exceeds `maximum`.
+pub fn saved_whole(document: &Automerge, maximum: usize) -> Result<Vec<u8>, PeerDocumentReadError> {
+    if !automerge::ReadDoc::get_missing_deps(document, &[]).is_empty() {
+        return Err(PeerDocumentReadError::Incomplete);
+    }
+    let bytes = document.save();
+    if bytes.len() > maximum {
+        return Err(PeerDocumentReadError::Capacity);
+    }
+    Ok(bytes)
 }
 
 /// The changes of `document` a holder of `since` lacks, as raw change chunks: every change for an
@@ -166,8 +187,8 @@ impl KeptRecord {
     }
 
     /// The kept record captured whole, at most `maximum` bytes: the bytes the last capture made
-    /// with the changes since appended, rather than every change encoded again. `None` when
-    /// nothing is kept.
+    /// (the document saved whole) with the changes since appended, rather than the document
+    /// saved again. `None` when nothing is kept.
     pub(crate) fn capture(
         &mut self,
         maximum: usize,
@@ -184,7 +205,7 @@ impl KeptRecord {
                 }
                 bytes
             }
-            _ => match changes_since(document, &[], usize::MAX) {
+            _ => match saved_whole(document, usize::MAX) {
                 Ok(bytes) => bytes,
                 Err(error) => return Some(Err(error)),
             },
@@ -256,7 +277,11 @@ impl StatePeer {
     /// permission: the document itself when it is held in the clear; an encrypted record's
     /// retained sealed history opened through the embedding owner's channel keys (`open`) onto
     /// what `kept` opened of it before, once that history is known to cover every admitted write.
-    /// What it opens is at most `maximum` bytes.
+    /// What it opens is at most `maximum` bytes: a sealed record reads in the room its caller
+    /// allows, as one held in the clear does. Its sealed history is bounded where it is admitted
+    /// (`MAX_SEALED_BYTES`), so the room a caller allows covers a record whatever its history
+    /// holds; a fixed bound of the capture's own refused a late joiner's record for good while
+    /// every caller allowed several times its size.
     ///
     /// # Errors
     /// The reader may not read the record, it is not held, it is encrypted and nothing opens it,
@@ -278,9 +303,7 @@ impl StatePeer {
             }
         };
         match (document.encryption_required, open) {
-            (true, Some(open)) => {
-                open_history(document, open, maximum.min(MAX_CAPTURE_BYTES), kept)
-            }
+            (true, Some(open)) => open_history(document, open, maximum, kept),
             (true, None) => Err(PeerDocumentReadError::Encrypted),
             (false, _) => {
                 kept.forget();

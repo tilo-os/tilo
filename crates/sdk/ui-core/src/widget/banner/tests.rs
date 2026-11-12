@@ -87,7 +87,7 @@ fn height_grows_with_text_scale_and_long_messages() {
     let mut text = TextRenderer::new();
     let message = "Tilo found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
     let short = BannerContent::new(BannerKind::Warning, "Your identity needs recovery");
-    let long = short.with_message(Some(message));
+    let long = short.clone().with_message(Some(message));
     let short_h = Banner::height(&short, 600.0, &mut text, &theme);
     let long_h = Banner::height(&long, 600.0, &mut text, &theme);
     assert!(long_h > short_h);

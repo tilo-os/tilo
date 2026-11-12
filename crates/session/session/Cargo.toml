@@ -41,7 +41,7 @@ dev-overrides = []
 # Publishes a Rust app's (Tube's, Chat's) resources and views in a development session, so a
 # shell draws them live: Tube's sample catalogue and Chat's demo conversation, with the views a
 # `#[view]` declares, never the live worker. A shot of a Rust app's view on the canvas builds
-# with it (dist/dev/shell-run.sh --dev-rust-views); a production image never does.
+# with it (`--features dev-rust-views`); a production image never does.
 dev-rust-views = ["dep:tube", "chat/samples"]
 
 [dependencies]
@@ -71,7 +71,9 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # The action broker's half every host runs: what a step is taken by, the step seam, the route.
 tilo-broker-core = { path = "../../collab/broker-core" }
 tilo-desktop-surface = { path = "../desktop-surface" }
-tilo-desktop-search = { path = "../desktop-search" }
+# Settings' pages are every desktop's own, the page's included: its search offers them wherever
+# the session runs.
+tilo-desktop-search = { path = "../desktop-search", features = ["settings"] }
 settings-store = { path = "../../system/settings-store" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files" }
@@ -158,7 +160,6 @@ tilo-workspace-directory = { path = "../workspace-directory" }
 agent-provider-config = { path = "../../agent/provider-config" }
 tilo-rt = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
-pollster.workspace = true
 tracing.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -275,10 +276,6 @@ tilolang-mail = { path = "../../platform/tilolang-mail", default-features = fals
 tilolang-youtube = { path = "../../platform/tilolang-youtube" }
 # The toolkit's words, which what a package the session runs publishes reads through.
 tilo-ui-host = { path = "../../platform/tilo-ui-host" }
-# A Rust app's records: its model runs as the app's own WebAssembly module in the session,
-# never linked into it (docs/architecture/apps.md §1–§2).
-tilo-model-host = { path = "../../sdk/tilo-model-host" }
-tilo-model-abi = { path = "../../sdk/tilo-model-abi" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 app-catalogue = { path = "../../packaging/app-catalogue" }
 # The pictures the desk shows: the image's own, and the person's.
@@ -408,11 +405,12 @@ settings-store = { path = "../../system/settings-store", features = ["watch"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]
+pollster.workspace = true
 # A Rust app's views, drawn by the shell as it draws a tilolang app's (one-app-model.md §2):
 # the sample catalogue's channels and videos, never the live worker.
 tube = { path = "../../../apps/tube", default-features = false, features = ["samples"] }
 # A development session's tilolang apps, built into signed `.tapp`s the tests install into
-# their own app store: the same packages `dist/dev/shell-run.sh` installs.
+# their own app store: the same packages a development session installs.
 tilolang-cli = { path = "../../lang/tilolang-cli" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 package-store = { path = "../../packaging/package-store", features = ["store"] }

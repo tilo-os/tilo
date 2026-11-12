@@ -283,3 +283,91 @@ async fn only_a_governance_change_is_announced_to_authorization() {
     grant_app_authorship(&fixture, "so.tilo.notes").await;
     assert_ne!(epoch(), before, "the next grant is announced");
 }
+
+/// What a write costs on disk does not grow with its record's history: a
+/// keystroke into a record of 2,000 changes writes about what one into a
+/// record of 100 does, and every change reads back after a restart.
+#[tokio::test]
+async fn a_write_costs_what_it_changed_however_long_the_record_history() {
+    const WRITES: usize = 2_050;
+    let fixture = fixture();
+    let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
+    let path = fixture.directory.path().join("owner.json");
+    testing::start_record(
+        &fixture.owner,
+        workspace,
+        "so.tilo.chat",
+        "",
+        &fixture.key,
+        fixture.now,
+    );
+    let written = || {
+        let store: &dyn std::any::Any = &*fixture.owner.0.store;
+        store
+            .downcast_ref::<crate::owner::file_store::FileStore>()
+            .unwrap()
+            .written
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    // What a write cost when each one wrote the workspace's file whole.
+    let whole = || {
+        serde_json::to_vec(&fixture.owner.0.authority.read().workspaces[&workspace])
+            .unwrap()
+            .len()
+    };
+    let mut wholes = Vec::new();
+    let mut costs = Vec::with_capacity(WRITES);
+    for n in 0..WRITES {
+        let before = written();
+        publish_write(&fixture, workspace, &format!("k{n}"));
+        costs.push(written() - before);
+        if n == 100 || n == 2_000 {
+            wholes.push(whole());
+        }
+        if n % 50 == 49 {
+            // The host took what custody held, as a linked device's does.
+            fixture.owner.retire_outgoing(workspace).unwrap();
+        }
+    }
+    let median = |range: std::ops::Range<usize>| {
+        let mut window = costs[range].to_vec();
+        window.sort_unstable();
+        window[window.len() / 2]
+    };
+    let (early, late) = (median(100..150), median(2_000..2_050));
+    println!(
+        "a write at 100 changes writes {early} bytes, at 2,000 {late}; the workspace's file \
+         whole is {wholes:?} bytes"
+    );
+    assert!(
+        late <= early * 2,
+        "a write at 2,000 changes costs {late} bytes, at 100 {early}"
+    );
+    // A new snapshot now and then included: once the journal outgrows the
+    // last one, so each write pays about its own size again for it.
+    let average = costs[1_000..].iter().sum::<usize>() / (WRITES - 1_000);
+    assert!(
+        average <= early * 4,
+        "writes past 1,000 changes cost {average} bytes each on average, at 100 {early}"
+    );
+
+    drop(fixture.owner);
+    let reopened = open_file(&path).unwrap();
+    let document = reopened
+        .with_current(workspace, |view| {
+            view.peer()
+                .document("so.tilo.chat", "")
+                .ok_or_else(|| "no record".to_owned())
+        })
+        .unwrap();
+    let document = automerge::AutoCommit::load(&document).unwrap();
+    for n in 0..WRITES {
+        let key = format!("k{n}");
+        assert!(
+            automerge::ReadDoc::get(&document, automerge::ROOT, &key)
+                .unwrap()
+                .is_some(),
+            "{key} reads after a restart"
+        );
+    }
+}

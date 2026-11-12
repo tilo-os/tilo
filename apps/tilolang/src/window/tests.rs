@@ -33,6 +33,7 @@ use ui::widget::DrawChild;
 
 mod clocks;
 mod mail;
+mod names;
 mod opening;
 mod personal;
 mod tree;
@@ -770,6 +771,31 @@ fn a_notebook_is_the_native_tree_shell_with_the_header_the_platform_fills() {
     let opened = workspace.opened_note();
     let host = workspace.window.current_host().unwrap();
     assert_eq!(tilolang_tilo::instance::title_of(&host, &opened), "Q3 plan");
+}
+
+/// The window says what it shows, so a desktop names its tab, its switcher entry and its
+/// assistive-technology node by the page rather than by the app: two windows of one app read
+/// apart without either being opened.
+#[test]
+fn the_window_says_the_note_it_shows() {
+    let mut workspace = Workspace::seeded("notes");
+    assert_eq!(
+        ui::component_lifecycle::window_title(&workspace.window),
+        Some("Q3 plan"),
+        "the note the window opened on names it"
+    );
+    let tree = workspace.key_of("ui.TreeView", "name", "Notes");
+    let inside = workspace.tree_row_note("Standups");
+    workspace.fire(
+        &tree,
+        "select",
+        Some(Value::Ref(tilolang_tilo::instance::wire::resource(&inside))),
+    );
+    assert_eq!(
+        ui::component_lifecycle::window_title(&workspace.window),
+        Some("Standups"),
+        "the note chosen beside the tree names the window now"
+    );
 }
 
 // USER REQUIREMENT (2026-10-20): `open(r)` "the host minimally implements it as

@@ -15,8 +15,9 @@ other push runs of its workflow on main, and answers with two outputs:
 * `superseded` -- main's window is somebody else's. Either a newer push run is
   running a window that covers these commits, or an older run holds the window:
   its plan and this one's are the same next window, which starts above both. In
-  both cases this run skips its jobs -- a clean success, since nothing was
-  tested here and nothing was lost.
+  both cases this run skips its jobs, and its `untested` job ends it as
+  cancelled (`--close`): never green, since nothing was tested here, and
+  `window` names the run that measures these commits.
 * `base` -- where this run's plan starts: the head of the newest earlier push
   run whose window was measured (it finished, successfully or not, its decision
   and plan jobs ran, and its builder job gave the checks their image). A run
@@ -56,6 +57,12 @@ plans from the push's own `before` commit, which is narrower but correct.
 `--sweep` is the safety net the CI host controller calls: it cancels the push
 runs on main that never started, so a decision job that died cannot let the pile
 grow back.
+
+`--close` ends a superseded run once the jobs it runs for its own head
+(`HEAD_RESULTS`, such as the page build) have their results: it cancels the
+run, so a head whose checks ran elsewhere reads as cancelled rather than as a
+success it never earned. A failed head job keeps the run red instead, and a
+refused cancellation fails the job, so the run is never green either way.
 
 `--dry-run` says what would be cancelled and where the plan would start, without
 touching a run: the same report the job logs, for reading by hand.
@@ -321,9 +328,10 @@ def write_output(name, value):
         handle.write(f"{name}={value}\n")
 
 
-def finish(superseded=False, base=""):
+def finish(superseded=False, base="", window=0):
     write_output("superseded", "true" if superseded else "false")
     write_output("base", base)
+    write_output("window", str(window) if window else "")
     return 0
 
 
@@ -406,9 +414,50 @@ def sweep():
     return 0
 
 
+def close():
+    """End a superseded run: cancelled, or red when a head job failed; never green."""
+    window = os.environ.get("WINDOW_RUN") or "a later run"
+    if window.isdigit():
+        window = f"run #{window}"
+    failed = [result for result in os.environ.get("HEAD_RESULTS", "").split()
+              if result not in ("success", "skipped")]
+    if failed:
+        notice(f"::error::a job this run ran for its own head ended {failed[0]}; "
+               f"the rest of its checks run in {window}", summary=False)
+        notice(f"not tested in this run: {window} measures these commits, and a job "
+               "for this head failed")
+        return 1
+    notice(f"not tested in this run: {window} measures these commits; this run "
+           "ends cancelled")
+    try:
+        run_number = int(os.environ["RUN_NUMBER"])
+    except (KeyError, ValueError):
+        notice("::error::no run number for this run; it cannot cancel itself",
+               summary=False)
+        return 1
+    api = api_from_environment()
+    if api is None:
+        return 1
+    try:
+        runs = [run for run in read_window(api) if run["index_in_repo"] == run_number]
+    except (urllib.error.HTTPError, OSError) as error:
+        notice(f"::error::cannot read this workflow's runs ({error})", summary=False)
+        return 1
+    if not runs or not cancel_runs(api, runs, [run_number],
+                                   os.environ.get("CI_SPARE_TOKEN", "")):
+        notice("::error::this run cannot cancel itself; it fails instead, since it "
+               "tested nothing", summary=False)
+        return 1
+    # The cancellation already ended this job; a failure is what remains if the
+    # forge still took this job's result.
+    return 1
+
+
 def main():
     if "--sweep" in sys.argv[1:]:
         return sweep()
+    if "--close" in sys.argv[1:]:
+        return close()
     if os.environ.get("EVENT_NAME") != "push":
         # Only pushes to main supersede each other; a dispatch validates the
         # complete workspace and is nobody's duplicate.
@@ -444,11 +493,11 @@ def main():
     if superseding:
         notice(f"run #{superseding} is newer and runs main's window: skipping this "
                "run's jobs, so these commits are measured there")
-        return finish(superseded=True)
+        return finish(superseded=True, window=superseding)
     if holding:
         notice(f"run #{holding} holds main's window: skipping this run's jobs, whose "
                "commits the window above it plans with its own")
-        return finish(superseded=True)
+        return finish(superseded=True, window=holding)
     cancelled = cancel_runs(api, runs, cancelling,
                             os.environ.get("CI_SPARE_TOKEN", "")) if cancelling else []
     if cancelled:

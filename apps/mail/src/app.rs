@@ -786,7 +786,7 @@ impl MailApp {
             bar: ui::framework::BarCommands::new(),
             first_run: EmptyState::new("No email account yet")
                 .with_icon(Icon::Mail)
-                .with_message("Email accounts are added in Settings, under External Accounts.")
+                .with_message(CATALOG.t("mail-first-run-message"))
                 .with_action("Open External Accounts")
                 .with_action_id("mail.add-account"),
             first_run_node: None,
@@ -1170,7 +1170,7 @@ impl MailApp {
         if all_inboxes {
             "these folders".to_owned()
         } else {
-            folder.title().to_owned()
+            crate::i18n::t(folder.message())
         }
     }
 
@@ -1348,7 +1348,7 @@ impl MailApp {
         let folder = self.shared.borrow().folder;
         SearchRequest::within(ScopeDecl::new(
             format!("mail.folder:{}", folder.as_key()),
-            folder.title(),
+            crate::i18n::t(folder.message()),
         ))
     }
 
@@ -3914,7 +3914,10 @@ impl MailApp {
             .collect::<Vec<_>>();
         let name = CATALOG.t_args(
             "mail-list-name",
-            &[("folder", ArgValue::Text(state.folder.title().to_owned()))],
+            &[(
+                "folder",
+                ArgValue::Text(crate::i18n::t(state.folder.message())),
+            )],
         );
         let mut children = vec![
             AccessNode::new(Role::Button)
@@ -3966,7 +3969,10 @@ impl MailApp {
         if total == 0 {
             list = list.with_description(CATALOG.t_args(
                 "mail-a11y-no-messages",
-                &[("folder", ArgValue::Text(state.folder.title().to_owned()))],
+                &[(
+                    "folder",
+                    ArgValue::Text(crate::i18n::t(state.folder.message())),
+                )],
             ));
         }
         list

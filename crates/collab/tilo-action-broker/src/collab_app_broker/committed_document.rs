@@ -1,6 +1,8 @@
 //! Current committed reads on the actual admitted channel.
 mod capture;
-use super::{Arc, CrdtRoute, Duration, JoinedChannel, Ordering, Rc, Weak};
+use super::{
+    Arc, CrdtRoute, Duration, JoinedChannel, Ordering, Rc, RouteAccess, Weak, identity_reads_record,
+};
 use crate::channel_encryption::ChannelKeyProvider;
 pub(super) use capture::Budget;
 pub use capture::DocumentBytes;
@@ -492,6 +494,7 @@ impl JoinedChannel {
         let peer = self.peer_id;
         let state = Arc::downgrade(&self.state);
         let checked_route = route.clone();
+        let read_only = self.route_access == RouteAccess::ReadOnly;
         let revalidate = Arc::new(move || {
             let state = state.upgrade().ok_or("committed read broker ended")?;
             if !state.is_accepting() {
@@ -502,16 +505,26 @@ impl JoinedChannel {
                     return Err("committed read worker ended".into());
                 }
             } else if let Some(local) = local.as_ref() {
-                // The launch's own routes, or a record every app of its
-                // workspace opens: the owner's grants decide the rest, below and
-                // in the owner's own authorization.
-                if !local.current()
-                    || (!local.keeps_records_of(&checked_route.app_id)
-                        && launch_workspace_record(local, &checked_route).is_none())
-                    || local.workspace_id != checked_route.cluster_id
+                // The launch's own routes, a record every app of its workspace
+                // opens, or another app's record it joined to read: the owner's
+                // grants decide the rest, below and in the owner's own
+                // authorization.
+                if launch_holds(local, &checked_route, read_only).is_none()
                     || admitted.agent_id.is_some()
                 {
                     return Err("committed read launcher custody ended".into());
+                }
+                // Another app's record is read with the person's own standing
+                // on it, as the join decided, and again at every read.
+                if read_only
+                    && !identity_reads_record(
+                        state.membership.as_ref(),
+                        &admitted,
+                        &checked_route,
+                        state.policy_now_ns()? / 1_000_000_000,
+                    )
+                {
+                    return Err("committed read of another app's record ended".into());
                 }
             } else if !sealed || admitted.agent_id.is_some() {
                 return Err("committed read requires launcher custody".into());
@@ -550,19 +563,12 @@ impl JoinedChannel {
         else {
             return Ok(None);
         };
-        // Another app's workspace record is no record of this window's own:
-        // it carries no private binding.
-        if local.current()
-            && !local.keeps_records_of(&route.app_id)
-            && launch_workspace_record(local, &route).is_some()
-        {
-            return Ok(None);
-        }
-        if !local.current()
-            || !local.keeps_records_of(&route.app_id)
-            || local.workspace_id != route.cluster_id
-        {
-            return Err("native private launch custody ended".into());
+        // Another app's workspace record, or another app's record this window
+        // reads, is no record of this window's own: it carries no private binding.
+        match launch_holds(local, &route, self.route_access == RouteAccess::ReadOnly) {
+            Some(true) => {}
+            Some(false) => return Ok(None),
+            None => return Err("native private launch custody ended".into()),
         }
         let context = self.document_read_context()?;
         self.state
@@ -735,16 +741,23 @@ impl JoinedChannel {
     }
 }
 
-/// The record every app of `local`'s launch workspace opens that `route` names
-/// ([`collab_types::workspace_record`]), when it does: the one route of
-/// another app a launch reads and commits to, and only in its own workspace.
-fn launch_workspace_record(
+/// Whether `local`'s live launch holds `route` in its own workspace: `Some(true)`
+/// for a record of its own, `Some(false)` for another app's it reads — one
+/// every app of the workspace opens ([`collab_types::workspace_record`]), or
+/// one it joined `read_only` as its surface declares — and `None` otherwise.
+fn launch_holds(
     local: &super::native_media::LocalAppConnection,
     route: &CrdtRoute,
-) -> Option<&'static collab_types::WorkspaceRecord> {
-    (local.workspace_id == route.cluster_id)
-        .then(|| collab_types::workspace_record(&route.app_id, &route.record_id))
-        .flatten()
+    read_only: bool,
+) -> Option<bool> {
+    if !local.current() || local.workspace_id != route.cluster_id {
+        return None;
+    }
+    if local.keeps_records_of(&route.app_id) {
+        return Some(true);
+    }
+    (read_only || collab_types::workspace_record(&route.app_id, &route.record_id).is_some())
+        .then_some(false)
 }
 
 /// What an Open reads with: the channel's checked custody and admission

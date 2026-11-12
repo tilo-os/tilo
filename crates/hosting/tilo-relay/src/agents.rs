@@ -889,6 +889,10 @@ fn attach_records(
             certification: relay.confirmations(),
             hand: relay.hand(),
         });
+        // The VM hosts start the sessions when this host's own device asks.
+        if let Some(workspaces) = relay.workspaces() {
+            browsers.ask_from(workspaces.plane(), relay.endpoint());
+        }
     }
     let shell = shell.map(|shell| shell as Arc<dyn WorkspaceShell>);
     actions

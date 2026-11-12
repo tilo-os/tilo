@@ -377,27 +377,43 @@ def spawned(shell: Path, log: Path, timeout: int,
             os.rmdir(directory)
 
 
+def session_runtime(state: Path) -> Path:
+    """The private runtime directory a session on `state` uses.
+
+    The launcher picks it (a login's XDG_RUNTIME_DIR, the user's /run/user
+    seat, or a short directory of its own) and prints it, so the rule lives in
+    one place rather than beside every tool that has to reach into a session.
+    """
+    printed = subprocess.run(
+        [str(REPO / "dist" / "dev" / "nested-session.sh"),
+         "--print-runtime", "--state", str(state)],
+        capture_output=True, text=True, check=True,
+    )
+    runtime = printed.stdout.strip()
+    if not runtime:
+        raise BenchError("the session launcher named no runtime directory")
+    return Path(runtime)
+
+
 @contextlib.contextmanager
 def desk_session(shell: Path, log: Path, timeout: int) -> Iterator[tuple[str, Path]]:
     """A headless session with a desk of its own: (control socket, runtime directory).
 
     A session that holds no identity opens setup instead of a desk, so a first
     pass mints the throwaway identity a development login opens its desk with
-    and exits; the pass that is measured starts on it. Its agent door goes
-    where a client in that login looks for it. The profile, its sockets and its
-    compositor are removed on exit.
+    and exits; the pass that is measured starts on it. The runtime directory is
+    the one the launcher names for the state `spawn-headless.sh` gives the
+    session, so its sockets and its agent door sit there. The profile, that
+    runtime directory and the compositor are removed on exit.
     """
     cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     cache.mkdir(parents=True, exist_ok=True)
     profile = Path(tempfile.mkdtemp(prefix="desk-session.", dir=cache))
     try:
-        for sub in ("config", "data", "state", "cache", "home", "run"):
+        for sub in ("config", "data", "state", "cache", "home", "identity"):
             (profile / sub).mkdir(parents=True, exist_ok=True, mode=0o700)
-        runtime = profile / "run"
+        runtime = session_runtime(profile / "state")
         env = {"TILO_HEADLESS_PROFILE": str(profile),
-               # spawn-headless.sh runs the session with XDG_RUNTIME_DIR=<profile>/run;
-               # the door goes where a client in that login looks for it.
-               "TILO_AGENT_DOOR": str(runtime / "tilo-session" / "agent.sock"),
                "RUST_LOG": os.environ.get("RUST_LOG", "info")}
         identity_log = log.with_name(log.stem + ".identity.log")
         with spawned(shell, identity_log, timeout, env) as socket_path:

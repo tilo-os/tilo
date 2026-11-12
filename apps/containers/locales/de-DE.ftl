@@ -74,3 +74,22 @@ containers-action-remove = Entfernen
 containers-prompt-name = Name
 containers-prompt-tag = Neues Tag
 containers-prompt-image = Image
+
+## What a removal leaves behind and what a pull is fetching
+containers-remove-container-body = Der Container und die darin vorgenommenen Änderungen werden gelöscht. Seine Volumes bleiben.
+containers-remove-image-body = Das Image wird von diesem Computer gelöscht. Du kannst es später erneut herunterladen.
+containers-remove-volume-body = Das Volume und die darin gespeicherten Daten werden gelöscht.
+containers-used-by = { $count ->
+    [0] Von keinem Container verwendet
+    [one] Von 1 Container verwendet
+   *[other] Von { $count } Containern verwendet
+}
+containers-downloading = Ebenen werden heruntergeladen
+containers-downloading-of = Ebenen werden heruntergeladen: { $done } von { $total }
+containers-downloading-so-far = Ebenen werden heruntergeladen: bisher { $done }
+containers-empty-containers-hint = Erstelle einen Container aus einem Image, um ihn hier laufen zu lassen.
+containers-engine-missing-hint = Installiere Podman oder starte den Benutzerdienst, um Container hier zu verwalten.
+containers-none-selected-hint = Wähle einen Container, um seine Protokolle, Nutzung und Einstellungen zu sehen.
+containers-empty-images-hint = Lade ein Image, um daraus Container zu erstellen.
+containers-empty-volumes-hint = Ein Volume bewahrt die Daten eines Containers auf, wenn der Container entfernt wird.
+containers-empty-distroboxes-hint = Erstelle eine Box mit distrobox, um sie hier laufen zu lassen.

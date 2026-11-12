@@ -9,7 +9,6 @@
 //! [`apply_command`].
 
 use serde::{Deserialize, Serialize};
-use tilo_sort::CompactSort as _;
 
 use crate::apps::canonical_app_id;
 use crate::closed_tabs::Leaving;
@@ -158,17 +157,14 @@ pub enum DesktopCommand {
         app: String,
         beside: Option<u64>,
     },
-    /// Save a shortcut in the workspace, replacing the shortcut with the same
-    /// id. The shortcut travels as its JSON: its inputs and bindings carry
-    /// schema-free values with no fixed binary form. The owner records the
-    /// caller as the shortcut's saver, whatever the JSON claims. Appended
-    /// last: existing encodings are unchanged.
-    SaveShortcut {
+    /// Retired with its own save path: a saved shortcut is one of the
+    /// workspace's settings, written where a setting is. It keeps the variants
+    /// after it at their encoded positions, and is refused.
+    RetiredSaveShortcut {
         shortcut_json: String,
     },
-    /// Delete the workspace's shortcut `id`. Appended last: existing
-    /// encodings are unchanged.
-    DeleteShortcut {
+    /// Retired with [`Self::RetiredSaveShortcut`].
+    RetiredDeleteShortcut {
         id: String,
     },
     /// Register topology namespace `salt` to the calling device, so it can
@@ -275,28 +271,6 @@ impl DesktopCommand {
                 | Self::ReopenClosed { .. }
         )
     }
-}
-
-/// The shortcut a [`DesktopCommand::SaveShortcut`] carries.
-pub fn decode_shortcut(json: &str) -> Result<tilo_automation::Shortcut, String> {
-    let shortcut: tilo_automation::Shortcut =
-        serde_json::from_str(json).map_err(|error| format!("not a shortcut: {error}"))?;
-    if shortcut.id.trim().is_empty() {
-        return Err("a shortcut needs an id".into());
-    }
-    Ok(shortcut)
-}
-
-/// `json`, the shortcut a [`DesktopCommand::SaveShortcut`] carries, with
-/// `saver` recorded as the person who saved it.
-///
-/// # Errors
-///
-/// Why the shortcut does not encode.
-pub fn stamp_saver(json: &str, saver: &str) -> Result<String, String> {
-    let mut shortcut = decode_shortcut(json)?;
-    shortcut.saved_by = Some(saver.to_string());
-    serde_json::to_string(&shortcut).map_err(|error| error.to_string())
 }
 
 pub const RECEIPT_KIND: &str = "desktop.command";
@@ -808,39 +782,6 @@ fn split_tab(
     Ok(())
 }
 
-fn apply_shortcut_command(
-    workspace: &mut Workspace,
-    command: &DesktopCommand,
-) -> Result<(), String> {
-    match command {
-        DesktopCommand::SaveShortcut { shortcut_json } => {
-            // Kept encoded: the program is decoded where it runs or is
-            // edited, so applying the command reads only its id.
-            let shortcut = tilo_automation::SavedShortcut::parse(shortcut_json)?;
-            match workspace
-                .shortcuts
-                .iter_mut()
-                .find(|saved| saved.id() == shortcut.id())
-            {
-                Some(saved) => *saved = shortcut,
-                None => workspace.shortcuts.push(shortcut),
-            }
-            workspace
-                .shortcuts
-                .compact_sort_by(|left, right| left.id().cmp(right.id()));
-        }
-        DesktopCommand::DeleteShortcut { id } => {
-            let before = workspace.shortcuts.len();
-            workspace.shortcuts.retain(|shortcut| shortcut.id() != id);
-            if workspace.shortcuts.len() == before {
-                return Err(format!("there is no shortcut `{id}`"));
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 /// Canonical topology reduction. The host checks authority ([`may_command`])
 /// and supplies fresh identities and a checked record constructor before the
 /// tab enters the tree.
@@ -851,8 +792,9 @@ pub fn apply_command(
     create: &mut impl FnMut(&str, u64) -> Result<(String, TileContent), String>,
 ) -> Result<(), String> {
     match command {
-        DesktopCommand::SaveShortcut { .. } | DesktopCommand::DeleteShortcut { .. } => {
-            apply_shortcut_command(workspace, command)?;
+        DesktopCommand::RetiredSaveShortcut { .. }
+        | DesktopCommand::RetiredDeleteShortcut { .. } => {
+            return Err("shortcut commands are retired".into());
         }
         DesktopCommand::SavePreset { .. }
         | DesktopCommand::AssignPreset { .. }

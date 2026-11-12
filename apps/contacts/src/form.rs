@@ -7,6 +7,7 @@
 //! reaches the shared document until Save.
 
 use ui::LocalState;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::widget::{
     Button, ButtonRole, DatePicker, Dropdown, Element, Field, Form, FormPage, FormSection,
@@ -136,23 +137,35 @@ impl Slot {
 /// The human-facing name of a field: its visible label, or for a field
 /// inside a repeated row, what assistive technology calls it.
 pub(crate) fn field_name(slot: Slot) -> String {
+    let catalogue = &crate::account_editor::CATALOG;
     match slot {
-        Slot::First => "First name".into(),
-        Slot::Last => "Last name".into(),
-        Slot::Org => "Organization".into(),
-        Slot::Title => "Job title".into(),
-        Slot::Website => "Website".into(),
-        Slot::Birthday => "Birthday".into(),
-        Slot::Notes => "Notes".into(),
-        Slot::Groups => "Groups".into(),
-        Slot::Phone(index) => format!("Phone {}", index + 1),
-        Slot::Email(index) => format!("Email {}", index + 1),
-        Slot::AddrStreet(index) => format!("Address {} street", index + 1),
-        Slot::AddrCity(index) => format!("Address {} city", index + 1),
-        Slot::AddrRegion(index) => format!("Address {} region", index + 1),
-        Slot::AddrPostal(index) => format!("Address {} postal code", index + 1),
-        Slot::AddrCountry(index) => format!("Address {} country", index + 1),
+        Slot::First => catalogue.t("contacts-field-first-name"),
+        Slot::Last => catalogue.t("contacts-field-last-name"),
+        Slot::Org => catalogue.t("contacts-field-organization"),
+        Slot::Title => catalogue.t("contacts-field-job-title"),
+        Slot::Website => catalogue.t("contacts-field-website"),
+        Slot::Birthday => catalogue.t("contacts-field-birthday"),
+        Slot::Notes => catalogue.t("contacts-field-notes"),
+        Slot::Groups => catalogue.t("contacts-field-groups"),
+        Slot::Phone(index) => catalogue.t_args(
+            "contacts-field-phone",
+            &[("number", ArgValue::Number(index as f64 + 1.0))],
+        ),
+        Slot::Email(index) => catalogue.t_args(
+            "contacts-field-email",
+            &[("number", ArgValue::Number(index as f64 + 1.0))],
+        ),
+        Slot::AddrStreet(index) => address_field(catalogue, "contacts-field-street", index),
+        Slot::AddrCity(index) => address_field(catalogue, "contacts-field-city", index),
+        Slot::AddrRegion(index) => address_field(catalogue, "contacts-field-region", index),
+        Slot::AddrPostal(index) => address_field(catalogue, "contacts-field-postal-code", index),
+        Slot::AddrCountry(index) => address_field(catalogue, "contacts-field-country", index),
     }
+}
+
+/// One line of the Nth address: "Address 2 street".
+fn address_field(catalogue: &ui::i18n::EmbeddedCatalog, message: &str, index: usize) -> String {
+    catalogue.t_args(message, &[("number", ArgValue::Number(index as f64 + 1.0))])
 }
 
 /// The hint an empty field shows, where the label alone does not say what

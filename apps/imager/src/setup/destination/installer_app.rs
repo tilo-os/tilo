@@ -88,27 +88,21 @@ use imager_backend::destination::power_readiness::current_insufficient_battery_p
 use imager_backend::destination::probes;
 
 mod console;
+#[cfg(test)]
+mod language_tests;
 mod surface;
 #[cfg(test)]
 mod surface_tests;
 
 pub use console::{CONSOLE_WAKE, redact_recovery_material};
 
-/// Labels for the FIDO2 segmented selector, in display order. Index 0 (off)
+/// Messages naming the security-key choice, in display order. Index 0 (off)
 /// is the default; index 1 enrolls a hardware security key as an extra
 /// unlock factor. Only shown when encryption is on.
-pub const FIDO2_LABELS: [&str; 2] = ["No security key", "Enroll security key"];
-
-/// The heading of the media codecs opt-in.
-pub const CODECS_TITLE: &str = "Play more video and audio formats";
-
-/// What the Media step says once Install was pressed, above its Undo.
-pub const CODECS_CHOSEN: &str = "Chosen: installed once the new system is online";
-
-/// The one short line under the title. The installer only records the
-/// choice; the installed system downloads the formats once it is online.
-pub const CODECS_DESCRIPTION: &str = "Downloaded to this computer from the formats' publishers once \
-it is online. You can turn it off in Settings.";
+const FIDO2_KEYS: [&str; 2] = [
+    "installer-security-key-off",
+    "installer-security-key-enroll",
+];
 
 /// Default hostname seeded into the CRDT (and the installed system).
 const DEFAULT_HOSTNAME: &str = "tilo";
@@ -121,9 +115,12 @@ const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 /// one that gives snapshots and rollback.
 const RECOMMENDED_FS: usize = 0;
 
-pub const INSTALL_METHOD_LABELS: [&str; 2] = ["Erase disk", "Install alongside"];
+/// Messages naming the two ways to install, in the segmented choice's order.
+const INSTALL_METHOD_KEYS: [&str; 2] = ["installer-method-erase", "installer-method-alongside"];
+/// The message naming the step's forward action: the one the published
+/// `next` gate carries, so the button and the action read alike.
+const NEXT_KEY: &str = "imager-installer-next";
 const WINDOWS_ALONGSIDE_PREPARATION: &str = "installer-storage-windows-preparation";
-
 const LINUX_ALONGSIDE_READY: &str = "installer-storage-linux-ready";
 const LINUX_ALONGSIDE_PREPARATION: &str = "installer-storage-linux-preparation";
 const ALONGSIDE_BOOT_GUIDANCE: &str = "installer-storage-boot-guidance";
@@ -136,18 +133,20 @@ fn connect_power_message(percent: u8) -> String {
     )
 }
 
+/// What installing alongside `dev` changes, and the firmware caveat that
+/// stands whatever the plan: the review's description reads it.
 fn alongside_install_impact(guided: bool, dev: &str) -> String {
-    let change = if guided {
-        format!(
-            "Three new Tilo partitions (EFI, boot, and encrypted root) will be created and formatted only in the reviewed unallocated space on {dev}. Existing OS partitions are preserved."
-        )
-    } else {
-        format!(
-            "Only the prepared Tilo boot and root partitions on {dev} will be formatted. The existing EFI partition and other OS partitions are preserved."
-        )
-    };
-    format!(
-        "{change} Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
+    let change = crate::setup::strings::t_args(
+        if guided {
+            "installer-alongside-change-guided"
+        } else {
+            "installer-alongside-change-prepared"
+        },
+        &[("device", ArgValue::Text(dev.to_owned()))],
+    );
+    crate::setup::strings::t_args(
+        "installer-alongside-change-note",
+        &[("change", ArgValue::Text(change))],
     )
 }
 
@@ -319,11 +318,39 @@ pub enum Step {
     Install,
 }
 
-/// Captions for the step-progress breadcrumb, index-aligned with
-/// [`step_index`].
+/// Machine names for the steps, index-aligned with [`step_index`]: what the
+/// headless console reports, so automation keeps the same names in every
+/// language.
 pub const STEP_LABELS: [&str; 9] = [
     "Keyboard", "Network", "Accounts", "Disk", "Account", "Options", "Media", "Review", "Install",
 ];
+
+/// The messages naming the steps, index-aligned with [`step_index`]: what the
+/// breadcrumb shows, in the window's language.
+const STEP_KEYS: [&str; 9] = [
+    "installer-step-keyboard",
+    "installer-step-network",
+    "installer-step-accounts",
+    "installer-step-disk",
+    "installer-step-account",
+    "installer-step-options",
+    "installer-step-media",
+    "installer-step-review",
+    "installer-step-install",
+];
+
+/// What the breadcrumb calls each step.
+fn step_captions() -> Vec<String> {
+    captions(&STEP_KEYS)
+}
+
+/// What `keys` say, in the window's language: a choice's segments and a
+/// short list of labels read as words, never as the catalogue's keys.
+fn captions(keys: &[&str]) -> Vec<String> {
+    keys.iter()
+        .map(|key| crate::setup::strings::t(key))
+        .collect()
+}
 
 /// Position of `step` in the breadcrumb (0-based). Keyboard is first so the
 /// layout is chosen BEFORE the user types anything (username/password).
@@ -1954,9 +1981,13 @@ impl InstallerApp {
         self.reset_viewport();
         self.install_state = InstallState::Running;
         self.install_launched = true;
-        self.status_lines = vec![format!(
-            "Starting install to {disk} for user {user} ({}).",
-            opts.filesystem
+        self.status_lines = vec![crate::setup::strings::t_args(
+            "installer-status-install-start",
+            &[
+                ("disk", ArgValue::Text(disk.clone())),
+                ("user", ArgValue::Text(user.clone())),
+                ("filesystem", ArgValue::Text(opts.filesystem.clone())),
+            ],
         )];
         self.recovery_key = None;
         self.recovery_key_copied = false;
@@ -2080,26 +2111,29 @@ impl InstallerApp {
 
     /// A navigation row for `step`: `Back` at the leading edge, shown only
     /// when the step has a predecessor so the first step has no dangling
-    /// Back, and the forward action (`forward_label`, primary, running
-    /// `forward`, optionally disabled) at the trailing one. A real `ui::Row`
-    /// so its buttons stay in the focusable order.
+    /// Back, and the forward action (`forward_key`, the catalogue message
+    /// naming it, primary, running `forward`, optionally disabled) at the
+    /// trailing one. A real `ui::Row` so its buttons stay in the focusable
+    /// order.
     fn nav_row(
         &self,
         step: Step,
         forward: Control,
-        forward_label: &str,
+        forward_key: &str,
         forward_disabled: bool,
     ) -> Box<dyn Widget> {
         let mut row = Row::new().no_wrap();
         if prev_step(step).is_some() {
             row = row.push(Box::new(
-                ActionButton::new("Back", self.back_control())
+                ActionButton::new("installer-preview-back", self.back_control())
                     .with_icon(ui::icons::Icon::ChevronLeft)
+                    .with_test_id("installer.back")
                     .large(),
             ));
         }
         row = row.push(Box::new(Spacer::new())).push(Box::new(
-            ActionButton::new(forward_label, forward)
+            ActionButton::new(forward_key, forward)
+                .with_test_id("installer.next")
                 .primary()
                 .large()
                 .disabled(forward_disabled),
@@ -2115,15 +2149,21 @@ impl InstallerApp {
                 .no_wrap()
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
-                    ActionButton::new("Power off", self.control(DestinationEffect::PowerOff))
-                        .large()
-                        .disabled(disabled),
+                    ActionButton::new(
+                        "installer-action-power-off",
+                        self.control(DestinationEffect::PowerOff),
+                    )
+                    .large()
+                    .disabled(disabled),
                 ))
                 .push(Box::new(
-                    ActionButton::new("Reboot now", self.control(DestinationEffect::Reboot))
-                        .primary()
-                        .large()
-                        .disabled(disabled),
+                    ActionButton::new(
+                        "installer-action-reboot",
+                        self.control(DestinationEffect::Reboot),
+                    )
+                    .primary()
+                    .large()
+                    .disabled(disabled),
                 )),
         )
     }
@@ -2138,7 +2178,7 @@ impl InstallerApp {
             Step::Network => self.compose_network_step(theme, &mut children, &mut actions),
             Step::Accounts => {
                 children.push(self.accounts_form.view());
-                actions.push(self.nav_row(Step::Accounts, self.next_control(), "Next", false));
+                actions.push(self.nav_row(Step::Accounts, self.next_control(), NEXT_KEY, false));
             }
             Step::Disk => self.compose_disk_step(theme, &mut children, &mut actions),
             Step::Account => self.compose_account_step(theme, &mut children, &mut actions),
@@ -2159,9 +2199,10 @@ impl InstallerApp {
         {
             actions.push(Box::new(
                 ActionButton::new(
-                    &format!("Return to {}", host.display_name()),
+                    "installer-action-return-to-host",
                     self.control(DestinationEffect::ReturnToHost),
                 )
+                .with_args(&[("host", ArgValue::Text(host.display_name().to_owned()))])
                 .with_test_id("return_to_host"),
             ));
         }
@@ -2183,14 +2224,9 @@ impl InstallerApp {
         for child in children {
             body = body.push(child);
         }
-        let stepper = Stepper::new(
-            STEP_LABELS
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-        )
-        .with_id("installer.stepper")
-        .current(Some(step_index(self.step)));
+        let stepper = Stepper::new(step_captions())
+            .with_id("installer.stepper")
+            .current(Some(step_index(self.step)));
         let mut frame = crate::page::Frame::new(body)
             .stepper_widget(stepper)
             .offset(Rc::clone(&self.viewport_offset));
@@ -2265,7 +2301,7 @@ impl InstallerApp {
             }
             children.push(Box::new(
                 ActionButton::new(
-                    "Connect",
+                    "installer-accounts-connect",
                     self.control(DestinationEffect::ConnectNetwork { password: None }),
                 )
                 .primary()
@@ -2305,19 +2341,19 @@ impl InstallerApp {
         ));
         children.push(Box::new(
             ActionButton::new(
-                "Refresh networks",
+                "installer-action-refresh-networks",
                 self.control(DestinationEffect::RefreshNetworks),
             )
             .disabled(self.network.is_busy()),
         ));
-        let continue_label = if self.network.snapshot.connectivity
+        let continue_key = if self.network.snapshot.connectivity
             == imager_backend::destination::network::ConnectivityState::Full
         {
-            "Continue"
+            "imager-installer-continue"
         } else {
-            "Continue offline"
+            "imager-installer-continue-offline"
         };
-        actions.push(self.nav_row(Step::Network, self.next_control(), continue_label, false));
+        actions.push(self.nav_row(Step::Network, self.next_control(), continue_key, false));
     }
 
     /// Add the Wi-Fi error or the currently visible network choices.
@@ -2382,7 +2418,7 @@ impl InstallerApp {
         self.compose_install_method(theme, children);
         children.push(Box::new(
             ActionButton::new(
-                "Refresh disks",
+                "installer-action-refresh-disks",
                 self.control(DestinationEffect::RefreshDisks),
             )
             .with_test_id("disk_refresh"),
@@ -2463,7 +2499,7 @@ impl InstallerApp {
         actions.push(self.nav_row(
             Step::Disk,
             self.next_control(),
-            "Next",
+            NEXT_KEY,
             self.selected_disk.is_none() || unavailable,
         ));
     }
@@ -2487,7 +2523,7 @@ impl InstallerApp {
             ));
         } else {
             children.push(Box::new(seg_choice(
-                &INSTALL_METHOD_LABELS,
+                captions(&INSTALL_METHOD_KEYS),
                 ["erase", "alongside"]
                     .iter()
                     .map(|method| {
@@ -2661,18 +2697,22 @@ impl InstallerApp {
             // throughout, so they compare with its GiB minimums.
             let start = ui::format::memory(plan.free_start_bytes);
             let size = ui::format::memory(plan.free_size_bytes);
-            let label = if self.selected_guided_extent == Some(index) {
-                format!("Selected: {size} free at {start}")
+            let key = if self.selected_guided_extent == Some(index) {
+                "installer-region-selected"
             } else {
-                format!("Use {size} free at {start}")
+                "installer-region-use"
             };
             children.push(Box::new(
                 ActionButton::new(
-                    &label,
+                    key,
                     self.control(DestinationEffect::SelectRegion {
                         index: i64::try_from(index).unwrap_or(i64::MAX),
                     }),
                 )
+                .with_args(&[
+                    ("size", ArgValue::Text(size.clone())),
+                    ("start", ArgValue::Text(start.clone())),
+                ])
                 .with_test_id(&format!("guided_extent_{index}")),
             ));
         }
@@ -2783,7 +2823,7 @@ impl InstallerApp {
                 .with_external_buffer(Arc::clone(&self.password_confirmation))
                 .with_secret(true),
         ));
-        actions.push(self.nav_row(Step::Account, self.next_control(), "Next", false));
+        actions.push(self.nav_row(Step::Account, self.next_control(), NEXT_KEY, false));
     }
 
     fn compose_keyboard_step(
@@ -2817,7 +2857,7 @@ impl InstallerApp {
                 .with_placeholder(&crate::setup::strings::t("installer-keyboard-layout")),
         ));
         children.push(Box::new(KeyboardView::new(&self.keymap)));
-        actions.push(self.nav_row(Step::Keyboard, self.next_control(), "Next", false));
+        actions.push(self.nav_row(Step::Keyboard, self.next_control(), NEXT_KEY, false));
         children.push(Box::new(
             Text::new(&crate::setup::strings::t("installer-recovery-tools"))
                 .with_role(TextRole::Caption)
@@ -2863,8 +2903,8 @@ impl InstallerApp {
                 .with_role(TextRole::Body),
         ));
         children.push(Box::new(seg_choice(
-            &FIDO2_LABELS,
-            (0..FIDO2_LABELS.len())
+            captions(&FIDO2_KEYS),
+            (0..FIDO2_KEYS.len())
                 .map(|i| self.control(DestinationEffect::SetSecurityKey { enabled: i == 1 }))
                 .collect(),
             usize::from(self.fido2),
@@ -2935,7 +2975,7 @@ impl InstallerApp {
         actions.push(self.nav_row(
             Step::Options,
             self.next_control(),
-            "Next",
+            NEXT_KEY,
             !self.filesystem_policy_ready(),
         ));
     }
@@ -2989,23 +3029,18 @@ impl InstallerApp {
             )));
             children.push(centered_media_control(Box::new(
                 ActionButton::new(
-                    &crate::setup::strings::t("installer-media-undo"),
+                    "installer-media-undo",
                     self.control(DestinationEffect::SetMediaCodecs { enabled: false }),
                 )
                 .quiet()
                 .with_test_id("codecs_undo"),
             )));
             children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
-            children.push(self.nav_row(
-                Step::Media,
-                self.next_control(),
-                &crate::setup::strings::t("installer-media-next"),
-                false,
-            ));
+            children.push(self.nav_row(Step::Media, self.next_control(), NEXT_KEY, false));
         } else {
             children.push(centered_media_control(Box::new(
                 ActionButton::new(
-                    &crate::setup::strings::t("installer-media-install"),
+                    "installer-media-install",
                     self.control(DestinationEffect::SetMediaCodecs { enabled: true }),
                 )
                 .primary()
@@ -3013,19 +3048,16 @@ impl InstallerApp {
                 .with_test_id("codecs_install"),
             )));
             children.push(centered_media_control(Box::new(
-                ActionButton::new(
-                    &crate::setup::strings::t("installer-media-skip"),
-                    self.next_control(),
-                )
-                .quiet()
-                .with_test_id("codecs_skip"),
+                ActionButton::new("installer-media-skip", self.next_control())
+                    .quiet()
+                    .with_test_id("codecs_skip"),
             )));
             children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
             children.push(Box::new(
                 Row::new()
                     .with_padding(0.0, 0.0)
                     .push(Box::new(ActionButton::new(
-                        &crate::setup::strings::t("installer-media-back"),
+                        "installer-media-back",
                         self.back_control(),
                     )))
                     .push(Box::new(Spacer::new())),
@@ -3055,7 +3087,7 @@ impl InstallerApp {
             .filter_map(|index| FILESYSTEMS.get(*index).copied())
             .collect();
         children.push(Box::new(seg_choice(
-            &labels,
+            labels.iter().map(|name| (*name).to_owned()).collect(),
             labels
                 .iter()
                 .map(|filesystem| {
@@ -3360,7 +3392,7 @@ impl InstallerApp {
         ));
         children.push(Box::new(
             ActionButton::new(
-                "I will save my recovery key",
+                "installer-action-recovery-promise",
                 self.control(DestinationEffect::SetRecoveryPromise {
                     acknowledged: !self.recovery_ack,
                 }),
@@ -3378,7 +3410,7 @@ impl InstallerApp {
         actions.push(self.nav_row(
             Step::Review,
             self.control(self.begin_effect()),
-            "Begin Install",
+            "installer-action-begin",
             begin_disabled,
         ));
     }
@@ -3462,10 +3494,10 @@ impl InstallerApp {
                 ));
                 self.compose_recovery_key(theme, children);
                 children.push(status_log(&self.status_lines, theme));
-                actions.push(Box::new(ActionButton::new(
-                    "Review storage",
-                    self.back_control(),
-                )));
+                actions.push(Box::new(
+                    ActionButton::new("installer-action-review-storage", self.back_control())
+                        .with_test_id("installer.review_storage"),
+                ));
             }
             _ => {
                 children.push(Box::new(
@@ -3499,9 +3531,9 @@ impl InstallerApp {
         children.push(Box::new(
             ActionButton::new(
                 if self.recovery_key_copied {
-                    "Copy recovery key again"
+                    "installer-action-copy-recovery-key-again"
                 } else {
-                    "Copy recovery key"
+                    "installer-action-copy-recovery-key"
                 },
                 self.control(DestinationEffect::CopyRecoveryKey),
             )
@@ -3523,7 +3555,7 @@ impl InstallerApp {
         ));
         children.push(Box::new(
             ActionButton::new(
-                "I saved this key off this computer",
+                "installer-action-recovery-saved",
                 self.control(DestinationEffect::ConfirmRecoverySaved {
                     saved: !self.recovery_key_saved,
                 }),
@@ -4383,7 +4415,7 @@ mod tests {
         assert!(
             find_accessible(&app, &crate::setup::strings::t("installer-welcome-note")).is_some()
         );
-        let next = find_test_id(&app, "Next").expect("first-page continuation");
+        let next = find_test_id(&app, "installer.next").expect("first-page continuation");
         assert!(next.get_rect().height() > 0.0);
         assert!(next.get_rect().y0 >= 0.0);
         assert!(
@@ -4405,7 +4437,7 @@ mod tests {
             )
             .is_some()
         );
-        let next = find_test_id(&app, "Next").expect("account continuation");
+        let next = find_test_id(&app, "installer.next").expect("account continuation");
         assert!(
             next.get_rect().y1 <= 600.0,
             "continue must remain visible at normal text size"
@@ -4913,6 +4945,9 @@ mod tests {
 
     #[test]
     fn the_media_step_is_one_install_button_and_review_repeats_it() {
+        let title = crate::setup::strings::t("installer-media-title");
+        let note = crate::setup::strings::t("installer-media-note");
+        let chosen_copy = crate::setup::strings::t("installer-media-chosen");
         let mut app = InstallerApp::for_shot(Step::Media);
         let _ = build(&mut app);
         let composed = app.composed.element().unwrap();
@@ -4923,10 +4958,10 @@ mod tests {
             "nothing is chosen yet"
         );
         for absent in ["RPM Fusion", "Cisco", "patent", "licence"] {
-            assert!(!CODECS_DESCRIPTION.contains(absent), "{absent}");
+            assert!(!note.contains(absent), "{absent}");
         }
         assert!(
-            find_accessible(composed, CODECS_DESCRIPTION).is_some(),
+            find_accessible(composed, &note).is_some(),
             "the rendered codec control must expose the formats source explanation"
         );
         let resources = app.published();
@@ -4939,14 +4974,14 @@ mod tests {
             install
                 .description
                 .as_deref()
-                .is_some_and(|description| description.contains(CODECS_DESCRIPTION)),
+                .is_some_and(|description| description.contains(&note)),
             "{:?}",
             install.description
         );
         let mut options = InstallerApp::for_shot(Step::Options);
         let _ = build(&mut options);
         assert!(
-            find_accessible(options.composed.element().unwrap(), CODECS_TITLE).is_none(),
+            find_accessible(options.composed.element().unwrap(), &title).is_none(),
             "Options no longer carries the formats"
         );
 
@@ -4956,7 +4991,7 @@ mod tests {
         let chosen = app.composed.element().unwrap();
         assert!(has_test_id(chosen, "codecs_undo"));
         assert!(!has_test_id(chosen, "codecs_install"));
-        assert!(find_accessible(chosen, CODECS_CHOSEN).is_some());
+        assert!(find_accessible(chosen, &chosen_copy).is_some());
 
         app.step = Step::Review;
         app.dirty_structure = true;
@@ -5096,7 +5131,7 @@ mod tests {
             app.erase_confirmation.set("/dev/sda".to_string());
             *app.password.lock().unwrap() = "correct horse battery staple".to_string();
             let _ = build(&mut app);
-            let begin_enabled = find_test_id(&app, "Begin Install").map(Widget::is_focusable);
+            let begin_enabled = find_test_id(&app, "installer.next").map(Widget::is_focusable);
             assert_eq!(begin_enabled, Some(!blocked), "{state:?}");
             assert_eq!(
                 find_test_id(&app, "installer.hardware.blocked").is_some(),
@@ -5154,7 +5189,7 @@ mod tests {
             app.kernel_lockdown = true;
             app.target_verified_boot = true;
             let _ = build(&mut app);
-            let begin_disabled = find_test_id(&app, "Begin Install").map(|b| !b.is_focusable());
+            let begin_disabled = find_test_id(&app, "installer.next").map(|b| !b.is_focusable());
             assert_eq!(begin_disabled, Some(true), "Begin disabled until ack");
 
             // Acknowledgement alone is insufficient because the passphrase is mandatory.
@@ -5169,7 +5204,7 @@ mod tests {
             app2.erase_confirmation.set("/dev/sda".to_string());
             *app2.password.lock().unwrap() = "804927".to_string();
             let _ = build(&mut app2);
-            let begin_enabled = find_test_id(&app2, "Begin Install").map(Widget::is_focusable);
+            let begin_enabled = find_test_id(&app2, "installer.next").map(Widget::is_focusable);
             assert_eq!(begin_enabled, Some(true), "Begin enabled once acknowledged");
         }
         {
@@ -5202,7 +5237,7 @@ mod tests {
                 "typing the confirmation must rebuild the disabled Begin button"
             );
             let _ = build(&mut app);
-            let begin_enabled = find_test_id(&app, "Begin Install").map(Widget::is_focusable);
+            let begin_enabled = find_test_id(&app, "installer.next").map(Widget::is_focusable);
             assert_eq!(begin_enabled, Some(true));
             let field = find_test_id(&app, "installer.erase_confirmation")
                 .and_then(Widget::accessibility)
@@ -5997,7 +6032,7 @@ mod tests {
             // The first step (Keyboard) offers no Back; the action is a no-op.
             assert!(!has_test_id(
                 app.build_composition(&Theme::dark()).as_ref(),
-                "Back"
+                "installer.back"
             ));
             run(&mut app, &doc, DestinationEffect::Back);
             assert_eq!(app.step, Step::Keyboard);
@@ -6424,12 +6459,12 @@ mod tests {
                         }
                         1 => {
                             app.shot_failed();
-                            "Review storage"
+                            "installer.review_storage"
                         }
                         _ => {
                             app.step = Step::Media;
                             app.codecs = true;
-                            "Next"
+                            "installer.next"
                         }
                     };
                     layout_with_theme(&mut app, 800.0, 600.0, &theme);
@@ -6450,7 +6485,9 @@ mod tests {
     fn assert_account_focus_reveal(theme: &Theme) {
         let mut account = InstallerApp::for_shot(Step::Account);
         let nodes = layout_with_theme(&mut account, 800.0, 600.0, theme);
-        let next = find_test_id(&account, "Next").expect("Next").get_rect();
+        let next = find_test_id(&account, "installer.next")
+            .expect("Next")
+            .get_rect();
         let confirm =
             find_test_id(&account, "installer.password_confirm").expect("password confirmation");
         assert!(confirm.is_focusable());
@@ -6478,7 +6515,7 @@ mod tests {
             "focused confirmation not revealed: {confirm:?} in {viewport:?}"
         );
         assert_eq!(
-            find_test_id(&account, "Next").unwrap().get_rect(),
+            find_test_id(&account, "installer.next").unwrap().get_rect(),
             next,
             "revealing a field moved pinned navigation"
         );
@@ -6488,7 +6525,7 @@ mod tests {
             .copied()
             .find(|&widget| {
                 // SAFETY: the current production node map, as above.
-                unsafe { (*widget).test_id() == Some("Next") }
+                unsafe { (*widget).test_id() == Some("installer.next") }
             })
             .expect("Next layout node");
         // SAFETY: as above.

@@ -414,15 +414,21 @@ fn bind_link(
     public_origin: Option<&String>,
     identity: &tls::Identity,
 ) -> Result<(tilo_net::webtransport::Listener, WebLink), String> {
+    let bound = socket
+        .local_addr()
+        .map_err(|error| format!("WebTransport listener: {error}"))?;
     let listener = tilo_net::webtransport::Listener::bind(socket, identity.certificate()?)
         .map_err(|error| format!("WebTransport listener: {error}"))?;
     let link = WebLink {
-        origin: config
-            .link
-            .as_ref()
-            .map(|link| link.origin.clone())
-            .or_else(|| public_origin.cloned())
-            .unwrap_or_else(|| format!("https://{addr}")),
+        origin: named_port(
+            &config
+                .link
+                .as_ref()
+                .map(|link| link.origin.clone())
+                .or_else(|| public_origin.cloned())
+                .unwrap_or_else(|| format!("https://{addr}")),
+            bound.port(),
+        ),
         certificate_sha256: identity
             .fingerprint
             .as_deref()
@@ -430,6 +436,23 @@ fn bind_link(
             .and_then(|bytes| bytes.try_into().ok()),
     };
     Ok((listener, link))
+}
+
+/// `origin` naming the port `bound` a listener took. An origin ending in `:0`
+/// names none of its own: the kernel picked the port, and this is where it
+/// answers. Any other origin is reached exactly as written, at the name and
+/// port its deployment publishes.
+fn named_port(origin: &str, bound: u16) -> String {
+    let Some((scheme, rest)) = origin.split_once("://") else {
+        return origin.to_owned();
+    };
+    let (authority, path) = rest
+        .find('/')
+        .map_or((rest, ""), |slash| rest.split_at(slash));
+    match authority.strip_suffix(":0") {
+        Some(name) => format!("{scheme}://{name}:{bound}{path}"),
+        None => origin.to_owned(),
+    }
 }
 
 /// How many kernel-picked ports [`bind_listeners`] tries before it gives up.

@@ -208,7 +208,12 @@ fn ahead_of(want: chrono::Weekday, from: chrono::Weekday) -> i64 {
 pub(crate) fn next_quarter_hour(now: NaiveDateTime) -> NaiveTime {
     let minute = now.minute();
     let rounded = minute - minute % 15 + 15;
+    // On the quarter hour itself: the seconds and the fraction of a second
+    // the clock happened to show are not part of a time a person picked, and
+    // the document keeps events to the minute.
     (now - Duration::minutes(i64::from(minute)) + Duration::minutes(i64::from(rounded))).time()
+        - Duration::seconds(i64::from(now.second()))
+        - Duration::nanoseconds(i64::from(now.nanosecond()))
 }
 
 /// The words at `index`, if they name a day, and which words said it.
@@ -447,6 +452,31 @@ mod tests {
                 time: true,
                 length: false
             }
+        );
+    }
+
+    /// The quarter hour a new event starts on is a quarter hour on the clock,
+    /// not the quarter hour plus the seconds and the fraction that happened to
+    /// show when the person pressed the key: a document keeps events to the
+    /// minute, and a start with a stray second in it never reads back as the
+    /// one just written.
+    #[test]
+    fn a_new_event_starts_on_the_quarter_hour_itself() {
+        let at_14_07_31 = NaiveDate::from_ymd_opt(2026, 10, 28)
+            .unwrap()
+            .and_hms_nano_opt(14, 7, 31, 978_144_743)
+            .unwrap();
+        assert_eq!(
+            next_quarter_hour(at_14_07_31),
+            NaiveTime::from_hms_opt(14, 15, 0).unwrap()
+        );
+        let at_14_59_59 = NaiveDate::from_ymd_opt(2026, 10, 28)
+            .unwrap()
+            .and_hms_opt(14, 59, 59)
+            .unwrap();
+        assert_eq!(
+            next_quarter_hour(at_14_59_59),
+            NaiveTime::from_hms_opt(15, 0, 0).unwrap()
         );
     }
 

@@ -29,6 +29,7 @@ use tilo_action_broker::services::{
     ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
     WifiContinuityServices, WorkspaceMemberships,
 };
+use tilo_actions::DoorError;
 use tilo_broker_core::services::TrackerRuns;
 use tilo_broker_core::services::{
     ContentStoreServices, SearchIndexServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
@@ -135,7 +136,7 @@ impl Link {
                         %action,
                         "an app invokes a published action"
                     );
-                    let _ = reply.send(receipt(services, &resource, &action, &arguments));
+                    answer(services, &resource, &action, &arguments, reply);
                 }
             }
         }
@@ -488,35 +489,75 @@ pub(crate) fn owner_publisher(
     })
 }
 
-/// A saved shortcut change on its way to the desk, answered once the session's
-/// loop applied it: the desk belongs to the loop, and the broker asks from its
-/// own thread.
-pub struct StoreRequest {
-    pub workspace: String,
-    /// The person the broker admitted the change for.
-    pub actor: String,
-    pub change: tilo_automation::ShortcutChange,
-    pub done: tokio::sync::oneshot::Sender<Result<(), String>>,
-}
-
-/// The workspace's shortcuts as the broker keeps and runs them: what a person
-/// saves through the action door lands on the desk the loop shows, and a run
-/// executes on `runtime`.
+/// The workspace's shortcuts as the broker keeps and runs them: a shortcut a
+/// person saves is one of its workspace's settings, and a run executes on
+/// `runtime`.
 pub struct ShortcutLibrary {
     runtime: tokio::runtime::Handle,
-    changes: tokio::sync::mpsc::UnboundedSender<StoreRequest>,
+    /// The workspaces this device's records are held in: where a saved shortcut
+    /// is written. A session that holds none saves none.
+    engine: Option<std::sync::Arc<crate::engine::Engine>>,
 }
 
 impl ShortcutLibrary {
-    /// A library whose runs execute on `runtime`, handing what a person saves
-    /// to the loop through the channel it comes with.
+    /// A library whose runs execute on `runtime`, saving into the workspaces of
+    /// `engine`.
     #[must_use]
     pub fn new(
         runtime: tokio::runtime::Handle,
-    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<StoreRequest>) {
-        let (changes, saved) = tokio::sync::mpsc::unbounded_channel();
-        (Self { runtime, changes }, saved)
+        engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    ) -> Self {
+        Self { runtime, engine }
     }
+}
+
+/// Store `request`'s change in its workspace: signed as the saver's own device
+/// ([`tilo_peer_state::workspace::sign_saved_shortcut`]), then written into the
+/// workspace's document as one of its settings. Every device of the workspace
+/// admits the write by the same rule, and reads the shortcut back from the
+/// document.
+async fn save_shortcut(
+    engine: std::sync::Arc<crate::engine::Engine>,
+    request: ShortcutLibraryRequest,
+) -> Result<(), String> {
+    let (key, device) = tilo_identity_host::broker::trusted_current_device(&request.workspace)
+        .map_err(|error| format!("this device cannot sign in the workspace: {error}"))?;
+    if request.actor != hex::encode(device.user_public_key) {
+        return Err("a shortcut is saved from its saver's own device".into());
+    }
+    let change = match &request.change {
+        tilo_automation::ShortcutChange::Save(shortcut) => {
+            let mut shortcut = shortcut.as_ref().clone();
+            // A trigger this device cannot watch would be saved into a shortcut
+            // that never runs: the person is told now.
+            for trigger in &shortcut.triggers {
+                crate::automation::triggers::validate_trigger(trigger)?;
+            }
+            tilo_peer_state::workspace::sign_saved_shortcut(
+                &request.workspace,
+                &mut shortcut,
+                &device,
+                &key,
+            )?;
+            tilo_automation::ShortcutChange::Save(Box::new(shortcut))
+        }
+        delete @ tilo_automation::ShortcutChange::Delete(_) => delete.clone(),
+    };
+    let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+        workspace: request.workspace,
+        operation: tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
+            invocation: uuid::Uuid::new_v4(),
+            caller: device,
+            command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Settings(
+                tilo_peer_state::workspace_membership::SettingsChange::Shortcuts(change),
+            ),
+        },
+    };
+    engine
+        .owner()
+        .commit_workspace_membership_command(request, &key, std::time::SystemTime::now())
+        .await
+        .map(drop)
 }
 
 impl ShortcutLibraryServices for ShortcutLibrary {
@@ -525,18 +566,15 @@ impl ShortcutLibraryServices for ShortcutLibrary {
     }
 
     fn store(&self, request: ShortcutLibraryRequest) -> ShortcutStore {
-        let changes = self.changes.clone();
+        let Some(engine) = self.engine.clone() else {
+            return Box::pin(std::future::ready(Err(
+                "this session keeps no shortcuts".to_owned()
+            )));
+        };
+        let runtime = self.runtime.clone();
         Box::pin(async move {
-            let (done, applied) = tokio::sync::oneshot::channel();
-            changes
-                .send(StoreRequest {
-                    workspace: request.workspace,
-                    actor: request.actor,
-                    change: request.change,
-                    done,
-                })
-                .map_err(|_| "this session keeps no shortcuts".to_owned())?;
-            applied
+            runtime
+                .spawn(save_shortcut(engine, request))
                 .await
                 .map_err(|_| "this session stopped before it saved the shortcut".to_owned())?
         })
@@ -1094,33 +1132,64 @@ fn encoded(value: &serde_json::Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap_or_default()
 }
 
-/// What invoking one of the services' actions answered.
-fn receipt(services: &mut Services, resource: &str, action: &str, arguments: &[u8]) -> Receipt {
+/// Answer `reply` with what invoking one of the services' actions answered: at once, or when the
+/// async work it started lands.
+fn answer(
+    services: &mut Services,
+    resource: &str,
+    action: &str,
+    arguments: &[u8],
+    reply: oneshot::Sender<Receipt>,
+) {
     let arguments = match serde_json::from_slice::<Map<String, serde_json::Value>>(arguments) {
         Ok(arguments) => arguments,
         Err(error) => {
-            return Receipt::Refused {
+            let _ = reply.send(Receipt::Refused {
                 code: "invalid_arguments".into(),
                 message: format!("the arguments are not a JSON object: {error}"),
-            };
+            });
+            return;
         }
     };
-    match services.invoke(resource, action, &arguments) {
-        Some(Ok(Started::Done(output))) => match serde_json::to_vec(&output) {
+    let done = match services.invoke(resource, action, &arguments) {
+        Some(Ok(Started::Done(output))) => Ok(output),
+        Some(Ok(Started::Accepted)) => {
+            let _ = reply.send(Receipt::Accepted);
+            return;
+        }
+        Some(Ok(Started::Later(later))) => {
+            later.then(move |landed| {
+                let _ = reply.send(receipt(landed.unwrap_or_else(|| {
+                    Err(DoorError::Failed("the action's work was given up".into()))
+                })));
+            });
+            return;
+        }
+        Some(Err(error)) => Err(error),
+        None => {
+            let _ = reply.send(Receipt::Refused {
+                code: "unknown_action".into(),
+                message: format!("this session publishes no `{resource}` resource"),
+            });
+            return;
+        }
+    };
+    let _ = reply.send(receipt(done));
+}
+
+/// What an action that finished answered, as the wire carries it.
+fn receipt(done: Result<tilo_actions::ActionOutput, DoorError>) -> Receipt {
+    match done {
+        Ok(output) => match serde_json::to_vec(&output) {
             Ok(output) => Receipt::Done(output),
             Err(error) => Receipt::Refused {
                 code: "failed".into(),
                 message: format!("the action's output does not encode: {error}"),
             },
         },
-        Some(Ok(Started::Accepted)) => Receipt::Accepted,
-        Some(Err(error)) => Receipt::Refused {
+        Err(error) => Receipt::Refused {
             code: error.code().to_owned(),
             message: error.to_string(),
-        },
-        None => Receipt::Refused {
-            code: "unknown_action".into(),
-            message: format!("this session publishes no `{resource}` resource"),
         },
     }
 }
@@ -1421,9 +1490,7 @@ mod tests {
                 .build()
                 .expect("a runtime for shortcut runs")
         });
-        let (library, saved) = ShortcutLibrary::new(runtime.handle().clone());
-        drop(saved);
-        std::sync::Arc::new(library)
+        std::sync::Arc::new(ShortcutLibrary::new(runtime.handle().clone(), None))
     }
 
     /// An app publishes what it holds through the broker, and the index the

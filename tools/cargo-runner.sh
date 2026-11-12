@@ -8,7 +8,8 @@
 # desktop session. Whoever runs a test and however, it cannot reach their
 # session bus, systemd user manager, logind, portals, media players, keyring
 # or display. A run that is already inside that environment (CI,
-# tools/test-env.sh, scripts/test-local.sh) keeps it.
+# tools/test-env.sh, scripts/test-local.sh) keeps it. Started as root in the
+# CI image, they run as its test user (tools/as-test-user.sh).
 #
 # `cargo run` targets (target/<profile>/<bin>, examples) start unchanged:
 # that is how a developer tries an app against their own desktop.
@@ -19,7 +20,13 @@ if [ "$#" -eq 0 ]; then
 fi
 case $1 in
     */deps/* | */rustdoctest*/*)
-        exec bash "$(dirname -- "${BASH_SOURCE[0]}")/with-test-environment.sh" "$@"
+        tools=$(dirname -- "${BASH_SOURCE[0]}")
+        # The build directory's tmp (CARGO_TARGET_TMPDIR), which tests write
+        # into, is the test user's too: cargo made it as whoever built.
+        dir=$(dirname -- "$1")
+        while [ "$dir" != / ] && [ "$dir" != . ] && [ ! -e "$dir/.rustc_info.json" ]; do dir=$(dirname -- "$dir"); done
+        [ ! -d "$dir/tmp" ] || bash "$tools/as-test-user.sh" --own "$dir/tmp"
+        exec bash "$tools/with-test-environment.sh" bash "$tools/as-test-user.sh" "$@"
         ;;
     *)
         exec "$@"

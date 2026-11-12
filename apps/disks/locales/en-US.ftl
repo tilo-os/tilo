@@ -40,3 +40,30 @@ disks-open-in-files = Open in Files
 disks-space-left = How much space is left?
 disks-swap = Swap space
 disks-filesystem-at = { $filesystem } at { $path }
+disks-in-use = In use
+disks-not-in-use = Not in use
+disks-purpose-root = Running system
+disks-purpose-home = Home folders
+disks-purpose-boot = Starts this device
+disks-partition-encrypted = encrypted
+disks-partition-encrypted-locked = encrypted and locked
+disks-partition-free = { $room } free
+disks-not-mounted = Not mounted
+disks-encryption-unlocked = { $scheme }, unlocked
+disks-encryption-locked = { $scheme }, locked
+
+disks-severity-warning = Warning
+disks-severity-critical = Critical
+disks-severity-healthy = OK
+disks-empty-drives-hint = Attach a drive, then rescan.
+
+## What formatting a drive or a partition erases, in the question it asks first
+disks-format-loses-drive = { $count ->
+    [0] Everything on it is erased for good.
+    [one] Its partition and every file on it are erased for good.
+   *[other] Its { $count } partitions and every file on them are erased for good.
+}
+disks-format-loses-files = Every file on it is erased for good.
+disks-format-loses-files-on = Every file on “{ $label }” is erased for good.
+disks-format-loses-used = The { $size } of files on it are erased for good.
+disks-format-loses-used-on = The { $size } of files on “{ $label }” are erased for good.

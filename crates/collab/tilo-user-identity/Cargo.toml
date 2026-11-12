@@ -53,6 +53,7 @@ tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 # `SigningKey`/`VerifyingKey` types are interchangeable.
 getrandom.workspace = true
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+collab-types = { version = "0.1.0", path = "../collab-types" }
 
 # The RNG shape ed25519-dalek 2.x consumes (`rand_core` 0.6). Kept
 # in lockstep with `collab-types` to avoid rand-version drift.

@@ -68,8 +68,6 @@ const KEPT_RUNS: usize = 64;
 pub struct Automation {
     triggers: TriggerHost,
     feed: records::RecordFeed,
-    /// What a person saves through the action door, applied on the loop.
-    saved: tokio::sync::mpsc::UnboundedReceiver<crate::plane::StoreRequest>,
     /// The workspaces whose records are followed now, so the worker is told only when that changed.
     followed: BTreeSet<String>,
     /// The apps' broker, while the session serves one: every firing starts through it.
@@ -129,7 +127,6 @@ impl Automation {
         wake: Wake,
         handle: DesktopHandle,
         person: String,
-        saved: tokio::sync::mpsc::UnboundedReceiver<crate::plane::StoreRequest>,
         feeds: Feeds,
     ) -> Self {
         let Feeds {
@@ -145,7 +142,6 @@ impl Automation {
         Self {
             triggers,
             feed: records::RecordFeed::start(root, BTreeSet::new(), wake),
-            saved,
             followed: BTreeSet::new(),
             broker: None,
             devices,
@@ -197,7 +193,6 @@ impl Automation {
     /// fired. Once per pass.
     pub fn settle(&mut self, desk: Option<&crate::plane::DeskAuthority>) {
         self.keep_finished();
-        self.apply_saved();
         // What fired while the broker was starting starts now that it serves. What it fired was
         // decided against a desk this loop had already published, so the broker knows the workspace
         // the run belongs to.
@@ -464,91 +459,6 @@ impl Automation {
                 );
             }
         }
-    }
-
-    /// Store every shortcut change the action door took since the last pass,
-    /// and answer the apps that asked: the desk belongs to this thread.
-    fn apply_saved(&mut self) {
-        while let Ok(request) = self.saved.try_recv() {
-            let result = self.save(
-                request.workspace.as_str(),
-                request.actor.as_str(),
-                &request.change,
-            );
-            if let Err(refusal) = &result {
-                tracing::info!(
-                    workspace = %request.workspace,
-                    actor = %request.actor,
-                    %refusal,
-                    "a saved shortcut was refused"
-                );
-            }
-            let _ = request.done.send(result);
-        }
-    }
-
-    /// `change` stored in `workspace` , as `actor` asked: a saved shortcut carries this device's
-    /// proof of who saved it, which is what arms its triggers on the saver's devices.
-    fn save(
-        &self,
-        workspace: &str,
-        actor: &str,
-        change: &tilo_automation::ShortcutChange,
-    ) -> Result<(), String> {
-        let (key, device) = tilo_identity_host::broker::trusted_current_device(workspace)
-            .map_err(|error| format!("this device cannot sign in the workspace: {error}"))?;
-        if actor != hex::encode(device.user_public_key) {
-            return Err("a shortcut is saved from its saver's own device".into());
-        }
-        let change = match change {
-            tilo_automation::ShortcutChange::Save(shortcut) => {
-                let mut shortcut = shortcut.as_ref().clone();
-                // A trigger this device cannot watch would be saved into a shortcut that never
-                // runs: the person is told now.
-                for trigger in &shortcut.triggers {
-                    triggers::validate_trigger(trigger)?;
-                }
-                tilo_peer_state::workspace::sign_saved_shortcut(
-                    workspace,
-                    &mut shortcut,
-                    &device,
-                    &key,
-                )?;
-                tilo_automation::ShortcutChange::Save(Box::new(shortcut))
-            }
-            delete @ tilo_automation::ShortcutChange::Delete(_) => delete.clone(),
-        };
-        let mut tree = self.handle.read(Clone::clone);
-        let workspace = tree
-            .workspaces
-            .iter_mut()
-            .find(|held| held.id().to_string() == workspace)
-            .ok_or("this device holds no such workspace")?;
-        match change {
-            tilo_automation::ShortcutChange::Save(shortcut) => {
-                let saved = tilo_automation::SavedShortcut::encode(&shortcut);
-                match workspace
-                    .shortcuts
-                    .iter_mut()
-                    .find(|held| held.id() == saved.id())
-                {
-                    Some(held) => *held = saved,
-                    None => workspace.shortcuts.push(saved),
-                }
-                workspace
-                    .shortcuts
-                    .sort_by(|left, right| left.id().cmp(right.id()));
-            }
-            tilo_automation::ShortcutChange::Delete(id) => {
-                let before = workspace.shortcuts.len();
-                workspace.shortcuts.retain(|held| held.id() != id);
-                if workspace.shortcuts.len() == before {
-                    return Err(format!("there is no shortcut `{id}`"));
-                }
-            }
-        }
-        self.handle.replace_tree(tree);
-        Ok(())
     }
 
     /// Record `claim` in `workspace` : the fire time this device took, which its other devices read

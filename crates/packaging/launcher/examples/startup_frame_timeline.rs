@@ -1,14 +1,31 @@
 //! Execute the synthetic native-app startup proof in the build environment.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+/// The checkout this program runs in: the tree above it that holds the tool. A build made in
+/// another checkout (`/src/tilo` on a builder) names that one at compile time, and the tree beside
+/// the executable is the one whose tools run here.
+fn repo(exe: &Path) -> PathBuf {
+    let tool = Path::new("scripts/headless-examples/startup-frame-timeline.py");
+    exe.ancestors()
+        .skip(1)
+        .find(|directory| directory.join(tool).is_file())
+        .map_or_else(
+            || {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf()
+            },
+            Path::to_path_buf,
+        )
+}
+
 fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(3)
-        .ok_or("launcher crate must live under crates/packaging")?;
     let exe = std::env::current_exe()?;
+    let repo = repo(&exe);
     let binaries = exe
         .parent()
         .and_then(Path::parent)
@@ -19,7 +36,11 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         std::fs::write(payload.join("probe.pid"), std::process::id().to_string())?;
         let runtime = std::env::var_os("XDG_RUNTIME_DIR").ok_or("missing private runtime")?;
         let runtime = Path::new(&runtime);
-        let display = std::fs::read_to_string(runtime.join("tilo-session/wayland-display"))?;
+        let session = tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))
+            .ok_or("the runtime directory names no session")?;
+        // The display the session published for this login, as any program it starts reads it.
+        let display =
+            std::fs::read_to_string(session.join(tilo_paths::login::WAYLAND_DISPLAY_FILE))?;
         let log = std::fs::File::create(payload.join("probe.log"))?;
         let status = Command::new(binaries.join("tilo-launcher"))
             .args(["run", "--manifest"])

@@ -35,7 +35,7 @@ import {request} from 'node:https';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import * as waits from './waits.mjs';
-import {stepLimit} from './waits.mjs';
+import {stepLimit, deskMetrics, DESK} from './waits.mjs';
 
 const [site, relay, origin, out, rolesFile, earlier] = process.argv.slice(2);
 if (!site || !relay || !origin || !out || !rolesFile) {
@@ -188,7 +188,10 @@ const dump = async (tab, name) => {
 // a turn between frames, so a wait of forty polls was adding forty turns of
 // work to the very page it waited for.
 const until = async (tab, expression, what, timeout = stepLimit(3)) => {
-  const value = await tab.evaluate(`globalThis.__tiloWait?.(() => (${expression}), ${timeout}) ?? false`)
+  // The frames the desk had presented as the wait began, kept in the page,
+  // so a wait that runs out says whether the desk drew at all meanwhile.
+  const value = await tab.evaluate(`(globalThis.__tiloWaitFrames = globalThis.tiloMount?.state()?.frames ?? 0,
+    globalThis.__tiloWait?.(() => (${expression}), ${timeout}) ?? false)`)
     .catch(() => false);
   if (value) return value;
   // Where the page stopped, in the failure line itself: the step it was in
@@ -200,9 +203,11 @@ const until = async (tab, expression, what, timeout = stepLimit(3)) => {
     progress: document.documentElement.dataset.arrivalProgress ?? null,
     status: document.getElementById('status')?.textContent ?? null,
     waited: ${JSON.stringify(what)},
+    framesWhenTheWaitBegan: globalThis.__tiloWaitFrames ?? null,
+    framesNow: globalThis.tiloMount?.state()?.frames ?? null,
   })`).catch(() => 'unreadable');
   await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-  await failed(`${what} never appeared: ${shown}`, tab);
+  await failed(`${what} never appeared${timeout >= 1000 ? ` in ${timeout / 1000} s` : ''}: ${shown}; the machine: ${waits.machine().text}`, tab);
 };
 // The page's own wait, in every page this file opens: `ask` until it answers
 // something true, or `ms` has passed, resolved as it answers.
@@ -282,7 +287,20 @@ const settle = (tab, by = 2, owed = () => true) => waits.settle({
   timeoutMs: stepLimit(3),
   pollMs: 100,
   onTimeout: ({from, by}) => until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
-    `the desk stepping ${by} more frame(s)`, 1),
+    `the desk stepping ${by} more frame(s) from frame ${from} in ${stepLimit(3) / 1000} s`, 1),
+});
+// The desk presented `by` more frames, or none for a whole step: a desk that
+// had already drawn what the person did (a pointer moved, a swipe it drew as
+// the wheel turned), or had nothing to draw for it, presents nothing more,
+// and that silence is its answer. A step is longer than a busy desk takes to
+// present a frame, so a desk still drawing is never taken for one that is done.
+const drawn = (tab, by = 2) => waits.settle({
+  evaluate: tab.evaluate.bind(tab),
+  by,
+  sleep,
+  idleMs: stepLimit(1),
+  timeoutMs: stepLimit(3),
+  pollMs: 100,
 });
 // Seconds from `from` to now, and the frames the desk has presented: what the
 // timing lines below print.
@@ -310,7 +328,7 @@ const search = async (tab, command, query, row, opens = null) => {
   // The desk keeps the search up until what it opened has arrived, and the
   // chord toggles it: it is opened only when it is down.
   if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen')) {
-    await click(tab, 640, 700);
+    await click(tab, DESK.empty.x, DESK.empty.y);
     await key(tab, 'k', command);
   }
   const chorded = Date.now();
@@ -584,8 +602,7 @@ const anotherBrowser = async () => {
   const launched = await launch({args: browserArgs});
   browsers.push(launched);
   const tab = await launched.tab();
-  await tab.send('Emulation.setDeviceMetricsOverride',
-    {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false}).catch(() => {});
+  await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
   await returning(tab);
   await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: waitSource});
   await recordLoading(launched, tab);
@@ -1136,8 +1153,11 @@ try {
     let last = null;
     let same = 0;
     for (let reads = 0; reads < 100 && same < 2; reads++) {
-      await settle(tab, 2);
+      // A strip still moving draws frames; one at rest draws none, and that
+      // is where it rests.
+      const how = await drawn(tab, 2);
       const now = await panOf(tab);
+      if (how === 'idle') return now;
       same = now && last && now.offset === last.offset ? same + 1 : 0;
       last = now;
     }
@@ -1164,18 +1184,18 @@ try {
     // The pointer rests where the fingers are, as a person's does: a wheel
     // says where it is, and the desk routes it to that place.
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
-    await settle(tab, 1);
+    await drawn(tab, 1);
     const steps = [6, 12, 18, 24, 18, 12, 6];
     for (const [index, step] of steps.entries()) {
       await wheel(tab, x, y, {deltaX: forward ? step : -step});
       // What the desk shows while the fingers are still on it, not only where
       // the gesture left it: a pause mid-gesture, one frame drawn, the rest.
       if (during && index === 2) {
-        await settle(tab, 1);
+        await drawn(tab, 1);
         await during();
       }
     }
-    await settle(tab, 2);
+    await drawn(tab, 2);
   };
   const rightClick = async (tab, x, y) => {
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
@@ -1490,7 +1510,7 @@ try {
     // the Lounge offers open by now and presents a frame every several
     // seconds through the software rasteriser, and each answer is a presented
     // frame: the waits are the ones a search gets everywhere in this gate.
-    await click(a.tab, 640, 700);
+    await click(a.tab, DESK.empty.x, DESK.empty.y);
     await key(a.tab, 'k', a.command);
     await until(a.tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search chord', stepLimit(3));
     await key(a.tab, 'Escape');
@@ -1583,12 +1603,22 @@ try {
     // invitation, not from the link alone.
     const c = await followLink('C', made);
     invited = c;
-    const people = listedNow.members === 1 ? '1 person' : `${listedNow.members} people`;
-    for (const expected of [`${ownName} invites you to`, listedNow.name, people,
+    for (const expected of [`${ownName} invites you to`, listedNow.name,
       'Commenter — you can add comments, but not edit shared work.']) {
       if (!c.card.includes(expected)) {
         await failed(`the invitation card does not say "${expected}": ${c.card.slice(0, 400)}`, c.tab);
       }
+    }
+    // How many people: the host's own count as it verified the invitation.
+    // The Lounge is shared with the run's other flows, whose people come and
+    // go meanwhile, so the card's number is held to the host's count before
+    // the link was opened and after the card showed, not to one of them.
+    const listedAfter = (await directory()).workspaces?.find(workspace => workspace.room === keptA.room);
+    const counted = Number(c.card.match(/\b(\d+) people\b/)?.[1] ?? (/\b1 person\b/.test(c.card) ? 1 : NaN));
+    const fewest = Math.min(listedNow.members, listedAfter?.members ?? listedNow.members);
+    const most = Math.max(listedNow.members, listedAfter?.members ?? listedNow.members);
+    if (!(counted >= fewest && counted <= most)) {
+      await failed(`the invitation card counts ${Number.isNaN(counted) ? 'nobody' : counted} people, where the host counted ${fewest === most ? fewest : `${fewest} to ${most}`} while it showed: ${c.card.slice(0, 400)}`, c.tab);
     }
     if (!c.buttons.includes('Join') || !c.buttons.includes('Not now')) {
       await failed(`the invitation card offers neither Join nor Not now: ${JSON.stringify(c.buttons)}`, c.tab);

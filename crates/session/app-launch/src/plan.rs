@@ -168,11 +168,6 @@ pub struct PlanContext<'a> {
     /// nothing, so the plan has no display, no render node and nothing open,
     /// which the launcher refuses beside `--tilolang-connector` anyway.
     pub connector: Option<&'a str>,
-    /// The resource address the session's document host publishes for this
-    /// app, when it serves the app's model: whether the app launches hosting
-    /// follows from that, and no per-app code says otherwise
-    /// (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
-    pub hosted: Option<&'a str>,
 }
 
 impl PlanContext<'_> {
@@ -358,12 +353,6 @@ impl Planned {
             // its continuation reports are addressed by.
             env.insert("TILO_CONTINUITY_INSTANCE".to_owned(), instance.to_string());
         }
-        if let Some(hosted) = context.hosted.filter(|_| window) {
-            // The session's document host keeps this app's record: its
-            // process opens none, and reads the reading published here over
-            // the connection the launcher made it (`one-app-model.md` §4).
-            env.insert("TILO_HOSTED_RESOURCE".to_owned(), hosted.to_owned());
-        }
         // The launcher resolves a package's services against
         // `$XDG_RUNTIME_DIR/tilo/services`. A session that serves none asks
         // for a launch without them, so a package needing one warns instead
@@ -539,7 +528,6 @@ mod tests {
             new_window: false,
             continuity_instance: None,
             connector: None,
-            hosted: None,
         }
     }
 

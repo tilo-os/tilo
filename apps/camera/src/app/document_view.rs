@@ -46,14 +46,15 @@ const CHOICES: [DocumentChoice; 5] = [
     DocumentChoice::Language,
 ];
 
-fn caption(choice: DocumentChoice) -> &'static str {
-    match choice {
-        DocumentChoice::Scanner => "Scanner",
-        DocumentChoice::Resolution => "Resolution",
-        DocumentChoice::Color => "Color",
-        DocumentChoice::Source => "Paper source",
-        DocumentChoice::Language => "Text language",
-    }
+fn caption(choice: DocumentChoice) -> String {
+    let message = match choice {
+        DocumentChoice::Scanner => "camera-scan-scanner",
+        DocumentChoice::Resolution => "camera-scan-resolution",
+        DocumentChoice::Color => "camera-scan-color",
+        DocumentChoice::Source => "camera-scan-paper-source",
+        DocumentChoice::Language => "camera-scan-text-language",
+    };
+    crate::CATALOG.t(message)
 }
 
 fn indexed(labels: impl IntoIterator<Item = String>) -> Vec<(String, String)> {
@@ -197,8 +198,9 @@ impl CameraApp {
         let gutter = f64::from(spacing.s6);
         let gap = f64::from(spacing.s4);
         // A captioned dropdown, its caption stacked above its field.
+        let first_caption = caption(CHOICES[0]);
         let field_h = DropdownFace::new(Rect::ZERO, "")
-            .caption(caption(CHOICES[0]))
+            .caption(&first_caption)
             .outer_height(theme);
         let control = ControlSize::Regular.height(theme);
         let content = Rect::new(

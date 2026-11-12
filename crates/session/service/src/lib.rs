@@ -35,13 +35,37 @@ pub use questions::{
 pub use worker::{Jobs, LoopWake, Wake, Worker};
 
 /// What an invocation started.
-#[derive(Clone, Debug, PartialEq)]
 pub enum Started {
     /// It finished on return, with this output.
     Done(ActionOutput),
     /// It was taken and runs on the device; its result lands in the
     /// service's reading.
     Accepted,
+    /// Its work is async (a signature, a commit into a workspace's record)
+    /// and runs off the loop: the asker hears this answer when it lands,
+    /// as it hears [`Self::Done`]'s at once.
+    Later(tilo_actions::remote::Pending<Result<ActionOutput, DoorError>>),
+}
+
+impl std::fmt::Debug for Started {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Done(output) => f.debug_tuple("Done").field(output).finish(),
+            Self::Accepted => f.write_str("Accepted"),
+            Self::Later(_) => f.write_str("Later"),
+        }
+    }
+}
+
+/// Two answers still to come are never known to be the same.
+impl PartialEq for Started {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Done(one), Self::Done(other)) => one == other,
+            (Self::Accepted, Self::Accepted) => true,
+            _ => false,
+        }
+    }
 }
 
 /// One service the session runs.
@@ -134,24 +158,6 @@ pub trait Service {
     /// through the app's own views. `None` for an app it keeps nothing of.
     fn module(&self, _app: &str) -> Option<std::sync::Arc<[u8]>> {
         None
-    }
-
-    /// The resource address this service publishes the app `app`'s record at,
-    /// when it runs that app's model: the session's document host serves the
-    /// app, so a launch it makes names the address and the app's process opens
-    /// no record of its own (`docs/architecture/apps.md` §8 step 2,
-    /// `one-app-model.md` §4). `None` for a service that runs no such model.
-    fn hosted(&self, _app: &str) -> Option<String> {
-        None
-    }
-
-    /// Every app whose model this service runs, by the app, with the resource address it publishes
-    /// its record at: what [`Self::hosted`] answers, for a host that asks about them all at once —
-    /// the session tells its launches which apps it serves, so a plain `open` of one places that
-    /// resource instead of awaiting a window process that never publishes
-    /// (`docs/designs/app-language/one-app-model.md` §3).
-    fn served(&self) -> Vec<(String, String)> {
-        Vec::new()
     }
 
     /// The record of the app `app` this service keeps, when the session runs the app's package
@@ -401,23 +407,6 @@ impl Services {
     #[must_use]
     pub fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
         self.started.iter().find_map(|service| service.module(app))
-    }
-
-    /// The resource address a service publishes the app `app`'s record at,
-    /// when it runs that app's model; see [`Service::hosted`].
-    #[must_use]
-    pub fn hosted(&self, app: &str) -> Option<String> {
-        self.started.iter().find_map(|service| service.hosted(app))
-    }
-
-    /// Every app whose model one of the services runs, by the app, with the resource address it
-    /// publishes its record at; see [`Service::served`].
-    #[must_use]
-    pub fn served(&self) -> Vec<(String, String)> {
-        self.started
-            .iter()
-            .flat_map(|service| service.served())
-            .collect()
     }
 
     /// The record of the app `app`, from the service keeping it; see [`Service::record`].
@@ -699,14 +688,6 @@ impl Service for Services {
 
     fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
         Self::module(self, app)
-    }
-
-    fn hosted(&self, app: &str) -> Option<String> {
-        Self::hosted(self, app)
-    }
-
-    fn served(&self) -> Vec<(String, String)> {
-        Self::served(self)
     }
 
     #[cfg(unix)]

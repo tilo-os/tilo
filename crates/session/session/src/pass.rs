@@ -628,6 +628,8 @@ impl Session {
             &self.shared.invocations,
         );
         self.place_sheets();
+        // What the async work this session started answered since the last pass.
+        self.shared.landings.land();
         self.settle_asks()?;
         // Who each workspace on the desk is whose, once this pass has opened the ones it was asked
         // for: the person's own are theirs, and one joined keeps its host's owner. A workspace the

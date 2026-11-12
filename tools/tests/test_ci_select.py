@@ -37,6 +37,12 @@ class SelectorTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        # The shipped build-bytes record is the subject of its own test; every
+        # other plan runs without measurements, so refreshing the record cannot
+        # change what it expects from the balancer.
+        self.recorded_build_bytes = ci_select.recorded_build_bytes
+        ci_select.recorded_build_bytes = lambda path=None: ci_select.BuildFootprint()
+        self.addCleanup(setattr, ci_select, "recorded_build_bytes", self.recorded_build_bytes)
         (self.root / "Cargo.toml").write_text("[workspace]\n")
         def package(name: str, rel: str, deps: list[str] | None = None) -> dict:
             directory = self.root / rel
@@ -831,6 +837,143 @@ class SelectorTests(unittest.TestCase):
             arm_packages = [name for row in arm for name in row["test_packages"].split()[1::2]]
             self.assertEqual(sorted(arm_packages), plan["tested"])
             self.assertLessEqual(len(arm), len([row for row in rows if row["arch"] == "x86_64"]))
+
+    def test_a_shard_is_bounded_by_the_bytes_its_build_writes(self):
+        gigabyte = 1024**3
+        empty = {"targets": [], "dependencies": []}
+        with self.subTest(phase='packages split where the store runs out'):
+            self.setUp()
+            packages = {f"p{index:02}": {"name": f"p{index:02}", **empty} for index in range(12)}
+            footprint = ci_select.BuildFootprint(baseline=4 * gigabyte,
+                                                 unrecorded=(0, 10 * gigabyte), packages={})
+            written = lambda names: footprint.shard(names, set())
+            # The baseline and six packages fit; the seventh opens a shard.
+            shards = ci_select.balance(set(packages), packages, 1, None, (),
+                                       written, 70 * gigabyte)
+            self.assertEqual([shard["package_count"] for shard in shards], [6, 6])
+            for shard in shards:
+                self.assertLessEqual(written(set(shard["packages"].split()[1::2])),
+                                     70 * gigabyte)
+            placed = [name for shard in shards for name in shard["packages"].split()[1::2]]
+            self.assertEqual(sorted(placed), sorted(packages))
+            # More shards than the caller asked for, and no cap: what a shard
+            # writes decides, not how many packages it names.
+            self.assertEqual(len(ci_select.balance(set(packages), packages, 1, None, (),
+                                                   written, 70 * gigabyte)), 2)
+            self.assertEqual(len(ci_select.balance(set(packages), packages, 1, None, (),
+                                                   written, 21 * gigabyte)), 12)
+        with self.subTest(phase='a package heavier than the budget keeps a shard of its own'):
+            self.setUp()
+            packages = {f"only{index}": {"name": f"only{index}", **empty} for index in range(3)}
+            footprint = ci_select.BuildFootprint(4 * gigabyte, (0, 100 * gigabyte), {})
+            shards = ci_select.balance(
+                set(packages), packages, 1, None, (),
+                lambda names: footprint.shard(names, set()), 70 * gigabyte)
+            self.assertEqual([shard["package_count"] for shard in shards], [1, 1, 1])
+        with self.subTest(phase='without a measurement the shards are unchanged'):
+            self.setUp()
+            packages = {f"p{index:02}": {"name": f"p{index:02}", **empty} for index in range(12)}
+            shards = ci_select.balance(set(packages), packages, 2)
+            self.assertEqual([shard["package_count"] for shard in shards], [6, 6])
+            self.assertIsNone(ci_select.BuildFootprint().shard({"p00"}, {"p00"}))
+
+    def test_each_test_job_is_bounded_by_its_store_and_its_memory(self):
+        gigabyte = 1024**3
+        with self.subTest(phase='the plan bounds every test row it emits'):
+            self.setUp()
+            for index in range(40):
+                name = f"app-{index:02}"
+                self.metadata["packages"].append({
+                    "name": name,
+                    "manifest_path": str(self.root / "apps" / name / "Cargo.toml"),
+                    "targets": [{"name": name}],
+                    "dependencies": [{"name": f"external-{i}"} for i in range(10)],
+                })
+            footprint = ci_select.BuildFootprint(baseline=8 * gigabyte,
+                                                 unrecorded=(0, 10 * gigabyte), packages={})
+            plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2,
+                                       force_full=True, build_bytes=footprint)
+            rows = plan["matrix"]["include"]
+            # Eight gigabytes of tree and ten per package: six packages a job,
+            # so the byte bound splits the plan well past the time-based count.
+            self.assertGreater(len(rows), 2 * ci_select.MAX_TEST_SHARDS)
+            for arch in ci_select.NATIVE_RUNNERS:
+                arch_rows = [row for row in rows if row["arch"] == arch]
+                names = [name for row in arch_rows for name in row["test_packages"].split()[1::2]]
+                self.assertEqual(sorted(names), plan["tested"])
+                self.assertEqual(len(names), len(set(names)))
+                for row in arch_rows:
+                    self.assertLessEqual(row["estimated_build_bytes"],
+                                         ci_select.TEST_SHARD_STORE_BYTES)
+                    self.assertGreaterEqual(row["build_jobs"], 1)
+                    self.assertLessEqual(row["build_jobs"] * ci_select.TEST_JOB_BYTES[arch],
+                                         ci_select.TEST_SHARD_MEMORY_BYTES)
+                    self.assertEqual(row["build_jobs"],
+                                     ci_select.test_build_jobs(row["runner"], arch))
+        with self.subTest(phase='a class never runs more jobs than its memory holds'):
+            self.setUp()
+            for arch in ci_select.NATIVE_RUNNERS:
+                for runner in (ci_select.NATIVE_RUNNERS[arch], ci_select.LARGE_RUNNERS[arch]):
+                    with self.subTest(arch=arch, runner=runner):
+                        jobs = ci_select.test_build_jobs(runner, arch)
+                        self.assertLessEqual(jobs, ci_select.TEST_CLASS_JOBS[runner][arch])
+                        self.assertLessEqual(jobs * ci_select.TEST_JOB_BYTES[arch],
+                                             ci_select.TEST_SHARD_MEMORY_BYTES)
+            self.assertLess(ci_select.test_build_jobs(ci_select.LARGE_RUNNERS["x86_64"], "x86_64"),
+                            ci_select.TEST_CLASS_JOBS[ci_select.LARGE_RUNNERS["x86_64"]]["x86_64"],
+                            "the measured ceiling is not the setting")
+
+    def test_the_recorded_build_bytes_bound_a_shard(self):
+        with self.subTest(phase='the record covers the tree'):
+            record = self.recorded_build_bytes()
+            self.assertIsNotNone(record.baseline, "tools/ci/recorded_build_bytes.json")
+            self.assertGreater(record.baseline, 0)
+            self.assertGreater(min(record.unrecorded), 0)
+            self.assertGreater(len(record.packages), 200)
+            # A heavy package must never fall back to the unrecorded default.
+            self.assertFalse(ci_select.HEAVY_PACKAGES - set(record.packages),
+                             ci_select.HEAVY_PACKAGES - set(record.packages))
+            self.assertGreater(record.of("tilo-ui")[1], record.unrecorded[1])
+        with self.subTest(phase='unreadable records are refused'):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "bytes.json"
+                self.assertIsNone(self.recorded_build_bytes(path).baseline)
+                for invalid in ('[]', '{"baseline": 1}', '{"baseline": 0}',
+                                '{"baseline": 1, "unrecorded": {"libraries": 0, "tests": 0}, "packages": {}}',
+                                '{"baseline": 1, "unrecorded": 1, "packages": {"a": -1}}',
+                                '{"baseline": 1, "unrecorded": {"libraries": 1, "tests": 1}, "packages": []}'):
+                    with self.subTest(invalid=invalid):
+                        path.write_text(invalid)
+                        with self.assertRaises(ValueError):
+                            self.recorded_build_bytes(path)
+        with self.subTest(phase='the generator writes what the planner reads'):
+            self.setUp()
+            target = self.root / "target/debug/deps"
+            target.mkdir(parents=True)
+            (self.root / "base").mkdir()
+            source = self.root / "base/src/lib.rs"
+            source.parent.mkdir()
+            source.write_text("")
+            (target / "libbase-0123456789abcdef.rlib").write_bytes(b"x" * 2048)
+            (target / "libbase-0123456789abcdef.d").write_text(f"out: {source}\n")
+            (target / "libserde-0123456789abcdef.rlib").write_bytes(b"y" * 512)
+            (target / "libserde-0123456789abcdef.d").write_text("out: registry/serde/src/lib.rs\n")
+            (self.root / "target/debug/build").mkdir(parents=True)
+            (self.root / "target/debug/build/probe").write_bytes(b"z" * 128)
+            generator = importlib.util.spec_from_file_location(
+                "recorded_build_bytes", MODULE_PATH.parent / "recorded_build_bytes.py")
+            module = importlib.util.module_from_spec(generator)
+            generator.loader.exec_module(module)
+            module.cargo_metadata = lambda root: self.metadata
+            module.package_maps = lambda metadata, root: (
+                {}, {Path("base"): "base"})
+            written = module.record(self.root)
+            # The library is what a dependent links; the test binary is what a
+            # shard that tests the package writes.
+            self.assertEqual(written["packages"], {"base": {"libraries": 2048, "tests": 0}})
+            # The dependency tree and build-script output are every job's base.
+            self.assertEqual(written["baseline"], 512 + 128)
+            self.assertEqual(written["unrecorded"]["libraries"], 2048)
 
     def test_documentation_changes_omit_rust_only_when_audited_and_unmixed(self):
         with self.subTest(phase='design only has explicit empty rust matrix'):

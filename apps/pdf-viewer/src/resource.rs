@@ -156,10 +156,27 @@ fn upgrade_markup(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelEr
     }
 }
 
+impl PdfMarkup {
+    /// What the record holds, as the app's own types: the PDF it marks up,
+    /// the pages and the values its form holds.
+    ///
+    /// A caller with no window open — an agent filling an application, a
+    /// script reading a form's values — reads the record through the door
+    /// with this, as it reads any app's record. One page reads on its own,
+    /// by the read its page occurrence offers.
+    pub fn read_document(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+        if item.is_some() {
+            return Err("a PDF reads whole; read one of its pages by its own read".into());
+        }
+        Ok(<Self as tilo_resource::Model>::to_json(self))
+    }
+}
+
 #[resource(
     kind = "pdf.document",
     label = "PDF",
     search = PdfMarkup::entries,
+    read_content = PdfMarkup::read_document,
     version = 4,
     migrate = upgrade_markup
 )]

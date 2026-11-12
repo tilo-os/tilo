@@ -122,3 +122,15 @@ pub fn edit_path(
     .map(drop)
     .map_err(|error| format!("{error:?}"))
 }
+
+/// The switch a reader lands on, named `name`, as the window exports it.
+pub fn switch_named(app: &mut TestApp<crate::SettingsShell>, name: &str) -> ui::accesskit::Node {
+    app.harness()
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(_, node)| {
+            (node.role() == ui::accesskit::Role::Switch && node.label() == Some(name))
+                .then_some(node)
+        })
+        .unwrap_or_else(|| panic!("no switch named {name}"))
+}

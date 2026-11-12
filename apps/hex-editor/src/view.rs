@@ -109,9 +109,7 @@ const NEW_FILE_NAME: &str = "Untitled.bin";
 fn empty_state() -> EmptyState {
     EmptyState::new("No file open")
         .with_icon(Icon::File)
-        .with_message(
-            "Inspect and edit any file byte by byte, or start an empty one and type bytes in.",
-        )
+        .with_message(crate::resource::CATALOG.t("hex-editor-empty-hint"))
         .with_action(crate::resource::CATALOG.t("hex-editor-open-file"))
         .with_action_id("hex.open")
 }

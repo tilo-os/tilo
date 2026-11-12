@@ -207,6 +207,9 @@ pub enum DirectoryError {
     /// A revocation-list operation failed.
     #[error("revocation-list error: {0}")]
     Revocation(#[from] RevocationError),
+    /// The device's signer refused.
+    #[error(transparent)]
+    Sign(#[from] collab_types::signer::SignError),
 }
 
 /// One user's workspace directory.
@@ -697,11 +700,11 @@ impl WorkspaceDirectory {
     /// Returns `DirectoryError::Canonical` if signing serialization fails.
     pub fn signed_snapshot(
         &mut self,
-        device_signing_key: &ed25519_dalek::SigningKey,
+        device: &dyn collab_types::signer::DeviceSigner,
         now_ns: u64,
     ) -> Result<DirectoryUpdate, DirectoryError> {
         let mut update = DirectoryUpdate {
-            author_device_public_key: device_signing_key.verifying_key().to_bytes(),
+            author_device_public_key: device.device_public_key(),
             authored_at_ns: now_ns,
             // `save` commits the open transaction first; saving a clone would
             // commit it only there, and the next local change would reuse its
@@ -710,7 +713,7 @@ impl WorkspaceDirectory {
             signature: [0; 64],
         };
         let digest = crate::canonical::signing_digest(DIR_DELTA_PREIMAGE_TAG, &update.view())?;
-        update.signature = device_signing_key.sign(&digest).to_bytes();
+        update.signature = collab_types::signer::sign_now(device, digest.to_vec())?;
         Ok(update)
     }
 

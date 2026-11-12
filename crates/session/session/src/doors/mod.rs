@@ -33,7 +33,7 @@ use tilo_identity_host::broker::{
     ChannelKeySource, IdentityBrokerHandle, PersonRecordKinds, WorkspaceMembership,
 };
 use tilo_portal::PortalCaller;
-use tilo_service::{Questions, Services, Started};
+use tilo_service::{Questions, Services};
 use tilo_system_stats::Grant;
 use tilo_system_stats::hub::Hub;
 use tilo_system_stats::protocol::Handoff;
@@ -430,7 +430,7 @@ impl Prompter for ConsentsPrompter {
             .allowed(&caller(handoff), grant.device_scope())
     }
 
-    fn ask(&self, handoff: &Handoff, grant: Grant) -> bool {
+    fn ask(&self, handoff: &Handoff, grant: Grant) -> std::sync::mpsc::Receiver<bool> {
         let caller = caller(handoff);
         let question = tilo_portal::consent::AccessQuestion {
             capability: grant.device_scope().to_owned(),
@@ -439,9 +439,14 @@ impl Prompter for ConsentsPrompter {
             text: None,
         };
         let handle = format!("system-stats:{}:{}", caller.app_id, question.capability);
-        // This connection's own thread waits; the service and the session go on, and the sheet is
-        // shown on the loop's next pass.
-        pollster::block_on(self.consents.decide(&caller, &handle, question)).is_ok()
+        // The connection's own thread waits for the answer; the service and the session go on,
+        // and the sheet is shown on the loop's next pass.
+        let (answer, answered) = std::sync::mpsc::channel();
+        let consents = self.consents.clone();
+        drop(crate::landing::off_loop(async move {
+            let _ = answer.send(consents.decide(&caller, &handle, question).await.is_ok());
+        }));
+        answered
     }
 }
 
@@ -457,7 +462,7 @@ impl Prompter for ConsentsPrompter {
 /// local day begins: then the reading before the change is counted first,
 /// so traffic lands on the connection and the day it moved on.
 mod data_usage {
-    use super::{ConnectionKind, Duration, Map, Reading, Services, Started, Value, mpsc};
+    use super::{ConnectionKind, Duration, Map, Reading, Services, Value, mpsc};
 
     /// How often the counters are read while this device has a connection up.
     const READ_EVERY: Duration = Duration::from_secs(60);
@@ -529,7 +534,7 @@ mod data_usage {
                 let arguments = arguments(&due.readings, self.boot.as_deref(), due.at, due.offset);
                 let counted = services.invoke(&format!("settings:{SECTION}"), COUNT, &arguments);
                 match counted {
-                    Some(Ok(Started::Done(_) | Started::Accepted)) => {}
+                    Some(Ok(_)) => {}
                     Some(Err(error)) => {
                         tracing::warn!(%error, "the data used was not counted");
                     }

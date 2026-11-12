@@ -105,6 +105,12 @@ impl NmClient {
         Self { connection }
     }
 
+    /// Whether `NetworkManager` is on the bus, without asking it anything.
+    /// A bus name check, so a caller may ask often.
+    pub async fn running(&self) -> bool {
+        ensure_running(&self.connection).await.is_ok()
+    }
+
     /// Read the global state once.
     ///
     /// # Errors
