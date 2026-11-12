@@ -284,6 +284,19 @@ const settle = (tab, by = 2, owed = () => true) => waits.settle({
   onTimeout: ({from, by}) => until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
     `the desk stepping ${by} more frame(s)`, 1),
 });
+// The desk presented `by` more frames, or none for a whole step: a desk that
+// had already drawn what the person did (a pointer moved, a swipe it drew as
+// the wheel turned), or had nothing to draw for it, presents nothing more,
+// and that silence is its answer. A step is longer than a busy desk takes to
+// present a frame, so a desk still drawing is never taken for one that is done.
+const drawn = (tab, by = 2) => waits.settle({
+  evaluate: tab.evaluate.bind(tab),
+  by,
+  sleep,
+  idleMs: stepLimit(1),
+  timeoutMs: stepLimit(3),
+  pollMs: 100,
+});
 // Seconds from `from` to now, and the frames the desk has presented: what the
 // timing lines below print.
 const took = from => ((Date.now() - from) / 1000).toFixed(1);
@@ -1135,8 +1148,11 @@ try {
     let last = null;
     let same = 0;
     for (let reads = 0; reads < 100 && same < 2; reads++) {
-      await settle(tab, 2);
+      // A strip still moving draws frames; one at rest draws none, and that
+      // is where it rests.
+      const how = await drawn(tab, 2);
       const now = await panOf(tab);
+      if (how === 'idle') return now;
       same = now && last && now.offset === last.offset ? same + 1 : 0;
       last = now;
     }
@@ -1163,18 +1179,18 @@ try {
     // The pointer rests where the fingers are, as a person's does: a wheel
     // says where it is, and the desk routes it to that place.
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
-    await settle(tab, 1);
+    await drawn(tab, 1);
     const steps = [6, 12, 18, 24, 18, 12, 6];
     for (const [index, step] of steps.entries()) {
       await wheel(tab, x, y, {deltaX: forward ? step : -step});
       // What the desk shows while the fingers are still on it, not only where
       // the gesture left it: a pause mid-gesture, one frame drawn, the rest.
       if (during && index === 2) {
-        await settle(tab, 1);
+        await drawn(tab, 1);
         await during();
       }
     }
-    await settle(tab, 2);
+    await drawn(tab, 2);
   };
   const rightClick = async (tab, x, y) => {
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
