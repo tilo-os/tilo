@@ -240,6 +240,49 @@ platform does: the host's own panel on macOS, and a chooser cancelled at once
 everywhere else, where every page is offscreen and no panel exists. A chooser
 to save into is never the embedder's.
 
+A server's sign-in (HTTP authentication, Basic or Digest, and a proxy's) is the
+embedder's to ask the person as well. `ready` / `tab_ready` advertise
+`http_auth: true`; a tab that then receives `http_auth` with a boolean
+`enabled` gets each challenge as an `http_auth` event while Chromium holds the
+request: a positive `id`, the `asker`, whether it is a `proxy`, the `realm`, the
+`scheme` (`basic`, `digest`; lower case, empty when it is no plain token) and
+whether it is a `retry`. The `asker` is where the credentials go and what a
+prompt names: the challenged request's origin (`https://example.org`,
+`http://127.0.0.1:8080`) for a server, `host:port` for a proxy. The `realm` is
+the server's own text, without control characters and at most 256 bytes; it
+names nobody and is shown as what the server says. `retry` says the credentials
+given last for this asker, realm and scheme were not accepted. The request waits
+until `http_auth_reply` with that `id` and that `asker` answers it: a `username`
+and a `password` (each at most 1024 bytes) to go on, or neither to cancel, which
+shows the server's own 401 page. A reply naming another `id` or another `asker`
+is no answer and sends nothing, so credentials never answer a question other
+than the one the person was shown. `http_auth_closed` with the `id` says the
+request no longer waits, answered or not: the tab went elsewhere, closed or
+moved, its renderer ended, another question took its place, or ten minutes
+passed with no answer.
+
+Only the tab's own document asks (the navigation under way, by its address), and
+what a document loads from its own origin. A challenge for anything else a page
+loads (an image, a frame or a request of another origin) is cancelled at once and
+nobody is asked, as current browsers do, so one site cannot put another's sign-in
+in front of the person as if it were its own; a proxy's challenge asks whatever
+the page is. A challenge whose sender is not the server the request went to is
+cancelled too. Requests waiting on one question (the same asker, realm and
+scheme) are one question, answered together; a different question supersedes an
+unanswered one. A tab that never asked has each challenge cancelled at once, so
+no request waits on a question nobody sees. No event and no log carries a
+password, and no `page` action answers a challenge or reads its answer.
+
+No challenge is ever Chromium's to ask. Its own prompt is a window of its own,
+on the desktop of whoever runs the host, while the page behind it stays blank
+on `ERR_INVALID_AUTH_CREDENTIALS`. Every start of the host sets
+`disable-chrome-login-prompt`, which hands each challenge to the host, and a
+host the switch is not in effect for ends at once instead of running. The host
+then holds a challenge for an embedder that asked, and cancels every other one
+itself: a tab that never asked, one whose embedder stopped answering, one that
+is closing or moved. The rules are `src/http_auth.h`
+(`tests/http_auth_test.cc`); `tests/http_auth.py` runs them against two servers.
+
 CEF callbacks enqueue output without pipe writes. Events have a bounded queue;
 only each tab's newest pending frame is kept, and tabs take turns, so a page
 painting every frame never drops another tab's last frame. A paint's pixels are

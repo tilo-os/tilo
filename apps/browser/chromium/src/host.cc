@@ -25,6 +25,7 @@
 #include "devtools_bridge.h"
 #include "extension_tabs.h"
 #include "page_clipboard.h"
+#include "http_auth.h"
 #include "text_composition_script.h"
 #if defined(OS_MAC)
 #include "credentials_mac.h"
@@ -467,6 +468,71 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     // so nothing else would settle it.
     if(unload && !accept && navigation_dispatched_ && !navigation_started_) RefuseNavigation("The page asked to stay");
   }
+  // A server or a proxy asks for a user name and a password (http_auth.h):
+  // the embedder's to ask the person, where it asked for them (`http_auth`).
+  // Chromium asks here on its IO thread and holds the request; who is asked,
+  // and whether anybody is, is decided on the UI thread, where the tab knows
+  // what it shows. The embedder is told of each as an `http_auth` with a
+  // positive id and who asks, and answers with `http_auth_reply`: the
+  // credentials, or none to cancel, which shows the server's own page. One
+  // question is open at a time, and none outlives its document, its tab, an
+  // embedder that stopped answering, or the wait; `http_auth_closed` says
+  // each time the request no longer waits. Nothing but that reply answers
+  // it: no page action reaches it, and no event or log carries a password.
+  bool GetAuthCredentials(CefRefPtr<CefBrowser>,const CefString& origin_url,bool proxy,const CefString& host,int port,const CefString& realm,const CefString& scheme,CefRefPtr<CefAuthCallback> callback) override {
+    CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self,std::string url,bool proxy,std::string host,int port,std::string realm,std::string scheme,CefRefPtr<CefAuthCallback> callback){
+      self->AskAuth(url,proxy,host,port,realm,scheme,callback);
+    },CefRefPtr<Client>(this),origin_url.ToString(),proxy,host.ToString(),port,realm.ToString(),scheme.ToString(),callback));
+    return true;
+  }
+  bool AsksAuth() const { return http_auth_ && browser_ && !transfer_owner_ && !native_closing_ && !closing; }
+  void AskAuth(const std::string& url,bool proxy,const std::string& host,int port,const std::string& realm_text,const std::string& scheme_text,CefRefPtr<CefAuthCallback> callback) {
+    tilo::AuthRequest request;CefURLParts parts;
+    if(url.size()<=8192 && CefParseURL(url,parts)) {
+      request.scheme=CefString(&parts.scheme).ToString();request.host=CefString(&parts.host).ToString();
+      const auto named=CefString(&parts.port).ToString();
+      // A port that is no number names no server: nobody is asked.
+      request.port=named.empty()?0:(named.size()<=5 && std::all_of(named.begin(),named.end(),[](unsigned char c){return std::isdigit(c);}))?std::atoi(named.c_str()):-1;
+    }
+    const auto asker=tilo::AuthAsker(request,proxy,host,port);
+    // A tab that never asked for them, and anything a page loads from
+    // another origin, is cancelled at once: nobody is shown a question.
+    if(!AsksAuth() || !tilo::AuthMayAsk(url,asker,proxy,auth_navigating_,tilo::Origin(committed_url_))) { callback->Cancel();return; }
+    const auto realm=tilo::AuthRealm(realm_text),scheme=tilo::AuthScheme(scheme_text);
+    const auto question=tilo::AuthQuestion(asker,proxy,realm,scheme);
+    // Another request waiting on the question already asked is answered
+    // with it: the person is asked once.
+    if(!auth_callbacks_.empty() && question==auth_question_) {
+      if(auth_callbacks_.size()<kMaxAuthWaiting) auth_callbacks_.push_back(callback); else callback->Cancel();
+      return;
+    }
+    // One tab, one question: a newer one supersedes an unanswered one.
+    CancelAuth();
+    auth_id_=auth_id_%2147483647+1;auth_callbacks_.push_back(callback);auth_asker_=asker;auth_question_=question;
+    auto d=CefDictionaryValue::Create();d->SetInt("id",auth_id_);d->SetString("asker",asker);d->SetBool("proxy",proxy);
+    d->SetString("realm",realm);d->SetString("scheme",scheme);
+    // The credentials given last for this very question were not accepted.
+    d->SetBool("retry",question==auth_given_);
+    Event("http_auth",d);
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self,int id){ if(!self->auth_callbacks_.empty() && self->auth_id_==id) self->CancelAuth(); },CefRefPtr<Client>(this),auth_id_),tilo::kAuthWaitMs);
+  }
+  // The requests that waited on the open question, which no longer do.
+  std::vector<CefRefPtr<CefAuthCallback>> TakeAuth() {
+    std::vector<CefRefPtr<CefAuthCallback>> waiting;waiting.swap(auth_callbacks_);
+    if(!waiting.empty()) {auto d=CefDictionaryValue::Create();d->SetInt("id",auth_id_);Event("http_auth_closed",d);}
+    return waiting;
+  }
+  void CancelAuth() { for(const auto& callback:TakeAuth()) callback->Cancel(); }
+  // The embedder's answer: for the question still open, naming the asker it
+  // was asked by, so credentials never answer a question other than the one
+  // the person was shown. Anything else is no answer and sends nothing.
+  void AnswerAuth(CefRefPtr<CefDictionaryValue> d) {
+    if(auth_callbacks_.empty() || d->GetInt("id")!=auth_id_ || d->GetString("asker").ToString()!=auth_asker_) return;
+    if(!d->HasKey("username")) { CancelAuth();return; }
+    auth_given_=auth_question_;
+    const auto username=d->GetString("username"),password=d->GetString("password");
+    for(const auto& callback:TakeAuth()) callback->Continue(username,password);
+  }
   // A file chooser a person opened is the embedder's to show where it asked
   // for them (`file_choosers`): it is told of each as a `file_chooser` with
   // a positive id, shows the desktop's own picker, and answers with
@@ -712,6 +778,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     InvalidateCredentials();
     // The page that asked for files is gone.
     CancelFileChooser();
+    CancelAuth();
     fullscreen_.ResetForRendererTermination();
     // Publish the lifecycle invalidation before terminal outcomes: a consumer
     // may admit recovery immediately after observing its owned completion.
@@ -883,7 +950,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     paint_snapshot_->Attach();
     document_size_=new tilo::DocumentSize(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     document_size_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("ime_composition",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("js_dialogs",true);d->SetBool("file_choosers",true);d->SetBool("selection_text",true);d->SetBool("page_events",true);d->SetBool("page_clipboard",page_clipboard && !sealed_documents);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("ime_composition",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("js_dialogs",true);d->SetBool("file_choosers",true);d->SetBool("http_auth",true);d->SetBool("selection_text",true);d->SetBool("page_events",true);d->SetBool("page_clipboard",page_clipboard && !sealed_documents);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     if(extension_tabs)extension_tabs->Introduce(id_);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
@@ -906,6 +973,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(geolocation_)geolocation_->Detach();
     geolocation_=nullptr;
     CancelFileChooser();
+    CancelAuth();
     if(page_automation_)page_automation_->Detach();
     page_automation_=nullptr;
     if(agent_log_)agent_log_->Detach();
@@ -951,7 +1019,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(frame->IsMain() && user_gesture && !redirect) OpenTab(request->GetURL(),false);
       return true;
     }
-    if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();CancelFileChooser();if(agent_log_ && !redirect)agent_log_->MainNavigation(request->GetURL().ToString(),user_gesture);InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
+    if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();CancelFileChooser();CancelAuth();auth_navigating_=request->GetURL().ToString();if(agent_log_ && !redirect)agent_log_->MainNavigation(request->GetURL().ToString(),user_gesture);InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
   }
   bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool user_gesture,const CefPopupFeatures& features,CefWindowInfo& window,CefRefPtr<CefClient>& client,CefBrowserSettings& settings,CefRefPtr<CefDictionaryValue>&,bool*) override {
     if(sealed_documents && !user_gesture) return true;
@@ -1040,6 +1108,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     // names the page it was held on.
     if(departures) departures->Gone(id_,committed_url_);
     committed_url_=frame->GetURL().ToString();
+    // The document is here: nothing is on its way, and what its sign-in was
+    // given is no longer what a new question would be a second try of.
+    auth_navigating_.clear();auth_given_.clear();
     // A new document: no script context a page action kept is one of its own.
     if(page_automation_) page_automation_->DocumentCommitted();
     // A new document has no field focused yet.
@@ -1063,7 +1134,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(service_session_import_)service_session_import_->Loaded(frame,status);
   }
   void OnLoadError(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,ErrorCode code,const CefString& text,const CefString& url) override {
-    if(frame->IsMain()) { failed_main_navigation_=url.ToString(); InvalidateCredentials(); }
+    if(frame->IsMain()) { failed_main_navigation_=url.ToString(); InvalidateCredentials(); if(tilo::AuthWithoutFragment(url.ToString())==tilo::AuthWithoutFragment(auth_navigating_)) auth_navigating_.clear(); }
     if(!frame->IsMain()) return;
     if(navigation_owner_ && navigation_started_ && navigation_urls_.count(url.ToString())) navigation_error_=text.ToString();
     if(code!=ERR_ABORTED) {auto d=CefDictionaryValue::Create();d->SetString("url",url);d->SetString("message",text);Event("error",d);}
@@ -1349,6 +1420,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(!file_choosers_) CancelFileChooser();
     }
     else if(op=="file_chooser_reply") AnswerFileChooser(d->GetInt("id"),d->GetList("paths"));
+    else if(op=="http_auth") {
+      http_auth_=d->GetBool("enabled");
+      // An embedder that stops answering lets the open question go.
+      if(!http_auth_) CancelAuth();
+    }
+    else if(op=="http_auth_reply") AnswerAuth(d);
     // A window opened for an agent holds what its page sends: the app is
     // told once, and answers each held request by its id. A hold nobody
     // answers ends after `wait_ms`, when the app names a time of its own.
@@ -1902,6 +1979,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     CancelMenu();
     // Said while the tab still speaks: its embedder stops waiting on a picker.
     CancelFileChooser();
+    CancelAuth();
     transfer_owner_=true;visible_=false;auto host=browser_->GetHost();host->WasHidden(true);host->SetFocus(false);
     capabilities_->Close();frame_.reset();popup_.clear();whole_next_=true;Event("tab_detached");PublishDownloadRuntime();
   }
@@ -2255,6 +2333,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   static constexpr size_t kMaxChooserTitle=256,kMaxAcceptedTypes=256,kMaxAcceptedType=128;
   static constexpr int64_t kFileChooserWaitMs=10*60*1000;
   CefRefPtr<CefFileDialogCallback> chooser_callback_;int chooser_id_=0;bool chooser_multiple_=false,file_choosers_=false;
+  // The sign-in a server asked for, if any (http_auth.h): the requests that
+  // wait on it, who asks, the question it is, and whether the embedder
+  // answers them. Then the address the tab is on its way to, and the
+  // question credentials were last given for.
+  static constexpr size_t kMaxAuthWaiting=64;
+  std::vector<CefRefPtr<CefAuthCallback>> auth_callbacks_;int auth_id_=0;bool http_auth_=false;
+  std::string auth_asker_,auth_question_,auth_navigating_,auth_given_;
   // A window opened for an agent holds what its page sends (departures.h):
   // changed by the app on the UI thread, and read where Chromium asks about a
   // request, on its IO thread.
@@ -2410,6 +2495,13 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     // The Rust application owns browser onboarding; Chromium's first-run UI
     // cannot be completed in an offscreen embedding and can stall Linux init.
     if(process_type.empty()) command_line->AppendSwitch("no-first-run");
+    // A server's sign-in is this host's to hold for its embedder
+    // (GetAuthCredentials, http_auth.h), and never Chromium's to ask:
+    // Chromium's own prompt is a window of its own, on the desktop of
+    // whoever runs the host, while the page behind it stays blank. This is
+    // the one place every start of the host passes; RunHost ends a host the
+    // switch is not in effect for.
+    if(process_type.empty() && !command_line->HasSwitch(tilo::kHoldSignInsSwitch)) command_line->AppendSwitch(tilo::kHoldSignInsSwitch);
     // Chromium serves the Extensions domain on the pipe the host created;
     // `unsafe-extension-debugging` is what enables its loadUnpacked.
     if(process_type.empty() && devtools_write>=0) {
@@ -2673,6 +2765,16 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
       (!d->HasKey("wait_ms") || (type("wait_ms",VTYPE_INT) && d->GetInt("wait_ms")>=tilo::kMinHoldWaitMs && d->GetInt("wait_ms")<=tilo::kMaxHoldWaitMs));
   }
   if(op=="hold_answer") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL) && answered();
+  if(op=="http_auth") return type("enabled",VTYPE_BOOL);
+  // The answer to a sign-in: the asker it was shown, and both credentials or
+  // neither, which cancels.
+  if(op=="http_auth_reply") {
+    if(!type("id",VTYPE_INT) || d->GetInt("id")<=0 || !type("asker",VTYPE_STRING)) return false;
+    const auto asker=d->GetString("asker").ToString();
+    if(asker.empty() || asker.size()>tilo::kMaxAuthAsker || d->HasKey("username")!=d->HasKey("password")) return false;
+    return !d->HasKey("username") || (type("username",VTYPE_STRING) && type("password",VTYPE_STRING) &&
+      d->GetString("username").ToString().size()<=tilo::kMaxAuthCredential && d->GetString("password").ToString().size()<=tilo::kMaxAuthCredential);
+  }
   if(op=="js_dialog_reply") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("accept",VTYPE_BOOL) && (!d->HasKey("text") || (type("text",VTYPE_STRING) && d->GetString("text").ToString().size()<=64*1024));
   if(op=="context_action") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("command",VTYPE_INT) && d->GetInt("command")>=0;
   if(op=="find") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("text",VTYPE_STRING) && d->GetString("text").length()<=4096 && type("forward",VTYPE_BOOL) && type("next",VTYPE_BOOL);
@@ -3220,6 +3322,12 @@ int RunHost(int argc,char** argv) {
   CefString(&settings.browser_subprocess_path)=(contents/"Frameworks/Browser Engine Helper.app/Contents/MacOS/Browser Engine Helper").string();
 #endif
   if(!CefInitialize(CefMainArgs(argc,argv),settings,MakeHostApp(),nullptr)) return CefGetExitCode();
+  // No host runs with Chromium's own sign-in prompt in reach (http_auth.h):
+  // every challenge is this host's to hold or to cancel.
+  if(!CefCommandLine::GetGlobalCommandLine()->HasSwitch(tilo::kHoldSignInsSwitch)) {
+    std::cerr<<"Chromium would ask for sign-ins in a window of its own; the host does not run\n";
+    CefShutdown();return 2;
+  }
 #if defined(OS_MAC)
   // Saved passwords live in the login keychain only for an engine with a team
   // identity: an item one ad hoc build saved would make every rebuild ask the
