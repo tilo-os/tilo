@@ -1284,13 +1284,16 @@ def steps(run: Run, args) -> None:
         run.step("S12", "after the reboot, an edit on box shows on a", lambda f: f.update(
             edit_shows_on(run, ws, SOURCE, "a", "S12")))
     if not together:
-        run.step("S05-b", "b boots, with box stopped to make room", boot_later, run)
+        run.step("S05-b", "b boots, with a stopped to make room and box, its host, up", boot_later, run)
         judge(("b",))
     run.step("S13", "vm rm box leaves a and b bootable", remove_source, run)
 
 
 def boot_later(facts: dict, run: Run) -> None:
-    run.vm(SOURCE).vm_cmd("stop", SOURCE, timeout=600)
+    """b boots beside box, the host of the person's workspaces: a branch is a device of its own,
+    and only the host admits it, once it reaches it, as a was at its first boot. Until then its
+    apps there run nothing (`device_branch.rs` proves that refusal); a box gone for good is S13's."""
+    run.vm("a").vm_cmd("stop", "a", timeout=600)
     boot(facts, run, ("b",))
 
 
