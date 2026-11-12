@@ -55,8 +55,8 @@ pub use history_content::HistoryContent;
 pub use join_service::OwnerJoinWorkspaces;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use publication::{
-    CUSTODY_FULL, HostAnswer, NativeOutgoing, NativeOutgoingEntry, RecordWrites, SealedHistoryKeys,
-    validate_file_layout,
+    HostAnswer, NativeOutgoing, NativeOutgoingEntry, RecordWrites, SealedHistoryKeys,
+    custody_run_name, outgoing_bytes, validate_file_layout,
 };
 pub use record::{
     EnrollmentTarget, NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus,
@@ -127,6 +127,16 @@ pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
     /// Read and verify a retained history block. Absence is an error, not UUID absence.
     fn read_history(&self, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
         Err("native owner history content is unavailable".into())
+    }
+    /// Durably keep `bytes`, a run of `workspace`'s outgoing custody waiting behind its head,
+    /// beside the record, and answer the hash it is named by. The store keeps it while the
+    /// record names it.
+    fn put_custody(&self, _workspace: WorkspaceId, _bytes: &[u8]) -> Result<[u8; 32], String> {
+        Err("native outgoing custody runs are unavailable".into())
+    }
+    /// Read a run of custody [`Self::put_custody`] kept.
+    fn read_custody(&self, _workspace: WorkspaceId, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        Err("native outgoing custody runs are unavailable".into())
     }
     /// False once a publication may or may not have reached disk; the owner
     /// then stays fenced until it is reopened from what the disk holds.
@@ -855,6 +865,7 @@ impl NativeWorkspaceOwner {
         let snapshot = {
             let live = replica.lock();
             publication::retire(&live, &mut record)?;
+            publication::settle(&mut record, self.0.store.as_ref())?;
             publication::retire_member_changes(&live, &mut record, &governed)?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
             let durable = record::DurablePeer::from(live.durable_parts()?);
@@ -995,6 +1006,7 @@ impl NativeWorkspaceOwner {
         // link admitted after it.
         let snapshot = {
             let live = replica.lock();
+            publication::settle(&mut record, self.0.store.as_ref())?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
             record.peer = live.durable_parts()?.into();
             Self::snapshot(&live, &mut record)?

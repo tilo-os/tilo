@@ -661,10 +661,8 @@ impl Task {
         let Ok(frames) = DocumentMutation::Snapshot(snapshot.clone()).encode_frames() else {
             return true;
         };
-        let (snapshot_entries, _) = self.commit_frames(&route, frames, true).await;
+        let (snapshot_entries, _) = self.commit_frames(&route, frames).await;
         if snapshot_entries.is_empty() {
-            // Custody has no room for the whole snapshot now: the host asks again as the record
-            // grows.
             return true;
         }
         if !self.send_custody(workspace_id, client) {
@@ -997,6 +995,7 @@ impl Task {
                 tracing::warn!(%error, "sealed histories stay uncompacted");
             }
         }
+        self.renew_custody().await;
         // What this device's custody still owes the host goes as its queue takes it:
         // every answer from the host, every command, every tick is a
         // chance to hand it more.

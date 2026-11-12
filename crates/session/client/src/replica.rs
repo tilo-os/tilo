@@ -32,6 +32,7 @@ use collab_types::Ed25519PublicKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::WorkspaceId;
 use tilo_desktop_model::projection::workspace_members;
+use tilo_lock::MutexRecover as _;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{
     Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, Store,
@@ -49,6 +50,9 @@ use tilo_peer_state::document_frame::DocumentRoute;
 struct PageWorkspaces {
     store: Arc<dyn PeerStore>,
     healthy: AtomicBool,
+    /// The runs of custody this page keeps beside its record, by name: those the record it last
+    /// kept names, and those put since. A store without runs of its own reads them from here.
+    runs: std::sync::Mutex<BTreeMap<String, Option<Vec<u8>>>>,
 }
 
 impl Store for PageWorkspaces {
@@ -64,6 +68,24 @@ impl Store for PageWorkspaces {
         None
     }
 
+    fn put_custody(&self, workspace: WorkspaceId, bytes: &[u8]) -> Result<[u8; 32], String> {
+        let hash = *blake3::hash(bytes).as_bytes();
+        let name = tilo_peer_state::owner::custody_run_name(workspace, hash);
+        self.store.save_rooms_run(&name, Some(bytes))?;
+        self.runs.lock_recover().insert(name, Some(bytes.to_vec()));
+        Ok(hash)
+    }
+
+    fn read_custody(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        let name = tilo_peer_state::owner::custody_run_name(workspace, hash);
+        if let Some(Some(bytes)) = self.runs.lock_recover().get(&name) {
+            return Ok(bytes.clone());
+        }
+        self.store
+            .load_rooms_run(&name)
+            .ok_or_else(|| format!("the run of custody {name} is not kept"))
+    }
+
     fn publish(
         &self,
         next: &NativeAuthorityStorage,
@@ -76,6 +98,23 @@ impl Store for PageWorkspaces {
             return Err(error);
         }
         install();
+        // A run the record no longer names moved to custody's head.
+        let named: BTreeSet<String> = next.custody_runs().collect();
+        let gone: Vec<String> = {
+            let mut runs = self.runs.lock_recover();
+            let gone = runs
+                .keys()
+                .filter(|name| !named.contains(*name))
+                .cloned()
+                .collect();
+            runs.retain(|name, _| named.contains(name));
+            gone
+        };
+        for name in gone {
+            if let Err(error) = self.store.save_rooms_run(&name, None) {
+                tracing::warn!(%error, "a run of custody the record no longer names was kept");
+            }
+        }
         Ok(())
     }
 }
@@ -97,9 +136,15 @@ impl Replicas {
         let kept = store
             .load_rooms()
             .and_then(|bytes| serde_json::from_slice::<NativeAuthorityStorage>(&bytes).ok());
+        let runs = kept
+            .iter()
+            .flat_map(NativeAuthorityStorage::custody_runs)
+            .map(|name| (name, None))
+            .collect();
         let workspaces = Arc::new(PageWorkspaces {
             store,
             healthy: AtomicBool::new(true),
+            runs: std::sync::Mutex::new(runs),
         });
         let owner = kept
             .and_then(|kept| NativeWorkspaceOwner::restore(workspaces.clone(), kept, now).ok())

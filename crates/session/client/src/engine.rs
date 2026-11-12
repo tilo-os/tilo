@@ -316,6 +316,17 @@ impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
             .ok_or("this device's channel service is not running")?
             .seal_checkpoint(workspace, app, record, snapshot)
     }
+
+    fn renew(
+        &self,
+        workspace: WorkspaceId,
+        write: &collab_types::SignedOp,
+    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
+        self.0
+            .get()
+            .ok_or("this device's channel service is not running")?
+            .renew_sealed(workspace, write)
+    }
 }
 
 impl Engine {
@@ -996,10 +1007,10 @@ impl Engine {
         };
         let committed = self
             .owner
-            .write(workspace, draft, self.identity.signer.as_ref(), true, now)
+            .write(workspace, draft, self.identity.signer.as_ref(), now)
             .await?
             .pop()
-            .ok_or("the workspace has no room for the write now")?;
+            .ok_or("the write was not committed")?;
         self.schedule_publication(workspace);
         let tilo_peer_state::owner_commit::CommitOperation::Document { envelope, .. } =
             committed.0.operation

@@ -33,9 +33,8 @@ impl Task {
         }
     }
 
-    /// Commit the writes held for their route's keys or for room in custody, once they may: every
-    /// held write of a route whose keys this device holds, in one owner turn per route; held,
-    /// so read, until committed.
+    /// Commit the writes held for their route's keys, once they may: every held write of a route
+    /// whose keys this device holds, in one owner turn per route; held, so read, until committed.
     pub(super) async fn commit_held(&mut self) {
         if !std::mem::take(&mut self.outbound_due) {
             return;
@@ -52,7 +51,7 @@ impl Task {
             let Some(frames) = self.engine.held_writes().lock().get(&route).cloned() else {
                 continue;
             };
-            let (_, taken) = self.commit_frames(&route, frames, false).await;
+            let (_, taken) = self.commit_frames(&route, frames).await;
             let mut held = self.engine.held_writes().lock();
             if let Some(frames) = held.get_mut(&route) {
                 frames.drain(..taken.min(frames.len()));
@@ -67,13 +66,12 @@ impl Task {
 
     /// Seal, sign and commit `frames` of `route` into this device's custody, in one owner turn;
     /// the entries it committed, as the host names them, and how many of `frames` it is done with
-    /// (all of them when they cannot commit). What this device writes, its readers read at once;
-    /// what custody has no room for waits for the host's answers. `whole` commits all or none.
+    /// (all of them, committed or not). What this device writes, its readers read at once, and
+    /// custody keeps however long its host is away.
     pub(super) async fn commit_frames(
         &mut self,
         route: &DocumentRoute,
         frames: Vec<Vec<u8>>,
-        whole: bool,
     ) -> (Vec<[u8; 32]>, usize) {
         let owner = self.replicas.owner();
         let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
@@ -83,26 +81,6 @@ impl Task {
             );
             return (Vec::new(), frames.len());
         };
-        let before: BTreeSet<[u8; 32]> = self
-            .custody(workspace)
-            .into_iter()
-            .map(|entry| entry.0)
-            .collect();
-        // Only what custody has room for is sealed and signed now.
-        let (entries, bytes) = owner.custody_room(workspace).unwrap_or_default();
-        let room = frames
-            .iter()
-            .scan((entries, bytes), |(entries, bytes), frame| {
-                let fits = *entries > 0 && frame.len() < *bytes;
-                *entries = entries.saturating_sub(1);
-                *bytes = bytes.saturating_sub(frame.len());
-                Some(fits)
-            })
-            .take_while(|fits| *fits)
-            .count();
-        if whole && room < frames.len() {
-            return (Vec::new(), 0);
-        }
         let Some(keys) = self.keys_of(route) else {
             self.fail("signature-rejected", "the route's channel keys went away");
             return (Vec::new(), frames.len());
@@ -118,7 +96,6 @@ impl Task {
         let draft = |view: &tilo_peer_state::owner::NativeCommittedView| {
             frames
                 .iter()
-                .take(room)
                 .zip(0..)
                 .map(|(frame, drafted)| {
                     let mut seal = |plaintext: &[u8]| {
@@ -149,29 +126,28 @@ impl Task {
                 .collect()
         };
         let committed = match owner
-            .write(workspace, draft, self.signer.as_ref(), whole, now)
+            .write(workspace, draft, self.signer.as_ref(), now)
             .await
         {
-            Ok(committed) => committed.len(),
+            Ok(committed) => committed,
             Err(error) => {
                 self.fail("signature-rejected", error);
                 return (Vec::new(), frames.len());
             }
         };
-        if committed == 0 {
-            return (Vec::new(), 0);
+        if committed.is_empty() {
+            return (Vec::new(), frames.len());
         }
         self.landed(route, Some(self.config.cert.device_public_key));
-        let ids: Vec<[u8; 32]> = self
-            .custody(workspace)
-            .into_iter()
-            .filter(|entry| !before.contains(&entry.0))
-            .map(|entry| tilo_relay_protocol::compaction::entry_id(&entry.1))
+        let ids: Vec<[u8; 32]> = committed
+            .iter()
+            .filter_map(|(request, _)| tilo_peer_state::owner::outgoing_bytes(request).ok())
+            .map(|bytes| tilo_relay_protocol::compaction::entry_id(&bytes))
             .collect();
         // What this device publishes, its own replica holds.
         self.note_delivered(route, &ids);
         self.count_custody();
-        (ids, committed)
+        (ids, frames.len())
     }
 
     /// `workspace`'s writes in this device's custody: id, bytes, channel and retention.
@@ -240,29 +216,76 @@ impl Task {
 
     /// Count what this device's custody still owes its hosts, over every workspace.
     pub(super) fn count_custody(&self) {
+        let owner = self.replicas.owner();
         let pending = self
             .workspaces
             .iter()
             .filter_map(|workspace_id| self.replicas.workspace(*workspace_id))
-            .map(|workspace| self.custody(workspace).len())
+            .map(|workspace| owner.unadmitted_writes(workspace).unwrap_or_default())
             .sum();
         self.reports
             .change(|status| status.outgoing_pending = pending);
     }
 
-    /// Complete `done` once every write now in this device's custody is answered by its host.
+    /// Complete `done` once every write now in this device's custody is answered by its host, or
+    /// left it renewed ([`Self::release_renewed`]).
     pub(super) fn await_custody(&mut self, done: Completion) {
-        let owed: BTreeSet<[u8; 32]> = self
-            .workspaces
-            .iter()
-            .filter_map(|workspace_id| self.replicas.workspace(*workspace_id))
-            .flat_map(|workspace| self.custody(workspace))
-            .map(|entry| entry.0)
-            .collect();
+        let owed = self.owed();
         if owed.is_empty() {
             let _ = done.send(Ok(()));
         } else {
             self.barriers.push((owed, None, done));
+        }
+    }
+
+    /// Every write in this device's custody, over every workspace, sendable now or not.
+    fn owed(&self) -> BTreeSet<[u8; 32]> {
+        let owner = self.replicas.owner();
+        self.workspaces
+            .iter()
+            .filter_map(|workspace_id| self.replicas.workspace(*workspace_id))
+            .flat_map(|workspace| owner.owed_writes(workspace).unwrap_or_default())
+            .collect()
+    }
+
+    /// Renew this device's sealed writes that expired in custody while its host was away, so
+    /// they still go; a barrier owed the original is owed nothing more for it, as the renewal
+    /// carries the same change.
+    pub(super) async fn renew_custody(&mut self) {
+        let now = crate::clock::system_time(tilo_clock::unix_now_ns());
+        let mut renewed = 0usize;
+        for workspace_id in self.workspaces.clone() {
+            let Some(workspace) = self.replicas.workspace(workspace_id) else {
+                continue;
+            };
+            match self
+                .replicas
+                .owner()
+                .renew_outgoing(workspace, self.signer.as_ref(), now)
+                .await
+            {
+                Ok(count) => renewed = renewed.saturating_add(count),
+                Err(error) => tracing::warn!(%error, "expired sealed writes stay unrenewed"),
+            }
+        }
+        if renewed > 0 {
+            self.release_renewed();
+        }
+    }
+
+    /// Complete each barrier whose writes all left custody, the last of them renewed.
+    fn release_renewed(&mut self) {
+        let owed = self.owed();
+        let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
+            .into_iter()
+            .map(|(mut left, refused, complete)| {
+                left.retain(|id| owed.contains(id));
+                (left, refused, complete)
+            })
+            .partition(|(left, _, _)| !left.is_empty());
+        self.barriers = waiting;
+        for (_, refused, complete) in done {
+            let _ = complete.send(refused.map_or(Ok(()), Err));
         }
     }
 

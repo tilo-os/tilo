@@ -695,17 +695,9 @@ impl Joined {
                 tracing::debug!(%error, "joined workspace sealed history stays uncompacted");
             }
         }
-        let Some(keys) = self.keys.get() else {
-            return;
-        };
         if let Err(error) = self
             .owner
-            .renew_outgoing(
-                workspace,
-                signer,
-                |sealed| keys.renew_sealed(workspace, sealed),
-                SystemTime::now(),
-            )
+            .renew_outgoing(workspace, signer, SystemTime::now())
             .await
         {
             tracing::warn!(%workspace, %error, "native sealed write renewal blocked");

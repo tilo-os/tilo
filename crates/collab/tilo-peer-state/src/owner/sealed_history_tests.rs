@@ -32,6 +32,17 @@ impl SealedHistoryKeys for Held {
             )
             .map_err(|error| error.to_string())
     }
+
+    fn renew(
+        &self,
+        _: WorkspaceId,
+        write: &SignedOp,
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        let plaintext = open(&self.0, write)?;
+        self.0
+            .seal_content(write.artifact, ContentRetention::Delta, &plaintext)
+            .map_err(|error| error.to_string())
+    }
 }
 
 fn open(keys: &ChannelContentKeys, write: &SignedOp) -> Result<Vec<u8>, String> {
@@ -117,7 +128,7 @@ async fn write(
         }])
     };
     owner
-        .write(workspace, draft, &member_key(), true, now)
+        .write(workspace, draft, &member_key(), now)
         .await
         .map(|committed| committed.len())
 }
@@ -155,6 +166,48 @@ fn answer(
         .collect();
     owner.retire_answered(workspace, &answers).unwrap();
     held.into_iter().map(|(_, message)| message).collect()
+}
+
+/// Five changes another member writes at `host` over `base`.
+fn written_at(
+    host: &mut crate::StatePeer,
+    base: &[u8],
+    keys: &ChannelContentKeys,
+    governor_key: &ed25519_dalek::SigningKey,
+    now: SystemTime,
+) -> Vec<NeighbourMsg> {
+    let mut peer = Typist::over(base, 2);
+    keys_typed('b', 5)
+        .map(|key| {
+            host.publication_mut()
+                .publish_sealed_incremental(
+                    APP,
+                    "",
+                    peer.change(&key),
+                    &mut seal_delta(keys),
+                    governor_key,
+                    now,
+                )
+                .unwrap()
+        })
+        .collect()
+}
+
+/// Everything custody holds, as the host takes it from its head until it owes nothing.
+fn drain(
+    owner: &NativeWorkspaceOwner,
+    workspace: WorkspaceId,
+    now: SystemTime,
+    order: &mut u64,
+) -> Vec<NeighbourMsg> {
+    let mut sent = Vec::new();
+    loop {
+        let more = answer(owner, workspace, now, order);
+        if more.is_empty() {
+            return sent;
+        }
+        sent.extend(more);
+    }
 }
 
 fn opened(
@@ -275,31 +328,22 @@ async fn a_device_that_compacted_offline_converges_with_a_peer_that_wrote_meanwh
             "{key} is taken offline"
         );
     }
-    let owed = custody(owner, workspace, now);
+    // Meanwhile the peer writes at the host.
+    let peers = written_at(
+        &mut host,
+        &base(owner, workspace),
+        &keys,
+        &governor_key,
+        now,
+    );
+
+    // Linked again: what each side holds reaches the other.
+    let sent = drain(owner, workspace, now, &mut order);
     assert!(
-        owed.iter().any(|(_, message)| matches!(message,
+        sent.iter().any(|message| matches!(message,
             NeighbourMsg::AppDocument { envelope, .. } if envelope.kind == OpKind::Compaction)),
         "the device compacted while offline"
     );
-    // Meanwhile the peer writes at the host.
-    let mut peer = Typist::over(&base(owner, workspace), 2);
-    let peers: Vec<NeighbourMsg> = keys_typed('b', 5)
-        .map(|key| {
-            host.publication_mut()
-                .publish_sealed_incremental(
-                    APP,
-                    "",
-                    peer.change(&key),
-                    &mut seal_delta(&keys),
-                    &governor_key,
-                    now,
-                )
-                .unwrap()
-        })
-        .collect();
-
-    // Linked again: what each side holds reaches the other.
-    let sent = answer(owner, workspace, now, &mut order);
     for message in sent.clone() {
         host.receive_from(TransportOrigin::RelayDelta(member), message, now)
             .unwrap();
@@ -331,6 +375,130 @@ async fn a_device_that_compacted_offline_converges_with_a_peer_that_wrote_meanwh
     );
 
     joins_after(&late, &sent, peers, &keys, &everything);
+}
+
+/// Writes a device makes while its host is away: custody keeps every one of them, past what
+/// it keeps in its record (eight writes here) and the record's sealed history bound many times.
+const AWAY: usize = 2_000;
+
+#[tokio::test]
+async fn a_device_away_keeps_every_write_through_a_restart_and_all_converge_on_return() {
+    let (fixture, mut host, governor_key) = governed_fixture_at(tilo_clock::wall());
+    let other = enrolled_with(fixture.clone());
+    let joined = enrolled_with(fixture);
+    let (workspace, now, path) = (joined.workspace, joined.now, joined.path.clone());
+    let member = member_key().verifying_key().to_bytes();
+    let governor = governor_key.verifying_key().to_bytes();
+    let (_, keys) = rotated_channel();
+    joined
+        .owner
+        .keep_sealed_histories(Arc::new(Held(keys.clone())));
+    let mut typist = Typist::over(&base(&joined.owner, workspace), 1);
+    let mut order = 0;
+    // What the host took from the device, in its order.
+    let mut relayed = Vec::new();
+    for key in keys_typed('k', LINKED) {
+        let changes = typist.change(&key);
+        assert_eq!(
+            write(&joined.owner, workspace, &keys, changes, now).await,
+            Ok(1)
+        );
+        for message in answer(&joined.owner, workspace, now, &mut order) {
+            host.receive_from(TransportOrigin::RelayDelta(member), message.clone(), now)
+                .unwrap();
+            relayed.push(message);
+        }
+    }
+    // Away: every write is taken, and kept as it is taken.
+    for key in keys_typed('k', LINKED + AWAY).skip(LINKED) {
+        let changes = typist.change(&key);
+        assert_eq!(
+            write(&joined.owner, workspace, &keys, changes, now).await,
+            Ok(1),
+            "{key} is taken while the host is away"
+        );
+    }
+    let owed = joined.owner.unadmitted_writes(workspace).unwrap();
+    assert!(owed >= AWAY, "custody owes every write: {owed}");
+    drop(joined.owner);
+    let owner = open_file(&path).unwrap();
+    owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
+    assert_eq!(
+        owner.unadmitted_writes(workspace).unwrap(),
+        owed,
+        "custody keeps them all through a restart"
+    );
+    // Meanwhile another member writes at the host.
+    let peers = written_at(
+        &mut host,
+        &base(&owner, workspace),
+        &keys,
+        &governor_key,
+        now,
+    );
+
+    // Back: custody goes to the host in its order until it owes nothing.
+    for message in drain(&owner, workspace, now, &mut order) {
+        host.receive_from(TransportOrigin::RelayDelta(member), message.clone(), now)
+            .unwrap();
+        relayed.push(message);
+    }
+    assert_eq!(owner.unadmitted_writes(workspace).unwrap(), 0);
+    for message in peers.clone() {
+        owner
+            .receive(
+                workspace,
+                TransportOrigin::RelayDelta(governor),
+                message,
+                now,
+            )
+            .unwrap();
+    }
+    // Another device of the workspace takes what the host relays.
+    for message in relayed.into_iter().chain(peers) {
+        let NeighbourMsg::AppDocument { envelope, .. } = &message else {
+            panic!("a document write");
+        };
+        let author = *envelope.author.as_bytes();
+        other
+            .owner
+            .receive(
+                other.workspace,
+                TransportOrigin::RetainedRelayDelta(author),
+                message,
+                other.now,
+            )
+            .unwrap();
+    }
+    let everything: BTreeSet<String> = keys_typed('k', LINKED + AWAY)
+        .chain(keys_typed('b', 5))
+        .collect();
+    converge(
+        [
+            ("the device", opened(&owner, workspace, &keys)),
+            ("the host", opened_in(&host, &keys)),
+            (
+                "the other device",
+                opened(&other.owner, other.workspace, &keys),
+            ),
+        ],
+        &everything,
+    );
+}
+
+/// Every one of `documents` holds every change of `everything`, and all are one document.
+fn converge<const N: usize>(documents: [(&str, AutoCommit); N], everything: &BTreeSet<String>) {
+    let mut heads = Vec::new();
+    for (holder, mut document) in documents {
+        assert_eq!(typed(&document), *everything, "{holder} holds every change");
+        let mut held = document.get_heads();
+        held.sort();
+        heads.push(held);
+    }
+    assert!(
+        heads.windows(2).all(|pair| pair[0] == pair[1]),
+        "all converge on one document"
+    );
 }
 
 /// A member that joins after the compaction is handed the compacted history,

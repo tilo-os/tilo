@@ -11,11 +11,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use web_time::SystemTime;
 
+/// Writes custody keeps in its record at its head, where the relay session sends them from,
+/// and at most as many again at its tail. Every write past them waits in runs of the store's
+/// beside the record ([`super::Store::put_custody`]): custody takes every write this device
+/// makes, linked or not, however long its host is away. This crate's tests keep fewer, so a
+/// test crosses the bound many times over in the writes it can afford.
+#[cfg(not(test))]
 pub(crate) const MAX_ENTRIES: usize = 64;
-/// What a commit is refused with while this device's custody holds as many writes as it
-/// keeps: it may commit again once the host answered some of them.
-pub const CUSTODY_FULL: &str = "native outgoing capacity exceeded; existing edits retained";
+#[cfg(test)]
+pub(crate) const MAX_ENTRIES: usize = 8;
 pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;
+/// Bytes of writes one run of custody's backlog gathers before the store keeps it.
+const RUN_BYTES: usize = 1024 * 1024;
+/// Most bytes a run the store keeps can hold: its writes, then one more that did not fit.
+pub(crate) const MAX_RUN_BYTES: usize = RUN_BYTES + MAX_BYTES + 64 * 1024;
 pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES + 1;
 /// Passes (writes, and asks of the workspace's holder) before a compaction that
 /// drafted nothing is tried again ([`NativeWorkspaceOwner::compact_outgoing`]).
@@ -44,6 +53,17 @@ pub trait SealedHistoryKeys: collab_types::signer::MaybeSendSync {
         record: &str,
         snapshot: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>), String>;
+    /// Seal `write` again under its channel's current epoch: one of this device's sealed writes
+    /// of `workspace` that expired in custody before its host took it. Answers the encryption and
+    /// payload its renewal carries.
+    ///
+    /// # Errors
+    /// This device holds no key that opens it, or none of its channel's current epoch.
+    fn renew(
+        &self,
+        workspace: WorkspaceId,
+        write: &SignedOp,
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String>;
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredPublication {
@@ -67,6 +87,25 @@ pub(crate) struct StoredPublication {
     /// What the workspace's relay host answered to this device's writes, per record.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     answered: Vec<AnsweredRecord>,
+    /// Writes behind `entries` the store keeps beside the record, oldest first: they move to
+    /// the head as it sends and the host answers what it holds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    spilled: Vec<SpilledRun>,
+    /// The newest writes behind `spilled`, until they make a run of their own.
+    #[serde(
+        default,
+        deserialize_with = "read_entries",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    tail: Vec<StoredOutgoing>,
+}
+/// Writes of custody's backlog the store keeps as one run, named by the hash of its bytes
+/// ([`super::Store::put_custody`]), and how many of them moved to custody's head already.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SpilledRun {
+    hash: [u8; 32],
+    writes: u32,
+    taken: u32,
 }
 /// The relay host's answers to this device's writes to one record, kept with the custody they
 /// left.
@@ -107,6 +146,8 @@ impl Default for StoredPublication {
             projection: Vec::new(),
             governance: Vec::new(),
             answered: Vec::new(),
+            spilled: Vec::new(),
+            tail: Vec::new(),
         }
     }
 }
@@ -384,6 +425,11 @@ fn bounds(publication: &StoredPublication) -> Result<usize, String> {
         || publication.next_ordinal == 0
         || publication.entries.len() > MAX_ENTRIES
         || publication.governance.len() > 1
+        || publication.spilled.iter().any(|run| {
+            run.writes == 0
+                || run.taken >= run.writes
+                || usize::try_from(run.writes).map_or(true, |writes| writes > MAX_ENTRIES)
+        })
     {
         return Err("invalid native outgoing publication or entry capacity".into());
     }
@@ -482,6 +528,14 @@ pub(crate) fn encode(message: &NeighbourMsg, limit: usize) -> Result<Vec<u8>, St
         .map_err(|e| e.to_string())?;
     postcard::to_allocvec(message).map_err(|e| e.to_string())
 }
+/// The bytes custody keeps, and its relay session sends, for `request`, one of this device's
+/// document writes as the owner committed it.
+///
+/// # Errors
+/// `request` is not a document write, or it exceeds custody's cap.
+pub fn outgoing_bytes(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
+    prepare(request)
+}
 pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
     let CommitOperation::Document {
         app,
@@ -512,20 +566,6 @@ pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
         MAX_BYTES,
     )
 }
-/// Workspace for `bytes` in the outgoing custody.
-fn reserve(view: &record::StoredWorkspace, bytes: &[u8]) -> Result<(), String> {
-    let publication = state_of(view)?;
-    let total = bounds(publication)?;
-    if publication.entries.len() >= MAX_ENTRIES
-        || total
-            .checked_add(bytes.len())
-            .is_none_or(|size| size > MAX_BYTES)
-    {
-        return Err(CUSTODY_FULL.into());
-    }
-    Ok(())
-}
-
 pub(crate) fn replace_governance_checkpoint(
     live: &StatePeer,
     view: &mut record::StoredWorkspace,
@@ -737,20 +777,31 @@ pub(crate) fn refresh_governance_checkpoint(
     }];
     Ok(())
 }
+/// Take `bytes`, one of this device's writes, into custody: at its head while the head has room
+/// and nothing waits behind it, else at its tail, which the store keeps in runs once it is long
+/// ([`settle`]). Custody refuses no write for how many it holds.
 fn append(view: &mut record::StoredWorkspace, bytes: Vec<u8>) -> Result<(), String> {
     let id = *blake3::hash(&bytes).as_bytes();
-    if state_of(view)?
+    let custody = state_of(view)?;
+    if custody
         .entries
         .iter()
+        .chain(&custody.tail)
         .any(|entry| entry.id == id && entry.bytes == bytes)
     {
         return Ok(());
     }
-    reserve(view, &bytes)?;
+    let head = bounds(custody)?;
     let message: NeighbourMsg = postcard::from_bytes(&bytes).map_err(|e| e.to_string())?;
     let (timestamp_ns, channel, incremental) = metadata(&message)?;
     let binding = request(&message)?.binding()?;
     let publication = view.publication.as_mut().ok_or("publication absent")?;
+    let at_head = publication.tail.is_empty()
+        && publication.spilled.is_empty()
+        && publication.entries.len() < MAX_ENTRIES
+        && head
+            .checked_add(bytes.len())
+            .is_some_and(|size| size <= MAX_BYTES);
     let ordinal = publication.next_ordinal;
     publication.next_ordinal = ordinal
         .checked_add(1)
@@ -759,7 +810,7 @@ fn append(view: &mut record::StoredWorkspace, bytes: Vec<u8>) -> Result<(), Stri
         .revision
         .checked_add(1)
         .ok_or("native publication revision exhausted")?;
-    publication.entries.push(StoredOutgoing {
+    let entry = StoredOutgoing {
         ordinal,
         id,
         bytes,
@@ -767,8 +818,169 @@ fn append(view: &mut record::StoredWorkspace, bytes: Vec<u8>) -> Result<(), Stri
         timestamp_ns,
         channel,
         incremental,
-    });
+    };
+    if at_head {
+        publication.entries.push(entry);
+    } else {
+        publication.tail.push(entry);
+    }
     Ok(())
+}
+
+/// Bytes of `entries`.
+fn size(entries: &[StoredOutgoing]) -> usize {
+    entries
+        .iter()
+        .fold(0, |bytes, entry| bytes.saturating_add(entry.bytes.len()))
+}
+
+/// Keep `workspace`'s custody in shape before its record is published: its head takes the
+/// oldest writes waiting behind it while it has room, and a tail that grew long becomes a run
+/// `store` keeps beside the record. Every write stays in the order it was committed.
+///
+/// # Errors
+/// A run could not be kept or read back.
+pub(crate) fn settle(
+    view: &mut record::StoredWorkspace,
+    store: &dyn super::Store,
+) -> Result<(), String> {
+    let workspace = view.workspace;
+    let Some(publication) = view.publication.as_mut() else {
+        return Ok(());
+    };
+    let mut held = bounds(publication)?;
+    let mut changed = false;
+    let mut run: Option<Vec<StoredOutgoing>> = None;
+    while publication.entries.len() < MAX_ENTRIES {
+        let next = match publication.spilled.first() {
+            Some(front) => {
+                let writes = match &mut run {
+                    Some(writes) => writes,
+                    None => run.insert(read_run(store, workspace, front)?),
+                };
+                writes
+                    .get(usize::try_from(front.taken).map_err(|e| e.to_string())?)
+                    .cloned()
+                    .ok_or("a kept run of custody is shorter than its record says")?
+            }
+            None => match publication.tail.first() {
+                Some(first) => first.clone(),
+                None => break,
+            },
+        };
+        let Some(after) = held
+            .checked_add(next.bytes.len())
+            .filter(|size| *size <= MAX_BYTES)
+        else {
+            break;
+        };
+        match publication.spilled.first_mut() {
+            Some(front) => {
+                front.taken = front.taken.saturating_add(1);
+                if front.taken == front.writes {
+                    publication.spilled.remove(0);
+                    run = None;
+                }
+            }
+            None => {
+                publication.tail.remove(0);
+            }
+        }
+        held = after;
+        publication.entries.push(next);
+        changed = true;
+    }
+    while publication.tail.len() >= MAX_ENTRIES || size(&publication.tail) >= RUN_BYTES {
+        let mut bytes = 0usize;
+        let count = publication
+            .tail
+            .iter()
+            .take(MAX_ENTRIES)
+            .take_while(|entry| {
+                let fits = bytes == 0 || bytes.saturating_add(entry.bytes.len()) <= RUN_BYTES;
+                bytes = bytes.saturating_add(entry.bytes.len());
+                fits
+            })
+            .count();
+        let writes: Vec<StoredOutgoing> = publication.tail.drain(..count).collect();
+        let encoded = postcard::to_allocvec(&writes).map_err(|e| e.to_string())?;
+        let hash = store.put_custody(workspace, &encoded)?;
+        publication.spilled.push(SpilledRun {
+            hash,
+            writes: u32::try_from(count).map_err(|e| e.to_string())?,
+            taken: 0,
+        });
+        changed = true;
+    }
+    if changed {
+        publication.revision = publication
+            .revision
+            .checked_add(1)
+            .ok_or("native publication revision exhausted")?;
+    }
+    Ok(())
+}
+
+/// The runs of custody's backlog `view` names, which its store keeps while it does.
+pub(crate) fn kept_runs(view: &record::StoredWorkspace) -> impl Iterator<Item = [u8; 32]> + '_ {
+    view.publication
+        .iter()
+        .flat_map(|publication| publication.spilled.iter().map(|run| run.hash))
+}
+
+/// The name a store keeps the run of `workspace`'s custody named `hash` under
+/// ([`super::Store::put_custody`]).
+#[must_use]
+pub fn custody_run_name(workspace: WorkspaceId, hash: [u8; 32]) -> String {
+    format!(
+        "{workspace}.custody.{}",
+        blake3::Hash::from_bytes(hash).to_hex()
+    )
+}
+
+impl record::NativeAuthorityStorage {
+    /// The name of every run of outgoing custody this record names: what its store keeps
+    /// beside it, and may let go of once a record it publishes no longer names it.
+    pub fn custody_runs(&self) -> impl Iterator<Item = String> + '_ {
+        self.workspaces.iter().flat_map(|(workspace, stored)| {
+            kept_runs(stored).map(|hash| custody_run_name(*workspace, hash))
+        })
+    }
+}
+
+/// The writes of `run`, read back from `store` and checked against its record.
+fn read_run(
+    store: &dyn super::Store,
+    workspace: WorkspaceId,
+    run: &SpilledRun,
+) -> Result<Vec<StoredOutgoing>, String> {
+    let bytes = store.read_custody(workspace, run.hash)?;
+    if bytes.len() > MAX_RUN_BYTES || *blake3::hash(&bytes).as_bytes() != run.hash {
+        return Err("a kept run of custody differs from its record".into());
+    }
+    let writes: Vec<StoredOutgoing> = postcard::from_bytes(&bytes).map_err(|e| e.to_string())?;
+    if usize::try_from(run.writes).ok() != Some(writes.len())
+        || writes
+            .iter()
+            .any(|write| write.id != *blake3::hash(&write.bytes).as_bytes())
+    {
+        return Err("a kept run of custody differs from its record".into());
+    }
+    Ok(writes)
+}
+
+/// The writes of every run `publication` keeps beside its record that are not at its head yet.
+fn spilled_writes(
+    publication: &StoredPublication,
+    store: &dyn super::Store,
+    workspace: WorkspaceId,
+) -> Result<Vec<StoredOutgoing>, String> {
+    let mut writes = Vec::new();
+    for run in &publication.spilled {
+        let taken = usize::try_from(run.taken).map_err(|e| e.to_string())?;
+        writes.extend(read_run(store, workspace, run)?.into_iter().skip(taken));
+    }
+    Ok(writes)
 }
 pub(crate) fn append_local(
     view: &mut record::StoredWorkspace,
@@ -782,19 +994,36 @@ pub(crate) fn append_local(
     // Nothing waits here, and what an earlier record kept waiting is released
     // with this commit, so custody of a device-hosted workspace stays empty.
     let publication = view.publication.as_mut().ok_or("publication absent")?;
-    if publication.entries.is_empty() {
+    if publication.entries.is_empty()
+        && publication.tail.is_empty()
+        && publication.spilled.is_empty()
+    {
         return Ok(());
     }
     publication.entries.clear();
+    publication.tail.clear();
+    publication.spilled.clear();
     publication.revision = publication
         .revision
         .checked_add(1)
         .ok_or("native publication revision exhausted")?;
     Ok(())
 }
-pub(crate) fn has_exact(view: &record::StoredWorkspace, bytes: &[u8]) -> Result<bool, String> {
-    Ok(state_of(view)?
+pub(crate) fn has_exact(
+    view: &record::StoredWorkspace,
+    bytes: &[u8],
+    store: &dyn super::Store,
+) -> Result<bool, String> {
+    let publication = state_of(view)?;
+    if publication
         .entries
+        .iter()
+        .chain(&publication.tail)
+        .any(|entry| entry.bytes == bytes)
+    {
+        return Ok(true);
+    }
+    Ok(spilled_writes(publication, store, view.workspace)?
         .iter()
         .any(|entry| entry.bytes == bytes))
 }
@@ -830,6 +1059,7 @@ pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
         .governance
         .iter()
         .chain(publication.entries.iter())
+        .chain(publication.tail.iter())
     {
         if entry.ordinal == 0
             || entry.ordinal >= publication.next_ordinal
@@ -853,14 +1083,23 @@ pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
         {
             return Err("native outgoing bytes/binding mismatch".into());
         }
-        if publication.entries.iter().any(|item| item.id == entry.id) {
+        if !publication
+            .governance
+            .iter()
+            .any(|item| item.id == entry.id)
+        {
             validate_exact(&view.peer, &message, view.device().device_public_key)?;
         }
     }
-    if publication
+    let written: Vec<u64> = publication
         .entries
+        .iter()
+        .chain(&publication.tail)
+        .map(|entry| entry.ordinal)
+        .collect();
+    if written
         .windows(2)
-        .any(|pair| matches!(pair, [first, second] if first.ordinal >= second.ordinal))
+        .any(|pair| matches!(pair, [first, second] if first >= second))
     {
         return Err("native publication ordinal order mismatch".into());
     }
@@ -1083,21 +1322,42 @@ impl NativeWorkspaceOwner {
             )
         })
     }
-    /// How many more writes, and how many more bytes of them, this device's
-    /// outgoing custody of `workspace` takes before it is full.
-    pub fn custody_room(&self, workspace: WorkspaceId) -> Result<(usize, usize), String> {
-        self.with_current(workspace, |view| {
-            let publication = state(view)?;
-            Ok((
-                MAX_ENTRIES.saturating_sub(publication.entries.len()),
-                MAX_BYTES.saturating_sub(bounds(publication)?),
-            ))
-        })
-    }
     /// How many of this device's committed writes to `workspace` are still in
     /// its outgoing custody: not yet admitted by the workspace's governor.
     pub fn unadmitted_writes(&self, workspace: WorkspaceId) -> Result<usize, String> {
-        self.with_current(workspace, |view| Ok(state(view)?.entries.len()))
+        self.with_current(workspace, |view| {
+            let publication = state(view)?;
+            Ok(publication
+                .spilled
+                .iter()
+                .map(|run| run.writes.saturating_sub(run.taken) as usize)
+                .fold(
+                    publication
+                        .entries
+                        .len()
+                        .saturating_add(publication.tail.len()),
+                    usize::saturating_add,
+                ))
+        })
+    }
+    /// Every write of this device to `workspace` still in its outgoing custody, sendable now or
+    /// not, by id, in the order it sends them: what a caller waits on to know all of them reached
+    /// the workspace's host.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or custody's backlog could not be read.
+    pub fn owed_writes(&self, workspace: WorkspaceId) -> Result<Vec<[u8; 32]>, String> {
+        self.with_current(workspace, |view| {
+            let publication = state(view)?;
+            let spilled = spilled_writes(publication, self.0.store.as_ref(), workspace)?;
+            Ok(publication
+                .entries
+                .iter()
+                .chain(&spilled)
+                .chain(&publication.tail)
+                .map(|entry| entry.id)
+                .collect())
+        })
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn outgoing_status(
@@ -1279,7 +1539,13 @@ impl NativeWorkspaceOwner {
                     )
                 })
                 .collect();
-            for entry in &publication.entries {
+            let spilled = spilled_writes(publication, self.0.store.as_ref(), workspace)?;
+            for entry in publication
+                .entries
+                .iter()
+                .chain(&spilled)
+                .chain(&publication.tail)
+            {
                 // ignored-failure: custody holds governance entries too, which belong to no record
                 if let Ok(NeighbourMsg::AppDocument {
                     app_id, record_id, ..
@@ -1294,11 +1560,11 @@ impl NativeWorkspaceOwner {
         .unwrap_or_default()
     }
     /// Renew this device's sealed writes that expired in custody before the
-    /// governor retired them, through `reseal`, the channels' key holder
+    /// governor retired them, with the keys [`Self::keep_sealed_histories`] gave
     /// (see [`PeerOutbox::draft_sealed_renewals`](crate::PeerOutbox::draft_sealed_renewals)).
     /// Each renewal replaces its original in one durable commit and moves behind every other
-    /// entry, so an author's writes still send in sequence order. A write `reseal` refuses stays
-    /// exactly as it was.
+    /// entry, so an author's writes still send in sequence order. A write the keys do not renew
+    /// stays exactly as it was. Answers how many writes were renewed.
     ///
     /// # Errors
     /// As [`Self::commit_outgoing`].
@@ -1306,9 +1572,12 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         signer: &dyn collab_types::signer::DeviceSigner,
-        mut reseal: impl FnMut(&SignedOp) -> Result<(EncryptionMetadata, Vec<u8>), String>,
         now: SystemTime,
-    ) -> Result<(), String> {
+    ) -> Result<usize, String> {
+        let Some(keys) = self.0.history_keys.lock().clone() else {
+            return Ok(0);
+        };
+        let mut reseal = |write: &SignedOp| keys.renew(workspace, write);
         let draft = |view: &NativeCommittedView| {
             let entries = &state_of(&view.record)?.entries;
             let originals = entries
@@ -1340,7 +1609,6 @@ impl NativeWorkspaceOwner {
         };
         self.commit_outgoing(workspace, signer, now, draft, admit)
             .await
-            .map(drop)
     }
 
     /// Keep every sealed record history this owner holds within its bound

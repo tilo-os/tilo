@@ -172,10 +172,8 @@ impl NativeWorkspaceOwner {
     /// Commit the writes `prepare` drafts from `workspace` as it stands, in order, in one signed
     /// turn of `signer`, this device's custody of its key: what `prepare` drafted unsigned, and a
     /// write a local writer of this device signed before whose sequence a later write took, is
-    /// signed between the turn's runs ([`crate::StatePeer::sequenced_local_document`]). Commits
-    /// as many as the workspace's outgoing custody takes; the rest wait until its host answered
-    /// some of what it holds. `whole` commits all of them or, when custody cannot take all, none.
-    /// A sealed history that used most of its bound is compacted first
+    /// signed between the turn's runs ([`crate::StatePeer::sequenced_local_document`]). Custody
+    /// takes every one of them, however many wait for the workspace's host already. A sealed history that used most of its bound is compacted first
     /// ([`Self::compact_outgoing`]), so a write is never refused for how long its record's
     /// history grew.
     ///
@@ -187,7 +185,6 @@ impl NativeWorkspaceOwner {
         workspace: WorkspaceId,
         prepare: impl FnOnce(&NativeCommittedView) -> Result<Vec<OwnerCommitRequest>, String>,
         signer: &dyn collab_types::signer::DeviceSigner,
-        whole: bool,
         now: SystemTime,
     ) -> Result<Vec<Committed>, String> {
         if let Err(error) = self.compact_outgoing(workspace, signer, now).await {
@@ -199,7 +196,7 @@ impl NativeWorkspaceOwner {
             let _turn = self.0.mutation.lock();
             let candidate = self.view(workspace)?;
             let writes = drafted_once(&mut drafted, &mut prepare, &candidate)?;
-            self.commit_writes(workspace, &candidate, writes, Some(signed), whole, now)
+            self.commit_writes(workspace, &candidate, writes, Some(signed), now)
         })
         .await
     }
@@ -207,7 +204,7 @@ impl NativeWorkspaceOwner {
     /// [`Self::write`] for one write a local writer of this device signed before the owner's turn.
     ///
     /// # Errors
-    /// As [`Self::write`], and when custody has no room for it.
+    /// As [`Self::write`].
     pub async fn commit_local_document(
         &self,
         request: OwnerCommitRequest,
@@ -216,10 +213,10 @@ impl NativeWorkspaceOwner {
     ) -> Result<Committed, String> {
         let workspace =
             WorkspaceId::parse(&request.workspace).ok_or("invalid native document workspace")?;
-        self.write(workspace, |_| Ok(vec![request]), signer, true, now)
+        self.write(workspace, |_| Ok(vec![request]), signer, now)
             .await?
             .pop()
-            .ok_or_else(|| publication::CUSTODY_FULL.to_owned())
+            .ok_or_else(|| "native document write committed nothing".to_owned())
     }
 
     /// Commit one write this device signed before the owner's turn, with its outgoing custody.
@@ -230,7 +227,7 @@ impl NativeWorkspaceOwner {
     /// in the turn writes through [`Self::write`].
     ///
     /// # Errors
-    /// As [`Self::write`], and when custody has no room for it.
+    /// As [`Self::write`].
     pub fn commit_document(
         &self,
         request: OwnerCommitRequest,
@@ -240,10 +237,10 @@ impl NativeWorkspaceOwner {
             WorkspaceId::parse(&request.workspace).ok_or("invalid native document workspace")?;
         let _turn = self.0.mutation.lock();
         let candidate = self.view(workspace)?;
-        self.commit_writes(workspace, &candidate, &mut [request], None, true, now)?
+        self.commit_writes(workspace, &candidate, &mut [request], None, now)?
             .pop()
             .map(|(_, receipt)| receipt)
-            .ok_or_else(|| publication::CUSTODY_FULL.to_owned())
+            .ok_or_else(|| "native document write committed nothing".to_owned())
     }
 
     /// Admit and durably commit writes of this device to `workspace`, in order and in the owner's
@@ -258,7 +255,6 @@ impl NativeWorkspaceOwner {
         candidate: &NativeCommittedView,
         writes: &mut [OwnerCommitRequest],
         signed: Option<&Signatures>,
-        whole: bool,
         now: SystemTime,
     ) -> Result<Vec<Committed>, String> {
         if writes.is_empty() {
@@ -268,7 +264,7 @@ impl NativeWorkspaceOwner {
         if signed.is_some_and(|signed| signed.device != device) {
             return Err("native local publication signer differs from selected device".into());
         }
-        let count = writes.len();
+        let store = self.0.store.as_ref();
         let changed = candidate.change(|live, stored| {
             let ready = numbered(live, workspace, device, writes, signed, now)?;
             let mut taken = Vec::new();
@@ -290,7 +286,7 @@ impl NativeWorkspaceOwner {
                     .is_some()
                 {
                     if !stored.hosted_here()
-                        && !publication::has_exact(stored, &outgoing)?
+                        && !publication::has_exact(stored, &outgoing, store)?
                         && !publication::retry_covered(live, stored, &outgoing)?
                     {
                         return Err(
@@ -309,17 +305,10 @@ impl NativeWorkspaceOwner {
                             .map_err(|error| error.to_string())?,
                     );
                 }
-                match publication::append_local(stored, outgoing) {
-                    Err(full) if full == publication::CUSTODY_FULL => break,
-                    appended => appended?,
-                }
+                publication::append_local(stored, outgoing)?;
                 live.admit_new_local_document(app, record, (**envelope).clone(), now)?;
                 taken.push(request);
                 fresh = true;
-            }
-            if whole && taken.len() < count {
-                // Leaves the replica as it was.
-                return Err(publication::CUSTODY_FULL.into());
             }
             if fresh {
                 stored.generation = stored
@@ -345,10 +334,7 @@ impl NativeWorkspaceOwner {
                 .collect::<Result<Vec<_>, String>>()?;
             Ok((committed, carried))
         });
-        let ((committed, carried), stored) = match changed {
-            Err(full) if whole && full == publication::CUSTODY_FULL => return Ok(Vec::new()),
-            changed => changed?,
-        };
+        let ((committed, carried), stored) = changed?;
         if stored.generation != candidate.generation() {
             // One durable publication for every write the turn took.
             self.publish_record(workspace, candidate, stored, None)?;

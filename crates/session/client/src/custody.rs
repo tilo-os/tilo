@@ -73,6 +73,17 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
     fn save_rooms(&self, _bytes: &[u8]) -> Result<(), String> {
         Ok(())
     }
+    /// Keep `bytes` under `name` beside the record of the workspaces this device holds: a run of
+    /// a workspace's outgoing custody waiting behind what the record keeps itself
+    /// ([`tilo_peer_state::owner::Store::put_custody`]). `None` lets it go. A store without
+    /// them holds them for the session only.
+    fn save_rooms_run(&self, _name: &str, _bytes: Option<&[u8]>) -> Result<(), String> {
+        Ok(())
+    }
+    /// The run [`Self::save_rooms_run`] keeps under `name`, if any.
+    fn load_rooms_run(&self, _name: &str) -> Option<Vec<u8>> {
+        None
+    }
     /// The key channel state is sealed under at rest, kept apart from that
     /// state: in the page, wrapped by a non-extractable `WebCrypto` key. A
     /// store without one seals channel state under a key of the session's
@@ -88,6 +99,7 @@ pub struct MemoryPeerStore(
     Mutex<Option<Vec<u8>>>,
     [u8; 32],
     Mutex<Option<Vec<u8>>>,
+    Mutex<BTreeMap<String, Vec<u8>>>,
 );
 
 impl Default for MemoryPeerStore {
@@ -96,6 +108,7 @@ impl Default for MemoryPeerStore {
             Mutex::default(),
             Mutex::default(),
             rand::random(),
+            Mutex::default(),
             Mutex::default(),
         )
     }
@@ -131,6 +144,21 @@ impl PeerStore for MemoryPeerStore {
     fn save_rooms(&self, bytes: &[u8]) -> Result<(), String> {
         *self.3.lock_recover() = Some(bytes.to_vec());
         Ok(())
+    }
+
+    fn save_rooms_run(&self, name: &str, bytes: Option<&[u8]>) -> Result<(), String> {
+        match bytes {
+            Some(bytes) => self
+                .4
+                .lock_recover()
+                .insert(name.to_owned(), bytes.to_vec()),
+            None => self.4.lock_recover().remove(name),
+        };
+        Ok(())
+    }
+
+    fn load_rooms_run(&self, name: &str) -> Option<Vec<u8>> {
+        self.4.lock_recover().get(name).cloned()
     }
 }
 

@@ -153,6 +153,11 @@ fn part_of(parts: &Path, workspace: WorkspaceId, revision: u64) -> PathBuf {
     parts.join(format!("{workspace}.{revision}.json"))
 }
 
+/// The file a run of `workspace`'s outgoing custody named `hash` is kept in.
+fn custody_run_of(parts: &Path, workspace: WorkspaceId, hash: [u8; 32]) -> PathBuf {
+    parts.join(crate::owner::custody_run_name(workspace, hash))
+}
+
 /// The journal of the workspace file written at `revision`.
 fn log_of(parts: &Path, workspace: WorkspaceId, revision: u64) -> PathBuf {
     parts.join(format!("{workspace}.{revision}.log"))
@@ -345,7 +350,7 @@ pub fn open_file_with(
     } else {
         // A publication that stopped between a workspace's file and the index
         // left a file the record does not name.
-        store.prune_parts();
+        store.prune_parts(&owner.0.authority.read());
     }
     Ok(owner)
 }
@@ -407,7 +412,7 @@ impl FileStore {
         }
         self.write_index(record, &held)?;
         *self.held.write() = held;
-        self.prune_parts();
+        self.prune_parts(record);
         Ok(())
     }
 
@@ -537,18 +542,22 @@ impl FileStore {
         }
     }
 
-    /// Remove the workspace files the record does not name: the one a
-    /// workspace was published over, one a release left behind, one a
-    /// publication stopped before its index wrote.
-    fn prune_parts(&self) {
+    /// Remove the workspace files `record`, the record as published, does not name: the one a
+    /// workspace was published over, one a release left behind, one a publication stopped
+    /// before its index wrote, and the runs of custody that moved to its head.
+    fn prune_parts(&self, record: &NativeAuthorityStorage) {
         let Ok(entries) = std::fs::read_dir(&self.parts) else {
             return;
         };
         let index = index_of(&self.parts);
         let held = self.held.read();
+        let runs: BTreeSet<PathBuf> = record
+            .custody_runs()
+            .map(|name| self.parts.join(name))
+            .collect();
         for entry in entries.flatten() {
             let path = entry.path();
-            if path == index {
+            if path == index || runs.contains(&path) {
                 continue;
             }
             if path
@@ -609,7 +618,7 @@ impl FileStore {
         self.write_index(next, &held)?;
         *self.held.write() = held;
         install();
-        self.prune_parts();
+        self.prune_parts(next);
         Ok(())
     }
 }
@@ -620,6 +629,35 @@ impl Store for FileStore {
     }
     fn read_history(&self, hash: [u8; 32]) -> Result<Vec<u8>, String> {
         self.history.read(hash)
+    }
+    fn put_custody(&self, workspace: WorkspaceId, bytes: &[u8]) -> Result<[u8; 32], String> {
+        if bytes.len() > crate::owner::publication::MAX_RUN_BYTES {
+            return Err("a run of outgoing custody exceeds its cap".into());
+        }
+        provision(&self.parts)?;
+        let hash = *blake3::hash(bytes).as_bytes();
+        // Named by its contents: a run kept already is the same run, and nothing names a new
+        // one before this returns, so it never fences the store.
+        tilo_files::native::atomic::replace(
+            &custody_run_of(&self.parts, workspace, hash),
+            bytes,
+            tilo_files::native::atomic::Privacy::OwnerOnly,
+        )
+        .map_err(|error| error.into_io_error().to_string())?;
+        Ok(hash)
+    }
+    fn read_custody(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        let path = custody_run_of(&self.parts, workspace, hash);
+        let file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
+        let limit = crate::owner::publication::MAX_RUN_BYTES;
+        let mut bytes = Vec::new();
+        file.take((limit as u64).saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() > limit {
+            return Err("a run of outgoing custody exceeds its cap".into());
+        }
+        Ok(bytes)
     }
     fn healthy(&self) -> bool {
         self.healthy.load(Ordering::Acquire)

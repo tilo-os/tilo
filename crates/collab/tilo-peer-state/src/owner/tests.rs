@@ -344,7 +344,6 @@ async fn prepared_local_write_uses_current_sequence_after_an_intervening_commit(
                     .map(|edit| vec![edit])
             },
             &crate::owner::testing::member_key(),
-            true,
             joined.now,
         )
         .await
@@ -946,6 +945,38 @@ async fn a_member_with_no_sealed_history_past_its_bound_compacts_nothing() {
     assert_eq!(sent(&joined.owner, joined.workspace, joined.now).len(), 1);
 }
 
+/// Channel keys that renew sealed writes as `0` answers, and hold no history to compact.
+struct Renewing<F>(F);
+
+impl<F> crate::owner::SealedHistoryKeys for Renewing<F>
+where
+    F: Fn(&collab_types::SignedOp) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String>
+        + Send
+        + Sync,
+{
+    fn open(&self, _: WorkspaceId, _: &collab_types::SignedOp) -> Result<Vec<u8>, String> {
+        Err("no history keys".into())
+    }
+
+    fn seal_checkpoint(
+        &self,
+        _: WorkspaceId,
+        _: &str,
+        _: &str,
+        _: &[u8],
+    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
+        Err("no history keys".into())
+    }
+
+    fn renew(
+        &self,
+        _: WorkspaceId,
+        write: &collab_types::SignedOp,
+    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
+        (self.0)(write)
+    }
+}
+
 #[tokio::test]
 async fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_original() {
     let joined = enrolled();
@@ -957,31 +988,36 @@ async fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_
         .unwrap();
     assert!(sent(&joined.owner, joined.workspace, later).is_empty());
 
-    let mut asked = 0;
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let current_keys = current.clone();
+    let counted = Arc::clone(&asked);
     joined
+        .owner
+        .keep_sealed_histories(Arc::new(Renewing(move |op: &collab_types::SignedOp| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let metadata = op.encryption.ok_or("not sealed")?;
+            let plaintext = current_keys
+                .open_content(op.artifact, &metadata, &op.payload)
+                .map_err(|e| e.to_string())?;
+            current_keys
+                .seal_content(
+                    op.artifact,
+                    collab_types::ContentRetention::Delta,
+                    &plaintext,
+                )
+                .map_err(|e| e.to_string())
+        })));
+    let renewed = joined
         .owner
         .renew_outgoing(
             joined.workspace,
             &crate::owner::testing::member_key(),
-            |op| {
-                asked += 1;
-                let metadata = op.encryption.ok_or("not sealed")?;
-                let plaintext = current
-                    .open_content(op.artifact, &metadata, &op.payload)
-                    .map_err(|e| e.to_string())?;
-                current
-                    .seal_content(
-                        op.artifact,
-                        collab_types::ContentRetention::Delta,
-                        &plaintext,
-                    )
-                    .map_err(|e| e.to_string())
-            },
             later,
         )
         .await
         .unwrap();
-    assert_eq!(asked, 1);
+    assert_eq!(renewed, 1);
+    assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
     let status = joined
         .owner
         .outgoing_status(joined.workspace, later)
@@ -1040,10 +1076,14 @@ async fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
         .unwrap();
     joined
         .owner
+        .keep_sealed_histories(Arc::new(Renewing(|_: &collab_types::SignedOp| {
+            Err("this device holds no current key".into())
+        })));
+    joined
+        .owner
         .renew_outgoing(
             joined.workspace,
             &crate::owner::testing::member_key(),
-            |_| Err("this device holds no current key".into()),
             later,
         )
         .await
@@ -1061,12 +1101,7 @@ async fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
     assert!(
         joined
             .owner
-            .renew_outgoing(
-                joined.workspace,
-                &SigningKey::from_bytes(&[99; 32]),
-                |_| panic!("another signer's renewal asked the key holder"),
-                later,
-            )
+            .renew_outgoing(joined.workspace, &SigningKey::from_bytes(&[99; 32]), later)
             .await
             .is_err()
     );

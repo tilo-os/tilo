@@ -186,6 +186,8 @@ struct DurablePeerStore {
     channels_key: durable_store::StorageKey,
     /// The workspaces the peer holds, beside the record.
     workspaces_key: durable_store::StorageKey,
+    /// What the keys of the runs of custody kept beside the workspaces begin with.
+    runs_prefix: String,
     /// Seals the member state in `channels_key`. The page keeps it in the
     /// platform secret store ([`channel_vault`]), never in this one.
     channel_vault: [u8; 32],
@@ -196,6 +198,15 @@ thread_local! {
 }
 
 impl DurablePeerStore {
+    /// The key the run of custody `name` is kept under.
+    fn run_key(&self, name: &str) -> durable_store::StorageKey {
+        durable_store::StorageKey::record(
+            PEER_PACKAGE,
+            crate::storage::PROFILE_WORKSPACE,
+            format!("{}{name}", self.runs_prefix),
+        )
+    }
+
     fn open(
         namespace: &str,
         user_public_key: &[u8; 32],
@@ -226,6 +237,7 @@ impl DurablePeerStore {
                 crate::storage::PROFILE_WORKSPACE,
                 format!("{}.rooms", hex::encode(user_public_key)),
             ),
+            runs_prefix: format!("{}.rooms.", hex::encode(user_public_key)),
             channel_vault,
         })
     }
@@ -279,6 +291,24 @@ impl PeerStore for DurablePeerStore {
             )
             .map(drop)
             .map_err(|error| error.to_string())
+    }
+
+    fn save_rooms_run(&self, name: &str, bytes: Option<&[u8]>) -> Result<(), String> {
+        use durable_store::DurableStore as _;
+        // The store forgets no key: a run let go keeps its key, empty.
+        self.store
+            .write(
+                &self.run_key(name),
+                durable_store::WriteOp::Replace(bytes.unwrap_or_default().to_vec()),
+                None,
+            )
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    fn load_rooms_run(&self, name: &str) -> Option<Vec<u8>> {
+        use durable_store::DurableStore as _;
+        Some(self.store.read(&self.run_key(name)).ok()??.bytes).filter(|bytes| !bytes.is_empty())
     }
 
     fn channel_vault(&self) -> Option<[u8; 32]> {

@@ -1,6 +1,7 @@
 //! Edits a browser makes over HTTPS while its host is down stay in its
-//! replica's persisted custody and are replayed once the host is back on the
-//! same address; a peer that joins afterwards receives them from the host.
+//! replica's persisted custody, however many there are, and are replayed once
+//! the host is back on the same address; a peer that joins afterwards receives
+//! them from the host.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -88,6 +89,9 @@ async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
     host.relay.shutdown().await;
 }
 
+/// Edits made while the host is down: past twice what custody keeps in its record.
+const OFFLINE: usize = 150;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn outbox_survives_a_host_restart_and_is_replayed() {
     let (root, _) = UserIdentity::generate("Ada", 1);
@@ -129,14 +133,20 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
 
     drop(host.web);
     host.relay.shutdown().await;
+    // Far more edits than custody keeps in its record: every one is taken.
     let mut offline = AutoCommit::new();
-    for text in ["written while offline", "typed while offline"] {
-        peer.write(route(), &say(&mut offline, text)).unwrap();
+    for typed in 0..OFFLINE {
+        peer.write(
+            route(),
+            &say(&mut offline, &format!("typed while offline {typed}")),
+        )
+        .unwrap();
     }
     // The outbox persists an edit before the link to the stopped host has
     // reported its end, so wait for the peer to see the host gone as well.
-    wait_for("both edits in the persisted outbox, the host gone", || {
-        let queued = unadmitted(&peer) == 2 && peer.status().phase != TransportPhase::Connected;
+    wait_for("every edit in the persisted outbox, the host gone", || {
+        let queued =
+            unadmitted(&peer) == OFFLINE && peer.status().phase != TransportPhase::Connected;
         async move { queued.then_some(()) }
     })
     .await;
