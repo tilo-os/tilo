@@ -108,17 +108,6 @@ fn stream_start(tab: TabId, writable: bool) -> PeerStreamStart {
         .expect("a stream start is what the announcement is")
 }
 
-/// One encoded unit of the stream, as the frame message carries it.
-fn frame(seq: u64, unit: Vec<u8>) -> NeighbourMsg {
-    NeighbourMsg::SurfaceFrame {
-        surface: SURFACE,
-        source_peer: SHARER,
-        encoded_h264: unit,
-        ts: 0,
-        seq,
-    }
-}
-
 /// The frames of `count` keyframes the crate's own VP9 encoder makes from a gradient, so what
 /// arrives is a real stream rather than bytes shaped like one.
 fn keyframes(count: usize) -> Vec<Vec<u8>> {
@@ -218,7 +207,9 @@ fn a_received_stream_is_pictured_in_its_tile() {
     for (index, unit) in keyframes(1).into_iter().enumerate() {
         let seq = u64::try_from(index).unwrap_or(0).saturating_add(1);
         assert!(
-            handle.peer_surface_frame(&frame(seq, unit)).is_some(),
+            handle
+                .peer_surface_picture(SHARER, SURFACE, seq, &unit)
+                .is_some(),
             "the tile takes the stream's unit"
         );
     }
@@ -293,7 +284,7 @@ fn three_pushes_at_a_held_paint_leave_the_newest_picture_in_the_resource() {
 }
 
 #[test]
-fn a_pointer_and_a_key_reach_a_writable_share_and_a_read_only_one_refuses_them() {
+fn a_pointer_scroll_keys_and_text_reach_a_writable_share_and_a_read_only_one_refuses_them() {
     let (mut driver, handle, tab) = desk();
     handle.show_peer_surface(&stream_start(tab, true));
     driver.relayout();
@@ -323,6 +314,17 @@ fn a_pointer_and_a_key_reach_a_writable_share_and_a_read_only_one_refuses_them()
     driver
         .invoke_published(&id, "key", &key)
         .expect("a writable share takes a keystroke");
+    let scroll = serde_json::Map::from_iter([
+        ("dx".to_string(), serde_json::Value::from(0.0)),
+        ("dy".to_string(), serde_json::Value::from(45.0)),
+    ]);
+    driver
+        .invoke_published(&id, "scroll", &scroll)
+        .expect("a writable share takes a scroll");
+    let text = serde_json::Map::from_iter([("text".to_string(), serde_json::Value::from("é"))]);
+    driver
+        .invoke_published(&id, "text", &text)
+        .expect("a writable share takes composed text");
 
     let events: Vec<InputEvent> = handle
         .take_peer_outgoing()
@@ -356,6 +358,8 @@ fn a_pointer_and_a_key_reach_a_writable_share_and_a_read_only_one_refuses_them()
                 pressed: true,
                 modifiers: 0
             },
+            InputEvent::PointerAxis { dx: 0.0, dy: 45.0 },
+            InputEvent::Text { text: "é".into() },
         ]
     );
 

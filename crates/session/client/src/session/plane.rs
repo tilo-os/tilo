@@ -668,6 +668,7 @@ impl Task {
             };
             let object = tilo_live::video::VideoObject {
                 keyframe: picture.keyframe,
+                hdr: false,
                 codec: tilo_live::video::Codec::H264,
                 layer: picture.layer,
                 sequence: picture.sequence,

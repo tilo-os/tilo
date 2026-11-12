@@ -1,7 +1,8 @@
 //! Two sessions in one workspace: one shares a window of its desk, the other shows it and reaches
-//! into it, and the bar on the sharing device says so. The two planes have no transport between
-//! them, so the test carries what one plane would have said to the other, to the members each
-//! message was for.
+//! into it, and the bar on the sharing device says so. The window's pictures travel the
+//! workspace's live plane, on an in-process relay both sessions' planes meet on; the state plane
+//! has no transport between them, so the test carries what one would have said to the other, to
+//! the members each control message was for.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -19,10 +20,18 @@
     reason = "test fixtures: a failed step is the assertion, and the sessions outlive every call"
 )]
 
+use std::collections::BTreeMap;
 use std::io::{Read as _, Write as _};
 use std::os::fd::AsFd as _;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+use channel_crypto::{ChannelGroup, MemberKey};
+use tilo_live::plane::{Join, Plane};
+use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
+use tilo_live::roster::Roster as LiveRoster;
+use tilo_live::scope::Scope;
 
 use crate::sync::Event;
 use iroh::EndpointId;
@@ -73,6 +82,81 @@ const APP: &str = "so.tilo.notes";
 const PHOTOS: &str = "so.tilo.photos";
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
+/// What the test's live planes run on: one runtime, one in-process relay and the workspace's keys,
+/// and the planes joined so far by device, for the whole test process.
+struct LivePlanes {
+    runtime: tokio::runtime::Runtime,
+    relay: Arc<Relay>,
+    keys: channel_crypto::ChannelContentKeys,
+    joined: Mutex<Vec<([u8; 32], Arc<Plane>)>>,
+}
+
+/// The relay the test's planes meet on: in-process, with no one to admit, since a local plane is
+/// its own relay's participant.
+fn live_planes() -> &'static LivePlanes {
+    static PLANES: OnceLock<LivePlanes> = OnceLock::new();
+    PLANES.get_or_init(|| {
+        struct Nobody;
+        impl RelayAuthority for Nobody {
+            fn admit<'a>(&'a self, _peer: Peer, _proof: &'a [u8]) -> Admission<'a> {
+                Box::pin(std::future::ready(Err(Denied)))
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("the live planes' runtime");
+        let relay = {
+            let _entered = runtime.enter();
+            Arc::new(Relay::new(Arc::new(Nobody)))
+        };
+        let channel = Scope::workspace(WORKSPACE.to_owned()).channel_id();
+        let keys =
+            ChannelGroup::create(channel, MemberKey::generate("owner").expect("a member key"))
+                .expect("the workspace's channel")
+                .content_keys()
+                .expect("the workspace's keys");
+        LivePlanes {
+            runtime,
+            relay,
+            keys,
+            joined: Mutex::new(Vec::new()),
+        }
+    })
+}
+
+/// `device` 's plane in the test workspace, with every plane joined before it hearing it, and it
+/// hearing them.
+fn live_plane(device: EndpointId) -> BTreeMap<String, Arc<Plane>> {
+    let live = live_planes();
+    let _entered = live.runtime.enter();
+    let mut joined = live.joined.lock().expect("the joined planes");
+    let devices: Vec<[u8; 32]> = joined
+        .iter()
+        .map(|(device, _)| *device)
+        .chain([*device.as_bytes()])
+        .collect();
+    let plane = Arc::new(
+        Plane::local(
+            &live.relay,
+            &Join {
+                scope: Scope::workspace(WORKSPACE.to_owned()),
+                device: *device.as_bytes(),
+                keys: live.keys.clone(),
+                roster: LiveRoster::new(devices.iter().copied()),
+                publish: true,
+            },
+        )
+        .expect("a local plane"),
+    );
+    for (_, other) in joined.iter() {
+        other.set_roster(LiveRoster::new(devices.iter().copied()));
+    }
+    joined.push((*device.as_bytes(), Arc::clone(&plane)));
+    BTreeMap::from([(WORKSPACE.to_owned(), plane)])
+}
+
 fn device(seed: u8) -> EndpointId {
     iroh::SecretKey::from_bytes(&[seed; 32]).public()
 }
@@ -229,6 +313,10 @@ fn member_on(
         },
         Vec::new(),
     );
+    let sync = sync.on_planes(
+        live_plane(device(seed)),
+        live_planes().runtime.handle().clone(),
+    );
     let sync = Rc::new(match person {
         Some(person) => sync.taking_part_as(&person),
         None => sync,
@@ -273,17 +361,11 @@ fn said(from: &Member, ws: Topic, msg: NeighbourMsg) -> Event {
     }
 }
 
-/// Hand what `from` would have sent on the plane to `to`: a window's stream
-/// to the members it was for, and a control message to the device it named,
-/// and nothing to anyone else.
+/// Hand what `from` would have sent on the state plane to `to`: a control message to the device it
+/// named, and nothing to anyone else. The window's pictures travel the live plane.
 fn carry(from: &mut Member, to: &Member) {
     while let Ok(outgoing) = from.said.try_recv() {
         match outgoing {
-            Cmd::PublishSurfaceTo { ws, msg, viewers } => {
-                if viewers.contains(&to.sync.peer()) {
-                    to.sync.hear(said(from, ws, *msg));
-                }
-            }
             Cmd::SendControl { ws, msg, target } if target == to.sync.publisher() => {
                 to.sync.hear(said(from, ws, *msg));
             }
@@ -472,17 +554,6 @@ fn stream_start(from: &Member, surface: u64, tab: u64) -> NeighbourMsg {
         bit_depth: 8,
         app_id: APP.to_owned(),
         tab,
-    }
-}
-
-/// One encoded unit of `from` 's stream of `surface` .
-fn stream_frame(from: &Member, surface: u64, seq: u64) -> NeighbourMsg {
-    NeighbourMsg::SurfaceFrame {
-        surface,
-        source_peer: from.sync.peer(),
-        encoded_h264: vec![0, 0, 0, 1, 0x65, 1],
-        ts: 0,
-        seq,
     }
 }
 
@@ -1057,6 +1128,13 @@ fn a_shared_window_reaches_the_member_showing_it() {
         "the stream says how big the window is: {reading}"
     );
 
+    // The member says it views the window, which is how the bar names it.
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        rows(&shares(&host.session), "sharing")
+            .first()
+            .and_then(|shared| shared["viewers"].as_array())
+            .is_some_and(|viewers| !viewers.is_empty())
+    });
     let reading = shares(&host.session);
     let shared = rows(&reading, "sharing")
         .first()
@@ -1136,6 +1214,8 @@ fn a_shared_window_is_pictured_where_it_is_shown_and_the_pointer_reaches_it() {
         width > 0 && height > 0,
         "the picture keeps the sender's size"
     );
+    // The member also says it views the window: the person lets the members viewing it in.
+    viewing(&mut host, &mut window, &mut viewer, tab);
     assert_eq!(
         bytes,
         usize::try_from(width).unwrap() * usize::try_from(height).unwrap() * 4,
@@ -1321,6 +1401,7 @@ fn closing_the_shared_window_ends_its_stream() {
             .peer_surface_read(tab)
             .is_some_and(|read| read.pictured())
     });
+    viewing(&mut host, &mut window, &mut viewer, tab);
 
     window.as_mut().expect("client").close_window();
     until(&mut host, &mut window, &mut viewer, |host, viewer, _| {
@@ -1651,7 +1732,6 @@ fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
     // What it sends to change anything is refused, however well formed: a stream of its own never
     // reaches the host's desk.
     tell(&host, &viewer, stream_start(&viewer, 991, 4));
-    tell(&host, &viewer, stream_frame(&viewer, 991, 1));
     settle(&mut host, &mut window, &mut viewer);
     assert!(
         rows(&shares(&host.session), "received").is_empty(),
@@ -1717,7 +1797,6 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
     // Its own stream reaches the host's desk: the window it shares is recorded there, waiting for
     // the tab the sender names. The host's desk shows no tab 4, so nothing decodes it here.
     tell(&host, &member, stream_start(&member, 991, 4));
-    tell(&host, &member, stream_frame(&member, 991, 1));
     until(&mut host, &mut window, &mut member, |host, _, _| {
         rows(&shares(&host.session), "received")
             .first()
@@ -1926,4 +2005,164 @@ fn heard(viewer: &Member, seed: u8, label: &str) {
             revocations: Vec::new(),
         }),
     });
+}
+
+/// The wall clock in microseconds since the Unix epoch: the clock a picture's capture is told on.
+fn wall_us() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros(),
+    )
+    .unwrap()
+}
+
+/// The median and the 95th percentile of `samples` (microseconds), in milliseconds.
+fn percentiles(samples: &mut [u64]) -> (f64, f64) {
+    samples.sort_unstable();
+    let at = |share: usize| samples[(samples.len() - 1) * share / 100] as f64 / 1000.0;
+    (at(50), at(95))
+}
+
+/// How long a shared window's picture takes from its capture to a viewer's decoded picture, over
+/// the workspace's live plane: the window is captured, encoded as a share encodes it, sealed and
+/// sent on its track, opened by the viewer's plane and decoded by the tile that shows it, on a
+/// thread of its own as a viewer's desk is another device's. The object's header carries the
+/// capture time on the sender's clock, which is this process's here.
+#[test]
+fn a_shared_windows_pictures_reach_a_viewer_within_a_few_frames() {
+    use tilo_live::live::Track;
+    use tilo_live::video::{Layer, VideoObject};
+    use tilo_window_share::flatpak_share::SharedFlatpakSession;
+    const TAB: u64 = 0x5EED_0000_0000_0031;
+    const PICTURES: usize = 90;
+    let (w, h) = (1280_u32, 800_u32);
+    tilo_window_share::flatpak_share::read_encoders();
+    let host = device(0x61);
+    let viewer = device(0x62);
+    let sharing = Arc::clone(&live_plane(host)[WORKSPACE]);
+    let watching = Arc::clone(&live_plane(viewer)[WORKSPACE]);
+    let live = live_planes();
+    let _entered = live.runtime.enter();
+    let share = SharedFlatpakSession::start(
+        1,
+        APP,
+        TAB,
+        w,
+        h,
+        &tilo_window_share::config::FlatpakShareConfig::default(),
+    )
+    .expect("a share of the window");
+    watching.show(*host.as_bytes(), &[Track::Window(TAB, Layer::High)]);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while sharing.wanted_windows() != [TAB] {
+        assert!(Instant::now() < deadline, "the window's track is asked for");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        sharing.take_window_keyframes(),
+        [TAB],
+        "a new viewer starts at a keyframe"
+    );
+
+    // The viewer: what its plane opened, and when each picture was decoded.
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let viewing = {
+        let done = Arc::clone(&done);
+        std::thread::spawn(move || {
+            let tree = showing(host, APP, TAB);
+            let mut tiles = tilo_desktop_surface::PeerSurfaces::default();
+            let peer = neighbour_wire::peer_handle(host.as_bytes());
+            let mut captured: BTreeMap<u64, u64> = BTreeMap::new();
+            let (mut heard, mut decoded) = (Vec::new(), Vec::new());
+            let mut last_seq = None;
+            let deadline = Instant::now() + Duration::from_secs(120);
+            while decoded.len() < PICTURES && Instant::now() < deadline {
+                while let Some(object) = watching.try_recv() {
+                    if object.track != Track::Window(TAB, Layer::High) {
+                        continue;
+                    }
+                    let object = VideoObject::decode(&object.body).expect("a picture");
+                    heard.push(wall_us().saturating_sub(object.timestamp_us));
+                    if object.keyframe && tiles.read(TAB).is_none() {
+                        let start = super::picture_start(&tree, 7, peer, TAB, &object)
+                            .expect("a codec this build decodes");
+                        tiles
+                            .start(&tree, &start)
+                            .expect("the tab shows the window");
+                    }
+                    captured.insert(object.sequence, object.timestamp_us);
+                    tiles.push(peer, TAB, object.sequence, &object.payload);
+                }
+                tiles.collect_pictures();
+                if let Some(read) = tiles
+                    .read(TAB)
+                    .filter(tilo_desktop_surface::PeerRead::pictured)
+                    && last_seq != Some(read.picture_seq)
+                {
+                    // The desk paints what the tile holds, which lets it take the next picture.
+                    if let Some(tile) = tiles.tile(TAB) {
+                        tile.borrow_mut().mark_drawn();
+                    }
+                    last_seq = Some(read.picture_seq);
+                    if let Some(at) = captured.get(&read.picture_seq) {
+                        decoded.push(wall_us().saturating_sub(*at));
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            done.store(true, std::sync::atomic::Ordering::Release);
+            (heard, decoded)
+        })
+    };
+
+    // The host: a window that changes every frame, drawn ahead so drawing it costs nothing,
+    // captured at sixty frames a second and encoded as a share encodes it.
+    let frames: Vec<Vec<u8>> = (0..8_usize)
+        .map(|step| {
+            let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h {
+                for x in 0..w {
+                    let tone = ((x as usize + y as usize + step * 31) % 256) as u8;
+                    rgba.extend_from_slice(&[tone, 255 - tone, (step * 29 % 256) as u8, 255]);
+                }
+            }
+            rgba
+        })
+        .collect();
+    let mut encoding: Vec<u64> = Vec::new();
+    let interval = Duration::from_micros(16_667);
+    let mut step = 0_usize;
+    let mut next = Instant::now();
+    while !done.load(std::sync::atomic::Ordering::Acquire) {
+        if Instant::now() >= next {
+            share.deposit_captured_rgba(frames[step % frames.len()].clone());
+            step += 1;
+            next += interval;
+        }
+        for encoded in share.pump(Instant::now()) {
+            encoding.push(wall_us().saturating_sub(share.captured_at_us(&encoded)));
+            let _ = super::send_picture(&sharing, TAB, &share, encoded);
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let (mut heard, mut decoded) = viewing.join().expect("the viewer");
+    assert!(
+        decoded.len() >= PICTURES,
+        "only {} pictures were decoded",
+        decoded.len()
+    );
+    let (encoded_p50, encoded_p95) = percentiles(&mut encoding);
+    let (heard_p50, heard_p95) = percentiles(&mut heard);
+    let (p50, p95) = percentiles(&mut decoded);
+    println!(
+        "a shared {w}x{h} window over the live plane, {} pictures: capture to encoded p50 {encoded_p50:.1} ms p95 {encoded_p95:.1} ms; to the viewer's plane p50 {heard_p50:.1} ms p95 {heard_p95:.1} ms; to decoded p50 {p50:.1} ms p95 {p95:.1} ms",
+        decoded.len()
+    );
+    // What the plane adds besides the encode and the decode is small next to a frame.
+    assert!(
+        heard_p50 - encoded_p50 < 16.7,
+        "the plane carries a picture within a frame: encoded p50 {encoded_p50:.1} ms, heard p50 {heard_p50:.1} ms"
+    );
 }

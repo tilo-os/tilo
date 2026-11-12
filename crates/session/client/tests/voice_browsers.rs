@@ -287,6 +287,7 @@ impl Native {
         if self.ticks.is_multiple_of(3) {
             let object = VideoObject {
                 keyframe: !self.started,
+                hdr: false,
                 codec: Codec::H264,
                 layer: Layer::Low,
                 sequence: u64::from(self.sequence),

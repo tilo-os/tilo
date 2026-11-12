@@ -236,6 +236,9 @@ struct Shared {
     /// reaches next.
     rejoin: tokio::sync::mpsc::UnboundedSender<WorkspaceId>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    /// The runtime the planes run on, once the plane's thread started it: what a plane's readers
+    /// are started on, whichever thread asks the plane to show a track.
+    runtime: std::sync::OnceLock<tokio::runtime::Handle>,
 }
 
 impl RelayAuthority for Shared {
@@ -607,6 +610,7 @@ impl Live {
             bridged: Mutex::new(BTreeMap::new()),
             rejoin,
             wake,
+            runtime: std::sync::OnceLock::new(),
         });
         let (relayed, named) = tokio::sync::watch::channel::<Option<Arc<Relay>>>(None);
         let handler = native::handler(move |session: native::Session| {
@@ -677,6 +681,13 @@ impl Live {
             .iter()
             .map(|(workspace, joined)| (*workspace, Arc::clone(&joined.plane)))
             .collect()
+    }
+
+    /// The runtime the planes run on, once it started: a plane asked to show a track starts its
+    /// reader there.
+    #[must_use]
+    pub fn runtime(&self) -> Option<tokio::runtime::Handle> {
+        self.shared.runtime.get().cloned()
     }
 
     /// A handle that says this plane's presence frames, for the transport the session says on.
@@ -756,6 +767,7 @@ fn run(
         tracing::warn!("the live plane could not start");
         return;
     };
+    let _ = shared.runtime.set(runtime.handle().clone());
     runtime.block_on(async move {
         let authority: Arc<dyn RelayAuthority> = Arc::clone(&shared) as Arc<dyn RelayAuthority>;
         let serving = Arc::new(Relay::new(authority));

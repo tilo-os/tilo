@@ -15,7 +15,6 @@
 use std::sync::Arc;
 
 use crate::harness::{TestClient, headless, mapped_client, pump};
-use neighbour_wire::NeighbourMsg;
 use neighbour_wire::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
 };
@@ -41,17 +40,11 @@ impl ShareStream for Tells {
     }
 }
 
-/// What `session` would announce to its viewers now, as `(colour, mastering volume)` : the same
-/// report a stream start carries.
+/// What `session` tells its viewers its pictures are now, as `(colour, mastering volume)` : what
+/// each keyframe says.
 fn announced(session: &SharedFlatpakSession) -> (Option<Colorimetry>, Option<Hdr10Metadata>) {
-    match session.stream_start_msg() {
-        NeighbourMsg::SurfaceStreamStart {
-            colorimetry,
-            hdr_static_metadata,
-            ..
-        } => (colorimetry, hdr_static_metadata),
-        other => panic!("expected SurfaceStreamStart, got {other:?}"),
-    }
+    let picture = session.picture();
+    (Some(picture.colorimetry), picture.hdr)
 }
 
 /// A BT.2020 PQ description, what an HDR video player attaches.

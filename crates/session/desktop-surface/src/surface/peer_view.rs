@@ -1,7 +1,8 @@
 //! Another device's shared window, as the tile this desktop shows it in.
 //!
-//! A peer announces a surface it streams ([`PeerStreamStart`]); this desktop
-//! decodes it into that window's tab and shows it:
+//! A peer shares a window ([`PeerStreamStart`], what its keyframes say of the
+//! pictures, or a page's announcement); this desktop decodes it into that
+//! window's tab and shows it:
 //!
 //! - **One decoder per shared surface.** [`PeerSurface`] owns the surface's
 //!   [`VideoDecoder`], replaced when the sender restarts the stream, and feeds
@@ -16,8 +17,9 @@
 //!   type into it, how the stream stands and, once it is here, the newest
 //!   picture: [`PeerSurface::read`], published as one resource per tile
 //!   ([`PeerSurface::resource`]).
-//! - **The behaviour is actions on that resource**: pointer motion and
-//!   buttons, keys, a keyframe request, and letting the window go. Every input
+//! - **The behaviour is actions on that resource**: pointer motion, buttons
+//!   and scrolling, keys and composed text, a keyframe request, and letting
+//!   the window go. Every input
 //!   goes through the share's own rule ([`ShareRegistry`]), and leaves as the
 //!   [`NeighbourMsg::RemoteInput`] the owner replays.
 //!
@@ -69,6 +71,10 @@ pub const POINTER_MOTION: &str = "pointer-motion";
 pub const POINTER_BUTTON: &str = "pointer-button";
 /// Press or release one key on the viewer's keyboard.
 pub const KEY: &str = "key";
+/// Scroll the shared window under the viewer's pointer.
+pub const SCROLL: &str = "scroll";
+/// Type text the viewer composed into the shared window's focused field.
+pub const TEXT: &str = "text";
 /// Ask the sender for a keyframe.
 pub const KEYFRAME: &str = "keyframe";
 /// Let the shared window's tile go.
@@ -77,6 +83,8 @@ pub const END: &str = "end";
 const POINTER_MOTION_OPERATION: &str = "desktop.peer-surface.pointer-motion";
 const POINTER_BUTTON_OPERATION: &str = "desktop.peer-surface.pointer-button";
 const KEY_OPERATION: &str = "desktop.peer-surface.key";
+const SCROLL_OPERATION: &str = "desktop.peer-surface.scroll";
+const TEXT_OPERATION: &str = "desktop.peer-surface.text";
 const KEYFRAME_OPERATION: &str = "desktop.peer-surface.keyframe";
 const END_OPERATION: &str = "desktop.peer-surface.end";
 
@@ -270,6 +278,10 @@ pub enum PeerAction {
     PointerButton,
     /// One key.
     Key,
+    /// Scrolling, in the sender's pixels.
+    Scroll,
+    /// Composed text.
+    Text,
     /// Ask the sender for a keyframe.
     Keyframe,
     /// Let the tile go.
@@ -284,6 +296,8 @@ impl PeerAction {
             POINTER_MOTION_OPERATION => Some(Self::PointerMotion),
             POINTER_BUTTON_OPERATION => Some(Self::PointerButton),
             KEY_OPERATION => Some(Self::Key),
+            SCROLL_OPERATION => Some(Self::Scroll),
+            TEXT_OPERATION => Some(Self::Text),
             KEYFRAME_OPERATION => Some(Self::Keyframe),
             END_OPERATION => Some(Self::End),
             _ => None,
@@ -501,6 +515,8 @@ impl PeerSurface {
             .with_action(motion_action())
             .with_action(button_action())
             .with_action(key_action())
+            .with_action(scroll_action())
+            .with_action(text_action())
             .with_action(keyframe_action())
             .with_action(end_action())
     }
@@ -733,6 +749,21 @@ impl PeerSurface {
                     modifiers,
                 })
             }
+            PeerAction::Scroll => {
+                let dx = number(arguments, "dx")?;
+                let dy = number(arguments, "dy")?;
+                self.send(&InputEvent::PointerAxis { dx, dy })
+            }
+            PeerAction::Text => {
+                let text = arguments
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|text| !text.is_empty())
+                    .ok_or_else(|| "`text` is no text".to_string())?;
+                self.send(&InputEvent::Text {
+                    text: text.to_owned(),
+                })
+            }
             PeerAction::Keyframe => {
                 self.request_keyframe(self.last_seq, true);
                 Ok(ActionOutput::default())
@@ -904,6 +935,33 @@ fn key_action() -> ActionSpec {
             ActionParam::required("pressed", ParamType::Boolean, "down or up"),
             ActionParam::required("modifiers", ParamType::Integer, "held modifiers"),
         ],
+    )
+}
+
+fn scroll_action() -> ActionSpec {
+    operation(
+        SCROLL,
+        "Scroll",
+        "How far",
+        SCROLL_OPERATION,
+        vec![
+            ActionParam::required("dx", ParamType::Number, "across, in the window's pixels"),
+            ActionParam::required("dy", ParamType::Number, "down, in the window's pixels"),
+        ],
+    )
+}
+
+fn text_action() -> ActionSpec {
+    operation(
+        TEXT,
+        "Type text",
+        "What to type",
+        TEXT_OPERATION,
+        vec![ActionParam::required(
+            "text",
+            ParamType::Text,
+            "what goes in the focused field",
+        )],
     )
 }
 
@@ -1307,6 +1365,13 @@ impl Widget for PeerView {
                 PeerAction::Key,
                 serde_json::json!({ "keysym": keysym, "pressed": pressed, "modifiers": modifiers }),
             ),
+            InputEvent::PointerAxis { dx, dy } => (
+                PeerAction::Scroll,
+                serde_json::json!({ "dx": dx, "dy": dy }),
+            ),
+            InputEvent::Text { ref text } => {
+                (PeerAction::Text, serde_json::json!({ "text": text }))
+            }
             _ => return,
         };
         let serde_json::Value::Object(arguments) = arguments else {
@@ -1383,6 +1448,8 @@ impl ResourceOperations for PeerView {
             POINTER_MOTION_OPERATION,
             POINTER_BUTTON_OPERATION,
             KEY_OPERATION,
+            SCROLL_OPERATION,
+            TEXT_OPERATION,
             KEYFRAME_OPERATION,
             END_OPERATION,
         ]
@@ -1495,23 +1562,17 @@ impl super::DesktopHandle {
         tab
     }
 
-    /// One encoded unit of a shared stream ([`NeighbourMsg::SurfaceFrame`]) goes to the decoder of
-    /// the tile showing that surface. `None` for a stream this desktop shows nowhere.
-    pub fn peer_surface_frame(&self, message: &NeighbourMsg) -> Option<PeerOutcome> {
-        let NeighbourMsg::SurfaceFrame {
-            surface,
-            source_peer,
-            encoded_h264,
-            seq,
-            ..
-        } = message
-        else {
-            return None;
-        };
+    /// One encoded picture of `peer`'s shared `surface`, `seq` in its stream, goes to the decoder
+    /// of the tile showing that surface. `None` for a stream this desktop shows nowhere.
+    pub fn peer_surface_picture(
+        &self,
+        peer: PeerId,
+        surface: SurfaceId,
+        seq: u64,
+        unit: &[u8],
+    ) -> Option<PeerOutcome> {
         let peers = Rc::clone(&self.shared.borrow().peers);
-        peers
-            .borrow_mut()
-            .push(*source_peer, *surface, *seq, encoded_h264)
+        peers.borrow_mut().push(peer, surface, seq, unit)
     }
 
     /// One object of the page of `surface`'s window: the display list its publisher's engine sent,
@@ -1526,7 +1587,7 @@ impl super::DesktopHandle {
         peers.borrow_mut().push_page(peer, surface, payload)
     }
 
-    /// The share of `surface` ended ([`NeighbourMsg::SurfaceStreamEnd`]), and why: its tile goes,
+    /// The share of `surface` ended, and why: its tile goes,
     /// and the tab shows what this desktop holds for it again.
     pub fn end_peer_surface(&self, peer: PeerId, surface: SurfaceId, why: &str) -> Option<TabId> {
         let peers = Rc::clone(&self.shared.borrow().peers);

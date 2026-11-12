@@ -221,6 +221,7 @@ fn page_decoder(codec: Codec) -> Result<Box<dyn Decoder>, String> {
         Codec::H264 => StreamCodec::H264,
         Codec::Vp9 => StreamCodec::Vp9,
         Codec::Av1 => StreamCodec::Av1,
+        Codec::HevcMain10 => StreamCodec::HevcMain10,
         Codec::Vp8 => return Err("This browser cannot show the window's VP8 pictures".into()),
     };
     let decoder = RealtimeDecoder::new(DecoderConfig::new(codec))
@@ -445,6 +446,7 @@ mod tests {
     fn object(sequence: u64, keyframe: bool, payload: &[u8]) -> Vec<u8> {
         VideoObject {
             keyframe,
+            hdr: false,
             codec: Codec::H264,
             layer: tilo_live::video::Layer::High,
             sequence,

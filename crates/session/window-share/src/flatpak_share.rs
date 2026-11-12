@@ -1,8 +1,7 @@
-//! `SharedFlatpakSession` composes surface capture, encode throttling, a
-//! video encoder, and the `NeighbourMsg` wire envelope into one live app
-//! share. Transport, cursor overlay, sandbox brokering, and input routing live
-//! elsewhere — this module only produces encoded frames and
-//! stream-start/stream-end envelopes.
+//! `SharedFlatpakSession` composes surface capture, encode throttling and a
+//! video encoder into one live app share. Transport, cursor overlay, sandbox
+//! brokering, and input routing live elsewhere — this module only produces
+//! encoded frames and says what they are ([`SharedFlatpakSession::picture`]).
 //!
 //! The codec is negotiated with the viewers ([`media::realtime::negotiate`]):
 //! AV1 or VP9 when this machine encodes it in hardware and every viewer
@@ -10,7 +9,8 @@
 //! advertised capabilities); HDR uses a hardware 10-bit encoder (AV1 or HEVC
 //! Main10) every viewer can decode, else the share runs in SDR.
 //! [`SharedFlatpakSession::renegotiate`] switches codec when the viewer set
-//! changes, and the caller then announces the new stream.
+//! changes; the new encoder's first frame is a keyframe, which is what tells
+//! the viewers the new stream.
 
 #[cfg(all(target_os = "linux", feature = "dmabuf"))]
 use std::os::fd::AsRawFd;
@@ -27,7 +27,7 @@ use crate::hdr_metadata::{Hdr10Metadata, HdrConfig};
 use crate::streaming::{ShareRegistry, StreamingShare};
 use media::realtime::{CodecCapabilities, RealtimePolicy, negotiate, negotiate_hdr};
 use neighbour_wire::colorimetry::Colorimetry;
-use neighbour_wire::{NeighbourMsg, PeerId, SurfaceId};
+use neighbour_wire::{PeerId, SurfaceId};
 #[cfg(all(target_os = "linux", feature = "dmabuf"))]
 use smithay::backend::allocator::Buffer as _;
 #[cfg(all(target_os = "linux", feature = "dmabuf"))]
@@ -120,23 +120,30 @@ pub struct EncodedFrame {
     pub surface: SurfaceId,
     pub source_peer: PeerId,
     pub nalus: Vec<u8>,
-    /// Owner-side capture timestamp (monotonic ns). Receivers subtract their
-    /// translated local clock to compute motion-to-photon latency.
+    /// When the frame was captured, in nanoseconds since the share started
+    /// ([`SharedFlatpakSession::captured_at_us`] on the wall clock).
     pub capture_ts_ns: u64,
-    /// Place in the share's encoded sequence; see `NeighbourMsg::SurfaceFrame::seq`.
+    /// Place in the share's encoded sequence, which viewers tell missing units
+    /// and keyframe requests by.
     pub seq: u64,
+    /// Whether the unit is a keyframe: a viewer can start decoding at it.
+    pub keyframe: bool,
 }
 
-impl EncodedFrame {
-    pub fn into_neighbour_msg(self) -> NeighbourMsg {
-        NeighbourMsg::SurfaceFrame {
-            surface: self.surface,
-            source_peer: self.source_peer,
-            encoded_h264: self.nalus,
-            ts: self.capture_ts_ns,
-            seq: self.seq,
-        }
-    }
+/// What a share's encoded pictures are: what a viewer's decoder starts from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PictureFormat {
+    pub codec: Codec,
+    /// The size the pictures are encoded at.
+    pub width: u32,
+    pub height: u32,
+    /// The colour the pictures are in: a client-declared one, or the share's
+    /// own (SDR BT.709, or the configured HDR when its encoder makes it).
+    pub colorimetry: Colorimetry,
+    /// The HDR10 static metadata of an HDR stream.
+    pub hdr: Option<Hdr10Metadata>,
+    /// The bit depth the codec encodes at.
+    pub bit_depth: u8,
 }
 
 /// What [`SharedFlatpakSession::assemble`] builds a session from.
@@ -296,7 +303,7 @@ pub struct SharedFlatpakSession {
     throttle: Arc<Mutex<StreamingThrottle>>,
     /// Frames a second a changing window is streamed at.
     rate_hz: AtomicU32,
-    /// Owner-side gate for inbound `NeighbourMsg::RemoteInput`; shared with
+    /// Owner-side gate for a viewer's remote input; shared with
     /// the compositor's `State` via `Arc` so input routing sees the same
     /// permissions.
     share_registry: Arc<Mutex<ShareRegistry>>,
@@ -323,6 +330,9 @@ pub struct SharedFlatpakSession {
     /// Which dmabuf layouts the encoder imports, as it answered.
     dmabuf_layouts: Mutex<std::collections::HashMap<(u32, u64), bool>>,
     origin: Instant,
+    /// The wall clock at [`Self::origin`], in microseconds since the Unix
+    /// epoch: what a frame's capture time is told on.
+    origin_wall_us: u64,
     active: Arc<AtomicBool>,
     /// Place of the next unit in the share's encoded sequence, which viewers
     /// tell missing units and keyframe requests by.
@@ -336,9 +346,6 @@ pub struct SharedFlatpakSession {
     /// encode however often it happens.
     standing_keyframe: Mutex<Option<EncodedFrame>>,
     color_override: Arc<Mutex<ColorOverride>>,
-    /// The workspace tab holding the window, announced with the stream so a
-    /// viewer shows it in exactly that tab; `0` names none.
-    tab: u64,
 }
 
 impl SharedFlatpakSession {
@@ -447,13 +454,17 @@ impl SharedFlatpakSession {
             window_taken: Mutex::new(None),
             dmabuf_layouts: Mutex::new(std::collections::HashMap::new()),
             origin: Instant::now(),
+            origin_wall_us: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| {
+                    u64::try_from(since.as_micros()).unwrap_or(u64::MAX)
+                }),
             active: Arc::new(AtomicBool::new(true)),
             frame_seq: AtomicU64::new(0),
             keyframe_after: AtomicU64::new(0),
             keyframe_requested: Mutex::new(None),
             standing_keyframe: Mutex::new(None),
             color_override: Arc::new(Mutex::new(None)),
-            tab: 0,
         }
     }
 
@@ -516,8 +527,8 @@ impl SharedFlatpakSession {
 
     /// Re-run codec negotiation for the current `receivers`. Returns `true`
     /// when the codec changed: the encoder was replaced (its first frame is a
-    /// keyframe) and the caller must publish [`Self::stream_start_msg`] so
-    /// receivers rebuild their decoders. A negotiation that cannot open an
+    /// keyframe, whose [`Self::picture`] the receivers rebuild their decoders
+    /// from). A negotiation that cannot open an
     /// encoder keeps the running one.
     pub fn renegotiate(&self, receivers: &[CodecCapabilities]) -> bool {
         let Some((codec, hdr)) = choose(&self.config, &self.local_caps, receivers) else {
@@ -551,8 +562,8 @@ impl SharedFlatpakSession {
         true
     }
 
-    /// Attach a client-declared colorimetry override; the next
-    /// [`Self::stream_start_msg`] carries it. Arc-shared so a background
+    /// Attach a client-declared colorimetry override; [`Self::picture`] says
+    /// it from now on. Arc-shared so a background
     /// clone can update it without racing the session's read path.
     pub fn set_color_override(&self, colorimetry: Colorimetry, hdr: Option<Hdr10Metadata>) {
         if let Ok(mut slot) = self.color_override.lock() {
@@ -560,7 +571,7 @@ impl SharedFlatpakSession {
         }
     }
 
-    /// Drops any colorimetry override; the next [`Self::stream_start_msg`]
+    /// Drops any colorimetry override; [`Self::picture`]
     /// falls back to the config default.
     pub fn clear_color_override(&self) {
         if let Ok(mut slot) = self.color_override.lock() {
@@ -586,18 +597,6 @@ impl SharedFlatpakSession {
         (self.width, self.height)
     }
 
-    /// Name the workspace tab the window is in, for the stream start.
-    #[must_use]
-    pub fn with_tab(mut self, tab: u64) -> Self {
-        self.tab = tab;
-        self
-    }
-
-    /// The workspace tab the stream names; `0` when none.
-    pub fn tab(&self) -> u64 {
-        self.tab
-    }
-
     /// Stream a changing window at `hz`: the refresh of the display it is on.
     pub fn set_rate(&self, hz: u32) {
         let rate = hz.max(1);
@@ -617,11 +616,9 @@ impl SharedFlatpakSession {
         self.config.clone()
     }
 
-    pub fn stream_start_msg(&self) -> NeighbourMsg {
-        // Single monotonic reading stamped into both `ts` and
-        // `sender_monotonic_ns_at_send` — reading twice would smear the
-        // clock-offset handshake by a couple hundred ns.
-        let now_ns = self.monotonic_ns_now();
+    /// What the share's pictures are now: the codec, the size and the colour
+    /// a viewer's decoder starts from, as each keyframe says them.
+    pub fn picture(&self) -> PictureFormat {
         let state = *self.codec_state.lock_recover();
         // The label and bit depth always describe the bytes. Colour
         // precedence: client-declared colorimetry > HDR config > SDR BT.709.
@@ -629,36 +626,24 @@ impl SharedFlatpakSession {
             Some(hdr_cfg) => (hdr_cfg.colorimetry(), Some(hdr_cfg.metadata), 10u8),
             None => (Colorimetry::sdr_bt709(), None, 8u8),
         };
-        let (colorimetry, hdr_static) = match self.current_color_override() {
-            Some((client_color, client_hdr)) => (Some(client_color), client_hdr.or(default_hdr)),
-            None => (Some(default_color), default_hdr),
+        let (colorimetry, hdr) = match self.current_color_override() {
+            Some((client_color, client_hdr)) => (client_color, client_hdr.or(default_hdr)),
+            None => (default_color, default_hdr),
         };
-        let codec_label = state.codec.wire_label().to_string();
-        NeighbourMsg::SurfaceStreamStart {
-            surface: self.surface_id,
-            source_peer: self.host_user_id,
-            app_id: self.app_id.clone(),
+        PictureFormat {
+            codec: state.codec,
             width: state.encoded.0,
             height: state.encoded.1,
-            codec: codec_label,
-            ts: now_ns,
-            sender_monotonic_ns_at_send: now_ns,
             colorimetry,
-            hdr_static_metadata: hdr_static,
+            hdr,
             bit_depth,
-            tab: self.tab,
         }
     }
 
-    /// Build the `NeighbourMsg::SurfaceStreamEnd` payload. Ship *before*
-    /// dropping the session so late viewers drop their `PeerView` instead
-    /// of hanging on a stale decoder.
-    pub fn stream_end_msg(&self) -> NeighbourMsg {
-        NeighbourMsg::SurfaceStreamEnd {
-            surface: self.surface_id,
-            source_peer: self.host_user_id,
-            ts: self.monotonic_ns_now(),
-        }
+    /// When `frame` was captured, in microseconds since the Unix epoch.
+    pub fn captured_at_us(&self, frame: &EncodedFrame) -> u64 {
+        self.origin_wall_us
+            .saturating_add(frame.capture_ts_ns / 1_000)
     }
 
     /// Deposit a captured RGBA frame for the next tick. Drop-oldest — an
@@ -918,6 +903,7 @@ impl SharedFlatpakSession {
                     nalus,
                     capture_ts_ns: carried_ts,
                     seq,
+                    keyframe: stats.keyframe,
                 };
                 *self.standing_keyframe.lock_recover() = stats.keyframe.then(|| frame.clone());
                 Some(frame)
@@ -1284,54 +1270,17 @@ mod tests {
 
     #[test]
     fn share_stream_encodes_staged_frames_and_announces_its_session() {
-        // Phase `stream_start_and_end_messages_carry_the_session_ids`.
+        // Phase `a_new_share_says_what_its_pictures_are`.
         {
             let s =
                 SharedFlatpakSession::start(0xBEEF, "org.gimp.GIMP", 42, 64, 64, &cfg_software())
                     .expect("start");
-            match s.stream_start_msg() {
-                NeighbourMsg::SurfaceStreamStart {
-                    surface,
-                    source_peer,
-                    width,
-                    height,
-                    codec,
-                    ts,
-                    sender_monotonic_ns_at_send,
-                    colorimetry,
-                    hdr_static_metadata,
-                    bit_depth,
-                    app_id,
-                    tab: _,
-                } => {
-                    assert_eq!(surface, 42);
-                    assert_eq!(source_peer, 0xBEEF);
-                    assert_eq!(width, 64);
-                    assert_eq!(height, 64);
-                    assert_eq!(codec, s.chosen_codec().wire_label());
-                    assert_eq!(app_id, "org.gimp.GIMP");
-                    assert!(sender_monotonic_ns_at_send > 0);
-                    assert_eq!(sender_monotonic_ns_at_send, ts);
-                    assert_eq!(
-                        colorimetry,
-                        Some(neighbour_wire::colorimetry::Colorimetry::sdr_bt709())
-                    );
-                    assert!(hdr_static_metadata.is_none());
-                    assert_eq!(bit_depth, 8);
-                }
-                other => panic!("expected SurfaceStreamStart, got {other:?}"),
-            }
-            match s.stream_end_msg() {
-                NeighbourMsg::SurfaceStreamEnd {
-                    surface,
-                    source_peer,
-                    ..
-                } => {
-                    assert_eq!(surface, 42);
-                    assert_eq!(source_peer, 0xBEEF);
-                }
-                other => panic!("expected SurfaceStreamEnd, got {other:?}"),
-            }
+            let picture = s.picture();
+            assert_eq!((picture.width, picture.height), (64, 64));
+            assert_eq!(picture.codec, s.chosen_codec());
+            assert_eq!(picture.colorimetry, Colorimetry::sdr_bt709());
+            assert!(picture.hdr.is_none());
+            assert_eq!(picture.bit_depth, 8);
         }
         // Phase `encode_next_frame_produces_annex_b_bytes`.
         {
@@ -1345,23 +1294,11 @@ mod tests {
                 .expect("encoder should yield a frame");
             assert_eq!(frame.surface, 7);
             assert!(!frame.nalus.is_empty(), "empty NALU payload");
-            let msg = frame.clone().into_neighbour_msg();
-            match msg {
-                NeighbourMsg::SurfaceFrame {
-                    surface,
-                    source_peer,
-                    encoded_h264,
-                    ts,
-                    seq,
-                } => {
-                    assert_eq!(surface, 7);
-                    assert_eq!(seq, frame.seq);
-                    assert_eq!(source_peer, 1);
-                    assert_eq!(encoded_h264, frame.nalus);
-                    assert_eq!(ts, frame.capture_ts_ns);
-                }
-                other => panic!("expected SurfaceFrame, got {other:?}"),
-            }
+            assert!(frame.keyframe, "a stream starts at a keyframe");
+            assert!(
+                s.captured_at_us(&frame) > 0,
+                "the capture is told on the wall clock"
+            );
         }
         // Phase `encode_next_frame_none_when_no_staged_frame`.
         {
@@ -1485,24 +1422,14 @@ mod tests {
         )
     }
 
-    /// What a share announces to its viewers now: its colour, its mastering
-    /// volume, its codec label and its bit depth.
+    /// What a share tells its viewers its pictures are now: its colour, its
+    /// mastering volume and its bit depth.
     fn announced(
         session: &SharedFlatpakSession,
     ) -> (Option<Colorimetry>, Option<Hdr10Metadata>, u8) {
-        match session.stream_start_msg() {
-            NeighbourMsg::SurfaceStreamStart {
-                codec,
-                colorimetry,
-                hdr_static_metadata,
-                bit_depth,
-                ..
-            } => {
-                assert_eq!(codec, session.chosen_codec().wire_label());
-                (colorimetry, hdr_static_metadata, bit_depth)
-            }
-            other => panic!("expected SurfaceStreamStart, got {other:?}"),
-        }
+        let picture = session.picture();
+        assert_eq!(picture.codec, session.chosen_codec());
+        (Some(picture.colorimetry), picture.hdr, picture.bit_depth)
     }
 
     #[test]
