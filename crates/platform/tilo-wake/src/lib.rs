@@ -988,46 +988,62 @@ mod tests {
         (scope, rx)
     }
 
+    /// Every wake the owner was sent, drained: a message is announced
+    /// before it can be received and again once it can.
+    fn drain(rx: &Receiver<WakeEvent>) {
+        while rx.try_recv().is_ok() {}
+    }
+
     #[test]
     fn a_worker_reply_on_a_waking_channel_wakes_its_owner() {
         let (scope, rx) = bound_scope();
-        let (sender, replies) = {
-            let _entry = scope.enter();
-            waking_channel::<u32>()
-        };
-        std::thread::spawn(move || sender.send(7).unwrap())
-            .join()
-            .unwrap();
-        assert!(
-            rx.recv().unwrap().requires_sync(),
-            "the reply woke the owner"
-        );
-        assert_eq!(replies.try_recv().unwrap(), 7);
-        // The worker's end went away with its thread: one more wake.
-        assert!(rx.recv().is_ok());
-        let (sender, replies) = {
-            let _entry = scope.enter();
-            waking_channel::<u32>()
-        };
-        drop(replies);
-        assert!(sender.send(1).is_err(), "the message reaches nobody");
-        // Announced before it could be received, as every message is; a wake
-        // no owner takes up costs a closed window nothing.
-        assert!(rx.try_recv().is_ok(), "the attempt was announced");
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-        let (sender, replies) = {
-            let _entry = scope.enter();
-            waking_channel::<u32>()
-        };
-        std::thread::spawn(move || drop(sender)).join().unwrap();
-        assert!(
-            rx.recv().is_ok(),
-            "a worker that ends without a reply wakes too"
-        );
-        assert!(matches!(
-            replies.try_recv(),
-            Err(std::sync::mpsc::TryRecvError::Disconnected)
-        ));
+        {
+            let (sender, replies) = {
+                let _entry = scope.enter();
+                waking_channel::<u32>()
+            };
+            std::thread::spawn(move || sender.send(7).unwrap())
+                .join()
+                .unwrap();
+            assert!(
+                rx.recv().unwrap().requires_sync(),
+                "the reply woke the owner"
+            );
+            assert_eq!(replies.try_recv().unwrap(), 7);
+            // The worker's end went away with its thread: one more wake.
+            assert!(rx.recv().is_ok());
+            drain(&rx);
+        }
+        {
+            let (sender, replies) = {
+                let _entry = scope.enter();
+                waking_channel::<u32>()
+            };
+            drop(replies);
+            assert!(sender.send(1).is_err(), "the message reaches nobody");
+            // Announced before it could be received, as every message is; a
+            // wake no owner takes up costs a closed window nothing.
+            assert!(rx.try_recv().is_ok(), "the attempt was announced");
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+            drop(sender);
+            drain(&rx);
+        }
+        {
+            let (sender, replies) = {
+                let _entry = scope.enter();
+                waking_channel::<u32>()
+            };
+            std::thread::spawn(move || drop(sender)).join().unwrap();
+            assert!(
+                rx.recv().is_ok(),
+                "a worker that ends without a reply wakes too"
+            );
+            assert!(matches!(
+                replies.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Disconnected)
+            ));
+            drain(&rx);
+        }
     }
 
     #[test]
