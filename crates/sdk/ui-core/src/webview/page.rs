@@ -81,7 +81,8 @@ const ACTOR_HEAD_UNITS: usize = 31;
 pub const MAX_OTHERS: usize = 8;
 /// The furthest line a read of the outline may start from.
 pub const MAX_OUTLINE_FROM: u32 = 1_000_000;
-/// The longest words a [`PageRequest::Search`] looks for. This and the form
+/// The longest words a [`PageRequest::Search`] looks for, or a
+/// [`PageRequest::Settle`] waits for. This and the form
 /// bounds below are counted in UTF-16 units, which is how an engine counts
 /// them, so a name in any script is bounded as the engine bounds it.
 pub const MAX_SEARCH_UNITS: usize = 200;
@@ -264,10 +265,17 @@ pub enum PageRequest {
         frame: Option<FrameId>,
     },
     /// Wait until the document has stopped changing for `quiet_ms` and has
-    /// loaded, or `timeout_ms` passed.
+    /// loaded, or `timeout_ms` passed. A page that waits on a timer or a
+    /// server changes nothing meanwhile, so it is quiet while it still says
+    /// it is loading: `text` names words the page must say, and `gone` words
+    /// it must no longer say, as a read of the page prints them. With
+    /// either, the wait ends when that holds or after `timeout_ms`, whatever
+    /// `quiet_ms` is, and the answer says which it was.
     Settle {
         quiet_ms: u32,
         timeout_ms: u32,
+        text: Option<String>,
+        gone: Option<String>,
         frame: Option<FrameId>,
     },
     /// Console messages and uncaught errors after sequence number `since`.
@@ -578,8 +586,23 @@ impl PageRequest {
             Self::Settle {
                 quiet_ms,
                 timeout_ms,
+                text,
+                gone,
                 ..
-            } => format!("Waited for the page to settle ({quiet_ms} ms, up to {timeout_ms} ms)"),
+            } => match (text, gone) {
+                (None, None) => {
+                    format!("Waited for the page to settle ({quiet_ms} ms, up to {timeout_ms} ms)")
+                }
+                (Some(text), None) => {
+                    format!("Waited for the page to say {text:?} (up to {timeout_ms} ms)")
+                }
+                (None, Some(gone)) => {
+                    format!("Waited for the page to stop saying {gone:?} (up to {timeout_ms} ms)")
+                }
+                (Some(text), Some(gone)) => format!(
+                    "Waited for the page to say {text:?} and stop saying {gone:?} (up to {timeout_ms} ms)"
+                ),
+            },
             Self::Console { .. } => "Read the console".to_string(),
             Self::Network { .. } => "Read the network".to_string(),
             Self::Ledger { .. } => "Read who did what in the tab".to_string(),
@@ -817,10 +840,14 @@ impl PageRequest {
             Self::Settle {
                 quiet_ms,
                 timeout_ms,
+                text,
+                gone,
                 ..
             } => Self::Settle {
                 quiet_ms,
                 timeout_ms,
+                text,
+                gone,
                 frame: None,
             },
             other => other,
@@ -913,10 +940,16 @@ impl PageRequest {
             Self::Settle {
                 quiet_ms,
                 timeout_ms,
+                text,
+                gone,
                 ..
             } => {
                 (MIN_SETTLE_QUIET_MS..=MAX_SETTLE_MS).contains(quiet_ms)
                     && (*quiet_ms..=MAX_SETTLE_MS).contains(timeout_ms)
+                    && [text, gone]
+                        .into_iter()
+                        .flatten()
+                        .all(|words| (1..=MAX_SEARCH_UNITS).contains(&units(words)))
             }
             Self::Pointer { steps, button } => {
                 !steps.is_empty()
@@ -1403,10 +1436,19 @@ pub(crate) fn encode_request(
         PageRequest::Settle {
             quiet_ms,
             timeout_ms,
+            text,
+            gone,
             ..
         } => {
             command["quiet_ms"] = (*quiet_ms).into();
             command["timeout_ms"] = (*timeout_ms).into();
+            // A wait without words is the command it always was.
+            if let Some(text) = text {
+                command["text"] = text.as_str().into();
+            }
+            if let Some(gone) = gone {
+                command["gone"] = gone.as_str().into();
+            }
         }
         PageRequest::Console { since }
         | PageRequest::Network { since }

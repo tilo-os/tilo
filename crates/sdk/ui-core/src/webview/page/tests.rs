@@ -525,10 +525,45 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
         let settle = PageRequest::Settle {
             quiet_ms: 500,
             timeout_ms: 10_000,
+            text: None,
+            gone: None,
             frame: None,
         };
         assert!(settle.valid());
         assert_eq!(encode_request(10, None, &settle)["timeout_ms"], 10_000);
+        // A wait without words is the command it always was.
+        assert_eq!(
+            encode_request(10, None, &settle),
+            serde_json::json!({"op":"page","request_id":10,"action":"settle","quiet_ms":500,"timeout_ms":10_000})
+        );
+        // The words to wait for, and the words to see gone, travel as given.
+        let words = PageRequest::Settle {
+            quiet_ms: 500,
+            timeout_ms: 8000,
+            text: Some("Hello World!".into()),
+            gone: Some("Loading...".into()),
+            frame: None,
+        };
+        assert!(words.valid() && words.only_observes());
+        assert_eq!(
+            encode_request(13, None, &words),
+            serde_json::json!({"op":"page","request_id":13,"action":"settle","quiet_ms":500,
+                "timeout_ms":8000,"text":"Hello World!","gone":"Loading..."})
+        );
+        assert_eq!(
+            words.described(),
+            "Waited for the page to say \"Hello World!\" and stop saying \"Loading...\" (up to 8000 ms)"
+        );
+        assert!(
+            PageRequest::Settle {
+                quiet_ms: 500,
+                timeout_ms: 8000,
+                text: None,
+                gone: Some("x".repeat(MAX_SEARCH_UNITS)),
+                frame: None,
+            }
+            .valid()
+        );
         assert_eq!(
             encode_request(11, None, &PageRequest::Network { since: 42 })["since"],
             42
@@ -559,16 +594,37 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             PageRequest::Settle {
                 quiet_ms: 10,
                 timeout_ms: 1000,
+                text: None,
+                gone: None,
                 frame: None,
             },
             PageRequest::Settle {
                 quiet_ms: 500,
                 timeout_ms: 100,
+                text: None,
+                gone: None,
                 frame: None,
             },
             PageRequest::Settle {
                 quiet_ms: 500,
                 timeout_ms: MAX_SETTLE_MS + 1,
+                text: None,
+                gone: None,
+                frame: None,
+            },
+            // Words are bounded as a search's are, and never empty.
+            PageRequest::Settle {
+                quiet_ms: 500,
+                timeout_ms: 1000,
+                text: Some(String::new()),
+                gone: None,
+                frame: None,
+            },
+            PageRequest::Settle {
+                quiet_ms: 500,
+                timeout_ms: 1000,
+                text: None,
+                gone: Some("x".repeat(MAX_SEARCH_UNITS + 1)),
                 frame: None,
             },
         ] {

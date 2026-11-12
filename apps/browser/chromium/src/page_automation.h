@@ -111,6 +111,11 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // once). The page began this navigation while it handled the action,
     // which is what the answer then says: it is not one still to come.
     if(pending_->navigation=="possible" && navigations_!=pending_->navigations) pending_->navigation="started";
+    // A wait for words is not answered by the page leaving its document: the
+    // words may be the next document's. The script that waited went with the
+    // old document, which reads the action again in the new one (see
+    // `AdvanceStage`), and that read is what answers it.
+    if(WaitsForWords()) { pending_->awaiting_load=false;return; }
     Succeed(pending_->message,std::nullopt);
   }
   // The page's own frame committed a new document. Every script context of
@@ -467,6 +472,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // Whether this action's answer is read from the document it acted in. A
     // navigation that begins then takes that document away unanswered.
     bool waits_on_document=false;
+    // When a wait for words first asked the page, so that one asked again of
+    // the document the page went on to waits for what is left of its time.
+    double wait_began=0;
     // Where a gesture's two ends are, in the view's space, once it began.
     int from_x=0,from_y=0,to_x=0,to_y=0;int steps=0,step=0;
     // What the page resolved when a drag began, so a drop nothing took can be
@@ -526,6 +534,11 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   bool HoverAtPoint() const { return Action()=="at" && pending_->command->GetBool("hover"); }
   bool Gesturing() const { return Dragging() || HoverAtPoint(); }
   std::string Action() const { return pending_->command->GetString("action").ToString(); }
+  // Whether the action in flight waits for the page to say words, or to stop
+  // saying some, and not for it to hold still.
+  bool WaitsForWords() const {
+    return pending_ && Action()=="settle" && (pending_->command->HasKey("text") || pending_->command->HasKey("gone"));
+  }
   bool PrivateText() const { return pending_->command->GetString("op")=="text_input"; }
   // The number a caller names a frame by: what the outline printed for it, a
   // whole number from 1. Nothing else names a frame, so a word, a selector or
@@ -2074,7 +2087,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     command->SetInt("doc",PrivateText()?text_frame_.document:document_);
     if(!PrivateText()) Mark(command);
     if(!PrivateText() && !world_frame_.number.empty()) command->SetString("frame",world_frame_.number);
-    for(const char* key:{"element","text","key","lease","history_scope"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
+    // A wait's words travel with it: `text` to wait for, `gone` to see gone.
+    for(const char* key:{"element","text","gone","key","lease","history_scope"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
     for(const char* key:{"cross_origin","secret","native_caret","enabled"}) if(pending_->command->HasKey(key)) command->SetBool(key,pending_->command->GetBool(key));
     // A find names what to look for, so the words it matches travel with it.
     for(const char* key:{"role","name"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
@@ -2082,6 +2096,16 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(action=="find" && !frame_doc_ && LooksInFrames()) command->SetBool("all",true);
     for(const char* key:{"x","y"}) if(pending_->command->HasKey(key)) command->SetDouble(key,Number(pending_->command,key));
     for(const char* key:{"quiet_ms","timeout_ms"}) if(pending_->command->HasKey(key)) command->SetInt(key,pending_->command->GetInt(key));
+    // A wait for words is asked again only when the script that waited went
+    // with its document. The document the page went on to is then waited on
+    // for what is left of the time the wait was given, and told how long the
+    // wait has run, which is what its answer says.
+    if(WaitsForWords()) {
+      const double now=Now();
+      const int waited=pending_->wait_began?static_cast<int>(now-pending_->wait_began):0;
+      if(pending_->wait_began) command->SetInt("waited_ms",waited);else pending_->wait_began=now;
+      command->SetInt("timeout_ms",std::max(1,pending_->command->GetInt("timeout_ms")-waited));
+    }
     if(pending_->command->HasKey("expires_ms")) command->SetDouble("expires_ms",Number(pending_->command,"expires_ms"));
     if(pending_->command->HasKey("values")) command->SetList("values",pending_->command->GetList("values")->Copy());
     if(pending_->command->HasKey("paths")) command->SetList("paths",pending_->command->GetList("paths")->Copy());
@@ -2601,7 +2625,14 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // A picture of the page is taken after the page says where the area is:
     // the page's own box, never one the caller made up.
     if(action=="capture") { CaptureRegion(value);return; }
-    if(action=="at" || action=="settle" || action=="reader" || action=="prepare_text_input" || action=="start_text_input" || action=="check_text_input" || action=="commit_text_input" || action=="cancel_text_input" || action=="undo_text_input" || action=="redo_text_input") {
+    // A wait for words answers with the lines that say them, as a search
+    // lists a line; a wait without words has none to show.
+    if(action=="settle") {
+      const auto said=Text(value,"outline");
+      Succeed(Text(value,"message"),said.empty()?std::nullopt:std::optional<std::string>(said),
+        value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr);return;
+    }
+    if(action=="at" || action=="reader" || action=="prepare_text_input" || action=="start_text_input" || action=="check_text_input" || action=="commit_text_input" || action=="cancel_text_input" || action=="undo_text_input" || action=="redo_text_input") {
       Succeed(Text(value,"message"),std::nullopt,value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr,
         PrivateText() && value->GetType("history")==VTYPE_DICTIONARY?value->GetDictionary("history"):nullptr);return;
     }

@@ -17,6 +17,12 @@ use ui::webview::{
 /// How long a settle waits for the page to go quiet, and at most, by default.
 const PAGE_SETTLE_QUIET_MS: u32 = 500;
 const PAGE_SETTLE_TIMEOUT_MS: u32 = 10_000;
+
+/// The words a wait was given, and none when it was given a blank: a caller
+/// that fills in every argument it may give waits as one that left it out.
+fn page_words(words: Option<String>) -> Option<String> {
+    words.filter(|words| !words.trim().is_empty())
+}
 /// Moves the pointer makes between a drag's two ends by default.
 const PAGE_DRAG_STEPS: u32 = 8;
 
@@ -564,7 +570,19 @@ pub enum BrowserEffect {
     /// Wait for the page to settle
     ///
     /// Answers once the document has loaded and stopped changing for a
-    /// quiet period, or the longest wait passed.
+    /// quiet period, or the longest wait passed. A page that shows
+    /// "Loading..." while it waits for a server changes nothing meanwhile,
+    /// so it counts as settled before what it loads is there. When you know
+    /// words the page will say once it is done, give them as `text`; when
+    /// you know words it shows only while it works, give them as `gone`.
+    /// The wait then ends when a read of the page says `text` and no longer
+    /// says `gone`, or at the longest wait, and the answer says which:
+    /// `appeared` and `gone` are true or false, `timed_out` says whether the
+    /// wait ran out, and the outline line that says the words comes with
+    /// its number. A wait that ran out is an answer, not a failure. Words
+    /// inside a frame are waited for with that frame named. A page that goes
+    /// on to another document while the wait runs is waited on there, for
+    /// what is left of the time.
     #[effect(
         row,
         job,
@@ -575,10 +593,20 @@ pub enum BrowserEffect {
         untrusted
     )]
     WaitPageSettled {
-        #[param("How long the page must stay unchanged, milliseconds (default 500)")]
+        #[param(
+            "How long the page must stay unchanged, milliseconds (default 500); not used when text or gone is given"
+        )]
         quiet_ms: Option<u32>,
         #[param("Longest wait, milliseconds (default 10000, at most 20000)")]
         timeout_ms: Option<u32>,
+        #[param(
+            "Words the page must say for the wait to end, as a read of the page prints them, in any letter case: 1 to 200 characters of one outline line"
+        )]
+        text: Option<String>,
+        #[param(
+            "Words the page must no longer say for the wait to end, such as Loading: 1 to 200 characters of one outline line"
+        )]
+        gone: Option<String>,
         #[param(
             "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
@@ -1258,10 +1286,14 @@ impl BrowserEffect {
             Self::WaitPageSettled {
                 quiet_ms,
                 timeout_ms,
+                text,
+                gone,
                 frame,
             } => page(PageRequest::Settle {
                 quiet_ms: quiet_ms.unwrap_or(PAGE_SETTLE_QUIET_MS),
                 timeout_ms: timeout_ms.unwrap_or(PAGE_SETTLE_TIMEOUT_MS),
+                text: page_words(text),
+                gone: page_words(gone),
                 frame: page_frame(frame),
             }),
             Self::ReadPageConsole { since } => page(PageRequest::Console {

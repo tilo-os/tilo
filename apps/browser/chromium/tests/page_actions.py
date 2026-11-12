@@ -618,7 +618,59 @@ UPLOAD_HOLDER = b"""<!doctype html><title>Documents</title>
 <h1>Your documents</h1>
 <iframe src="{OTHER}/upload" title="Upload" style="width:600px;height:200px;border:0"></iframe>"""
 
-TWO_SITES = {'/news': NEWS, '/consent': CONSENT, '/consent-loading': CONSENT_LOADING, '/churn': CHURN,
+# A page that says it is loading and, after a timer during which nothing in
+# the document changes, shows what it loaded: what "Start" does on a site
+# that fetches its content. The page holds its "Loading..." from the start
+# and does not show it, and hides it again when it is done. While the timer
+# runs the page is quiet by every measure a wait without words has.
+WAITS_MS = 4000
+WAITS = b"""<!doctype html><title>Loading</title>
+<h1>Dynamic content</h1>
+<button id="start" type="button">Start</button>
+<p id="loading" hidden>Loading...</p>
+<div id="finish"></div>
+<script>
+document.getElementById('start').onclick = () => {
+  document.getElementById('start').hidden = true;
+  document.getElementById('loading').hidden = false;
+  setTimeout(() => {
+    document.getElementById('loading').hidden = true;
+    document.getElementById('finish').innerHTML = '<h4>Hello World!</h4>';
+  }, %d);
+};
+</script>""" % WAITS_MS
+
+
+# The same page in a frame of another site, which is where a site often puts
+# the part that loads.
+WAITS_FRAMED = b"""<!doctype html><title>Framed loading</title>
+<h1>Around the frame</h1>
+<iframe src="{OTHER}/waits" title="Dynamic content" style="width:600px;height:240px;border:0"></iframe>"""
+
+
+# The same, as a component writes it: the words arrive inside its shadow
+# tree, where nothing that watches the document alone hears of them.
+WAITS_SHADOW = b"""<!doctype html><title>Component loading</title>
+<h1>Order</h1>
+<button id="start" type="button">Start</button>
+<order-status></order-status>
+<script>
+customElements.define('order-status', class extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({mode: 'open'}).innerHTML = '<p>Nothing ordered yet</p>';
+  }
+  place() {
+    const said = this.shadowRoot.querySelector('p');
+    said.textContent = 'Placing your order';
+    setTimeout(() => { said.textContent = 'Order confirmed'; }, %d);
+  }
+});
+document.getElementById('start').onclick = () => document.querySelector('order-status').place();
+</script>""" % WAITS_MS
+
+
+TWO_SITES = {'/news': NEWS, '/waits-framed': WAITS_FRAMED, '/consent': CONSENT, '/consent-loading': CONSENT_LOADING, '/churn': CHURN,
              '/gestures-holder': GESTURES_HOLDER, '/upload': UPLOAD, '/upload-holder': UPLOAD_HOLDER,
              '/embedder': EMBEDDER, '/signup': SIGNUP, '/blanks': BLANKS,
              '/terms': TERMS, '/terms-holder': TERMS_HOLDER,
@@ -775,7 +827,7 @@ for (let number = 0; number < 45000; number++) gaps.append(' ');
 </script>"""
 
 READS = {'/shadow': SHADOW, '/code': CODE, '/layout': LAYOUT, '/component-article': COMPONENT_ARTICLE,
-         '/spaced': SPACED}
+         '/spaced': SPACED, '/waits': WAITS, '/waits-shadow': WAITS_SHADOW}
 
 
 # A shop, from its search to an order's confirmation: the stand-in for a real
@@ -2309,6 +2361,205 @@ class PageActions(unittest.TestCase):
         changed = self.ok('changes')
         self.assertEqual(changed['outline'], '+ - text "added later"', changed)
         self.assertEqual(self.ok('changes')['message'], 'Nothing changed')
+
+    def start_loading(self, **fields):
+        # The fixture's "Start": the page says it is loading and holds still
+        # until its timer brings what it loaded. Answers the moment before
+        # the click, which is before the timer began.
+        outline = self.reads('button "Start"', 'the page never showed its Start', **fields)['outline']
+        began = time.monotonic()
+        self.ok('click', element=self.ref(outline, 'button "Start"'))
+        return began
+
+    def test_a_wait_for_words_answers_once_the_page_says_them(self):
+        self.h.navigate(self.url + '/waits')
+        began = self.start_loading()
+        # Nothing in the document changes while the page waits for what it
+        # loads, so a wait without words is over while the page still says it
+        # is loading: quiet is all such a wait knows of.
+        early = self.ok('settle', quiet_ms=300, timeout_ms=SETTLE_MS)
+        self.assertTrue(early['data']['settled'], early)
+        self.assertNotIn('appeared', early['data'], early)
+        self.assertRegex(early['message'], r'^Settled after \d+ ms$')
+        self.assertIsNone(early['outline'], early)
+        unloaded = self.outline()
+        self.assertIn('text "Loading..."', unloaded)
+        self.assertNotIn('Hello World!', unloaded)
+        # A wait that names the words the page will say ends when a read of
+        # the page says them, in whatever letter case, and no sooner.
+        waited = self.ok('settle', quiet_ms=300, timeout_ms=SETTLE_MS, text='hello WORLD')
+        self.assertGreaterEqual(time.monotonic() - began, WAITS_MS / 1000, waited)
+        data = waited['data']
+        self.assertEqual((data['appeared'], data['timed_out']), (True, False), waited)
+        self.assertNotIn('settled', data, waited)
+        self.assertNotIn('page_left', data, waited)
+        self.assertEqual(waited['message'],
+                         f'After {data["waited_ms"]} ms the page says "hello WORLD" (line {data["line"]})')
+        # The answer carries the line that says them, as a search does: by
+        # the number a read of the page gives it, which a read reads on from.
+        line = self.outline().splitlines()[data['line'] - 1]
+        self.assertIn('heading "Hello World!" level=4', line)
+        self.assertEqual(waited['outline'], f'{data["line"]}: {line.strip()}')
+        onward = self.ok('outline', **{'from': data['line']})['outline']
+        self.assertIn('Hello World!', onward.splitlines()[0])
+        # Words the page already says are there at the first look.
+        again = self.ok('settle', quiet_ms=300, timeout_ms=SETTLE_MS, text='Hello World!')
+        self.assertEqual((again['data']['appeared'], again['data']['checks']), (True, 1), again)
+        # Waiting is a read: it took no place in the tab's record.
+        self.assertEqual([entry['action'] for entry in self.ok('ledger', since=0)['data']['entries']], ['click'])
+
+    def test_a_wait_for_words_to_leave_answers_once_the_page_no_longer_says_them(self):
+        self.h.navigate(self.url + '/waits')
+        # The page holds its "Loading..." from the start and does not show
+        # it: what a person cannot read, the page does not say.
+        unseen = self.ok('settle', quiet_ms=300, timeout_ms=SETTLE_MS, gone='Loading...')
+        self.assertEqual((unseen['data']['gone'], unseen['data']['timed_out'], unseen['data']['checks']),
+                         (True, False, 1), unseen)
+        self.assertRegex(unseen['message'], r'^After \d+ ms the page does not say "Loading\.\.\."$')
+        began = self.start_loading()
+        left = self.ok('settle', quiet_ms=300, timeout_ms=SETTLE_MS, gone='loading...')
+        self.assertGreaterEqual(time.monotonic() - began, WAITS_MS / 1000, left)
+        data = left['data']
+        self.assertEqual((data['gone'], data['timed_out']), (True, False), left)
+        self.assertNotIn('settled', data, left)
+        self.assertEqual(left['message'], f'After {data["waited_ms"]} ms the page no longer says "loading..."')
+        self.assertIsNone(left['outline'], left)
+        after = self.outline()
+        self.assertIn('heading "Hello World!" level=4', after)
+        self.assertNotIn('Loading...', after)
+
+    def test_a_wait_for_words_that_never_come_says_so_at_its_timeout(self):
+        self.h.navigate(self.url + '/waits')
+        began = time.monotonic()
+        never = self.ok('settle', quiet_ms=100, timeout_ms=1200, text='Hello World!')
+        self.assertGreaterEqual(time.monotonic() - began, 1.2, never)
+        data = never['data']
+        # A wait that timed out is an answer, and says plainly what it is.
+        self.assertEqual((data['appeared'], data['timed_out']), (False, True), never)
+        self.assertGreaterEqual(data['waited_ms'], 1200, never)
+        self.assertNotIn('line', data, never)
+        self.assertNotIn('settled', data, never)
+        self.assertEqual(never['message'],
+                         f'Timed out after {data["waited_ms"]} ms: the page does not say "Hello World!"')
+        self.assertIsNone(never['outline'], never)
+        # Words that stay are said to stay, with the line that still says them.
+        stays = self.ok('settle', quiet_ms=100, timeout_ms=600, gone='dynamic content')
+        self.assertEqual((stays['data']['gone'], stays['data']['timed_out']), (False, True), stays)
+        self.assertEqual(stays['outline'], f'{stays["data"]["gone_line"]}: - heading "Dynamic content" level=1')
+        self.assertEqual(stays['message'], f'Timed out after {stays["data"]["waited_ms"]} ms: '
+                         f'the page still says "dynamic content" (line {stays["data"]["gone_line"]})')
+        # Both asked for, and one of them so: the wait is not over, and the
+        # answer says which of the two is.
+        half = self.ok('settle', quiet_ms=100, timeout_ms=600, text='Dynamic content', gone='Start')
+        self.assertEqual((half['data']['appeared'], half['data']['gone'], half['data']['timed_out']),
+                         (True, False, True), half)
+        self.assertRegex(half['message'], r'^Timed out after \d+ ms: the page says "Dynamic content" \(line \d+\) '
+                         r'and still says "Start" \(line \d+\)$')
+        self.assertEqual(len(half['outline'].splitlines()), 2, half)
+        # Words are bounded as a search's are; what is outside the bound is
+        # refused as the caller's mistake, and the engine goes on.
+        for words in ('', '   ', 'x' * 201):
+            for field in ('text', 'gone'):
+                refused = self.page('settle', quiet_ms=100, timeout_ms=600, **{field: words})
+                self.assertEqual((refused['ok'], refused.get('code')), (False, 'invalid_request'), refused)
+                self.assertIn('1 to 200 characters', refused['message'])
+        self.assertIn('heading "Dynamic content" level=1', self.outline())
+
+    def test_a_wait_for_words_in_a_frame_reads_the_frames_own_document(self):
+        self.h.navigate(self.url + '/waits-framed')
+        frame = re.search(r'iframe "Dynamic content" \[frame=(\d+)\]', self.outline()).group(1)
+        began = self.start_loading(frame=frame)
+        waited = self.ok('settle', quiet_ms=300, timeout_ms=SETTLE_MS, text='Hello World!', gone='Loading...',
+                         frame=frame)
+        self.assertGreaterEqual(time.monotonic() - began, WAITS_MS / 1000, waited)
+        data = waited['data']
+        self.assertEqual((data['appeared'], data['gone'], data['timed_out']), (True, True, False), waited)
+        self.assertEqual(waited['message'], f'After {data["waited_ms"]} ms frame {frame} says "Hello World!" '
+                         f'(line {data["line"]}) and no longer says "Loading..."')
+        inside = self.ok('outline', frame=frame)['outline'].splitlines()
+        self.assertIn('heading "Hello World!" level=4', inside[data['line'] - 1])
+        # A frame is its own document: the page around it does not say the
+        # frame's words, and a wait for them there says so.
+        around = self.ok('settle', quiet_ms=100, timeout_ms=600, text='Hello World!')
+        self.assertEqual((around['data']['appeared'], around['data']['timed_out']), (False, True), around)
+
+    def test_a_wait_for_words_goes_on_in_the_document_the_page_moves_to(self):
+        # The words a caller waits for are often the next page's: the page
+        # says it is sending them on and leaves a moment later. The wait is
+        # not over when the document it began in is gone. It is asked again
+        # of the document the page went on to, for what is left of its time.
+        self.h.navigate(self.url + '/later')
+        outline = self.outline()
+        self.assertNotIn('/next', outline)
+        began = time.monotonic()
+        self.ok('click', element=self.ref(outline, 'button "Go later"'))
+        waited = self.ok('settle', quiet_ms=300, timeout_ms=8000, text='/next', gone='Go later')
+        data = waited['data']
+        self.assertEqual((data['appeared'], data['gone'], data['timed_out']), (True, True, False), waited)
+        self.assertTrue(waited['url'].endswith('/next'), waited)
+        self.assertEqual(waited['outline'], f'{data["line"]}: - text "/next"')
+        # The answer says the page went on, since what was read of the page
+        # before went with it, and how long the wait was from its start: the
+        # page left a second after the click.
+        self.assertIs(data['page_left'], True, waited)
+        self.assertEqual(waited['message'], f'After {data["waited_ms"]} ms the page says "/next" (line {data["line"]}) '
+                         'and does not say "Go later", in the document it went on to')
+        self.assertGreaterEqual(data['waited_ms'], 500, waited)
+        self.assertLess(time.monotonic() - began, 8, waited)
+        self.h.navigate(self.url + '/later')
+        began = time.monotonic()
+        self.ok('click', element=self.ref(self.outline(), 'button "Go later"'))
+        never = self.ok('settle', quiet_ms=300, timeout_ms=3000, text='no such words here')
+        self.assertEqual((never['data']['appeared'], never['data']['timed_out'], never['data']['page_left']),
+                         (False, True, True), never)
+        self.assertTrue(never['url'].endswith('/next'), never)
+        # What is left of its time, and no more: the whole wait is the time
+        # it was given, whichever document it ended in.
+        elapsed = time.monotonic() - began
+        self.assertGreaterEqual(elapsed, 3, never)
+        self.assertGreaterEqual(never['data']['waited_ms'], 3000, never)
+        self.assertLess(never['data']['waited_ms'], 4000, never)
+
+    def test_a_wait_for_words_reads_them_in_a_shadow_tree(self):
+        # A component changes its own shadow tree, which the document's
+        # changes say nothing of. The wait reads the tree a read reads.
+        self.h.navigate(self.url + '/waits-shadow')
+        began = self.start_loading()
+        waited = self.ok('settle', quiet_ms=300, timeout_ms=SETTLE_MS, text='order CONFIRMED',
+                         gone='Placing your order')
+        self.assertGreaterEqual(time.monotonic() - began, WAITS_MS / 1000, waited)
+        data = waited['data']
+        self.assertEqual((data['appeared'], data['gone'], data['timed_out']), (True, True, False), waited)
+        self.assertEqual(waited['message'], f'After {data["waited_ms"]} ms the page says "order CONFIRMED" '
+                         f'(line {data["line"]}) and no longer says "Placing your order"')
+        self.assertIn('text "Order confirmed"', self.outline().splitlines()[data['line'] - 1])
+        # The change was heard where it happened: the document itself did
+        # not change while the wait ran, and the wait counts one that did.
+        self.assertGreaterEqual(data['mutations'], 1, waited)
+
+    def test_a_wait_for_words_reads_the_page_now_and_then_and_not_every_frame(self):
+        # Each look for the words is a read of the whole page. A page that
+        # holds still is read at the start, about once a second after that
+        # for what changes without the document saying so, and at the end.
+        self.h.navigate(self.url + '/long')
+        still = self.ok('settle', quiet_ms=100, timeout_ms=2000, text='no such words here')
+        self.assertEqual((still['data']['appeared'], still['data']['timed_out']), (False, True), still)
+        self.assertLessEqual(still['data']['checks'], 4, still)
+        # A page that changes all the time is read after a change and then
+        # left alone for several times as long as the read took.
+        self.main_world('setInterval(() => { document.body.dataset.tick = Date.now(); }, 10) > 0')
+        busy = self.ok('settle', quiet_ms=100, timeout_ms=2000, text='no such words here')
+        self.assertEqual((busy['data']['appeared'], busy['data']['timed_out']), (False, True), busy)
+        self.assertGreater(busy['data']['mutations'], 20, busy)
+        self.assertLessEqual(busy['data']['checks'], 2 + busy['data']['waited_ms'] // 50, busy)
+        self.assertLessEqual(busy['data']['read_ms'], busy['data']['waited_ms'] / 2, busy)
+        # Reading a page marks what a hover opens, on the page itself and for
+        # the length of the read. The wait does not take that for the page
+        # changing: a page that holds still is not read again for it.
+        self.h.navigate(self.url + '/gestures')
+        marked = self.ok('settle', quiet_ms=100, timeout_ms=1500, text='no such words here')
+        self.assertEqual((marked['data']['mutations'], marked['data']['timed_out']), (0, True), marked)
+        self.assertLessEqual(marked['data']['checks'], 3, marked)
 
     def test_element_at_names_what_a_click_there_would_hit(self):
         self.h.navigate(self.url + '/agent')

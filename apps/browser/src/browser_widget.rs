@@ -5523,9 +5523,11 @@ impl BrowserWidget {
                 E::WaitPageSettled {
                     quiet_ms: None,
                     timeout_ms: None,
+                    text: None,
+                    gone: None,
                     frame: None,
                 },
-                &["quiet_ms", "timeout_ms", "frame"][..],
+                &["quiet_ms", "timeout_ms", "text", "gone", "frame"][..],
             ),
             (
                 E::ShowPageField {

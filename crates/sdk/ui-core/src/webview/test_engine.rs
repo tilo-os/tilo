@@ -356,8 +356,24 @@ impl TestEngine {
                 PageRequest::At { x, y, .. } => {
                     Some(serde_json::json!({"x": x, "y": y, "element": null}))
                 }
-                PageRequest::Settle { .. } => {
-                    Some(serde_json::json!({"settled": true, "waited_ms": 0}))
+                // A wait without words finds the page quiet; one with words
+                // finds it saying what was waited for, and no longer saying
+                // what was waited to be gone.
+                PageRequest::Settle {
+                    text: None,
+                    gone: None,
+                    ..
+                } => Some(serde_json::json!({"settled": true, "waited_ms": 0})),
+                PageRequest::Settle { text, gone, .. } => {
+                    let mut data = serde_json::json!({"timed_out": false, "waited_ms": 0});
+                    if text.is_some() {
+                        data["appeared"] = true.into();
+                        data["line"] = 1.into();
+                    }
+                    if gone.is_some() {
+                        data["gone"] = true.into();
+                    }
+                    Some(data)
                 }
                 // A find answers the ref of the description it was asked
                 // for, as a page with that element would.

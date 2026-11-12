@@ -1040,8 +1040,13 @@ globalThis.__tiloPage ||= (() => {
   }
 
   // Resolves once the document stops changing for `quiet` ms after it has
-  // loaded, or after `timeout` ms.
-  function settle(quiet, timeout) {
+  // loaded, or after `timeout` ms. Quiet is all it knows of: a page that
+  // waits on a timer or a server changes nothing meanwhile, and is settled
+  // while it still says it is loading. A caller that knows what the page
+  // will say, or what it says only while it works, names the words, and the
+  // wait is for them instead.
+  function settle(quiet, timeout, text, gone, before) {
+    if (text != null || gone != null) return waitForWords(timeout, text, gone, before);
     return new Promise(done => {
       const start = performance.now();
       let last = start, mutations = 0;
@@ -1060,6 +1065,102 @@ globalThis.__tiloPage ||= (() => {
           return;
         }
         setTimeout(tick, Math.min(MAX_SETTLE_POLL_MS, quiet));
+      };
+      tick();
+    });
+  }
+
+  // A wait for words ends when a read of the page says `text` and no longer
+  // says `gone`, either of which may be left out, or after `timeout` ms, and
+  // answers which it was. What the page says is what a read prints, found as
+  // a search finds it, so the words are those of one outline line, and what
+  // the page holds without showing is not said. Each look is a read of the
+  // whole page, so the page is not looked at every frame: at the start;
+  // after it has changed, and then no sooner than several times the length
+  // of the look before, so that looking takes a small part of a busy page's
+  // time; once a second while nothing changes, for what a page shows
+  // without changing its document (a style that runs out, a field's value);
+  // and at the end, so that an answer that the words never came has looked.
+  // A wait whose document the page left is asked again of the document the
+  // page went on to, with what is left of its time and with `before`, the
+  // time it had waited already: the answer counts that in, and says the
+  // page went on, since what was read of the page before is gone with it.
+  const WAIT_IDLE_MS = 1000, WAIT_REST = 9, MAX_WAIT_SAID = 80;
+  function waitForWords(timeout, text, gone, before) {
+    const asked = [text, gone].map(words => words == null ? null : String(words));
+    const wanted = asked.map(words => words === null ? null : clean(words, Infinity));
+    if (asked.some((words, index) => words !== null && (!wanted[index] || words.length > MAX_TEXT)))
+      throw failure('invalid_request',
+        `A wait takes the words to wait for, and the words to see gone, as 1 to ${MAX_TEXT} characters each`);
+    const says = wanted.map(words => words === null ? null : sayer(words));
+    return new Promise(done => {
+      const start = performance.now();
+      let mutations = 0, changed = false, checks = 0, reading = 0, looked = start, cost = 0, was = false, last = null;
+      const observer = new MutationObserver(records => { mutations += records.length; changed = true; });
+      const watch = root => observer.observe(root, {subtree: true, childList: true, attributes: true, characterData: true});
+      watch(document);
+      const look = () => {
+        const began = performance.now();
+        changed = false;
+        // A shadow tree's changes are not the document's: each tree a read
+        // meets is listened to as the document is.
+        onShadowRoot = watch;
+        let read;
+        try { read = walkLines(MAX_ALL_LINES, MAX_ALL_CHARS); } finally { onShadowRoot = null; }
+        // A read marks what a hover opens on the page itself, for as long
+        // as it takes to ask. That is this side's doing, not the page's.
+        observer.takeRecords();
+        const [said, still] = says.map(say => {
+          for (let index = 0; say && index < read.lines.length; index++) {
+            const hit = say(read.lines[index], index);
+            if (hit) return hit;
+          }
+          return null;
+        });
+        if (still) was = true;
+        looked = performance.now();
+        cost = looked - began;
+        reading += cost;
+        checks++;
+        return {said, still, beyond: read.truncated};
+      };
+      const tick = () => {
+        try {
+          const now = performance.now(), over = now - start >= timeout;
+          if (!last || over || now - looked >= Math.max(changed ? MAX_SETTLE_POLL_MS : WAIT_IDLE_MS, cost * WAIT_REST))
+            last = look();
+          const held = (!says[0] || !!last.said) && (!says[1] || !last.still);
+          if (!held && !over) { setTimeout(tick, MAX_SETTLE_POLL_MS); return; }
+          observer.disconnect();
+          const waited = Math.round(performance.now() - start) + Math.max(0, Math.round(Number(before)) || 0);
+          const quoted = wanted.map(words => words === null ? '' : quote(clean(words, MAX_WAIT_SAID)));
+          const data = {timed_out: !held, waited_ms: waited, mutations, checks, read_ms: Math.round(reading)};
+          if (before != null) data.page_left = true;
+          const clauses = [], shown = [];
+          if (says[0]) {
+            data.appeared = !!last.said;
+            if (last.said) { data.line = last.said.line; shown.push(last.said); }
+            clauses.push(last.said ? `says ${quoted[0]} (line ${last.said.line})` : `does not say ${quoted[0]}`);
+          }
+          if (says[1]) {
+            data.gone = !last.still;
+            if (last.still) { data.gone_line = last.still.line; shown.push(last.still); }
+            clauses.push(last.still ? `still says ${quoted[1]} (line ${last.still.line})`
+              : `${was ? 'no longer says' : 'does not say'} ${quoted[1]}`);
+          }
+          // A read that stopped short of a long page's end knows nothing of
+          // what is past it, and says so of words it did not find.
+          const partial = last.beyond && (data.appeared === false || data.gone === true);
+          if (partial) data.partial = true;
+          done({ok: true,
+            message: `${held ? 'After' : 'Timed out after'} ${waited} ms${held ? '' : ':'} ` +
+              `${frameId() ? `frame ${frameId()}` : 'the page'} ${clauses.join(' and ')}` +
+              (partial ? ', as far as a page is read' : '') + (before != null ? ', in the document it went on to' : ''),
+            outline: shown.map(hit => `${hit.line}: ${hit.text}`).join('\n') || undefined, data});
+        } catch (error) {
+          observer.disconnect();
+          done(error && error.ok === false ? error : failure('script', clean(error && error.message || error, 300)));
+        }
       };
       tick();
     });
@@ -1338,21 +1439,30 @@ globalThis.__tiloPage ||= (() => {
   // through to find them. It reads what the outline reads, so what the
   // outline hides (a secret's value) is not found either.
   const MAX_SEARCH_HITS = 30, SEARCH_CONTEXT = 160;
+  // How a line says words: as it prints them, quotes escaped, in any letter
+  // case. A line that does is answered as a search lists it, by its number
+  // and with as much of it around the words as an answer carries.
+  const sayer = wanted => {
+    const needle = quote(wanted).slice(1, -1).toLowerCase();
+    return (line, index) => {
+      const at = line.toLowerCase().indexOf(needle);
+      if (at < 0) return null;
+      const start = Math.max(0, at - SEARCH_CONTEXT), end = Math.min(line.length, at + needle.length + SEARCH_CONTEXT);
+      return {line: index + 1, text: (start ? '…' : '') + line.slice(start, end).trim() + (end < line.length ? '…' : '')};
+    };
+  };
   function search(text) {
     const wanted = clean(text, MAX_TEXT);
     if (!wanted) throw failure('invalid_request', 'A search needs the words to look for');
-    // A line holds its words as it prints them, quotes escaped.
-    const needle = quote(wanted).slice(1, -1).toLowerCase();
+    const said = sayer(wanted);
     const {lines: all, truncated: beyond} = walkLines(MAX_ALL_LINES, MAX_ALL_CHARS);
     const hits = [];
     let total = 0;
     all.forEach((line, index) => {
-      const at = line.toLowerCase().indexOf(needle);
-      if (at < 0) return;
+      const hit = said(line, index);
+      if (!hit) return;
       total++;
-      if (hits.length >= MAX_SEARCH_HITS) return;
-      const start = Math.max(0, at - SEARCH_CONTEXT), end = Math.min(line.length, at + needle.length + SEARCH_CONTEXT);
-      hits.push({line: index + 1, text: (start ? '…' : '') + line.slice(start, end).trim() + (end < line.length ? '…' : '')});
+      if (hits.length < MAX_SEARCH_HITS) hits.push(hit);
     });
     const where = frameId() ? ` in frame ${frameId()}` : '';
     if (!total)
@@ -1399,7 +1509,7 @@ globalThis.__tiloPage ||= (() => {
   // the nodes that slot was given, and is followed in its turn.
   function flatChildren(parent) {
     const root = parent.shadowRoot;
-    if (root) { watchRoot(root); return root.childNodes; }
+    if (root) { watchRoot(root); if (onShadowRoot) onShadowRoot(root); return root.childNodes; }
     const given = parent.localName === 'slot' && parent.assignedNodes ? parent.assignedNodes() : null;
     return given && given.length ? given : parent.childNodes;
   }
@@ -1457,6 +1567,9 @@ globalThis.__tiloPage ||= (() => {
   // still one.
   const watchedRoots = new WeakSet();
   let typeWatch = null;
+  // Who else is told of a shadow tree a read meets, while it reads: a wait
+  // for words, which listens to the tree for the rest of its wait.
+  let onShadowRoot = null;
   function watchRoot(root) {
     if (watchedRoots.has(root)) return;
     watchedRoots.add(root);
@@ -3303,7 +3416,7 @@ globalThis.__tiloPage ||= (() => {
             : at(command.x, command.y, command.inside === true ? {x: command.page_x, y: command.page_y} : null);
           case 'frame_offset': return frameOffset(command.element, command.anchored);
           case 'frame_fence': return fence();
-          case 'settle': return settle(command.quiet_ms, command.timeout_ms);
+          case 'settle': return settle(command.quiet_ms, command.timeout_ms, command.text, command.gone, command.waited_ms);
           case 'locate': arm('pointer'); return acted(command.element, locate(command.element, command.cross_origin));
           case 'locate_box': return locateBox(command.element);
           case 'capture': return captureRegion(command.element);

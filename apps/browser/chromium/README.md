@@ -489,6 +489,56 @@ and headings only; its refusal says words are found by searching. A search or
 a find that names no `frame` looks on in the frames the page shows (see
 "Frames"), and one that comes up empty there too names the frames to look in.
 
+`action: "settle"` with `quiet_ms` (50 or more) and `timeout_ms` (at most
+20000) answers once the document has loaded and nothing in it or its
+resources has changed for the quiet time, or at the timeout: `data.settled`,
+`waited_ms`, `mutations` and `resources`, and `Settled after 563 ms` or `Still
+changing after 10000 ms`. Quiet is all that wait knows of. A page that shows
+"Loading..." and waits on a timer or a server changes nothing meanwhile, and
+is settled while what it loads has not arrived.
+
+A caller that knows what the page will say names it. `text` is words the page
+must say and `gone` words it must no longer say, each 1 to 200 UTF-16 units;
+given both, both must hold. The wait then ends when a read of the document
+says so or at the timeout, whatever `quiet_ms` is, and never answers
+`settled`. `data.appeared` (of `text`) and `data.gone` say whether each held
+and `data.timed_out` whether the wait ran out; `data.line` is the number of
+the outline line that says `text` and `data.gone_line` of one that still says
+`gone`, each printed in `outline` as a search prints a match
+(`12: - heading "Hello World!" level=4`) and a `from` to read on from. The
+message says the same: `After 5012 ms the page says "Hello World!" (line 12)
+and no longer says "Loading..."`, or `Timed out after 3004 ms: the page does
+not say "Hello World!"`. A wait that ran out is an answer, `ok`, and never a
+failure: the caller decides what it means. Words that were not on the page
+when the wait began are gone at once (`does not say`).
+
+The words a caller waits for are often the next page's. A page that leaves
+its document while a wait for words runs has not ended the wait: the document
+the page went on to is waited on for what is left of the time, and the answer
+says so (`data.page_left`, `…, in the document it went on to`), with
+`waited_ms` counted from the wait's start. A second leaving is `page_changed`.
+A frame that moves on to another document is waited on the same way.
+
+The words are found as `search` finds them, in the lines a read prints, in
+any letter case. So what the page holds without showing (a spinner it has
+hidden) is not said, words in an open shadow tree are, and words of two lines
+are no match. With a `frame` the frame's document is the one waited on;
+without one only the page's own document is, and the frames it shows are not
+looked in. A read that stops short of a very long page's end says so of words
+it did not find (`data.partial`, `as far as a page is read`). Words outside
+their bound are refused as `invalid_request`.
+
+Each look for the words is a read of the whole document, so the page is not
+looked at every frame. It is looked at when the wait begins; after a change in
+the document, or in a shadow tree a look has met, and then no sooner than nine
+times the length of the look before and never within 50 ms of it, so that
+between its first look and its last a wait spends at most a tenth of a busy
+page's time looking; once a second while nothing changes, for what a page
+shows without changing its document (a style that runs out, a field's value);
+and once more at the timeout, so an answer that the words never came has just
+looked. A look costs what one `search` of the page costs. `data.checks` counts
+the looks and `data.read_ms` the time they took.
+
 `action: "reader"` with `enabled` shows the document's article alone and puts
 the page back when turned off. The article is the `article`, `main` or
 article-body element whose paragraphs hold the most text, else the block whose

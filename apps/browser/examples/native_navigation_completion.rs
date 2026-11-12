@@ -208,6 +208,8 @@ fn history_roundtrip(
         &BrowserEffect::WaitPageSettled {
             quiet_ms: Some(100),
             timeout_ms: Some(2000),
+            text: None,
+            gone: None,
             frame: None,
         },
     )?;

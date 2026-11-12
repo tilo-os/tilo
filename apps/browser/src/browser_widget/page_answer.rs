@@ -171,6 +171,14 @@ impl BrowserWidget {
                 "`search` takes the words to find: 1 to {} characters",
                 ui::webview::page::MAX_SEARCH_UNITS
             ),
+            PageRequest::Settle { .. } => format!(
+                "`settle` waits for the page to hold still for {} ms or more, {} ms at most in \
+                 all, and takes the words to wait for, and the words to see gone, as 1 to {} \
+                 characters each",
+                ui::webview::page::MIN_SETTLE_QUIET_MS,
+                ui::webview::page::MAX_SETTLE_MS,
+                ui::webview::page::MAX_SEARCH_UNITS
+            ),
             PageRequest::FillForm { .. } => format!(
                 "`fill_form` takes a form's id or signature of at most {} characters and at \
                  most {} answers by the names the form asks under, each a text, a number, true \

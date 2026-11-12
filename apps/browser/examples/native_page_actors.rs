@@ -249,6 +249,8 @@ fn open_the_form(app: &mut App, url: &str) -> Result<(), Failure> {
             &BrowserEffect::WaitPageSettled {
                 quiet_ms: Some(200),
                 timeout_ms: Some(5000),
+                text: None,
+                gone: None,
                 frame: None,
             },
         );

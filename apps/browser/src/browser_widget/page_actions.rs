@@ -228,6 +228,126 @@ fn page_actions_publish_programmatic_write_contracts() {
     );
 }
 
+// Phase `a_wait_takes_words_to_wait_for_and_answers_whether_they_came`.
+#[test]
+fn a_wait_takes_words_to_wait_for_and_answers_whether_they_came() {
+    let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+    // One action waits both ways: beside the quiet it always took, it names
+    // the words to wait for and the words to see gone, each of them left out
+    // at will, and says when to give them.
+    let wait = page_action(&widget, "wait-page-settled");
+    assert_eq!(
+        wait.params()
+            .iter()
+            .map(|param| (param.name.to_string(), param.required))
+            .collect::<Vec<_>>(),
+        ["quiet_ms", "timeout_ms", "text", "gone", "frame"].map(|name| (name.to_string(), false))
+    );
+    let said = wait.description.clone().unwrap_or_default();
+    assert!(
+        said.contains("`text`") && said.contains("`gone`") && said.contains("Loading"),
+        "an agent that lists the actions learns when to name words: {said}"
+    );
+
+    // A wait that ran out is an answer, not a failure: what the engine said
+    // of it reaches the caller as it was said.
+    engine.push_page_reply(Ok(PageReply {
+        message: "Timed out after 3004 ms: the page does not say \"Hello World!\"".into(),
+        data: Some(serde_json::json!({"appeared": false, "timed_out": true, "waited_ms": 3004})),
+        ..answer("")
+    }));
+    let never = start(
+        &mut widget,
+        &mut doc,
+        &root,
+        "wait-page-settled",
+        &serde_json::json!({"text": "Hello World!", "timeout_ms": 3000}),
+    )
+    .unwrap();
+    let never = succeeded(settled(&mut widget, &doc, &root, never));
+    assert_eq!(
+        (&never["data"]["appeared"], &never["data"]["timed_out"]),
+        (&serde_json::json!(false), &serde_json::json!(true)),
+        "{never}"
+    );
+    assert_eq!(
+        never["message"],
+        "Timed out after 3004 ms: the page does not say \"Hello World!\""
+    );
+    assert!(never["data"].get("settled").is_none(), "{never}");
+
+    let mut answers = Vec::new();
+    for args in [
+        serde_json::json!({"gone": "Loading...", "frame": "2"}),
+        serde_json::json!({"text": "Hello World!", "gone": "Loading...", "quiet_ms": 200}),
+        // A blank is no words: a caller that fills in every argument it may
+        // give waits as one that left them out.
+        serde_json::json!({"text": "", "gone": "  "}),
+    ] {
+        let invocation = start(&mut widget, &mut doc, &root, "wait-page-settled", &args).unwrap();
+        answers.push(succeeded(settled(&mut widget, &doc, &root, invocation)));
+    }
+    assert_eq!(
+        page_requests(&engine),
+        vec![
+            PageRequest::Settle {
+                quiet_ms: 500,
+                timeout_ms: 3000,
+                text: Some("Hello World!".into()),
+                gone: None,
+                frame: None,
+            },
+            PageRequest::Settle {
+                quiet_ms: 500,
+                timeout_ms: 10_000,
+                text: None,
+                gone: Some("Loading...".into()),
+                frame: Some(FrameId::parse("2").unwrap()),
+            },
+            PageRequest::Settle {
+                quiet_ms: 200,
+                timeout_ms: 10_000,
+                text: Some("Hello World!".into()),
+                gone: Some("Loading...".into()),
+                frame: None,
+            },
+            PageRequest::Settle {
+                quiet_ms: 500,
+                timeout_ms: 10_000,
+                text: None,
+                gone: None,
+                frame: None,
+            },
+        ]
+    );
+    assert_eq!(answers[0]["data"]["gone"], true, "{}", answers[0]);
+    assert_eq!(answers[1]["data"]["appeared"], true, "{}", answers[1]);
+    assert_eq!(answers[1]["data"]["gone"], true, "{}", answers[1]);
+    // Only a wait without words answers that the page settled.
+    assert!(
+        answers[0]["data"].get("settled").is_none(),
+        "{}",
+        answers[0]
+    );
+    assert_eq!(answers[2]["data"]["settled"], true, "{}", answers[2]);
+
+    // Words past their bound are refused before the page is asked, in the
+    // words that say the bound.
+    let asked = page_requests(&engine).len();
+    for args in [
+        serde_json::json!({"text": "x".repeat(201)}),
+        serde_json::json!({"gone": "x".repeat(201)}),
+        serde_json::json!({"text": "Hello World!", "timeout_ms": 20_001}),
+    ] {
+        let refused = start(&mut widget, &mut doc, &root, "wait-page-settled", &args).unwrap_err();
+        assert!(
+            refused.contains("1 to 200 characters") && refused.contains("20000 ms at most"),
+            "{refused}"
+        );
+    }
+    assert_eq!(page_requests(&engine).len(), asked);
+}
+
 // Phase `read_returns_the_engine_outline_in_the_declared_shape`.
 #[test]
 fn read_returns_the_engine_outline_in_the_declared_shape() {
@@ -538,11 +658,15 @@ fn agent_reads_and_consented_writes_reach_the_engine_typed() {
             PageRequest::Settle {
                 quiet_ms: 500,
                 timeout_ms: 10_000,
+                text: None,
+                gone: None,
                 frame: None,
             },
             PageRequest::Settle {
                 quiet_ms: 200,
                 timeout_ms: 3000,
+                text: None,
+                gone: None,
                 frame: None,
             },
             PageRequest::Console { since: 4 },
