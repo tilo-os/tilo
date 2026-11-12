@@ -29,4 +29,7 @@ cargo build --locked --profile lounge-gate -p tilo-front-door -p fake-discord \
   --bin tilo-front-door --bin fake-discord
 for bin in tilo-front-door fake-discord; do cp "$target/lounge-gate/$bin" "$out/bin/"; done
 bash tools/ci/publish/lounge-context.sh "$out/lounge" "$binaries" "$fonts"
+# Outside the image a Tilo program finds the font catalog in fonts/ beside itself,
+# and the stack reads this layout as it is (in a check, read-only).
+ln -sfn ../fonts "$out/lounge/bin/fonts"
 echo "the stack's programs: $out/bin; its relay's context: $out/lounge"

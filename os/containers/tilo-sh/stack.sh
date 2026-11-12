@@ -676,7 +676,7 @@ lay_out_lounge() {
   # The image installs the catalog at /usr/share/fonts/tilo; outside it a Tilo
   # program finds it in fonts/ beside itself.
   [[ -d $lounge/fonts ]] || die "TILO_SH_LOUNGE names $lounge, which holds no fonts"
-  ln -sfn ../fonts "$lounge/bin/fonts"
+  [[ -e $lounge/bin/fonts ]] || ln -sfn ../fonts "$lounge/bin/fonts"
 }
 
 # The desktop bundle the web entry serves (build.sh --bundle desktop, the
