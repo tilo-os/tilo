@@ -271,3 +271,101 @@ fn check_links(book: &Book, rendered: &[Rendered]) -> Result<(), Error> {
         Err(Error::BrokenLinks(broken))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page(id: &str, slug: &str, body: &str) -> String {
+        let url = if slug.is_empty() {
+            "/docs/".to_string()
+        } else {
+            format!("/docs/{slug}/")
+        };
+        format!(
+            "---\nid: \"{id}\"\nslug: \"{slug}\"\nurl: \"{url}\"\ntitle: \"{id}\"\nnav: \"{id}\"\ndescription: \"About {id}.\"\n\
+             source: \"docs/{id}.md\"\nsourceUrl: \"https://example/src/docs/{id}.md\"\nsection: \"Start\"\norder: 0\n---\n\n# {id}\n\n{body}\n"
+        )
+    }
+
+    fn book(dir: &Path, index_body: &str) -> Book {
+        fs::create_dir_all(dir.join("pages")).unwrap();
+        fs::write(dir.join("pages/index.md"), page("index", "", index_body)).unwrap();
+        fs::write(
+            dir.join("pages/files.md"),
+            page("files", "files", "## Upload a file\n\nText.\n"),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("manifest.json"),
+            r#"{"title": "Tilo docs", "origin": "https://tilo.sh", "base": "/docs/", "repository": "https://example",
+                "commit": null, "sections": [{"title": "Start", "pages": [{"id": "index"}, {"id": "files"}]}]}"#,
+        )
+        .unwrap();
+        Book::load(dir).unwrap()
+    }
+
+    #[test]
+    fn a_book_becomes_pages_markdown_search_and_llms_txt() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = book(
+            &dir.path().join("book"),
+            "[Upload](/docs/files/#upload-a-file)",
+        );
+        let out = dir.path().join("site");
+        let report = build(&book, &out, &Options::default()).unwrap();
+        assert_eq!(report.pages, 2);
+        let files = fs::read_to_string(out.join("files/index.html")).unwrap();
+        assert!(files.contains("<h1>files</h1>"));
+        assert!(files.contains("<link rel=\"canonical\" href=\"https://tilo.sh/docs/files/\">"));
+        assert!(
+            files.contains("<a class=\"previous\" href=\"/docs/\"><span>Previous</span>index</a>"),
+            "{files}"
+        );
+        assert!(
+            fs::read_to_string(out.join("files.md"))
+                .unwrap()
+                .starts_with("---\nid: \"files\"")
+        );
+        let llms = fs::read_to_string(out.join("llms.txt")).unwrap();
+        assert!(
+            llms.contains("- [files](https://tilo.sh/docs/files.md): About files."),
+            "{llms}"
+        );
+        let search = fs::read_to_string(out.join("search.json")).unwrap();
+        assert!(
+            search.contains("[\"upload-a-file\",\"Upload a file\"]"),
+            "{search}"
+        );
+        // A second build replaces the first.
+        build(&book, &out, &Options::default()).unwrap();
+    }
+
+    #[test]
+    fn a_link_to_a_missing_page_or_heading_fails_the_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = book(
+            &dir.path().join("book"),
+            "[Gone](/docs/gone/) and [nowhere](/docs/files/#nowhere)",
+        );
+        let error = build(&book, &dir.path().join("site"), &Options::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("/docs/gone/: no such page"), "{error}");
+        assert!(error.contains("no heading #nowhere"), "{error}");
+    }
+
+    #[test]
+    fn a_directory_it_did_not_write_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = book(&dir.path().join("book"), "Hello.");
+        let out = dir.path().join("site");
+        fs::create_dir_all(&out).unwrap();
+        fs::write(out.join("keep.txt"), "mine").unwrap();
+        assert!(matches!(
+            build(&book, &out, &Options::default()),
+            Err(Error::NotOurs(_))
+        ));
+        assert_eq!(fs::read_to_string(out.join("keep.txt")).unwrap(), "mine");
+    }
+}
