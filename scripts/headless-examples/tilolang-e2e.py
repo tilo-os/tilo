@@ -25,6 +25,8 @@ app gets on a real system:
   windows    a second window of Tasks, opened as a person opens one from search (its row
              with Ctrl+Enter), is a second window of the same process and its instance runs
              in the same host; a task typed into either window shows in the other at once
+  today      Today's Tasks card reads Tasks' own record: the tasks typed into Tasks' Today
+             show in Today's window, which holds none of them itself (today-*.png)
   native     native Notes (so.tilo.notes), installed beside them, launches and
              presents a frame (native-notes.png)
   activation "Show this window" answers for tilolang Notes as for native Notes
@@ -398,6 +400,33 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
             "process": procs[0], "host": hosts[0], "changed": len(after)}
 
 
+def today_shown(session: Session, out: Path, name: str) -> None:
+    """Today's window in front, as it shows now, captured as today-`name`.png."""
+    today = app_id("today")
+    window = next(w for w in session.windows() if w.get("app_id") == today)
+    focus(session, window)
+    time.sleep(1.0)
+    session.control_cmd("snapshot", str(out / f"today-{name}.png"))
+
+
+def hold_today(session: Session, out: Path) -> dict:
+    """Capture Today's window before Tasks holds a task."""
+    today_shown(session, out, "before")
+    return {"before": str(out / "today-before.png")}
+
+
+def check_today(session: Session, out: Path) -> dict:
+    """Today's Tasks card, which read nothing before Tasks held a task, shows the tasks typed
+    into Tasks' Today since: Today reads them from Tasks' own record, live."""
+    def shows_tasks():
+        today_shown(session, out, "after")
+        named = json.dumps(session.targets())
+        return named if "Water the plants" in named else None
+    named = until("Tasks' tasks in Today's card", shows_tasks, 30, 1.0)
+    (out / "today-targets.json").write_text(named)
+    return {"before": str(out / "today-before.png"), "after": str(out / "today-after.png")}
+
+
 def invoke_found(session: Session, found: dict, args: dict | None = None) -> dict:
     """Invoke the action the listing printed, as the tools do: its own provider and id."""
     return session.invoke(found["provider"], found["id"], args)
@@ -691,7 +720,9 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         # Before the checks that type into the desk: every app's threads are held to sleeping
         # on a desk no other check has just touched.
         ("idle", lambda: check_idle(session, summary["checks"]["processes"], pid)),
+        ("today-before", lambda: hold_today(session, out)),
         ("windows", lambda: check_windows(session, summary["checks"]["processes"], pid, out)),
+        ("today", lambda: check_today(session, out)),
     ])
     stop_session(proc)
     running["proc"] = None

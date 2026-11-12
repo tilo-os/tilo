@@ -1393,6 +1393,10 @@ impl tilo_identity_host::broker::PersonRecordKinds for AttachedSurfaces {
         ui::app_surface::person_record_kinds(app_id)
     }
 
+    fn reads_records_of(&self, reader: &str, owner: &str) -> bool {
+        ui::app_surface::reads_app(reader, owner)
+    }
+
     fn attached(&self, app_id: &str, surface: &[u8]) {
         if self.dev
             && self.apps.declared_resource_kinds(app_id).is_none()

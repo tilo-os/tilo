@@ -354,6 +354,12 @@ impl Bound<'_> {
                 .any(|old| old == app_id)
     }
 
+    /// Whether the bound app declares that it reads `app_id`'s records: another app's, which
+    /// it opens and never writes.
+    fn reads_records_of(&self, app_id: &str) -> bool {
+        self.person.reads_records_of(self.app_id, app_id)
+    }
+
     /// Whether `workspace_id` is the own cluster of the person the bound
     /// workspace's identity is, and the app keeps records of theirs there.
     fn in_personal_cluster(
@@ -567,10 +573,12 @@ fn channel_keys(
     let bound = &route.bound;
     let launch_workspace = route.workspace_id == bound.workspace.to_string();
     // A route of the launch, a record every app of the launch workspace opens,
-    // or a record of the person's the app declares in their own store (its
-    // own, or another app's it reads).
+    // another app's record of the launch workspace it declares it reads, or a
+    // record of the person's the app declares in their own store (its own, or
+    // another app's it reads).
     if (launch_workspace
         && !bound.keeps_records_of(route.app_id)
+        && !bound.reads_records_of(route.app_id)
         && collab_types::workspace_record(route.app_id, route.record_id).is_none())
         || (!launch_workspace && !bound.keeps_person_record(route.record_id))
     {
@@ -1706,6 +1714,58 @@ params = []
         assert!(
             matches!(answer, Response::ChannelKeys { .. }),
             "the person reads their own cluster: {answer:?}"
+        );
+    }
+
+    /// Today declares that it reads Tasks' records.
+    struct TodayReadsTasks;
+
+    impl PersonRecordKinds for TodayReadsTasks {
+        fn person_record_kinds(&self, _app_id: &str) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn reads_records_of(&self, reader: &str, owner: &str) -> bool {
+            reader == "so.tilo.lang.today" && owner == "so.tilo.lang.tasks"
+        }
+    }
+
+    /// An app is handed the keys of another app's record it declares it reads, as the broker
+    /// admits its read-only join, and of no other app's.
+    #[test]
+    fn an_app_gets_the_keys_of_the_records_it_declares_it_reads() {
+        let fixture = crate::join_proof::tests::Fixture::new();
+        let workspace = WorkspaceId::parse(
+            &collab_types::personal_cluster(&fixture.user_public_key).to_string(),
+        )
+        .expect("the person's store");
+        let launch = workspace.to_string();
+        let keys_of = |owner: &str| {
+            channel_keys(
+                &WorkspaceTree::default().shared(),
+                &ReadyChannels,
+                &ChannelKeyRoute {
+                    bound: Bound {
+                        workspace: &workspace,
+                        app_id: "so.tilo.lang.today",
+                        person: &TodayReadsTasks,
+                    },
+                    workspace_id: &launch,
+                    app_id: owner,
+                    record_id: "",
+                },
+                0,
+            )
+        };
+        let tasks = keys_of("so.tilo.lang.tasks");
+        assert!(
+            matches!(tasks, Response::ChannelKeys { .. }),
+            "Today reads Tasks' record: {tasks:?}"
+        );
+        let chat = keys_of("so.tilo.lang.chat");
+        assert!(
+            matches!(chat, Response::Denied(_)),
+            "Today declares no read of Chat: {chat:?}"
         );
     }
 
