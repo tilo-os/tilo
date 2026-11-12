@@ -226,6 +226,13 @@ def tasks_content(session: Session, bound: float = 180.0) -> str:
     return text
 
 
+def present(session: Session, room: str) -> list[str]:
+    """Who `session` says is here in `room`, by the seat each of them is at."""
+    peers = session.state_dump().get("peers") or {}
+    held = next((held for held in peers.get("workspaces") or [] if held.get("room") == room), {})
+    return [member.get("publisher") for member in held.get("members") or []]
+
+
 def build_tasks(built: Path, state: Path) -> Path:
     """`apps/tl/tasks` as a signed package of `state`'s runtime, to install."""
     built.mkdir(parents=True, exist_ok=True)
@@ -255,6 +262,10 @@ def main() -> int:
     out = args.out.resolve()
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
+    token = uuid.uuid4().hex[:8]
+    note_title = f"Release plan {token}"
+    note_body = f"Ship the {token} build on Friday."
+    task_title = f"Book the studio for {token}"
 
     # Tasks as a tilolang package of the host's runtime: built once, installed into
     # both states as the signed package the launcher trusts.
@@ -284,6 +295,12 @@ def main() -> int:
                   bool(members_of(peer_workspace)
                        or (peer_workspace.get("policy") or {}).get("grants")),
                   json.dumps(peer_workspace.get("policy"))[:600])
+            for one, other in ((host, peer), (peer, host)):
+                seat = (other.state_dump().get("peers") or {}).get("own", {}).get("publisher")
+                seen = until(f"{one.tag} to say {other.tag} is here",
+                             lambda: seat in present(one, room) or None, CROSSING_BOUND, 0.5)
+                check(f"{one.tag} says {other.tag} is here", bool(seat) and bool(seen),
+                      f"{seat} among {present(one, room)}")
             host.snapshot(out / "01-host-workspace.png")
             peer.snapshot(out / "02-peer-workspace.png")
 
