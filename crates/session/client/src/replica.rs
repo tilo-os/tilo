@@ -213,7 +213,7 @@ impl Replicas {
         let device = self.device.device_public_key;
         self.with_workspace(workspace_id, |view| {
             view.peer()
-                .permissions(device, SystemTime::now())
+                .permissions(device, tilo_clock::wall())
                 .map(drop)
                 .map_err(|error| error.to_string())
         })
