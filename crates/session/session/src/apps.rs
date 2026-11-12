@@ -7,7 +7,7 @@
 //! the same way, and an app that stops without choosing to is offered again where its window was.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -95,6 +95,12 @@ struct State {
     /// The door of each launch still running, by the launch's id: the end of the launch retires it,
     /// so the app's next window there starts a process again.
     held: BTreeMap<u64, HeldDoor>,
+    /// The windows apps asked this session for, by app and in ask order: each starts in the tab the
+    /// desk holds for it once the desk asks back ([`Apps::start_asked`]).
+    planned: BTreeMap<String, VecDeque<WindowAsk>>,
+    /// The window a send opened on an item, by app and the item's anchor, by the tab it stands in:
+    /// a second send landing in that item raises that window rather than standing another on it.
+    opened: BTreeMap<(String, String), u64>,
     /// What the tool a launch opens was asked to show, for the one launch being planned
     /// (`TILO_TOOL_CONTEXT`): set only while a launch a service asked for is being started, and
     /// read where it is planned.
@@ -114,6 +120,13 @@ struct State {
     hosts: Option<Arc<tilo_app_launch::tilolang_hosts::Hosts>>,
     /// The connectors of the apps' outside services: what a hosted instance reaches its origin by.
     connectors: Option<Rc<crate::connectors::ConnectorHost>>,
+}
+
+/// A window an app asked its session for: the launch that starts it, and the item it shows when it
+/// named one.
+struct WindowAsk {
+    launch: Launch,
+    reveal: Option<String>,
 }
 
 /// An agent this device started, as the record of it the launch pass keeps.
@@ -175,6 +188,8 @@ impl Apps {
                 me: Weak::new(),
                 authorship: None,
                 held: BTreeMap::new(),
+                planned: BTreeMap::new(),
+                opened: BTreeMap::new(),
                 tool_context: None,
                 broker: None,
                 wake,
@@ -636,7 +651,8 @@ impl Apps {
     }
 
     /// The launches the desktop queued: each named app is planned against the workspace whose tab
-    /// the desk made for its window, and started there.
+    /// the desk made for its window, and started there — a window an app asked its session for in
+    /// the tab the desk holds for it, from what this session planned.
     fn start_asked(&self) {
         let Some(desktop) = self.desktop.borrow().clone() else {
             return;
@@ -646,6 +662,13 @@ impl Apps {
             return;
         }
         for asked in asked {
+            // A tab the desk holds for a window an app asked its session for: the session planned
+            // that window, and starts it in the tab, whether it is a hosted app's window or one of
+            // the machine's own.
+            if let Some(app) = asked.app.strip_prefix(tilo_desktop_policy::HELD_PREFIX) {
+                self.start_planned(app, asked.tab);
+                continue;
+            }
             let Some(launch) = Launch::parse(&asked.app) else {
                 tracing::warn!(asked = %asked.app, "not a launch this session knows");
                 self.could_not_open(
@@ -674,17 +697,108 @@ impl Apps {
                 // The window is coming, or the app's own window came forward in place of a second
                 // one: the tab it was held in takes it.
                 Ok(true) => {}
-                Ok(false) => {
-                    if let Some(tab) = asked.tab {
-                        desktop.with_policy(|policy| policy.release_tab(tab));
-                    }
-                }
+                Ok(false) => self.release_tab(asked.tab),
                 Err(error) => {
                     tracing::warn!(asked = %asked.app, %error, "an app did not start");
                     self.could_not_open(asked.tab, &asked.app, &error.to_string());
                 }
             }
         }
+    }
+
+    /// Start the window an app asked this session for in the tab the desk holds for it: a window of
+    /// its own, beside the app's own, showing the item the app named when it named one. The tab is
+    /// the window's instance ([`Self::start_window`]).
+    fn start_planned(&self, app: &str, tab: Option<u64>) {
+        let planned = {
+            let mut state = self.state.borrow_mut();
+            state.planned.get_mut(app).and_then(VecDeque::pop_front)
+        };
+        let Some(planned) = planned else {
+            // The tab is held, the window it was asked for is gone: the place goes with it.
+            tracing::info!(%app, "a tab was held for a window nothing asked for");
+            self.release_tab(tab);
+            return;
+        };
+        let Some(tab) = tab else {
+            return;
+        };
+        // What the window opens on is what it shows: a later ask for the same item raises this
+        // window rather than opening another one beside it.
+        if let Some(reveal) = &planned.reveal {
+            self.state
+                .borrow_mut()
+                .opened
+                .insert((app.to_owned(), reveal.clone()), tab);
+        }
+        let workspace = self.workspace_of(Some(tab));
+        if let Err(error) = self.start_window(
+            &planned.launch,
+            &workspace,
+            true,
+            Some(tab),
+            planned.reveal.as_deref(),
+        ) {
+            tracing::warn!(%error, %app, "a window an app asked for did not start");
+            self.release_tab(Some(tab));
+        }
+    }
+
+    /// The tab the desk held for a window that never came goes, with everything it held.
+    fn release_tab(&self, tab: Option<u64>) {
+        let (Some(tab), Some(desktop)) = (tab, self.desktop.borrow().clone()) else {
+            return;
+        };
+        desktop.with_policy(|policy| policy.release_tab(tab));
+    }
+
+    /// Ask the desk for the tab a window of the app's own takes — right after `anchor`, the tab the
+    /// app shows there, and standing over the desk when `floated` — and plan the window that fills
+    /// it: the session starts it once the desk asks back, the tab being the window's instance
+    /// ([`Self::start_asked`]). `reveal` is the item the window shows, when the app named one.
+    /// Nothing comes when the desk holds no tab of the app to open beside.
+    pub fn ask_window(
+        &self,
+        launch: &Launch,
+        anchor: Option<u64>,
+        background: bool,
+        floated: bool,
+        reveal: Option<&str>,
+    ) {
+        let Some(desktop) = self.desktop.borrow().clone() else {
+            return;
+        };
+        let app = launch.app();
+        if !desktop.with_policy(|policy| policy.hold(app, anchor, background, floated)) {
+            return;
+        }
+        self.state
+            .borrow_mut()
+            .planned
+            .entry(app.to_owned())
+            .or_default()
+            .push_back(WindowAsk {
+                launch: launch.clone(),
+                reveal: reveal.map(str::to_owned),
+            });
+    }
+
+    /// The tab the window `app` opened on `item` stands in, while it is on the desk.
+    #[must_use]
+    pub fn window_on(&self, app: &str, item: &str) -> Option<u64> {
+        self.state
+            .borrow()
+            .opened
+            .get(&(app.to_owned(), item.to_owned()))
+            .copied()
+    }
+
+    /// The window opened on `item` is gone: the next send landing there opens a new one.
+    pub fn forget_window_on(&self, app: &str, item: &str) {
+        self.state
+            .borrow_mut()
+            .opened
+            .remove(&(app.to_owned(), item.to_owned()));
     }
 
     /// What the person asked for in `tab` did not happen, `why` says why: the tab keeps its place
@@ -1357,7 +1471,7 @@ impl Apps {
     /// own: a hosted window is shown in a tab of the desk's, and that tab is the window's
     /// instance, so what it asks about its own window — the controls of its content for assistive
     /// technology, its bar, its search — is answered for the tab it stands in, never for another
-    /// window of its app (`crate::app_tabs`, `start_held`). A record the window opens asks too: it
+    /// window of its app ([`Self::start_asked`]). A record the window opens asks too: it
     /// is the app's window on that record, in a tab of the desk's as every window of the app.
     ///
     /// A hosted window that opens a file or a link names no tab: it cannot show what such a launch

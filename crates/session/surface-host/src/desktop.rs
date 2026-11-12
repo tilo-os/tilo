@@ -556,12 +556,6 @@ impl DesktopHost {
         self.with_policy(DesktopPolicy::take_launches)
     }
 
-    /// The tabs the desk made for windows apps asked it for since the last
-    /// call, oldest first: the session starts each window beside its tab.
-    pub fn take_held_launches(&self) -> Vec<tilo_desktop_policy::HeldLaunch> {
-        self.with_policy(DesktopPolicy::take_held_launches)
-    }
-
     /// The desk's widget tree as hosted: what it publishes, its
     /// accessibility tree, the actions it accepts.
     pub fn with_widgets<R>(&self, read: impl FnOnce(&mut WidgetHost) -> R) -> R {

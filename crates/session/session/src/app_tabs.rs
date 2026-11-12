@@ -10,7 +10,7 @@
 //! window's workspace.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufReader, Write};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -166,21 +166,6 @@ pub struct AppTabs {
     /// not.
     sent: Vec<Sent>,
     asked: Vec<Asked>,
-    /// The windows apps asked the desk for, by app and in ask order: each is
-    /// started once the desk has made the tab it takes.
-    held: BTreeMap<String, VecDeque<HeldStart>>,
-    /// The window a send opened on an item, by app and the item's anchor
-    /// (`chat/channels/c_ada`), by the tab it took: a second send landing in the
-    /// conversation a window already shows raises that window rather than
-    /// standing another one on the same conversation.
-    opened: BTreeMap<(String, String), u64>,
-}
-
-/// A window an app asked the desk for: what starting it launches, and the
-/// workspace and item its launch names.
-struct HeldStart {
-    launch: Launch,
-    reveal: Option<String>,
 }
 
 /// An open shell-ui connection: the app it vouches for, the launch whose
@@ -279,8 +264,6 @@ impl AppTabs {
             socket,
             sent: Vec::new(),
             asked: Vec::new(),
-            held: BTreeMap::new(),
-            opened: BTreeMap::new(),
         })
     }
 
@@ -311,6 +294,7 @@ impl AppTabs {
         {
             let mut answered = Answers {
                 desktop,
+                apps,
                 compositor,
                 services,
                 studio,
@@ -320,8 +304,6 @@ impl AppTabs {
                 launches: &self.launches,
                 sent: &mut self.sent,
                 asked: &mut self.asked,
-                held: &mut self.held,
-                opened: &mut self.opened,
                 pages: &shared.pages,
             };
             for request in self.requests.try_iter() {
@@ -334,9 +316,6 @@ impl AppTabs {
             // drawing that window.
             answered.deliver_target_presses();
         }
-        // The tabs the desk made for the windows the apps asked for this pass: each window starts
-        // now, taking the tab it was held.
-        self.start_held(desktop, apps);
         // What the members' desks show of these windows' pages, and what the
         // apps sent of them since the last pass.
         self.follow_pages(shared);
@@ -375,45 +354,6 @@ impl AppTabs {
             };
             tell(&link.writer, &message, &link.app);
         }
-    }
-
-    /// Start the windows the apps asked the desk for, now that it made the tab each takes: the
-    /// window takes that tab as its instance, so what it asks about its own window — the controls
-    /// of its content, its bar, its search — is answered for it, never for another window of the
-    /// same app.
-    fn start_held(&mut self, desktop: &DesktopHost, apps: Option<&Apps>) {
-        let Some(apps) = apps else {
-            return;
-        };
-        let made = desktop.take_held_launches();
-        if made.is_empty() {
-            return;
-        }
-        for made in made {
-            let Some(due) = self.held.get_mut(&made.app).and_then(VecDeque::pop_front) else {
-                // The tab is held, the window it was asked for is gone: the place goes with it.
-                tracing::info!(app = %made.app, "a tab was held for a window nothing asked for");
-                desktop.with_policy(|policy| policy.release_tab(made.tab));
-                continue;
-            };
-            let workspace = apps.workspace_of(Some(made.tab));
-            // What the window opens on is what it shows: a later ask for the same item raises this
-            // window rather than opening another one beside it.
-            if let Some(reveal) = &due.reveal {
-                self.opened
-                    .insert((made.app.clone(), reveal.clone()), made.tab);
-            }
-            if let Err(error) = apps.start_beside(
-                &due.launch,
-                &workspace,
-                Some(made.tab),
-                due.reveal.as_deref(),
-            ) {
-                desktop.with_policy(|policy| policy.release_tab(made.tab));
-                tracing::warn!(%error, app = %made.app, "a window an app asked for did not start");
-            }
-        }
-        self.held.retain(|_, due| !due.is_empty());
     }
 
     /// Send what the windows' boxes sent, each through the session's one send action as the app
@@ -701,6 +641,9 @@ impl AppTabs {
 /// connections the answers go back on.
 struct Answers<'a> {
     desktop: &'a DesktopHost,
+    /// The launches of this session, which a window an app asks for starts through: it is planned
+    /// here and started once the desk asks back for the tab it takes.
+    apps: Option<&'a Apps>,
     compositor: &'a mut Compositor,
     services: Option<&'a DesktopServices>,
     studio: Option<&'a CaptureStudio>,
@@ -713,11 +656,6 @@ struct Answers<'a> {
     /// themselves do not touch.
     sent: &'a mut Vec<Sent>,
     asked: &'a mut Vec<Asked>,
-    /// The windows the apps asked the desk for, by app and in ask order.
-    held: &'a mut BTreeMap<String, VecDeque<HeldStart>>,
-    /// The window a send opened on an item, by app and the item's anchor, by its tab
-    /// ([`AppTabs::opened`]).
-    opened: &'a mut BTreeMap<(String, String), u64>,
     /// The windows whose apps hand their page over as a paint stream.
     pages: &'a Rc<RefCell<PageTracks>>,
 }
@@ -1076,12 +1014,15 @@ impl Answers<'_> {
     /// Open the place a window of `app` asked for: beside the one that asked, and a launch that
     /// starts nothing takes the place back.
     fn answer_open_beside(
-        &mut self,
+        &self,
         app: &str,
         target: Option<String>,
         background: bool,
         anchor: Option<u64>,
     ) {
+        let Some(apps) = self.apps else {
+            return;
+        };
         let open = if let Some(target) = target {
             let Some(open) = target_open(app, &target) else {
                 tracing::info!(%app, "an app asked to open an address it does not claim");
@@ -1091,23 +1032,17 @@ impl Answers<'_> {
         } else {
             None
         };
-        // The place it opens into is there from this frame; the window starts once the desk has
-        // made its tab, so the tab is the window's instance.
-        if !self
-            .desktop
-            .with_policy(|policy| policy.hold_beside(app, anchor, background))
-        {
-            return;
-        }
-        self.hold(
-            app,
-            HeldStart {
-                launch: Launch::Package {
-                    app: app.to_owned(),
-                    open,
-                },
-                reveal: None,
+        // The tab is there from this frame and the window starts once the desk asks back, so the
+        // tab is the window's instance.
+        apps.ask_window(
+            &Launch::Package {
+                app: app.to_owned(),
+                open,
             },
+            anchor,
+            background,
+            false,
+            None,
         );
     }
 
@@ -1119,45 +1054,32 @@ impl Answers<'_> {
     /// was reading instead of over it. The workspace's record keeps it there
     /// beside its sender, for every member, and the window that sent it goes on
     /// showing what it showed.
-    fn answer_open_after_send(&mut self, app: &str, anchor: &str) {
+    fn answer_open_after_send(&self, app: &str, anchor: &str) {
+        let Some(apps) = self.apps else {
+            return;
+        };
         // One window per item: the conversation a window already shows is that window, so a
         // second send into it raises the window it stands in instead of opening another on the
         // same conversation.
-        let item = (app.to_owned(), anchor.to_owned());
-        if let Some(tab) = self.opened.get(&item).copied() {
+        if let Some(tab) = apps.window_on(app, anchor) {
             if self.desktop.with_policy(|policy| policy.focus_tab(tab)) {
                 return;
             }
             // Its window closed: the item stands nowhere, and a window opens for it again.
-            self.opened.remove(&item);
+            apps.forget_window_on(app, anchor);
         }
-        // The place it opens into is there from this frame; the window starts once the desk has
-        // made its tab, so the tab is the window's instance.
-        if !self
-            .desktop
-            .with_policy(|policy| policy.hold_window(app, false))
-        {
-            return;
-        }
-        self.hold(
-            app,
-            HeldStart {
-                launch: Launch::Package {
-                    app: app.to_owned(),
-                    open: None,
-                },
-                reveal: Some(anchor.to_owned()),
+        // The tab is there from this frame and the window starts once the desk asks back, so the
+        // tab is the window's instance.
+        apps.ask_window(
+            &Launch::Package {
+                app: app.to_owned(),
+                open: None,
             },
+            None,
+            false,
+            true,
+            Some(anchor),
         );
-    }
-
-    /// Hold `start` for the window `app` asked the desk for: it starts once the
-    /// desk has made its tab ([`AppTabs::start_held`]).
-    fn hold(&mut self, app: &str, start: HeldStart) {
-        self.held
-            .entry(app.to_owned())
-            .or_default()
-            .push_back(start);
     }
 
     /// Withhold `app`'s windows from captures, as its own ask narrows what

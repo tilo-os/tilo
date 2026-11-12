@@ -289,7 +289,7 @@ fn the_desk_names_the_tabs_it_has_for_apps_with_their_apps() {
     // asked for, and that tab is the app's window on its way: the next
     // launch of the app goes there instead of starting a second process.
     assert!(
-        policy.hold_beside("so.tilo.notes", None, false),
+        policy.hold("so.tilo.notes", None, false, false),
         "a place beside the window the app has"
     );
     // The place shows a window that has not come, which never stops moving.
@@ -655,31 +655,29 @@ fn a_conversation_opens_beside_its_sender() {
     map(&mut driver, &mut policy, 1, "so.tilo.chat");
     let sender = window_tab(&policy, 1);
     assert!(
-        policy.hold_window("so.tilo.chat", false),
+        policy.hold("so.tilo.chat", None, false, true),
         "the desk takes the place beside the sender"
     );
     settle(&mut driver);
 
-    assert!(
-        policy.take_launches().is_empty(),
-        "the session starts the window the send landed in; the desk only holds its place"
-    );
     let tab = tabs(&policy)
         .into_iter()
         .find(|(_, tile)| matches!(tile, TileContent::AppPlaceholder { .. }))
         .map(|(tab, _)| tab)
         .expect("the desk holds the tab the conversation's window takes");
-    let made = policy.take_held_launches();
+    let asked = policy.take_launches();
     assert_eq!(
-        made.len(),
+        asked.len(),
         1,
         "the session starts the window the place waits for"
     );
-    assert_eq!(made[0].app, "so.tilo.chat");
+    assert_eq!(asked[0].app, "held:so.tilo.chat");
     assert_eq!(
-        made[0].tab, tab,
+        asked[0].tab,
+        Some(tab),
         "the tab the window takes is the instance it is known by"
     );
+    assert!(asked[0].beside, "a window of the app's own");
     let groups = groups(&policy);
     let (sender_group, _, _) = groups
         .iter()
