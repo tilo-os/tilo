@@ -52,3 +52,19 @@ camera-a11y-cancel-crop = Zuschnitt verwerfen
 
 ## What the window shows
 camera-scan-kind = Art
+
+## The settings sheet
+camera-settings-title = Kamera-Einstellungen
+camera-settings-capture = Aufnahme
+camera-settings-resolution = Auflösung
+camera-settings-photo-format = Fotoformat
+camera-settings-timer = Selbstauslöser
+camera-settings-default-camera = Standardkamera
+camera-settings-viewfinder = Sucher und Fotos
+camera-settings-hdr = HDR
+camera-settings-grid = Drittel-Raster
+camera-settings-level = Wasserwaage
+camera-settings-mirror = Frontkamera spiegeln
+camera-settings-geotag = Aufnahmeort mit Fotos speichern
+camera-timer-3s = 3 Sekunden
+camera-timer-10s = 10 Sekunden

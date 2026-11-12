@@ -202,7 +202,7 @@ pub(crate) fn location(state: &MailState, composing: Option<&str>) -> String {
         .and_then(|id| state.mailbox.get(id));
     if let Some(message) = open {
         return if message.subject.trim().is_empty() {
-            "(no subject)".to_owned()
+            crate::i18n::no_subject()
         } else {
             message.subject.clone()
         };

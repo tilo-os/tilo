@@ -113,3 +113,4 @@ api-tester-copy-headers = Kopfzeilen kopieren
 api-tester-copy-request = Anfrage kopieren
 api-tester-new-collection-button = Neue Sammlung
 api-tester-reset-area = Anfragebereich zurücksetzen
+api-tester-size-more-than = Mehr als { $size }

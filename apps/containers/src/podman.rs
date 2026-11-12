@@ -61,15 +61,15 @@ impl Action {
         matches!(self, Action::Remove)
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Action::Start => "Start",
-            Action::Stop => "Stop",
-            Action::Restart => "Restart",
-            Action::Pause => "Pause",
-            Action::Unpause => "Resume",
-            Action::Remove => "Remove",
-        }
+    pub fn label(self) -> String {
+        crate::resource::CATALOG.t(match self {
+            Action::Start => "containers-start",
+            Action::Stop => "containers-action-stop",
+            Action::Restart => "containers-action-restart",
+            Action::Pause => "containers-action-pause",
+            Action::Unpause => "containers-action-resume",
+            Action::Remove => "containers-action-remove",
+        })
     }
 }
 

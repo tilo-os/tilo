@@ -770,9 +770,9 @@ struct WrittenDraft {
 fn draft_markdown(draft: &WrittenDraft) -> String {
     let mut out = String::new();
     let subject = if draft.subject.trim().is_empty() {
-        "(no subject)"
+        crate::i18n::no_subject()
     } else {
-        draft.subject.trim()
+        draft.subject.trim().to_owned()
     };
     let _ = writeln!(out, "## {subject} (draft)\n");
     let _ = writeln!(out, "- Folder: Drafts");
@@ -799,9 +799,9 @@ fn markdown(messages: &[(&Id, &HeldMessage)]) -> String {
             out.push_str("\n---\n\n");
         }
         let subject = if held.subject.trim().is_empty() {
-            "(no subject)"
+            crate::i18n::no_subject()
         } else {
-            held.subject.trim()
+            held.subject.trim().to_owned()
         };
         let _ = writeln!(out, "## {subject}\n");
         let _ = writeln!(out, "- From: {}", held.from);

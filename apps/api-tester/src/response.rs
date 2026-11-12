@@ -172,7 +172,10 @@ pub(crate) fn size_caption(data: &ResponseData) -> String {
     if data.size_exact {
         size(data.size_bytes)
     } else {
-        format!("More than {}", size(data.size_bytes))
+        crate::locales::CATALOG.t_args(
+            "api-tester-size-more-than",
+            &[("size", size(data.size_bytes).into())],
+        )
     }
 }
 

@@ -315,9 +315,7 @@ pub(crate) fn container_list(
                 status_rank(a.status).cmp(&status_rank(b.status))
             })
             .with_align(CellAlign::Center)
-            .with_badge(|row: &ContainerRow| {
-                (row.status.label().to_string(), status_tone(row.status))
-            }),
+            .with_badge(|row: &ContainerRow| (row.status.label(), status_tone(row.status))),
     ])
     .with_id("containers-list")
     .with_accessible_name(crate::resource::CATALOG.t("containers-a11y-containers"))
@@ -542,7 +540,7 @@ fn detail_verbs(model: &DetailModel<'_>, intents: &Intents) -> Vec<Button> {
             verb_button(
                 model,
                 verb(action),
-                action.label(),
+                &action.label(),
                 action_icon(action),
                 Intent::Lifecycle {
                     id: c.id.clone(),

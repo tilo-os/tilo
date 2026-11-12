@@ -635,6 +635,7 @@ files-app-kind-system = System
 ## What the window shows
 files-cannot-read = Cannot read { $path }: { $detail }
 files-is-a-folder = { $path } is a folder, not a file
+files-too-large = Files can't open { $path }: it is larger than { $limit }.
 files-is-too-large = too large
 files-not-a-folder = { $path } is not a folder Files can open
 files-terminal-failed = Could not open a terminal here: { $detail }

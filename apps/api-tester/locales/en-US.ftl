@@ -113,3 +113,4 @@ api-tester-copy-headers = Copy headers
 api-tester-copy-request = Copy request
 api-tester-new-collection-button = New collection
 api-tester-reset-area = Reset request area
+api-tester-size-more-than = More than { $size }

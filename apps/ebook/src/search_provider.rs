@@ -237,7 +237,7 @@ impl BookSearch {
         for book in books.iter() {
             book_metadata.insert(
                 book.id.clone(),
-                (Self::book_title(book).to_string(), book.author.clone()),
+                (Self::book_title(book), book.author.clone()),
             );
         }
         for entry in registry.iter() {
@@ -308,7 +308,7 @@ impl BookSearch {
         };
 
         for (book_index, book) in books.iter().enumerate() {
-            let title = Self::book_title(book).to_string();
+            let title = Self::book_title(book);
             let mut result =
                 SearchResult::new(BOOK_KIND, title.clone(), book_place_resource(&book.id))
                     .with_icon(Icon::FileText);
@@ -506,11 +506,11 @@ impl BookSearch {
         })
     }
 
-    pub(crate) fn book_title(book: &Book) -> &str {
+    pub(crate) fn book_title(book: &Book) -> String {
         if book.title.trim().is_empty() {
-            "Untitled"
+            CATALOG.t("ebook-untitled")
         } else {
-            &book.title
+            book.title.clone()
         }
     }
 

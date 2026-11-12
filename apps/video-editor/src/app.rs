@@ -7613,24 +7613,24 @@ enum LinkAffordance {
 impl LinkAffordance {
     /// What the control says it will do. The button names the *change*, not
     /// the state; the caption above it names the state.
-    fn label(self) -> &'static str {
-        match self {
-            LinkAffordance::Unlink => "Unlink audio and video",
-            LinkAffordance::Link => "Link audio and video",
-            LinkAffordance::SplitAudio => "Split off audio",
-        }
+    fn label(self) -> String {
+        crate::resource::CATALOG.t(match self {
+            LinkAffordance::Unlink => "video-editor-unlink-audio-video",
+            LinkAffordance::Link => "video-editor-link-audio-video",
+            LinkAffordance::SplitAudio => "video-editor-split-off-audio",
+        })
     }
 
     /// What is true now, above the button.
-    fn state(self) -> &'static str {
-        match self {
-            LinkAffordance::Unlink => "Linked audio and video",
-            LinkAffordance::Link => "Not linked",
+    fn state(self) -> String {
+        crate::resource::CATALOG.t(match self {
+            LinkAffordance::Unlink => "video-editor-link-state-linked",
+            LinkAffordance::Link => "video-editor-link-state-unlinked",
             // True whether the sound has never left the picture or the clip it
             // left for is gone; the editor knows which of those it is, and
             // neither changes what the button does.
-            LinkAffordance::SplitAudio => "No linked audio clip",
-        }
+            LinkAffordance::SplitAudio => "video-editor-link-state-no-audio",
+        })
     }
 }
 

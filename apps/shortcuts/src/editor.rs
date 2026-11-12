@@ -17,6 +17,7 @@ use tilo_automation::{
 use ui::tilo_actions::remote::CatalogueRow;
 use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
 
+use crate::locales::CATALOG;
 use crate::model::{Draft, block_at, step_at};
 use tilo_automation::grant;
 
@@ -733,18 +734,18 @@ pub const fn param_type_name(ty: ParamType) -> &'static str {
 /// What a value of `ty` is called to a person: "Whole number", not
 /// "integer".
 #[must_use]
-pub const fn param_type_label(ty: ParamType) -> &'static str {
-    match ty {
-        ParamType::Text => "Text",
-        ParamType::Integer => "Whole number",
-        ParamType::Number => "Number",
-        ParamType::Boolean => "Yes or no",
-        ParamType::DateTime => "Date and time",
-        ParamType::Secret => "Secret",
-        ParamType::Resource => "Item from an app",
-        ParamType::Object => "Group of values",
-        ParamType::Array => "List",
-    }
+pub fn param_type_label(ty: ParamType) -> String {
+    CATALOG.t(match ty {
+        ParamType::Text => "shortcuts-param-type-text",
+        ParamType::Integer => "shortcuts-param-type-integer",
+        ParamType::Number => "shortcuts-param-type-number",
+        ParamType::Boolean => "shortcuts-param-type-boolean",
+        ParamType::DateTime => "shortcuts-param-type-date-time",
+        ParamType::Secret => "shortcuts-param-type-secret",
+        ParamType::Resource => "shortcuts-param-type-resource",
+        ParamType::Object => "shortcuts-param-type-object",
+        ParamType::Array => "shortcuts-param-type-array",
+    })
 }
 
 #[cfg(test)]

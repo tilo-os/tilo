@@ -580,17 +580,14 @@ pub(super) fn history_view(snapshot: &Snapshot, tx: &Door) -> El {
     page(groups(items))
 }
 
-fn device_summary(
-    supplies_known: bool,
-    queue: &os_actions::printing::PrinterQueue,
-) -> &'static str {
-    if supplies_known {
-        "The printer answered the latest status check."
+fn device_summary(supplies_known: bool, queue: &os_actions::printing::PrinterQueue) -> String {
+    CATALOG.t(if supplies_known {
+        "print-centre-device-answered"
     } else if queue.telemetry.available {
-        "This printer does not report supply levels."
+        "print-centre-device-no-supplies"
     } else {
-        "Live details are unavailable. The printer may be asleep or disconnected."
-    }
+        "print-centre-device-unreachable"
+    })
 }
 
 pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &Door) -> El {

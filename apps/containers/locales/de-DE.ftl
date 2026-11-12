@@ -52,3 +52,25 @@ containers-stop-download = Den Download stoppen
 containers-new = Neuer Container
 containers-close-details = Details schließen
 containers-demo-unavailable = Distrobox-Aktionen sind im Demo-Modus nicht verfügbar
+
+## Status pills, sections, tabs and actions
+containers-status-running = Läuft
+containers-status-exited = Beendet
+containers-status-paused = Angehalten
+containers-status-restarting = Startet neu
+containers-status-dead = Abgestürzt
+containers-nav-images = Images
+containers-nav-volumes = Volumes
+containers-nav-distrobox = Distrobox
+containers-tab-logs = Protokoll
+containers-tab-stats = Auslastung
+containers-tab-inspect = Prüfen
+containers-tab-terminal = Terminal
+containers-action-stop = Stoppen
+containers-action-restart = Neu starten
+containers-action-pause = Anhalten
+containers-action-resume = Fortsetzen
+containers-action-remove = Entfernen
+containers-prompt-name = Name
+containers-prompt-tag = Neues Tag
+containers-prompt-image = Image
