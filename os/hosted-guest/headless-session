@@ -32,7 +32,11 @@ esac
 shift
 
 config=${1:-${TILO_SESSION_CONFIG:-}}
-if [ -n "$config" ] && [ -r "$config" ]; then
+if [ -n "$config" ]; then
+    # A file named and not readable is an error, not the defaults: a session
+    # that skipped it would serve its display and keep its files elsewhere
+    # than its caller looks.
+    [ -r "$config" ] || { echo "headless-session: $(id -un) cannot read $config" >&2; exit 1; }
     # shellcheck disable=SC1090 # the file the agent wrote is the point
     . "$config"
 fi
