@@ -830,19 +830,20 @@ pub fn ends_of<'c>(
     out
 }
 
-/// The version a step on the record that is no package's action was made by (an undo, a
-/// revert from History; [`STEP_ACTION`]), when `change` is one: who took it, when, and which
-/// step. `None` for a package action's change, and for one that is nobody's step (an outside
-/// effect settling).
+/// The version a step on the record that is no readable action of a package was made by (an
+/// undo, a revert from History; [`STEP_ACTION`]), when `change` is one: who took it, when, and
+/// which step. `None` for a change whose recorded action reads, and for one that is nobody's
+/// step (an outside effect settling).
+///
+/// A change whose entry names a package action this device cannot decode is read as a step is:
+/// its resources' versions come from what it wrote ([`stepped`]), so history still names the
+/// change. An action keeps its large parts as content ([`tilo_actions::CONTENT_PART_THRESHOLD`]),
+/// which this device has not held yet, or the package version that wrote it is not installed.
 #[must_use]
 pub fn step_stamp(change: &(impl ChangeHead + ?Sized)) -> Option<Stamp> {
     let parsed = parsed(change);
     let context = parsed.context.as_ref()?;
-    if context
-        .action
-        .as_ref()
-        .is_some_and(|action| action.type_id == ACTION_TYPE)
-    {
+    if parsed.read.is_some() {
         return None;
     }
     let invoker = context.invoker.as_ref()?;
@@ -851,7 +852,12 @@ pub fn step_stamp(change: &(impl ChangeHead + ?Sized)) -> Option<Stamp> {
         version: Version {
             who: invoker.actor.clone(),
             at: tilolang::calendar::time_text(change.timestamp()),
-            action: STEP_ACTION.to_owned(),
+            // The entry names the action its change ran, which a change whose action does not
+            // read has no other way to say: a verb's own, and a step's [`STEP_ACTION`].
+            action: match context.what.as_ref() {
+                Some(tilo_actions::Did::Verb(verb)) => verb.action.action.clone(),
+                _ => STEP_ACTION.to_owned(),
+            },
             run: run_of(context),
             change: hash,
             op: change.start_op(),

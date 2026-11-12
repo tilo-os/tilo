@@ -641,11 +641,14 @@ impl Store for TiloStore {
     }
 
     fn field_changed(&self, at: &ResourceRef, field: &str) -> Result<Option<Version>, StoreError> {
-        let answered = self.held().field_changed(at, field);
-        if let Some(end) = answered {
-            return end;
+        if let Some(answered) = self.held().field_changed(at, field)
+            && !matches!(&answered, Ok(Some(version)) if version.change.is_empty())
+        {
+            return answered;
         }
-        // No index answers yet: the log does.
+        // No index answers yet, or it answers a version this device invoked and the record does
+        // not name yet: with no change recorded, nothing shows what the version wrote. The log
+        // names the change that wrote the field, which is what history reads the entry by.
         Ok(tilolang_runtime::store::last_change_of(
             self.versions(at)?,
             field,
