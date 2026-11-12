@@ -67,11 +67,11 @@ key|type|click` there. While a slot holds seat0, its input goes to seat0.
 ## Opening apps: a throwaway identity
 
 Everything in this guide drives the desktop over the control socket the image
-binds at `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`, and today only the
-old shell binds it. A slot whose session is `tilo-session` therefore fails
-these commands — `tilo-control` finds no socket there — instead of accepting
-them. The session serves a socket of its own, but only where the command line
-names one: `tilo-session --test-control PATH`, or `TILO_TEST_CONTROL=PATH`
+binds at `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`, and the shell that
+bound it is gone. A slot therefore fails these commands — `tilo-control` finds
+no socket there — instead of accepting them. The session serves a socket of
+its own, but only where the command line names one: `tilo-session
+--test-control PATH`, or `TILO_TEST_CONTROL=PATH`
 (development builds) answers `snapshot`, `click_at` and
 `provision_test_identity`, not input or named controls.
 
