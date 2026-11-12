@@ -14,8 +14,8 @@
  * says where it is.
  */
 
-import { resourceProxy } from "tilo-sdk";
-import type * as tilo from "tilo-sdk";
+import { resourceProxy } from "@tilo/sdk";
+import type * as tilo from "@tilo/sdk";
 
 /** One of "error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change". */
 export type ItemKind = "error" | "warning" | "location" | "url" | "test-passed" | "test-failed" | "test-ignored" | "change";
@@ -89,13 +89,12 @@ export interface Session extends tilo.Resource {
     started_ms: number;
     ended_ms: number;
     exit: number;
-    output_len: number;
     truncated: boolean;
     tool: string;
     undoable: boolean;
     items: unknown[];
     run: string;
-    output?: string;
+    output?: unknown;
     request?: string;
   }): Promise<tilo.Run | void>;
   recordTarget(args: {

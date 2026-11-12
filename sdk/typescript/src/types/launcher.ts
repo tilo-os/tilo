@@ -14,8 +14,8 @@
  * says where it is.
  */
 
-import { resourceProxy } from "tilo-sdk";
-import type * as tilo from "tilo-sdk";
+import { resourceProxy } from "@tilo/sdk";
+import type * as tilo from "@tilo/sdk";
 
 /** Search — `launcher.search`. */
 export interface Search extends tilo.Resource {

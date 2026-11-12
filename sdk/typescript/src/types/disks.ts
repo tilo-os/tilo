@@ -14,8 +14,8 @@
  * says where it is.
  */
 
-import { resourceProxy } from "tilo-sdk";
-import type * as tilo from "tilo-sdk";
+import { resourceProxy } from "@tilo/sdk";
+import type * as tilo from "@tilo/sdk";
 
 /** Storage devices — `disks.system`. */
 export interface System extends tilo.Resource {

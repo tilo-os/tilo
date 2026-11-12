@@ -14,8 +14,8 @@
  * says where it is.
  */
 
-import { resourceProxy } from "tilo-sdk";
-import type * as tilo from "tilo-sdk";
+import { resourceProxy } from "@tilo/sdk";
+import type * as tilo from "@tilo/sdk";
 
 /** One of "pid", "name", "user", "cpu", "mem", "threads". */
 export type SortKey = "pid" | "name" | "user" | "cpu" | "mem" | "threads";
