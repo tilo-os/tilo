@@ -64,8 +64,10 @@ pub enum PeopleAsk {
     /// Do the host action this person's own card offers, as the palette and a banner hand theirs
     /// back: the choice the ask on their avatar waits for is answered here too.
     HostAction(String),
-    /// Ask this of the agent of `client`, through its card in Console.
+    /// Ask this of the agent of `client`, whose card stands for the member `who` (by its presence
+    /// key): an agent this device seats is stopped here, anything else through its card in Console.
     Agent {
+        who: String,
         client: String,
         ask: tilo_desktop::profile_card::AgentAsk,
     },
@@ -936,9 +938,10 @@ impl Panel {
                     self.asks.borrow_mut().push(PeopleAsk::Message { key });
                 }
                 ProfileChoice::Agent { client, ask } => {
+                    let who = self.shown.borrow().card_open.clone().unwrap_or_default();
                     self.asks
                         .borrow_mut()
-                        .push(PeopleAsk::Agent { client, ask });
+                        .push(PeopleAsk::Agent { who, client, ask });
                 }
                 // One person's card is a step inside who is here: everyone here stands in its
                 // place, as a second press on their face leaves the roster.

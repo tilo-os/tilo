@@ -42,8 +42,20 @@ impl Shared {
         for ask in asked {
             match ask {
                 people::PeopleAsk::Message { key } => self.message_person(&key),
-                people::PeopleAsk::Agent { client, ask } => {
-                    self.invoke_app_action(LaunchpadAppAction::ask_agent(&client, ask));
+                people::PeopleAsk::Agent { who, client, ask } => {
+                    // An agent the person admitted at this device's door works on the connection
+                    // they let in here: their Stop ends that connection, as the desk's Stop on its
+                    // seat does. Console knows only the runs of the person's hosted door.
+                    let seated = self
+                        .sync
+                        .as_ref()
+                        .and_then(|sync| self.seats.spoken_as(*sync.publisher().as_bytes(), &who));
+                    match seated {
+                        Some(agent) if ask == tilo_desktop::profile_card::AgentAsk::Stop => {
+                            self.seats.stop(&agent);
+                        }
+                        _ => self.invoke_app_action(LaunchpadAppAction::ask_agent(&client, ask)),
+                    }
                 }
                 people::PeopleAsk::Rename(name) => self.name_self(&name),
                 people::PeopleAsk::Status(status) => self.set_own_status(&status),
