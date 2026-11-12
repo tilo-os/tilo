@@ -151,6 +151,14 @@ impl NativeWorkspaceOwner {
     /// The workspace is not held here, `hint` is not this workspace's address
     /// signed by this device, or the record cannot be published.
     pub fn name_host(&self, workspace: WorkspaceId, hint: TransportHint) -> Result<bool, String> {
+        // Answer from the record as it is kept before taking the workspace's turn: a session names
+        // the hosts of its workspaces as it goes, and a turn a write of the person's holds is no
+        // place to wait to learn that there is nothing to write. Nothing is decided here that the
+        // turn does not decide again below, so a write that lands in between only means this call
+        // answers from the record just before it.
+        if !self.names_another_host(workspace, &hint)? {
+            return Ok(false);
+        }
         let _turn = self.0.mutation.lock();
         let candidate = self.view(workspace)?;
         // What the record names is this device's own host only when this
@@ -182,6 +190,47 @@ impl NativeWorkspaceOwner {
         record.host_hint = Some(hint);
         self.publish_record(workspace, &candidate, record, None)?;
         Ok(true)
+    }
+}
+
+impl NativeWorkspaceOwner {
+    /// Whether `workspace`'s record, as it is kept, leaves [`Self::name_host`] something to write
+    /// for `hint`: this device hosts it, and the relays its record names for its host are not the
+    /// ones `hint` is reached through. Read without the workspace's turn.
+    fn names_another_host(
+        &self,
+        workspace: WorkspaceId,
+        hint: &TransportHint,
+    ) -> Result<bool, String> {
+        // What it names is read out under the state's read, which is let go before the hints are
+        // read: the address is all the answer needs.
+        let named = {
+            let current = self.0.current.read();
+            if self.0.fenced(&current, workspace) {
+                return Err("native owner continuity is fenced".into());
+            }
+            let record = &current
+                .workspaces
+                .get(&workspace)
+                .ok_or("workspace has no committed native enrollment")?
+                .record;
+            if record.device != record.workspace_host
+                || record.enrollment.is_some()
+                || record
+                    .vouched
+                    .as_ref()
+                    .is_some_and(|vouched| vouched.hint.is_some())
+            {
+                return Ok(false);
+            }
+            let named = record.host_hint.clone();
+            drop(current);
+            named
+        };
+        match named {
+            Some(named) => Ok(host_relays(&named)? != host_relays(hint)?),
+            None => Ok(true),
+        }
     }
 }
 

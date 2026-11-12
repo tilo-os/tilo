@@ -202,6 +202,17 @@ pub struct Engine {
     /// Sealed records as this device last opened them for a reader, so the next read opens only
     /// what was sealed since: a record its apps follow is opened once per write, not whole per read.
     kept: std::sync::Mutex<KeptRecords>,
+    /// What this device last named its workspaces' hosts as: the address it wrote, and which
+    /// workspaces it wrote it to ([`Self::name_own_hosts`]).
+    named_hosts: std::sync::Mutex<NamedHosts>,
+}
+
+/// What [`Engine::name_own_hosts`] last named: the address of the endpoint it named, and the
+/// workspaces that were hosted then.
+#[derive(Default)]
+struct NamedHosts {
+    endpoint: Option<iroh_base::EndpointAddr>,
+    workspaces: Vec<WorkspaceId>,
 }
 
 /// The sealed records this device keeps opened, by workspace, app and record, with the keys that
@@ -356,6 +367,7 @@ impl Engine {
             channel_keys: std::sync::Mutex::default(),
             held: HeldWrites::default(),
             kept: std::sync::Mutex::default(),
+            named_hosts: std::sync::Mutex::default(),
         }
     }
 
@@ -1662,24 +1674,50 @@ impl Engine {
     /// so what a workspace says keeps up with the relays this device answers through.
     #[cfg(target_os = "linux")]
     pub fn name_own_hosts(&self, endpoint: &iroh_base::EndpointAddr) {
-        for workspace in self.owner.hosted() {
+        // Nothing it would write moved since it last wrote: the address is the one it named and
+        // the same workspaces are hosted, so every record already says this. Naming them again
+        // would sign a hint per workspace and wait on each record's turn for no change — on the
+        // pass, once per workspace, while the person types into one of them.
+        let hosted = self.owner.hosted();
+        if self.named(&hosted, endpoint) {
+            return;
+        }
+        let mut named = true;
+        for workspace in &hosted {
             let hint = match self.own_host_hint(&workspace.to_string(), endpoint) {
                 Ok(hint) => hint,
                 Err(error) => {
                     tracing::warn!(%error, %workspace, "this device's own host could not be named");
+                    named = false;
                     continue;
                 }
             };
-            match self.owner.name_host(workspace, hint) {
+            match self.owner.name_host(*workspace, hint) {
                 Ok(true) => {
                     tracing::info!(%workspace, "the workspace's own host is named in its record");
                 }
                 Ok(false) => {}
                 Err(error) => {
                     tracing::warn!(%error, %workspace, "the workspace's own host was not named");
+                    named = false;
                 }
             }
         }
+        // Only what every one of them took is named: a workspace that refused is asked again on
+        // the next pass rather than waiting for the address to move.
+        if named {
+            *self.named_hosts.lock_recover() = NamedHosts {
+                endpoint: Some(endpoint.clone()),
+                workspaces: hosted,
+            };
+        }
+    }
+
+    /// Whether `hosted` at `endpoint` is what this device last named.
+    #[cfg(target_os = "linux")]
+    fn named(&self, hosted: &[WorkspaceId], endpoint: &iroh_base::EndpointAddr) -> bool {
+        let named = self.named_hosts.lock_recover();
+        named.endpoint.as_ref() == Some(endpoint) && named.workspaces.as_slice() == hosted
     }
 
     /// Whether this device holds a link into a workspace that still admits someone: a person who
@@ -1956,6 +1994,56 @@ mod tests {
         engine
             .check_custody(&engine.owner, workspace)
             .expect("its own member acts there, its host being in this process");
+    }
+
+    /// A pass names the host of the workspaces this device hosts only when what it would name
+    /// moved: the same address on the next pass signs nothing and waits on no record's turn.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_pass_names_the_hosts_of_its_workspaces_only_when_the_address_moves() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let at = endpoint(&identity);
+        let device = iroh_base::EndpointId::from_bytes(&identity.device_cert.device_public_key)
+            .expect("a device endpoint");
+        let engine = engine(state.path(), identity);
+        let workspace = WorkspaceId::new();
+        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
+        let named = || {
+            engine
+                .owner
+                .with_current(workspace, |view| Ok(view.transport_hint().cloned()))
+                .expect("a workspace this device founded")
+        };
+        let first = named();
+
+        engine.name_own_hosts(&at);
+        assert!(
+            engine.named(&[workspace], &at),
+            "the address it named is the one it keeps"
+        );
+        // The record says something else now, as a net report of the address beside the same
+        // relay would have it: one more pass at the same address writes nothing, and the pass
+        // after an address that moved names it again.
+        let elsewhere = iroh_base::EndpointAddr::new(device)
+            .with_relay_url("https://relay.example.com/".parse().expect("a relay"));
+        engine.name_own_hosts(&at);
+        assert_eq!(
+            named(),
+            first,
+            "a pass with the same address writes nothing"
+        );
+        assert!(
+            !engine.named(&[workspace], &elsewhere),
+            "an address that moved is not what it last named"
+        );
+        engine.name_own_hosts(&elsewhere);
+        assert_ne!(
+            named(),
+            first,
+            "a pass with an address that moved writes it"
+        );
+        assert!(engine.named(&[workspace], &elsewhere));
     }
 
     /// What this device tells its siblings of where its workspaces are hosted reads back as the
