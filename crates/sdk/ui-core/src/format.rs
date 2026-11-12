@@ -28,6 +28,7 @@
 //! | count | [`count`], [`items`] | `12,345`, `12 items` | `12.345`, `12 Objekte` |
 //! | money | [`money`] | `$5`, `$0.42`, `$1,250` | `$5`, `$0,42`, `$1.250` |
 //! | decimal | [`decimal`] | `3.14` | `3,14` |
+//! | value list | [`list`] | `Home folders, encrypted, 134 GB free` | `Home-Ordner, verschlüsselt, 134 GB frei` |
 //!
 //! [`size`] uses SI decimal units and [`memory`] IEC binary ones, the platform's rule shared with
 //! Files, Disks and the Storage pane: anything stored or transferred (files, downloads, caches,
