@@ -61,6 +61,9 @@ pub enum PeopleAsk {
     Colour(String),
     /// Open the Settings page a card action names, such as their identities or an identity backup.
     Settings(String),
+    /// Show how an agent or a computer of theirs connects: Console's Connect place, where the
+    /// commands that add Tilo to an agent are.
+    ConnectAgent,
     /// Do the host action this person's own card offers, as the palette and a banner hand theirs
     /// back: the choice the ask on their avatar waits for is answered here too.
     HostAction(String),
@@ -117,6 +120,16 @@ pub(crate) fn own_face(own: &crate::sync::OwnPresence, seated: &str) -> (String,
 /// The card of this person themselves, where the roster lists someone else's: marked in
 /// [`Shown::card_open`] while it stands there.
 const SELF_CARD: &str = "";
+
+/// The own card's action that shows how an agent, or a computer running Tilo, connects. A page
+/// answers it with the setup its first screen shows (a `tilo login` prompt and Tilo's MCP
+/// address); a desktop has no login code to hand out, so it shows Console's Connect place, where
+/// the commands that add Tilo to an agent are and the agents already let in are listed.
+pub const CONNECT_AGENT: &str = "connect-agent";
+
+/// The own card's action that opens Settings' "Devices and access": everything that acts as the
+/// person, and taking any of it back.
+pub const DEVICES_ACCESS: &str = "devices-access";
 
 /// How the roster kept on screen stands at its edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -923,6 +936,21 @@ impl Panel {
                 group: ProfileGroup::Devices,
                 icon: ui::icons::Icon::MonitorSmartphone,
             },
+            // An agent, or a computer running Tilo, becomes a device of the person by signing in
+            // there once (`tilo login`), so the one entry covers both.
+            ProfileAction {
+                id: CONNECT_AGENT.to_owned(),
+                title: crate::i18n::t("profile-action-connect-agent"),
+                group: ProfileGroup::Devices,
+                icon: ui::icons::Icon::Bot,
+            },
+            // Everything that acts as the person, and taking any of it back.
+            ProfileAction {
+                id: DEVICES_ACCESS.to_owned(),
+                title: crate::i18n::t("profile-action-devices-access"),
+                group: ProfileGroup::Devices,
+                icon: ui::icons::Icon::Shield,
+            },
         ]);
         actions
     }
@@ -932,7 +960,7 @@ impl Panel {
         match id {
             "identities" => Some("settings://users"),
             "identity-backup" => Some("settings://about"),
-            "pair-device" => Some("settings://devices_sync"),
+            "pair-device" | DEVICES_ACCESS => Some("settings://devices_sync"),
             _ => None,
         }
     }
@@ -1017,6 +1045,8 @@ impl Panel {
                         self.asks
                             .borrow_mut()
                             .push(PeopleAsk::Settings(link.to_owned()));
+                    } else if id == CONNECT_AGENT {
+                        self.asks.borrow_mut().push(PeopleAsk::ConnectAgent);
                     } else if self
                         .handle
                         .host_actions()

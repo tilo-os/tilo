@@ -18,7 +18,7 @@ pub(crate) enum AgentCommand {
 /// page.
 pub(crate) fn agent(effect: &ConsoleEffect) -> Option<(&str, Option<AgentCommand>)> {
     match effect {
-        ConsoleEffect::ViewRun { .. } => None,
+        ConsoleEffect::ViewRun { .. } | ConsoleEffect::ViewConnect => None,
         ConsoleEffect::ViewAgent { agent } => Some((agent, None)),
         ConsoleEffect::StopAgent { agent } => Some((agent, Some(AgentCommand::Stop))),
         ConsoleEffect::UndoAgentRun { agent } => Some((agent, Some(AgentCommand::UndoRun))),

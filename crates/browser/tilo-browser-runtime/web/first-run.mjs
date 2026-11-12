@@ -919,8 +919,13 @@ export function domView(document) {
     signInFailed() { say('That passkey did not sign you in. Try another, or sign in with your agent.'); },
     close() {
       $('first-run').dataset.closing = '';
-      // The screen fades, then leaves the page; reduced motion skips the fade.
-      const done = () => { root.removeAttribute('data-first-run'); $('first-run')?.remove(); };
+      // The screen fades, then leaves the page: reduced motion skips the fade. It stays in the
+      // document, hidden, so the person's card can show it again ("Connect an agent"): the
+      // setup is one flow, wherever it is opened.
+      const done = () => {
+        root.removeAttribute('data-first-run');
+        $('first-run')?.removeAttribute('data-closing');
+      };
       if (globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches) done();
       else setTimeout(done, 280);
     },
@@ -957,6 +962,31 @@ function copyBySelection(text, document) {
  * once it can (`offerSetup`, `offerAgentSignIn`, `offerSignIn`). */
 export function startFirstRun(document = globalThis.document, {storage} = {}) {
   if (document?.documentElement?.dataset?.firstRun === undefined || !document.getElementById?.('first-run')) return null;
+  return wireFirstRunScreen(document, storage);
+}
+
+/**
+ * Show the first screen again, once the person is set up: the same flow, in
+ * the same place, for a person who wants their agent connected later (their
+ * card's "Connect an agent"). The page hands it a code as it did the first
+ * time (`offerSetup`); Skip here only closes it, since there is nothing left
+ * to open.
+ */
+export function openFirstRun(document = globalThis.document, {storage} = {}) {
+  const screen = document?.getElementById?.('first-run');
+  if (!screen) return null;
+  const root = document.documentElement;
+  // Hidden while the fresh screen is written into, so it appears at once and whole.
+  root.removeAttribute('data-first-run');
+  screen.removeAttribute('data-closing');
+  const run = wireFirstRunScreen(document, storage);
+  run?.whenDone(() => {});
+  root.setAttribute('data-first-run', '');
+  return run;
+}
+
+/** The screen's buttons wired to a controller of its own. */
+function wireFirstRunScreen(document, storage) {
   const run = createFirstRun({view: domView(document), clipboard: pageClipboard(), storage: storage ?? globalThis.localStorage,
     site: globalThis.location?.origin});
   const on = (id, handler) => document.getElementById(id)?.addEventListener('click', handler);

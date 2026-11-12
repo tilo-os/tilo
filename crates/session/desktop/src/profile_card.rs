@@ -1,9 +1,11 @@
 //! Who you are here: the card your own avatar in the top bar opens.
 //!
 //! It shows you as everyone else sees you (your avatar in your colour, your
-//! name) and puts changing that name right there, in a field: type, Enter,
-//! done. Below it, what keeps this identity yours (a passkey, a recovery
-//! key) and your other devices (pairing a new one). Those are the host's
+//! name) and puts changing that name right there, in a field: type, and it
+//! is kept — on Enter, when you leave the field, once you pause, and when the
+//! card closes. There is no Save button, so nothing typed is lost. Below it,
+//! what keeps this identity yours (a passkey, a recovery key) and your other
+//! devices (pairing a new one). Those are the host's
 //! own commands, the same ones search lists, so the card shows what the
 //! host offers ([`ProfileModel::actions`]) and hands a choice back by id;
 //! it never carries them out itself.
@@ -16,7 +18,7 @@
 //! those on the connector's workspace record and tells the card what came of it
 //! ([`ProfileCard::set_linked`]); the card stays open meanwhile.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -24,6 +26,7 @@ use taffy::{NodeId, TaffyTree};
 use ui::icons::Icon;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::time::Instant;
 use ui::widget::{
     Avatar, AvatarSize, Button, ButtonRole, ColorSwatch, ColorSwatchPicker, Column, Container,
     Divider, Fact, Facts, ListRow, Popover, PopoverSide, Row, Segment, Text, TextInput, Toggle,
@@ -38,6 +41,10 @@ use crate::i18n::{t, t_args};
 use tilo_app::linked_accounts::service_icon;
 pub use tilo_app::linked_accounts::{LinkState, LinkedAccount};
 use ui::widget::DrawChild;
+
+/// How long after the last keystroke the card keeps what was typed: the pause a person takes
+/// when they have finished writing a name or a status, without reaching for Enter.
+const TYPING_SETTLE: ui::time::Duration = ui::time::Duration::from_millis(700);
 
 /// The words for a status preset. The words for one way of sharing what you are doing.
 fn sharing_key(mode: ui::StatusSharing) -> &'static str {
@@ -299,14 +306,15 @@ impl ProfileChoice {
     fn closes(&self) -> bool {
         matches!(
             self,
-            Self::Rename(_)
-                | Self::Action(_)
+            Self::Action(_)
                 | Self::Follow(_)
                 | Self::Message(_)
                 | Self::Agent { .. }
                 | Self::EveryoneHere
         )
-        // The rest are settings the card goes on showing.
+        // The rest are settings the card goes on showing. A name is one of them: it is kept
+        // while the person works, and a card that shut itself the moment typing paused would
+        // take the status, the colour and the way back out with it.
     }
 }
 
@@ -406,16 +414,270 @@ impl Widget for CardFocus {
     }
 }
 
+/// What the pointer and the keyboard are doing to [`PictureButton`]: the three states its face
+/// paints, which are one thing at a time and never a set of flags.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Pressing {
+    /// Waiting to be pressed.
+    #[default]
+    Resting,
+    /// A pointer is over it, or focus is on it: the camera shows.
+    Offered,
+    /// Its press is down.
+    Held,
+}
+
+/// Your own face, as the control that changes it. A press opens the picture picker — the very
+/// command "Change picture" runs — and a pointer over the face shows the camera that says so. The
+/// picture is the button, so what a person aims at is what changes.
+struct PictureButton {
+    face: Avatar,
+    /// The host's command that opens the picker, by id.
+    action: String,
+    /// What a reader hears it called.
+    label: String,
+    chosen: Rc<RefCell<Vec<ProfileChoice>>>,
+    rect: Rect,
+    /// Where the pointer last was, on this widget's own surface: a release carries none of its
+    /// own, and the press it ends is only a press if it ends on the face.
+    cursor: Point,
+    hovered: bool,
+    focused: bool,
+    pressing: Pressing,
+    dirty: bool,
+}
+
+impl PictureButton {
+    fn build(
+        face: Avatar,
+        action: &str,
+        label: &str,
+        chosen: &Rc<RefCell<Vec<ProfileChoice>>>,
+    ) -> Self {
+        Self {
+            face,
+            action: action.to_owned(),
+            label: label.to_owned(),
+            chosen: Rc::clone(chosen),
+            rect: Rect::ZERO,
+            cursor: Point::ZERO,
+            hovered: false,
+            focused: false,
+            pressing: Pressing::Resting,
+            dirty: true,
+        }
+    }
+
+    /// Open the picker: one press, one choice, and the host runs it.
+    fn activate(&self) {
+        self.chosen
+            .borrow_mut()
+            .push(ProfileChoice::Action(self.action.clone()));
+    }
+
+    /// What the face says the person can do with it: the camera shows while a pointer is over it
+    /// or focus is on it, and the veil deepens under a press.
+    fn state(hovered: bool, focused: bool, held: bool) -> Pressing {
+        if held {
+            Pressing::Held
+        } else if hovered || focused {
+            Pressing::Offered
+        } else {
+            Pressing::Resting
+        }
+    }
+
+    /// The circle the face is drawn in, which the camera and its veil follow.
+    fn disc(&self) -> vello::kurbo::Circle {
+        vello::kurbo::Circle::new(self.rect.center(), self.rect.width() / 2.0)
+    }
+}
+
+impl Widget for PictureButton {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        use ui::widget::TaffyTreeExt;
+        let face = self.face.build_layout(taffy, theme, map);
+        taffy.widget_node(taffy::Style::default(), &[face], map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let at = ui::widget::layout_rect(taffy, node, origin).origin();
+        if let Some(face) = taffy
+            .children(node)
+            .ok()
+            .and_then(|kids| kids.first().copied())
+        {
+            self.face.apply_layout(taffy, face, at);
+        }
+        let rect = self.face.get_rect();
+        if rect != self.rect {
+            self.dirty = true;
+        }
+        self.rect = rect;
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = ctx.logical(position);
+                let over = self.rect.contains(self.cursor);
+                if over != self.hovered {
+                    self.hovered = over;
+                    self.dirty = true;
+                }
+                self.pressing = Self::state(self.hovered, self.focused, false);
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => match state {
+                winit::event::ElementState::Pressed if self.hovered => {
+                    self.pressing = Pressing::Held;
+                    *ctx.handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    self.dirty = true;
+                }
+                winit::event::ElementState::Released if self.pressing == Pressing::Held => {
+                    let over = self.rect.contains(self.cursor);
+                    self.pressing = Self::state(over, self.focused, false);
+                    self.dirty = true;
+                    *ctx.handled = true;
+                    if over {
+                        self.activate();
+                    }
+                }
+                _ => {}
+            },
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        logical_key:
+                            winit::keyboard::Key::Named(
+                                winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space,
+                            ),
+                        state: winit::event::ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.focused => {
+                *ctx.handled = true;
+                self.activate();
+            }
+            _ => {}
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        self.face
+            .draw_child(scene, transform, text, theme, presence);
+        if self.pressing == Pressing::Resting {
+            return;
+        }
+        // A veil over the face and the camera on it: what the picture is for, said only while
+        // the pointer is on it so it never competes with the face itself.
+        let media = &theme.tokens.colors.media;
+        let disc = self.disc();
+        let veil = media.scrim.with_alpha(if self.pressing == Pressing::Held {
+            0.62
+        } else {
+            0.45
+        });
+        scene.fill(vello::peniko::Fill::NonZero, transform, veil, None, &disc);
+        let camera = vello::kurbo::Shape::bounding_box(&disc)
+            .inflate(-disc.radius * 0.62, -disc.radius * 0.62);
+        Icon::Camera.draw(scene, transform, camera, media.ink);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty || Widget::needs_redraw(&self.face)
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        Widget::mark_children_drawn(self);
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.face]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.face]
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        if self.focused != focused {
+            self.dirty = true;
+        }
+        self.focused = focused;
+        self.pressing = Self::state(self.hovered, focused, self.pressing == Pressing::Held);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::Button)
+                .with_name(self.label.clone())
+                .with_semantic_key("profile-photo")
+                .with_bounds(self.rect)
+                .with_state(AccessState::new().focusable(true).focused(self.focused)),
+        )
+    }
+
+    fn name(&self) -> &'static str {
+        "ProfilePictureButton"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("profile-photo")
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
 pub struct ProfileCard {
     popover: Popover<Container>,
     /// The name being typed.
     draft: LocalState<String>,
     /// The status being typed.
     status_draft: LocalState<String>,
-    /// The name the card opened with.
+    /// The name the card opened with, then the one it last kept.
     shown: String,
-    chosen: Rc<RefCell<Option<ProfileChoice>>>,
+    /// The status the card last kept: a field that says what is already kept says nothing.
+    status_shown: String,
+    /// When the name or the status was last typed into: a pause after it keeps what was typed,
+    /// so a card with no Save button saves while the person works.
+    settle: Rc<Cell<Option<Instant>>>,
+    /// A field was left or submitted: keep what the card holds now, this frame.
+    asked: Rc<Cell<bool>>,
+    chosen: Rc<RefCell<Vec<ProfileChoice>>>,
     focus_reset: bool,
+    /// The card was open when it was last looked at: a card that stopped being open without
+    /// [`Self::close`] (Escape, a click outside) still keeps what was typed in it.
+    was_open: bool,
     /// What the open card shows, to build it again when a linked account changes, and the anchor
     /// and viewport it opened at.
     model: Option<ProfileModel>,
@@ -432,8 +694,12 @@ impl Default for ProfileCard {
             draft: LocalState::new(String::new()),
             status_draft: LocalState::new(String::new()),
             shown: String::new(),
+            status_shown: String::new(),
+            settle: Rc::default(),
+            asked: Rc::default(),
             chosen: Rc::default(),
             focus_reset: false,
+            was_open: false,
             model: None,
             placed: (Rect::ZERO, Rect::ZERO),
             replaced: false,
@@ -446,19 +712,32 @@ impl ProfileCard {
         Self::default()
     }
 
-    /// A field for the person's name: submitting a non-empty one renames them.
+    /// A field for the person's name. There is no Save button: Enter, leaving the field, the card
+    /// closing and a pause in typing each keep what is in it ([`Self::keep_typed`]).
     fn name_field(&self, id: &str, placeholder: String, accessible: String) -> TextInput {
-        let chosen = Rc::clone(&self.chosen);
-        TextInput::from_state(&self.draft)
-            .with_id(id)
-            .with_placeholder(placeholder)
-            .with_accessible_name(accessible)
-            .on_submit_view(move |typed| {
-                let typed = typed.trim();
-                if !typed.is_empty() {
-                    *chosen.borrow_mut() = Some(ProfileChoice::Rename(typed.to_owned()));
-                }
-            })
+        Self::edited(
+            TextInput::from_state(&self.draft)
+                .with_id(id)
+                .with_placeholder(placeholder)
+                .with_accessible_name(accessible),
+            &self.settle,
+            &self.asked,
+        )
+    }
+
+    /// A field the person types a value into: leaving it, Enter and a pause after typing all say
+    /// the card should keep it, so nothing typed is lost for want of a Save.
+    fn edited(
+        field: TextInput,
+        settle: &Rc<Cell<Option<Instant>>>,
+        asked: &Rc<Cell<bool>>,
+    ) -> TextInput {
+        let settle = Rc::clone(settle);
+        let asked = Rc::clone(asked);
+        field
+            .with_leaving_commits(true)
+            .on_change(move |_| settle.set(Some(ui::time::now())))
+            .on_submit_view(move |_| asked.set(true))
     }
 
     /// The person's stable id, short, with a button that copies it whole. Their own card keeps it
@@ -569,7 +848,7 @@ impl ProfileCard {
             .with_icon(Icon::Users)
             .role(ButtonRole::Plain)
             .on_effect(move || {
-                *chosen.borrow_mut() = Some(ProfileChoice::EveryoneHere);
+                chosen.borrow_mut().push(ProfileChoice::EveryoneHere);
             })
     }
 
@@ -631,7 +910,9 @@ impl ProfileCard {
                     .with_icon(Icon::MessageCircle)
                     .role(ButtonRole::Primary)
                     .on_own_device_effect(move || {
-                        *chosen.borrow_mut() = Some(ProfileChoice::Message(key.clone()));
+                        chosen
+                            .borrow_mut()
+                            .push(ProfileChoice::Message(key.clone()));
                     }),
             ));
             any = true;
@@ -648,7 +929,7 @@ impl ProfileCard {
                 Button::new("profile-follow", &label)
                     .with_icon(Icon::Eye)
                     .on_effect(move || {
-                        *chosen.borrow_mut() = Some(ProfileChoice::Follow(id.clone()));
+                        chosen.borrow_mut().push(ProfileChoice::Follow(id.clone()));
                     }),
             ));
             any = true;
@@ -661,7 +942,7 @@ impl ProfileCard {
                     .with_icon(Icon::PanelRight)
                     .role(ButtonRole::Primary)
                     .on_effect(move || {
-                        *chosen.borrow_mut() = Some(ProfileChoice::Agent {
+                        chosen.borrow_mut().push(ProfileChoice::Agent {
                             client: client.clone(),
                             ask: AgentAsk::Card,
                         });
@@ -715,7 +996,7 @@ impl ProfileCard {
                     .with_icon(icon)
                     .role(role)
                     .on_effect(move || {
-                        *chosen.borrow_mut() = Some(ProfileChoice::Agent {
+                        chosen.borrow_mut().push(ProfileChoice::Agent {
                             client: client.clone(),
                             ask,
                         });
@@ -810,19 +1091,30 @@ impl ProfileCard {
                     .with_icon(icon)
                     .role(ButtonRole::Plain)
                     .on_effect(move || {
-                        *chosen.borrow_mut() = Some(ProfileChoice::Action(id.clone()));
+                        chosen.borrow_mut().push(ProfileChoice::Action(id.clone()));
                     }),
             ));
         }
         Some(Box::new(row))
     }
 
-    /// Your avatar, your name (or a field for it) and the hint beneath.
+    /// Your avatar, your name (or a field for it) and the hint beneath. Where the host offers a
+    /// picture, the avatar is the button that changes it.
     fn own_header(&self, model: &ProfileModel) -> Row {
         let mut avatar = Avatar::person(&model.name, &model.identity).size(AvatarSize::Large);
         if let Some(colour) = model.colour {
             avatar = avatar.with_presence(colour);
         }
+        let face: Box<dyn Widget> = match model.actions.iter().find(|action| action.id == SET_PHOTO)
+        {
+            Some(set) => Box::new(PictureButton::build(
+                avatar,
+                &set.id,
+                &t("profile-photo-change"),
+                &self.chosen,
+            )),
+            None => Box::new(avatar),
+        };
         let name: Box<dyn Widget> = if model.can_rename {
             Box::new(self.name_field(
                 "profile-name",
@@ -860,7 +1152,7 @@ impl ProfileCard {
         Row::new()
             .no_wrap()
             .with_align_items(taffy::AlignItems::Center)
-            .push(Box::new(avatar))
+            .push(face)
             .push(Box::new(who))
     }
 
@@ -935,7 +1227,7 @@ impl ProfileCard {
                         .with_icon(action.icon)
                         .role(ButtonRole::Plain)
                         .on_effect(move || {
-                            *chosen.borrow_mut() = Some(ProfileChoice::Action(id.clone()));
+                            chosen.borrow_mut().push(ProfileChoice::Action(id.clone()));
                         }),
                 ));
             }
@@ -972,7 +1264,7 @@ impl ProfileCard {
                     .with_id("profile-control-hints-toggle")
                     .with_accessible_name(&label)
                     .on_view("profile-control-hints-toggle", move |on| {
-                        *chosen.borrow_mut() = Some(ProfileChoice::ControlHints(on));
+                        chosen.borrow_mut().push(ProfileChoice::ControlHints(on));
                     }),
             )),
         ))
@@ -992,16 +1284,17 @@ impl ProfileCard {
         self.push_sharing(body, model)
     }
 
-    /// What they are doing in their own words: Enter says it, an empty field clears it.
+    /// What they are doing in their own words. Said on Enter, on leaving the field, and once
+    /// typing pauses; an empty field clears it.
     fn status_field(&self) -> TextInput {
-        let chosen = Rc::clone(&self.chosen);
-        TextInput::from_state(&self.status_draft)
-            .with_id("profile-status")
-            .with_placeholder(t("profile-status-placeholder"))
-            .with_accessible_name(t("profile-status"))
-            .on_submit_view(move |typed| {
-                *chosen.borrow_mut() = Some(ProfileChoice::Status(typed.trim().to_owned()));
-            })
+        Self::edited(
+            TextInput::from_state(&self.status_draft)
+                .with_id("profile-status")
+                .with_placeholder(t("profile-status-placeholder"))
+                .with_accessible_name(t("profile-status")),
+            &self.settle,
+            &self.asked,
+        )
     }
 
     /// Status, colour and what people see: how the person shows to others. How what they are doing
@@ -1031,7 +1324,7 @@ impl ProfileCard {
             .with_accessible_name(t("a11y-shell-sharing-change"))
             .on_view("profile-sharing", move |index| {
                 if let Some(mode) = sharings.get(index) {
-                    *chosen.borrow_mut() = Some(ProfileChoice::Sharing(*mode));
+                    chosen.borrow_mut().push(ProfileChoice::Sharing(*mode));
                 }
             }),
         );
@@ -1068,7 +1361,9 @@ impl ProfileCard {
         .with_accessible_name(t("profile-section-status"))
         .on_view("profile-availability", move |index| {
             if let Some(preset) = presets.get(index) {
-                *chosen.borrow_mut() = Some(ProfileChoice::Availability(*preset));
+                chosen
+                    .borrow_mut()
+                    .push(ProfileChoice::Availability(*preset));
             }
         });
         body = body
@@ -1092,7 +1387,9 @@ impl ProfileCard {
         )
         .on_change_view(move |index| {
             if let Some(hue) = hues.get(index) {
-                *chosen.borrow_mut() = Some(ProfileChoice::Colour(hue.id().to_owned()));
+                chosen
+                    .borrow_mut()
+                    .push(ProfileChoice::Colour(hue.id().to_owned()));
             }
         });
         // The colour they chose, or, until they choose one, the colour their identity wears: the
@@ -1140,7 +1437,7 @@ impl ProfileCard {
         ))
         .on_view("profile-visibility", move |index| {
             if let Some(choice) = choices.get(index) {
-                *chosen.borrow_mut() = Some(ProfileChoice::Visibility(*choice));
+                chosen.borrow_mut().push(ProfileChoice::Visibility(*choice));
             }
         });
         body = body
@@ -1196,7 +1493,7 @@ impl ProfileCard {
                         .with_icon(icon)
                         .role(ButtonRole::Primary)
                         .on_effect(move || {
-                            *chosen.borrow_mut() = Some(ProfileChoice::Link(app.clone()));
+                            chosen.borrow_mut().push(ProfileChoice::Link(app.clone()));
                         }),
                     ));
                 }
@@ -1277,7 +1574,7 @@ impl ProfileCard {
                         .with_icon(icon)
                         .role(ButtonRole::Primary)
                         .on_effect(move || {
-                            *chosen.borrow_mut() = Some(ProfileChoice::Accept(app.clone()));
+                            chosen.borrow_mut().push(ProfileChoice::Accept(app.clone()));
                         }),
                     ))
                     .push(Box::new(
@@ -1287,8 +1584,9 @@ impl ProfileCard {
                         )
                         .role(ButtonRole::Plain)
                         .on_effect(move || {
-                            *declined.borrow_mut() =
-                                Some(ProfileChoice::Decline(declining.clone()));
+                            declined
+                                .borrow_mut()
+                                .push(ProfileChoice::Decline(declining.clone()));
                         }),
                     )),
             ))
@@ -1360,7 +1658,7 @@ impl ProfileCard {
                     )
                     .with_icon(Icon::Unlink)
                     .on_effect(move || {
-                        *chosen.borrow_mut() = Some(ProfileChoice::Unlink(app.clone()));
+                        chosen.borrow_mut().push(ProfileChoice::Unlink(app.clone()));
                     }),
                 )),
         )
@@ -1396,6 +1694,7 @@ impl ProfileCard {
             return;
         }
         self.shown.clone_from(&model.name);
+        self.status_shown.clone_from(&model.status);
         // Asked for a name: the field starts empty, showing what to type.
         self.draft.set(if model.ask_name && !model.can_rename {
             String::new()
@@ -1403,7 +1702,9 @@ impl ProfileCard {
             model.name.clone()
         });
         self.status_draft.set(model.status.clone());
-        self.chosen.borrow_mut().take();
+        self.settle.set(None);
+        self.asked.set(false);
+        self.chosen.borrow_mut().clear();
         self.placed = (anchor, viewport);
         self.present(model);
         self.model = Some(model.clone());
@@ -1483,21 +1784,52 @@ impl ProfileCard {
         true
     }
 
-    /// Close the card. A name typed but not yet entered is kept, as a field that loses focus keeps
+    /// Close the card. What was typed and not yet kept is kept, as a field that loses focus keeps
     /// what was typed.
     pub fn close(&mut self) {
         if self.is_open() {
             self.popover.close();
-            self.commit_draft();
+            self.keep_typed();
         }
     }
 
-    fn commit_draft(&self) {
-        let typed = self.draft.get();
-        let typed = typed.trim();
-        if !typed.is_empty() && typed != self.shown.trim() && self.chosen.borrow().is_none() {
-            *self.chosen.borrow_mut() = Some(ProfileChoice::Rename(typed.to_owned()));
+    /// Keep what the card's fields hold, where that says something the card has not already
+    /// kept: the name they go by and the status they say. A card has no Save button, so what is
+    /// typed in it is kept when it is submitted, when a field is left, when the card closes and
+    /// when typing pauses ([`Self::set_settled`]). Whether either changed.
+    fn keep_typed(&mut self) -> bool {
+        let mut kept = false;
+        let name = self.draft.get();
+        let name = name.trim();
+        // A person asked for a name they have not given yet keeps being asked; an empty field is
+        // no answer, never a way to lose the name they have.
+        if !name.is_empty() && name != self.shown.trim() {
+            name.clone_into(&mut self.shown);
+            self.note(ProfileChoice::Rename(name.to_owned()));
+            kept = true;
         }
+        let status = self.status_draft.get();
+        let status = status.trim();
+        if status != self.status_shown.trim() {
+            status.clone_into(&mut self.status_shown);
+            self.note(ProfileChoice::Status(status.to_owned()));
+            kept = true;
+        }
+        kept
+    }
+
+    /// Put `choice` to the card's host.
+    fn note(&self, choice: ProfileChoice) {
+        self.chosen.borrow_mut().push(choice);
+    }
+
+    /// The pause after typing that keeps what was typed: a person who types a name and stops
+    /// has saved it, without reaching for Enter.
+    fn settle_due(&self, now: Instant) -> Option<Instant> {
+        self.settle
+            .get()
+            .and_then(|typed| typed.checked_add(TYPING_SETTLE))
+            .filter(|due| *due > now)
     }
 
     pub fn is_open(&self) -> bool {
@@ -1511,13 +1843,24 @@ impl ProfileCard {
 
     /// Type `name` into the name field, as the person would.
     pub fn set_draft(&mut self, name: &str) {
+        self.settle.set(Some(ui::time::now()));
         self.draft.set(name.to_owned());
+    }
+
+    /// Type `status` into the status field, as the person would.
+    pub fn set_status_draft(&mut self, status: &str) {
+        self.settle.set(Some(ui::time::now()));
+        self.status_draft.set(status.to_owned());
     }
 
     /// What the person did since the last call. A choice closes the card,
     /// but for a linked account's, whose outcome the card goes on to show.
     pub fn take_choice(&mut self) -> Option<ProfileChoice> {
-        let choice = self.chosen.borrow_mut().take()?;
+        let choice = if self.chosen.borrow().is_empty() {
+            None
+        } else {
+            Some(self.chosen.borrow_mut().remove(0))
+        }?;
         if let ProfileChoice::Rename(name) = &choice {
             self.shown.clone_from(name);
         }
@@ -1556,7 +1899,15 @@ impl Widget for ProfileCard {
     }
 
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
-        self.popover.update(state, path)
+        let mut kept = self.asked.replace(false);
+        // Escape or a click outside closed the panel itself, past [`Self::close`]: what was in
+        // its fields is still theirs.
+        if self.was_open && !self.is_open() {
+            kept = true;
+        }
+        self.was_open = self.is_open();
+        let kept = kept && self.keep_typed();
+        self.popover.update(state, path) || kept
     }
 
     fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
@@ -1568,8 +1919,33 @@ impl Widget for ProfileCard {
         self.popover.handle_event(event, ctx);
         if open && !self.is_open() {
             // Escape or a click outside: what was typed is kept.
-            self.commit_draft();
+            self.keep_typed();
         }
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        // The pause that keeps what was typed, beside whatever the card's own fields ask for
+        // (a field being spelled asks for a frame when its word settles).
+        self.settle_due(ui::time::now())
+            .into_iter()
+            .chain(self.popover.next_wake_deadline())
+            .min()
+    }
+
+    fn serve_deadline(&mut self, now: Instant) -> bool {
+        // The card asks for the earliest deadline in it, which may be one of its fields' (a word
+        // being spelled): what was typed is kept only once its own pause has passed.
+        let settled = self
+            .settle
+            .get()
+            .and_then(|typed| typed.checked_add(TYPING_SETTLE))
+            .is_some_and(|due| due <= now);
+        let mut kept = false;
+        if settled {
+            self.settle.set(None);
+            kept = self.keep_typed();
+        }
+        self.popover.serve_deadline(now) || kept
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1920,832 +2296,5 @@ impl Widget for LazyProfileCard {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn model() -> ProfileModel {
-        ProfileModel {
-            name: "Kim".into(),
-            identity: "kim-root".into(),
-            colour: None,
-            can_rename: true,
-            ask_name: false,
-            actions: vec![
-                ProfileAction {
-                    id: "keep-identity".into(),
-                    title: "Keep your name and work".into(),
-                    group: ProfileGroup::Identity,
-                    icon: Icon::Fingerprint,
-                },
-                ProfileAction {
-                    id: "pair-device".into(),
-                    title: "Pair a new device".into(),
-                    group: ProfileGroup::Devices,
-                    icon: Icon::MonitorSmartphone,
-                },
-            ],
-            linked: Vec::new(),
-            ..ProfileModel::default()
-        }
-    }
-
-    fn discord(state: LinkState) -> LinkedAccount {
-        LinkedAccount {
-            app: "so.tilo.discord".into(),
-            service: "Discord".into(),
-            state,
-            problem: None,
-        }
-    }
-
-    fn unlinked() -> LinkState {
-        LinkState::Unlinked {
-            connect: true,
-            elsewhere: Some("In the Discord server, type /link to link from there.".into()),
-        }
-    }
-
-    fn ada_account() -> tilo_app::linked_accounts::AccountName {
-        tilo_app::linked_accounts::AccountName {
-            user_name: "ada.l".into(),
-            display_name: Some("Ada L".into()),
-        }
-    }
-
-    fn offered() -> LinkState {
-        LinkState::Offered(tilo_app::linked_accounts::OfferReading {
-            service: "Discord".into(),
-            account: ada_account(),
-            started_here: false,
-        })
-    }
-
-    /// The card open with `linked` , in a frame that clicks.
-    fn framed(linked: Vec<LinkedAccount>) -> ui::headless::Framed<ProfileCard> {
-        ui::i18n::I18nManager::init("en-US");
-        let mut card = ProfileCard::new();
-        card.toggle(
-            &ProfileModel { linked, ..model() },
-            Rect::new(1200.0, 2.0, 1220.0, 22.0),
-            Rect::new(0.0, 0.0, 1280.0, 720.0),
-        );
-        ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
-    }
-
-    fn click(frame: &mut ui::headless::Framed<ProfileCard>, name: &str) {
-        let harness = ui::headless::Framed::harness_mut(frame);
-        harness.poll_frame().unwrap();
-        harness.click_named(name).unwrap();
-        harness.poll_frame().unwrap();
-    }
-
-    /// Everything the open card says, as assistive technology reads it.
-    fn says(frame: &mut ui::headless::Framed<ProfileCard>) -> String {
-        let harness = ui::headless::Framed::harness_mut(frame);
-        harness.poll_frame().unwrap();
-        harness.inspection_json().unwrap()
-    }
-
-    /// A build that links the card makes it at once: the lazy card opens,
-    /// shows it as its child and closes as the card does.
-    #[test]
-    fn a_linked_lazy_card_opens_and_closes_as_the_card() {
-        let mut card = LazyProfileCard::new();
-        assert!(!card.is_open());
-        assert!(card.children().is_empty(), "made on first use");
-        let anchor = Rect::new(300.0, 0.0, 332.0, 32.0);
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        card.toggle(&model(), anchor, viewport);
-        assert!(card.is_open());
-        assert_eq!(card.children().len(), 1);
-        card.close();
-        assert!(!card.is_open());
-    }
-
-    /// A card nobody opened is an empty leaf of a fixed size: it asks no frame of the page to
-    /// re-solve the layout, as it did by reading as layout-dirty, which made every frame (each
-    /// keystroke's, each of an animation's) measure the whole desktop.
-    #[test]
-    fn an_unopened_lazy_card_asks_no_frame_to_measure() {
-        let card = LazyProfileCard::new();
-        assert!(!card.is_layout_dirty());
-        assert!(!card.layout_needs_measure());
-    }
-
-    /// Linked accounts that arrive while the card's code is on its way (the refresh opening the own
-    /// card asks for) show once it opens: the Discord row is there, as it is on a card whose code
-    /// was linked.
-    #[test]
-    fn a_lazy_card_opens_with_accounts_that_arrived_while_it_loaded() {
-        static CODE: ui::lazy_code::LazyCode<MakeProfileCard> = ui::lazy_code::LazyCode::fetched();
-        ui::i18n::I18nManager::init("en-US");
-        let mut card = LazyProfileCard::with_code(&CODE);
-        let anchor = Rect::new(1200.0, 2.0, 1220.0, 22.0);
-        let viewport = Rect::new(0.0, 0.0, 1280.0, 720.0);
-        card.toggle(&model(), anchor, viewport);
-        assert!(
-            card.is_open() && card.children().is_empty(),
-            "still loading"
-        );
-        card.set_linked(vec![discord(unlinked())]);
-        CODE.install(builtin_profile_card());
-        assert!(
-            card.follow_anchor(anchor, viewport),
-            "opens once the code is in"
-        );
-        let mut frame =
-            ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark());
-        let harness = ui::headless::Framed::harness_mut(&mut frame);
-        harness.poll_frame().unwrap();
-        let said = harness.inspection_json().unwrap();
-        assert!(said.contains("Connect Discord"), "{said}");
-        assert!(said.contains("type /link"), "{said}");
-    }
-
-    /// Opening the card is not editing: focus rests on the card itself, and Tab (or a click) enters
-    /// the name field.
-    #[test]
-    fn the_card_opens_focused_on_itself_and_tab_enters_the_name() {
-        // The card's keyboard stops in tree order, as both shells' focus order walks them; a trap
-        // that opens focuses the first.
-        fn stops(widget: &dyn Widget, out: &mut Vec<ui::a11y::AccessNode>) {
-            if widget.is_focusable()
-                && let Some(node) = widget.accessibility()
-            {
-                out.push(node);
-            }
-            for child in widget.children() {
-                stops(child, out);
-            }
-        }
-        ui::i18n::I18nManager::init("en-US");
-        let mut card = ProfileCard::new();
-        card.toggle(
-            &model(),
-            Rect::new(1200.0, 2.0, 1220.0, 22.0),
-            Rect::new(0.0, 0.0, 1280.0, 720.0),
-        );
-        let mut order = Vec::new();
-        stops(&card, &mut order);
-        let names: Vec<_> = order.iter().map(|node| node.name.clone()).collect();
-        let first = order.first().expect("the open card has keyboard stops");
-        assert_eq!(
-            first.semantic_key.as_deref(),
-            Some("profile-card-focus"),
-            "the card opens focused on itself, not its name field: {names:?}"
-        );
-        assert_eq!(first.name, Some(t("profile-card")));
-        assert_eq!(
-            order.get(1).and_then(|node| node.name.clone()),
-            Some(t("profile-name")),
-            "Tab enters the name field: {names:?}"
-        );
-    }
-
-    /// A person who has not named themselves is asked, gently, in the card: "Add your name", in
-    /// place of the hint, until they have.
-    #[test]
-    fn a_person_without_a_name_is_asked_for_one() {
-        let open = |ask_name: bool| {
-            ui::i18n::I18nManager::init("en-US");
-            let mut card = ProfileCard::new();
-            card.toggle(
-                &ProfileModel {
-                    name: "bob".into(),
-                    can_rename: false,
-                    ask_name,
-                    ..model()
-                },
-                Rect::new(1200.0, 2.0, 1220.0, 22.0),
-                Rect::new(0.0, 0.0, 1280.0, 720.0),
-            );
-            ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
-        };
-        let mut asked = open(true);
-        let said = says(&mut asked);
-        assert!(said.contains("Add your name"), "{said}");
-        let mut named = open(false);
-        let said = says(&mut named);
-        assert!(!said.contains("Add your name"), "{said}");
-        assert!(said.contains(&t("profile-name-hint")));
-    }
-
-    /// Of the host's ways to keep who you are, the card offers the two it lists first: keeping the
-    /// identity and backing it up. A third overlapping ask stays in search, where it does not
-    /// compete here. Devices stay as listed.
-    #[test]
-    fn the_card_offers_two_ways_to_keep_your_identity() {
-        ui::i18n::I18nManager::init("en-US");
-        let identity = |id: &str, title: &str| ProfileAction {
-            id: id.into(),
-            title: title.into(),
-            group: ProfileGroup::Identity,
-            icon: Icon::Fingerprint,
-        };
-        let mut actions = vec![
-            identity("keep-identity", "Keep your name and work"),
-            identity("save-recovery-key", "Save a recovery key"),
-            identity("sign-in-passkey", "Sign in with a passkey"),
-        ];
-        actions.extend(
-            model()
-                .actions
-                .into_iter()
-                .filter(|a| a.group == ProfileGroup::Devices),
-        );
-        let mut card = ProfileCard::new();
-        card.toggle(
-            &ProfileModel { actions, ..model() },
-            Rect::new(1200.0, 2.0, 1220.0, 22.0),
-            Rect::new(0.0, 0.0, 1280.0, 720.0),
-        );
-        let mut frame =
-            ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark());
-        let said = says(&mut frame);
-        assert!(said.contains("Keep your name and work"), "{said}");
-        assert!(said.contains("Save a recovery key"), "{said}");
-        assert!(!said.contains("Sign in with a passkey"), "{said}");
-        assert!(said.contains("Pair a new device"), "{said}");
-    }
-
-    #[test]
-    fn no_linked_accounts_section_without_a_connected_service() {
-        let mut frame = framed(Vec::new());
-        assert!(!says(&mut frame).contains("Linked accounts"));
-        let mut frame = framed(vec![discord(unlinked())]);
-        assert!(says(&mut frame).contains("Linked accounts"));
-    }
-
-    #[test]
-    fn connect_keeps_the_card_open_and_says_where_it_goes() {
-        let mut frame = framed(vec![discord(unlinked())]);
-        let said = says(&mut frame);
-        assert!(said.contains("Connect Discord"), "{said}");
-        assert!(said.contains("type /link"), "the other way in: {said}");
-        click(&mut frame, "profile-link-so.tilo.discord");
-        assert_eq!(
-            frame.take_choice(),
-            Some(ProfileChoice::Link("so.tilo.discord".into()))
-        );
-        assert!(frame.is_open(), "the card waits for the consent page");
-        frame.set_linked(vec![discord(LinkState::Connecting)]);
-        let said = says(&mut frame);
-        assert!(said.contains("Opening Discord"), "{said}");
-        assert_eq!(frame.draft(), "Kim", "the name field keeps what it had");
-    }
-
-    #[test]
-    fn a_service_without_sign_in_only_says_how_to_link_from_there() {
-        let mut frame = framed(vec![discord(LinkState::Unlinked {
-            connect: false,
-            elsewhere: Some("In the Discord server, type /link to link from there.".into()),
-        })]);
-        let said = says(&mut frame);
-        assert!(!said.contains("profile-link-so.tilo.discord"), "{said}");
-        assert!(said.contains("type /link"), "{said}");
-    }
-
-    /// A link from Discord's /link asks before it links: the account it offers and the person it
-    /// links to, with Link and Cancel.
-    #[test]
-    fn an_offered_account_asks_before_it_links() {
-        let mut frame = framed(vec![discord(offered())]);
-        let said = says(&mut frame);
-        assert!(
-            said.contains("Link Discord Ada L · @ada.l to Kim?"),
-            "{said}"
-        );
-        click(&mut frame, "profile-link-accept-so.tilo.discord");
-        assert_eq!(
-            frame.take_choice(),
-            Some(ProfileChoice::Accept("so.tilo.discord".into()))
-        );
-        click(&mut frame, "profile-link-decline-so.tilo.discord");
-        assert_eq!(
-            frame.take_choice(),
-            Some(ProfileChoice::Decline("so.tilo.discord".into()))
-        );
-        assert!(frame.is_open());
-    }
-
-    /// A page's own card with a linked account keeps its status field its height, and its rows
-    /// follow one another: a linked row that outgrew its first measure squashed the field above it
-    /// to nothing.
-    #[test]
-    fn a_linked_card_keeps_its_status_field() {
-        ui::i18n::I18nManager::init("en-US");
-        let mut card = ProfileCard::new();
-        card.toggle(
-            &ProfileModel {
-                linked: vec![discord(LinkState::Linked(
-                    tilo_app::linked_accounts::AccountName {
-                        user_name: "quinn.davis".into(),
-                        display_name: Some("Quinn".into()),
-                    },
-                ))],
-                sharing: Some(ui::StatusSharing::Automatic),
-                status: "Sketching".into(),
-                control_hints: Some(true),
-                ..model()
-            },
-            Rect::new(1350.0, 2.0, 1370.0, 22.0),
-            Rect::new(0.0, 0.0, 1440.0, 900.0),
-        );
-        let mut frame =
-            ui::headless::Framed::new(ui::State::new(), card, (1440, 900), Theme::dark());
-        let harness = ui::headless::Framed::harness_mut(&mut frame);
-        harness.poll_frame().unwrap();
-        let targets = harness.targets();
-        let at = |name: &str| {
-            *targets
-                .get(name)
-                .unwrap_or_else(|| panic!("{name} is laid out: {targets:?}"))
-        };
-        let status = at("profile-status");
-        let sharing = at("profile-sharing");
-        let unlink = at("profile-unlink-so.tilo.discord");
-        let hints = at("profile-control-hints-toggle");
-        assert!(status.height() > 0.0, "the status field has its height");
-        assert!(status.y1 <= sharing.y0, "{status:?} above {sharing:?}");
-        assert!(sharing.y1 <= unlink.y0, "{sharing:?} above {unlink:?}");
-        assert!(unlink.y1 <= hints.y0, "{unlink:?} above {hints:?}");
-        // The linked row is one line, and the switch follows it closely,
-        // inside the viewport: no gap where a wrapped line was measured.
-        let linked = at("profile-linked-so.tilo.discord");
-        assert!(linked.height() < 2.0 * 16.0 * 1.2, "one line: {linked:?}");
-        assert!(
-            hints.y0 - unlink.y1 < 72.0,
-            "the switch follows the linked row: {unlink:?} then {hints:?}"
-        );
-        assert!(hints.y1 <= 900.0, "the switch is on screen: {hints:?}");
-    }
-
-    #[test]
-    fn a_linked_line_is_cut_short_never_wrapped() {
-        let account = |user: &str, shown: Option<&str>| tilo_app::linked_accounts::AccountName {
-            user_name: user.into(),
-            display_name: shown.map(str::to_owned),
-        };
-        assert_eq!(
-            linked_line(&account("quinn.davis", Some("Quinn"))),
-            ("@quinn.davis".into(), Some("Quinn".into()))
-        );
-        assert_eq!(
-            linked_line(&account("quinn.davis", Some("quinn.davis"))),
-            ("@quinn.davis".into(), None),
-            "the name only when it is another"
-        );
-        let (handle, shown) =
-            linked_line(&account("a_very_long_discord_username_x", Some("Someone")));
-        assert_eq!(handle.chars().count(), LINKED_LINE_CHARS);
-        assert!(handle.ends_with('…'), "{handle}");
-        assert_eq!(shown, None, "the name gives way first");
-        let (handle, shown) = linked_line(&account("quinn", Some("Quinn Davis-Montgomery")));
-        assert_eq!(handle, "@quinn");
-        let shown = shown.expect("room for some of the name");
-        assert!(shown.ends_with('…'), "{shown}");
-        assert!(handle.chars().count() + 1 + shown.chars().count() <= LINKED_LINE_CHARS);
-    }
-
-    #[test]
-    fn a_linked_account_offers_unlink() {
-        let mut frame = framed(vec![discord(LinkState::Linked(ada_account()))]);
-        let said = says(&mut frame);
-        assert!(
-            said.contains("@ada.l") && said.contains("Ada L"),
-            "shown by handle and name: {said}"
-        );
-        click(&mut frame, "profile-unlink-so.tilo.discord");
-        assert_eq!(
-            frame.take_choice(),
-            Some(ProfileChoice::Unlink("so.tilo.discord".into()))
-        );
-        assert!(frame.is_open());
-        frame.set_linked(vec![discord(unlinked())]);
-        assert_eq!(frame.linked(), [discord(unlinked())]);
-    }
-
-    #[test]
-    fn what_went_wrong_is_said_on_the_row() {
-        let mut frame = framed(vec![LinkedAccount {
-            problem: Some("This link ran out after ten minutes. Run /link again.".into()),
-            ..discord(unlinked())
-        }]);
-        assert!(says(&mut frame).contains("ran out after ten minutes"));
-    }
-
-    /// Hosts the card as a shell does: the linked accounts change during a frame's update, not
-    /// through the harness's own access to its root (which lays out from scratch).
-    struct Shell {
-        card: ProfileCard,
-        next: Rc<RefCell<Option<Vec<LinkedAccount>>>>,
-    }
-
-    impl Widget for Shell {
-        fn build_layout(
-            &mut self,
-            taffy: &mut TaffyTree<()>,
-            theme: &Theme,
-            map: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            self.card.build_layout(taffy, theme, map)
-        }
-
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.card.apply_layout(taffy, node, origin);
-        }
-
-        fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
-            let linked = self.next.borrow_mut().take();
-            let changed = linked.is_some();
-            if let Some(linked) = linked {
-                self.card.set_linked(linked);
-            }
-            self.card.update(state, path) | changed
-        }
-
-        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-            self.card.handle_event(event, ctx);
-        }
-
-        fn children(&self) -> Vec<&dyn Widget> {
-            vec![&self.card]
-        }
-
-        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-            vec![&mut self.card]
-        }
-
-        fn needs_redraw(&self) -> bool {
-            self.next.borrow().is_some()
-                || (self.card.needs_redraw() || self.card.needs_animation_frame())
-        }
-
-        fn name(&self) -> &'static str {
-            "Shell"
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.card.get_rect()
-        }
-    }
-
-    /// The card builds its widgets again when a linked account changes. A layout kept from before
-    /// would still point at the ones they replaced, freed: the page read them as garbage once their
-    /// memory was reused (after an app's code loaded), and trapped in an indirect call.
-    #[test]
-    fn a_rebuilt_card_is_laid_out_again_before_a_frame_reaches_it() {
-        ui::i18n::I18nManager::init("en-US");
-        let mut card = ProfileCard::new();
-        card.toggle(
-            &ProfileModel {
-                linked: vec![discord(unlinked())],
-                ..model()
-            },
-            Rect::new(1200.0, 2.0, 1220.0, 22.0),
-            Rect::new(0.0, 0.0, 1280.0, 720.0),
-        );
-        let next = Rc::new(RefCell::new(None));
-        let shell = Shell {
-            card,
-            next: Rc::clone(&next),
-        };
-        let mut frame =
-            ui::headless::Framed::new(ui::State::new(), shell, (1280, 720), Theme::dark());
-        let harness = ui::headless::Framed::harness_mut(&mut frame);
-        harness.poll_frame().unwrap();
-        let before = harness.rebuilt_frames();
-        *next.borrow_mut() = Some(vec![discord(offered())]);
-        assert!(harness.poll_frame().unwrap(), "the change is drawn");
-        assert!(
-            harness.rebuilt_frames() > before,
-            "the frame lays the rebuilt card out again instead of keeping the old layout"
-        );
-        assert!(harness.inspection_json().unwrap().contains("@ada.l"));
-    }
-
-    /// The linked accounts the host hears about are the person's own. While someone else's card is
-    /// open (opened from an author in Chat) they keep arriving, the first answer a couple of
-    /// seconds after opening: the card is not built again under the pointer for them, it stays open
-    /// as it was and goes on answering presses.
-    #[test]
-    fn someone_elses_card_stays_as_it_was_when_your_linked_accounts_arrive() {
-        ui::i18n::I18nManager::init("en-US");
-        let mut card = ProfileCard::new();
-        card.toggle(
-            &ada(true, crate::collaborators::LineSource::Generated),
-            Rect::new(600.0, 300.0, 602.0, 302.0),
-            Rect::new(0.0, 0.0, 1280.0, 720.0),
-        );
-        let next = Rc::new(RefCell::new(None));
-        let shell = Shell {
-            card,
-            next: Rc::clone(&next),
-        };
-        let mut frame =
-            ui::headless::Framed::new(ui::State::new(), shell, (1280, 720), Theme::dark());
-        let harness = ui::headless::Framed::harness_mut(&mut frame);
-        harness.poll_frame().unwrap();
-        let before = harness.rebuilt_frames();
-        *next.borrow_mut() = Some(vec![discord(unlinked())]);
-        harness.poll_frame().unwrap();
-        assert_eq!(
-            harness.rebuilt_frames(),
-            before,
-            "nothing of the card was built again"
-        );
-        let said = harness.inspection_json().unwrap();
-        assert!(!said.contains("Linked accounts"), "{said}");
-        harness.click_named("profile-follow").unwrap();
-        harness.poll_frame().unwrap();
-        let card = &mut frame.card;
-        assert!(card.is_open(), "the card stays open");
-        assert_eq!(
-            card.take_choice(),
-            Some(ProfileChoice::Follow("ada-device".into()))
-        );
-    }
-
-    /// Where the host keeps only how what they do is shared (a page), the card still has the field
-    /// for what they are doing in their own words, holding what they said.
-    #[test]
-    fn a_page_card_offers_what_they_are_doing_in_their_own_words() {
-        ui::i18n::I18nManager::init("en-US");
-        let open = |sharing| {
-            let mut card = ProfileCard::new();
-            card.toggle(
-                &ProfileModel {
-                    sharing,
-                    offers_presence: false,
-                    status: "Reviewing the launch plan".into(),
-                    ..model()
-                },
-                Rect::new(1200.0, 2.0, 1220.0, 22.0),
-                Rect::new(0.0, 0.0, 1280.0, 720.0),
-            );
-            ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
-        };
-        let said = says(&mut open(Some(ui::StatusSharing::Automatic)));
-        assert!(said.contains("profile-status"), "{said}");
-        assert!(said.contains("Reviewing the launch plan"), "{said}");
-        let said = says(&mut open(None));
-        assert!(!said.contains("profile-status"), "{said}");
-    }
-
-    fn opened() -> ProfileCard {
-        ui::i18n::I18nManager::init("en-US");
-        let mut card = ProfileCard::new();
-        card.toggle(
-            &model(),
-            Rect::new(1200.0, 2.0, 1220.0, 22.0),
-            Rect::new(0.0, 0.0, 1280.0, 720.0),
-        );
-        card
-    }
-
-    #[test]
-    fn the_card_opens_with_the_name_in_its_field() {
-        let card = opened();
-        assert!(card.is_open());
-        assert_eq!(card.draft(), "Kim");
-    }
-
-    #[test]
-    fn a_typed_name_is_kept_when_the_card_closes() {
-        let mut card = opened();
-        card.set_draft("  Kim Lee ");
-        card.close();
-        assert_eq!(
-            card.take_choice(),
-            Some(ProfileChoice::Rename("Kim Lee".into()))
-        );
-        assert_eq!(card.take_choice(), None);
-    }
-
-    #[test]
-    fn an_unchanged_or_blank_name_changes_nothing() {
-        let mut card = opened();
-        card.close();
-        assert_eq!(card.take_choice(), None);
-        let mut card = opened();
-        card.set_draft("   ");
-        card.close();
-        assert_eq!(card.take_choice(), None);
-    }
-
-    #[test]
-    fn an_open_card_follows_its_avatar_once_the_page_has_its_size() {
-        ui::i18n::I18nManager::init("en-US");
-        let mut card = ProfileCard::new();
-        let tiny = Rect::new(0.0, 0.0, 40.0, 40.0);
-        card.toggle(&model(), Rect::new(10.0, 0.0, 30.0, 20.0), tiny);
-        let (avatar, page) = (
-            Rect::new(1340.0, 4.0, 1364.0, 28.0),
-            Rect::new(0.0, 0.0, 1440.0, 900.0),
-        );
-        assert!(
-            card.follow_anchor(avatar, page),
-            "moves to where it belongs"
-        );
-        assert!(!card.follow_anchor(avatar, page), "and stays");
-        assert!(
-            !card.follow_anchor(Rect::ZERO, page),
-            "not to an avatar not drawn"
-        );
-        card.close();
-        assert!(
-            !card.follow_anchor(avatar, tiny),
-            "a closed card stays closed"
-        );
-    }
-
-    #[test]
-    fn toggling_again_closes() {
-        let mut card = opened();
-        card.toggle(&model(), Rect::ZERO, Rect::new(0.0, 0.0, 800.0, 600.0));
-        assert!(!card.is_open());
-    }
-
-    const ADA_KEY: &str = "a6d40c19e7b25f83c1d9e0a4b7f26c58d3e1a9b0c7f4e2d6a8b5c3e1f0d9a7c2";
-
-    fn ada(can_message: bool, status: crate::collaborators::LineSource) -> ProfileModel {
-        ProfileModel {
-            name: "Ada".into(),
-            identity: "ada-device".into(),
-            key: Some(ADA_KEY.into()),
-            other: Some(OtherPerson {
-                id: "ada-device".into(),
-                status: Some(crate::collaborators::RosterStatus {
-                    text: "Reviewing the checklist".into(),
-                    source: status,
-                }),
-                place: None,
-                presence: Some(ui::Availability::Available),
-                following: false,
-                can_follow: true,
-                can_message,
-                linked: Vec::new(),
-                agent: None,
-            }),
-            ..ProfileModel::default()
-        }
-    }
-
-    fn framed_model(model: &ProfileModel) -> ui::headless::Framed<ProfileCard> {
-        ui::i18n::I18nManager::init("en-US");
-        let mut card = ProfileCard::new();
-        card.toggle(
-            model,
-            Rect::new(1000.0, 2.0, 1020.0, 22.0),
-            Rect::new(0.0, 0.0, 1280.0, 720.0),
-        );
-        ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
-    }
-
-    fn claude(now: &str) -> ProfileModel {
-        ProfileModel {
-            name: "Claude Code".into(),
-            identity: "claude-run".into(),
-            other: Some(OtherPerson {
-                id: "claude-run".into(),
-                status: Some(crate::collaborators::RosterStatus {
-                    text: now.into(),
-                    source: crate::collaborators::LineSource::Observed,
-                }),
-                place: None,
-                presence: None,
-                following: false,
-                can_follow: true,
-                can_message: false,
-                linked: Vec::new(),
-                agent: Some(AgentFacts {
-                    client: "Claude Code".into(),
-                }),
-            }),
-            ..ProfileModel::default()
-        }
-    }
-
-    /// An agent's card says what it is at now: the run narrates each action while its card stands,
-    /// and the card must not go on quoting what it was at when it opened.
-    #[test]
-    fn an_agents_card_says_what_it_is_doing_now_while_it_stands() {
-        let mut frame = framed_model(&claude("Looking at the apps"));
-        let said = says(&mut frame);
-        assert!(said.contains("Looking at the apps"), "{said}");
-        assert!(
-            said.contains("Now"),
-            "it reads as what it is at now: {said}"
-        );
-        let (card, _) = ui::headless::Framed::split(&mut frame);
-        assert!(
-            !card.shows(&claude("Working in Notes")),
-            "the row moved past the card"
-        );
-        assert!(card.updated(&claude("Working in Notes")), "the line moved");
-        assert!(
-            card.shows(&claude("Working in Notes")),
-            "and the card has it"
-        );
-        let said = says(&mut frame);
-        assert!(said.contains("Working in Notes"), "{said}");
-        assert!(
-            !said.contains("Looking at the apps"),
-            "not what it opened with: {said}"
-        );
-        assert!(frame.is_open(), "the card keeps standing");
-        let (card, _) = ui::headless::Framed::split(&mut frame);
-        assert!(
-            !card.updated(&claude("Working in Notes")),
-            "the same line again builds nothing"
-        );
-    }
-
-    /// Your own card is yours to type in: what is said of other people never rebuilds it.
-    #[test]
-    fn your_own_card_is_never_built_again_from_what_is_said_of_someone_else() {
-        let mut frame = framed_model(&model());
-        assert!(says(&mut frame).contains("Your name"));
-        let (card, _) = ui::headless::Framed::split(&mut frame);
-        assert!(!card.updated(&claude("Working in Notes")));
-        assert!(
-            says(&mut frame).contains("Your name"),
-            "still your own card, untouched"
-        );
-    }
-
-    #[test]
-    fn someone_elses_card_says_who_they_are_and_offers_writing_and_following() {
-        let mut frame = framed_model(&ada(true, crate::collaborators::LineSource::Generated));
-        let said = says(&mut frame);
-        assert!(said.contains("Ada’s profile"), "{said}");
-        assert!(said.contains("a6d40c19…a7c2"), "the id, short: {said}");
-        assert!(said.contains("Written automatically"), "{said}");
-        // Nothing of the person's own card: no name field, no identity.
-        assert!(!said.contains("Your name"), "{said}");
-        click(&mut frame, "profile-message");
-        assert_eq!(
-            frame.take_choice(),
-            Some(ProfileChoice::Message(ADA_KEY.into()))
-        );
-
-        let mut frame = framed_model(&ada(false, crate::collaborators::LineSource::Written));
-        let said = says(&mut frame);
-        assert!(said.contains("In their own words"), "{said}");
-        assert!(
-            !said.contains("\"Message\""),
-            "no conversation to open: {said}"
-        );
-        click(&mut frame, "profile-follow");
-        assert_eq!(
-            frame.take_choice(),
-            Some(ProfileChoice::Follow("ada-device".into()))
-        );
-    }
-
-    #[test]
-    fn your_own_card_shows_your_id_and_your_pictures_buttons() {
-        let mut own = model();
-        own.key = Some(ADA_KEY.into());
-        for id in [SET_PHOTO, RESET_PHOTO] {
-            own.actions.push(ProfileAction {
-                id: id.into(),
-                title: id.into(),
-                group: ProfileGroup::Identity,
-                icon: Icon::Fingerprint,
-            });
-        }
-        let mut frame = framed_model(&own);
-        let said = says(&mut frame);
-        assert!(said.contains("Change picture"), "{said}");
-        assert!(said.contains("Remove picture"), "{said}");
-        assert!(said.contains("Copy ID"), "{said}");
-        click(&mut frame, "profile-action-set-photo");
-        assert_eq!(
-            frame.take_choice(),
-            Some(ProfileChoice::Action(SET_PHOTO.into()))
-        );
-        assert_eq!(short_key("abc"), "abc");
-    }
-
-    #[test]
-    fn someone_elses_card_names_their_linked_accounts() {
-        let mut model = ada(true, crate::collaborators::LineSource::Written);
-        let mut frame = framed_model(&model);
-        assert!(!says(&mut frame).contains("Linked to"));
-        if let Some(other) = &mut model.other {
-            other.linked = vec![tilo_app::linked_accounts::ProfileLink {
-                service: "Discord".into(),
-                handle: "ada".into(),
-                picture: None,
-            }];
-        }
-        let mut frame = framed_model(&model);
-        let said = says(&mut frame);
-        assert!(said.contains("Linked to @ada on Discord"), "{said}");
-        assert!(
-            !said.contains("Unlink"),
-            "only their own card unlinks: {said}"
-        );
-    }
-}
+#[path = "profile_card/tests.rs"]
+mod tests;

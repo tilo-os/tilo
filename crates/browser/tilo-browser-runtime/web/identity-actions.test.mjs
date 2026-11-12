@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ACTION_GAP_MS, ASK_AFTER_ACTIONS, createIdentityActions, KEEP, LINKED_ID, NAME, PAIR, passkeysUsable, PHOTO, RECOVERY, RESET_PHOTO,
-  REVOKE_DEVICE, SIGN_IN, syncProfile,
+  ACTION_GAP_MS, ASK_AFTER_ACTIONS, CONNECT_AGENT, createIdentityActions, KEEP, LINKED_ID, NAME, PAIR, passkeysUsable, PHOTO,
+  RECOVERY, RESET_PHOTO, REVOKE_DEVICE, SIGN_IN, syncProfile,
 } from './identity-actions.mjs';
 import {openInvites} from './pairing.mjs';
 import {IdentityError} from './identity.mjs';
@@ -424,6 +424,27 @@ async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
 
 const request = (digest, invite, extra = {}) => ({digest, pairingCode: '123456', label: 'Safari on iPhone', device: 'ee'.repeat(32),
   invite, requestedAtMs: 0, ...extra});
+
+test('the card offers the agent setup, and choosing it shows that setup again', async () => {
+  const identity = fakeIdentity();
+  const mount = fakeMount();
+  let shown = 0;
+  const actions = createIdentityActions({identity, session: memorySession(), passkeys: async () => false,
+    showAgentSetup: () => { shown += 1; }});
+  await actions.attach(mount);
+  assert.ok(mount.actions.includes(CONNECT_AGENT.id), 'the card offers it beside the devices');
+  assert.equal(mount.subtitles[CONNECT_AGENT.id], CONNECT_AGENT.subtitle);
+  await actions.perform(CONNECT_AGENT.id);
+  assert.equal(shown, 1, 'the first screen\'s own setup, with a fresh code');
+});
+
+test('without a page that can show the setup, the card offers nothing it cannot do', async () => {
+  const identity = fakeIdentity();
+  const mount = fakeMount();
+  const actions = createIdentityActions({identity, session: memorySession(), passkeys: async () => false});
+  await actions.attach(mount);
+  assert.ok(!mount.actions.includes(CONNECT_AGENT.id));
+});
 
 test('each pairing link names a fresh invite, shown on a sheet that can copy it, open for ten minutes', async () => {
   const pairing = await pairingFixture();

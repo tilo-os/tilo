@@ -136,6 +136,11 @@ impl Nav {
     /// Show `place`, as a capture stages it.
     #[cfg(feature = "samples")]
     pub(crate) fn show(&self, place: Place) {
+        self.show_place(place);
+    }
+
+    /// Show `place`: what a link or the person's own card asks for.
+    pub(crate) fn show_place(&self, place: Place) {
         self.place.set(Some(place.key().to_owned()));
         self.pane.set(ui::widget::NavPane::Content);
     }
@@ -355,11 +360,11 @@ impl ResourceApp for App {
         cx.effects(move |effect: ConsoleEffect, _cx| {
             match effects::agent(&effect) {
                 Some((client, command)) => opened.show_agent(client, command),
-                None => {
-                    if let ConsoleEffect::ViewRun { run } = &effect {
-                        opened.show_run(run);
-                    }
-                }
+                None => match &effect {
+                    ConsoleEffect::ViewRun { run } => opened.show_run(run),
+                    ConsoleEffect::ViewConnect => opened.show_place(Place::Connect),
+                    _ => {}
+                },
             }
             Ok(ui::framework::Effected::done())
         });

@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
-import {ASK_MS, codeWait, showPrompt, CONNECTED_MS, QUIET_MS, createFirstRun, FOLLOW_MS, MAKE_MS, manualCommands, MCP_URL, OFFER_MS, PASSKEY_WAIT_MS, RENEW_MS,
-  readSetup, SETUP, setupFailure, setupPrompt, signInPrompt, stepLines, minutesLeft} from './first-run.mjs';
+import {ASK_MS, codeWait, showPrompt, CONNECTED_MS, QUIET_MS, createFirstRun, FOLLOW_MS, MAKE_MS, manualCommands, MCP_URL, OFFER_MS,
+  openFirstRun, PASSKEY_WAIT_MS, RENEW_MS, readSetup, SETUP, setupFailure, setupPrompt, signInPrompt, stepLines, minutesLeft}
+  from './first-run.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const CODE = 'K7Q-MX2P';
@@ -760,4 +761,48 @@ test('the prompt breaks only between its words: a flag and a URL each stay whole
   const words = element.children.filter(child => child.className === 'fr-word').map(child => child.textContent);
   for (const whole of ['-fsSL', 'https://tilo.example', '--site', 'D9B-X4GK']) assert.ok(words.includes(whole), `${whole} stays one unbreakable word`);
   assert.ok(element.children.filter(child => child.kind === 'text').every(child => /^ +$/.test(child.textContent)), 'it breaks only at spaces');
+});
+
+/** Enough of a document for the first screen's own markup: every element it
+ * asks for, answering to nothing. `removed` says whether the screen was taken
+ * out of the page, which is what showing it again depends on. */
+function stubDocument() {
+  const made = [];
+  const element = id => {
+    const el = {
+      id, dataset: {}, textContent: '', value: '', hidden: false, removed: false, style: {}, className: '',
+      attrs: new Map(), children: [], kind: 'element', ownerDocument: null,
+      setAttribute(name, value) { this.attrs.set(name, String(value)); },
+      getAttribute(name) { return this.attrs.get(name) ?? null; },
+      removeAttribute(name) { this.attrs.delete(name); },
+      addEventListener() {}, removeEventListener() {}, focus() {}, select() {}, append() {}, appendChild(child) { this.children.push(child); return child; },
+      replaceChildren(...children) { this.children = children; }, closest() { return this; }, remove() { this.removed = true; },
+      querySelector() { return null; }, querySelectorAll() { return []; },
+    };
+    made.push(el);
+    return el;
+  };
+  const byId = new Map();
+  const getElementById = id => {
+    if (!byId.has(id)) byId.set(id, element(id));
+    return byId.get(id);
+  };
+  const root = element('html');
+  const document = {documentElement: root, getElementById, getSelection: () => null, addEventListener() {},
+    createElement: name => element(name), createTextNode: text => ({kind: 'text', textContent: text}), body: element('body')};
+  return {document, root, screen: () => byId.get('first-run'), made};
+}
+
+test('the agent setup can be shown again from the person\'s card, in the same place', () => {
+  const {document, root, screen} = stubDocument();
+  const storage = {getItem: () => JSON.stringify({step: 'done'}), setItem() {}};
+  const run = openFirstRun(document, {storage});
+  assert.ok(run, 'the setup, again');
+  assert.equal(typeof run.offerSetup, 'function', 'it takes a fresh code, as the first screen did');
+  assert.equal(root.attrs.get('data-first-run'), '', 'the screen is shown');
+  assert.ok(screen(), 'in the page it was first shown in');
+  // Leaving it takes it off the page without taking it out of the document.
+  document.getElementById('first-run').dataset.closing = '';
+  assert.notEqual(screen().removed, true, 'the same screen is shown the next time');
+  assert.equal(openFirstRun({getElementById: () => null}), null, 'a page without one shows nothing');
 });

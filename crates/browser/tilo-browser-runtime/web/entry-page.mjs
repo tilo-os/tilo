@@ -27,7 +27,7 @@ import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspac
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, SIGN_IN, syncProfile} from './identity-actions.mjs';
-import {firstRun, MCP_URL, setupDone} from './first-run.mjs';
+import {firstRun, MCP_URL, openFirstRun, setupDone} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
@@ -1887,6 +1887,12 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
     pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', showPairLink: pairLinkSheet, askPairing: pairingAsk,
     standIn: standInOf({peer, identity, runtime}), standInStore: globalThis.localStorage,
     profiled: at => peer?.setProfileChanged?.(at),
+    // The card's "Connect an agent" is the first screen's own setup, shown
+    // again with a fresh code: the same prompt and the same MCP address the
+    // person saw when they arrived.
+    showAgentSetup: peer?.origin
+      ? () => { connectAnAgent({origin: peer.origin, identity, runtime, link}); }
+      : null,
   });
   void actions.attach(mount);
   if (peer?.authoredChanges) {
@@ -1962,21 +1968,20 @@ const pageLetIn = new Promise(resolve => { letIn = resolve; });
 const LET_IN_MS = 30_000;
 
 /**
- * The first screen's login codes, from the host at `origin` (for an agent
- * to set Tilo up through this tab's root, or to sign this tab in as a person
- * who has been here), offered once: the tab needs only its person
- * (`identity`) and that host for them, not a session in any workspace.
+ * The codes a person's agent sets Tilo up with, for this tab's root on
+ * `origin`: `make()` hands back a code the agent runs `tilo login` with and
+ * the setup keeps (`resume(saved)` follows it again after a reload), and
+ * `codes` are the host's login codes themselves. Its `ours(saved)` says
+ * whether a kept code is this person's, on this host.
  *
- * The setup code names a pairing link to this tab, into the person's own
+ * The code names a pairing link to this tab, into the person's own
  * workspace on that host. A first visit has none yet, so the link names the
  * one this tab chose (`namedOwnWorkspace`): whichever comes first, the
  * agent's `tilo login` or this page once let in, has the host make it under
  * that name. The tab approves the agent's device through the host's
  * published address, and gives the person a stand-in there.
  */
-function offerFirstRunCodes({origin, identity, runtime, link}) {
-  if (firstRunCodesOffered || !firstRun || !origin || !runtime?.createLoginCode) return;
-  firstRunCodesOffered = true;
+function agentSetupCodes({origin, identity, runtime, link}) {
   const host = new URL(origin).origin;
   const codes = loginCodes(runtime, host);
   let actions = null;
@@ -1991,7 +1996,7 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
   // What the setup keeps of a code names whose it is: a code kept for
   // another person or host is not this tab's to follow.
   const ours = saved => saved?.person === identity.userPublicKey && saved?.host === host;
-  firstRun.offerSetup(async () => {
+  const make = async () => {
     const agents = await agentActions();
     const pairing = await agents.connectAgent({workspace: setUpIn ?? namedOwnWorkspace(host, identity.userPublicKey)});
     const made = await codes.create(pairing.link);
@@ -2000,7 +2005,8 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
     void agents.keepStandIn().catch(error => console.warn('first run: stand-in', error));
     return {...made, saved: {...made.saved, person: identity.userPublicKey, host,
       invite: pairing.invite, inviteExpiresAt: pairing.expiresAt}};
-  }, saved => {
+  };
+  const resume = saved => {
     if (!ours(saved)) return null;
     // The link in the code names an invite this tab made before it was
     // loaded again: the agent's device answering it is approved here, as
@@ -2010,7 +2016,40 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
         .catch(error => console.warn('first run: approving your agent', error));
     }
     return codes.resume(saved);
-  });
+  };
+  return {codes, ours, make, resume};
+}
+
+/**
+ * The agent setup again, from the person's own card: the first screen, in
+ * the same place, with a fresh code (`first-run.mjs` `openFirstRun`). Skip
+ * there only closes it: the person is set up already.
+ */
+function connectAnAgent({origin, identity, runtime, link}) {
+  const run = openFirstRun(document);
+  if (!run) return false;
+  if (!origin || !runtime?.createLoginCode) {
+    run.unavailable({code: 'no-workspace'});
+    return true;
+  }
+  const {make, resume} = agentSetupCodes({origin, identity, runtime, link});
+  run.offerSetup(make, resume);
+  return true;
+}
+
+/**
+ * The first screen's login codes, from the host at `origin` (for an agent
+ * to set Tilo up through this tab's root, or to sign this tab in as a person
+ * who has been here), offered once: the tab needs only its person
+ * (`identity`) and that host for them, not a session in any workspace.
+ * The code itself is [`agentSetupCodes`]'s.
+ */
+function offerFirstRunCodes({origin, identity, runtime, link}) {
+  if (firstRunCodesOffered || !firstRun || !origin || !runtime?.createLoginCode) return;
+  firstRunCodesOffered = true;
+  const setup = agentSetupCodes({origin, identity, runtime, link});
+  firstRun.offerSetup(setup.make, setup.resume);
+  const {codes, ours} = setup;
   // Claimed by a device of the person: this tab asks to be certified as a
   // device of theirs with the invite the claim named, as a pairing link
   // does, and their stand-in on the host approves exactly that request.
