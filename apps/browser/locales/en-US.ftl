@@ -510,6 +510,7 @@ browser-resource-personal-bookmarks = Personal bookmarks
 browser-resource-bookmark-navigation = Bookmark navigation
 browser-library-already-clear = The library filter is already clear
 browser-action-needs-page = Open a web page first
+browser-action-private-no-forms = A private window remembers no forms
 browser-action-no-previous-page = No previous page
 browser-action-no-next-page = No next page
 browser-action-page-idle = Page is idle

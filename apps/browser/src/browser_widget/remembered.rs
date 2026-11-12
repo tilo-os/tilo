@@ -35,9 +35,9 @@ impl BrowserWidget {
     pub(super) fn remembered_forms_action(&self) -> ui::tilo_actions::ActionSpec {
         let read = BrowserEffect::ReadRememberedForms.bound();
         if self.browsing_mode.is_private() {
-            read.unavailable("private_window", "A private window remembers no forms")
+            read.unavailable("private_window", t("browser-action-private-no-forms"))
         } else if crate::site_controls::origin(&self.current_uri).is_none() {
-            read.unavailable("no_web_page", "Open a web page first")
+            read.unavailable("no_web_page", t("browser-action-needs-page"))
         } else {
             read
         }

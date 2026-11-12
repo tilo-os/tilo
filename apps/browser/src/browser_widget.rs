@@ -5395,7 +5395,7 @@ impl BrowserWidget {
         page.actions.push(if web_page {
             review
         } else {
-            review.unavailable("no_web_page", "Open a web page first")
+            review.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
         });
         page.actions.extend(self.daily.zoom_actions());
         // A page waiting on a permission asks in the page's own actions too:

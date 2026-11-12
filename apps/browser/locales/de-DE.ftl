@@ -510,6 +510,7 @@ browser-resource-personal-bookmarks = Persönliche Lesezeichen
 browser-resource-bookmark-navigation = Lesezeichen-Navigation
 browser-library-already-clear = Der Filter der Bibliothek ist bereits leer
 browser-action-needs-page = Öffne zuerst eine Webseite
+browser-action-private-no-forms = Ein privates Fenster merkt sich keine Formulare
 browser-action-no-previous-page = Keine vorherige Seite
 browser-action-no-next-page = Keine nächste Seite
 browser-action-page-idle = Die Seite ist untätig
