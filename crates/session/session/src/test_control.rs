@@ -204,6 +204,9 @@ pub(crate) struct Desk<'a> {
     /// Who is here, as the collaboration plane says it: this session's membership of each
     /// workspace, when it takes part in one.
     pub(crate) sync: Option<&'a crate::sync::Client>,
+    /// The windows this session shares and the ones of other devices it shows: what its
+    /// window-share resource reads.
+    pub(crate) shares: &'a std::cell::RefCell<crate::window_share::WindowShares>,
     pub(crate) locked: bool,
     pub(crate) lock_screen_drawn: bool,
     /// The lock's own state: what unlocking it is, the same one an accepted password sets, so a
@@ -2693,7 +2696,7 @@ mod tests {
                     "overlays": {"quick_settings": true, "overview": false},
                 },
                 "peers": Json::Null,
-                "sharing": Json::Null,
+                "sharing": {"sharing": [{"tab": "7", "room": "room-1", "viewers": []}]},
             }})
         };
         // Unlocked, the owner's door sees the desk as the development socket does.
@@ -2708,11 +2711,29 @@ mod tests {
         assert_eq!(locked["state"]["workspace_tree"], Json::Null);
         assert_eq!(locked["state"]["held_workspaces"], json!([]));
         assert_eq!(
+            locked["state"]["sharing"],
+            Json::Null,
+            "which windows the desk shares is behind the lock too"
+        );
+        assert_eq!(
             locked["state"]["chrome"]["overlays"],
             json!({"quick_settings": false, "overview": false})
         );
         // A development socket sees the desk it drives, locked or not.
         assert_eq!(owner_shown(Gate::Dev, dump(true)), dump(true));
+        // An app reads its own workspace of the desk, and nothing of what the desk shares.
+        let app = Context {
+            gate: Gate::Dev,
+            scope: Some(Arc::new(Scope {
+                app: "so.tilo.notes".to_owned(),
+                workspace: "room-1".to_owned(),
+            })),
+        };
+        assert_eq!(
+            shown(&app, dump(false))["state"]["sharing"],
+            Json::Null,
+            "the window shares are the desk's, and no app's to read"
+        );
     }
 
     #[test]

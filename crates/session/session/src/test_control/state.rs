@@ -26,6 +26,7 @@ pub(super) fn owner_shown(gate: Gate, dump: Json) -> Json {
     state.insert("held_workspaces".into(), json!([]));
     // Who is here is desk state like the rest: a locked desk names nobody.
     state.insert("peers".into(), Json::Null);
+    state.insert("sharing".into(), Json::Null);
     if let Some(open) = state
         .get_mut("chrome")
         .and_then(|chrome| chrome.get_mut("overlays"))
@@ -69,6 +70,8 @@ fn only_workspace(mut dump: Json, scope: &Scope) -> Json {
     {
         rows.retain(|workspace| in_scope(workspace, scope));
     }
+    // The window shares are the desk's, of every workspace it holds: an app reads none of them.
+    state.insert("sharing".into(), Json::Null);
     dump
 }
 
@@ -94,9 +97,30 @@ fn locked_in(dump: &Json) -> bool {
         == Some(true)
 }
 
+/// What the session shares of its windows and shows of other devices', as its window-share
+/// resource reads it: `sharing` (each shared window and who views it), `starting` (a share that
+/// waits, and for what), `watching` (the windows of other devices this one asks for, and of which
+/// device) and `received` (the streams that reached it, and whether their tab pictures them). A
+/// tool driving two desks reads on each end how far a share came. The identifier a window is
+/// captured under is left out: it is the compositor's, for the clients it trusts.
+fn shares_shown(desk: &Desk<'_>) -> Json {
+    let Ok(shares) = desk.shares.try_borrow() else {
+        return Json::Null;
+    };
+    let mut reading = shares.reading();
+    for (_, rows) in reading.as_object_mut().into_iter().flatten() {
+        for row in rows.as_array_mut().into_iter().flatten() {
+            if let Some(row) = row.as_object_mut() {
+                row.remove("window");
+            }
+        }
+    }
+    reading
+}
+
 /// The desk as it is now: its tree without its history, the workspaces this computer holds, what
-/// stands over it, and whether the screen is locked — the shape the tools that drive a desktop
-/// read, and the line a `watch` streams as it changes.
+/// stands over it, whether the screen is locked and what the session shares of its windows — the
+/// shape the tools that drive a desktop read, and the line a `watch` streams as it changes.
 pub(super) fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
     let held: BTreeSet<String> = desk
         .engine
@@ -177,7 +201,7 @@ pub(super) fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
             },
         },
         "peers": presence(desk),
-        "sharing": Json::Null,
+        "sharing": shares_shown(desk),
     }})
 }
 

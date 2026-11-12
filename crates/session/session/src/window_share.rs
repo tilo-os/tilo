@@ -421,7 +421,7 @@ impl WindowShares {
     }
 
     /// The resource's reading now.
-    fn reading(&self) -> Value {
+    pub(crate) fn reading(&self) -> Value {
         let sharing: Vec<Value> = self
             .hosted
             .iter()
