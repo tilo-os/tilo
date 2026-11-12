@@ -37,7 +37,7 @@ const FACES_SHOWN: usize = 4;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct WorkspaceDirectory {}
 
-#[resource(kind = "workspace-directory.listing", label = "Public workspaces")]
+#[resource(kind = "workspace-directory.listing")]
 impl WorkspaceDirectory {}
 
 /// What the sheet asks of the shell.

@@ -28,7 +28,7 @@ pub const APP_ID: &str = "so.tilo.delete-workspace";
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct DeleteWorkspace {}
 
-#[resource(kind = "delete_workspace.question", label = "Delete workspace")]
+#[resource(kind = "delete_workspace.question")]
 impl DeleteWorkspace {}
 
 /// The question the sheet asks: the workspace's name.

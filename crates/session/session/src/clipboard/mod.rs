@@ -721,7 +721,7 @@ pub(crate) enum ClipboardAction {
         text: String,
     },
     /// Paste the copied files into a folder, as a copy, or a move after a cut
-    #[effect(own_device, label = "Paste files")]
+    #[effect(own_device)]
     PasteFiles {
         /// The folder to paste them into
         #[param("The folder")]

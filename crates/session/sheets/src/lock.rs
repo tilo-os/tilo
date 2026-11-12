@@ -87,7 +87,7 @@ const BLANK: MotionSpec = MotionSpec {
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct LockScreen {}
 
-#[resource(kind = "lock.screen", label = "Lock screen")]
+#[resource(kind = "lock.screen")]
 impl LockScreen {}
 
 /// What can be done on the lock screen.
@@ -119,13 +119,23 @@ pub enum LockEffect {
     #[effect(own_device, keywords = "music, media, skip")]
     PreviousTrack,
     /// Suspend the computer
-    #[effect(own_device, keywords = "sleep, standby")]
+    #[effect(label = "power-suspend", own_device, keywords = "sleep, standby")]
     Suspend,
     /// Restart the computer
-    #[effect(own_device, destructive, keywords = "reboot, reset")]
+    #[effect(
+        label = "power-restart",
+        own_device,
+        destructive,
+        keywords = "reboot, reset"
+    )]
     Restart,
     /// Shut the computer down
-    #[effect(own_device, destructive, keywords = "shutdown, power off")]
+    #[effect(
+        label = "power-shut-down",
+        own_device,
+        destructive,
+        keywords = "shutdown, power off"
+    )]
     ShutDown,
     /// The screen has finished leaving: the lock may lift
     #[effect(own_device)]

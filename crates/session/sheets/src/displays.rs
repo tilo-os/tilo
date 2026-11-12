@@ -40,7 +40,7 @@ pub const APP_ID: &str = "so.tilo.display-sheet";
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct DisplaySheet {}
 
-#[resource(kind = "display-sheet.layouts", label = "Displays")]
+#[resource(kind = "display-sheet.layouts")]
 impl DisplaySheet {}
 
 /// What the sheet asks of the shell.

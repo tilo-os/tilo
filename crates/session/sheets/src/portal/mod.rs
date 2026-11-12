@@ -51,7 +51,7 @@ pub const APP_ID: &str = "so.tilo.portal-sheet";
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct PortalSheet {}
 
-#[resource(kind = "portal-sheet.question", label = "System question")]
+#[resource(kind = "portal-sheet.question")]
 impl PortalSheet {}
 
 /// What the sheet asks of the shell. Every effect names the request

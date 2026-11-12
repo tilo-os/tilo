@@ -35,7 +35,7 @@ pub const APP_ID: &str = "so.tilo.file-chooser";
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct FileChooser {}
 
-#[resource(kind = "file-chooser.request", label = "File chooser")]
+#[resource(kind = "file-chooser.request")]
 impl FileChooser {}
 
 /// What a person does in the chooser. Every step names the request
