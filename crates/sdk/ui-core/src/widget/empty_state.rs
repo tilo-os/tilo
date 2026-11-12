@@ -15,6 +15,7 @@
 //! drain channel ([`EmptyState::take_action`]) rather than a callback, matching the CRDT-native
 //! input model of [`super::ContextMenu`].
 
+use crate::i18n::widget_text;
 use crate::widget::{AppModel, ModelPath};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1347,9 +1348,9 @@ impl EmptyState {
     /// Re-read the title, message and action label through the i18n layer.
     fn resolve(&mut self) {
         let resolved = (
-            crate::i18n!(&self.title),
-            self.message.as_deref().map(|m| crate::i18n!(m)),
-            self.action_label.as_deref().map(|a| crate::i18n!(a)),
+            widget_text(&self.title),
+            self.message.as_deref().map(|m| widget_text(m)),
+            self.action_label.as_deref().map(|a| widget_text(a)),
         );
         if resolved != self.resolved {
             self.resolved = resolved;
@@ -1914,7 +1915,7 @@ impl Widget for EmptyState {
             // whether or not the disclosure is open.
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("empty-state-details"))
+                    .with_name(widget_text("empty-state-details"))
                     .with_description(details.clone())
                     .with_bounds(self.details_rect)
                     .with_state(

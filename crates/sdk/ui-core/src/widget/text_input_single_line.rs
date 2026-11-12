@@ -2,6 +2,7 @@
 //! into per-character offsets, scrolling the caret into view, and drawing
 //! the selection, decorations, text and caret.
 
+use crate::i18n::widget_text;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 
@@ -364,7 +365,7 @@ impl TextInput {
         };
         self.prompt_fit = None;
         if self.shows_placeholder() {
-            let placeholder = crate::i18n!(&self.placeholder);
+            let placeholder = widget_text(&self.placeholder);
             // The placeholder sets in the field's own style, in the tertiary
             // ink: a prompt, clearly weaker than any value.
             let style = self.placeholder_style(text_size);

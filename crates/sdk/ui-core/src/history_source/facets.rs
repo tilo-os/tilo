@@ -4,6 +4,7 @@
 //! them later. Counts are derived from durable action context; legacy entries
 //! simply contribute to people and operation-class lenses.
 
+use crate::i18n::widget_text;
 use std::collections::BTreeMap;
 
 use crate::widget::EntryKind;
@@ -62,7 +63,7 @@ impl EntryKind {
     /// What kind of change this is, in the desktop's language.
     #[must_use]
     pub fn label(self) -> String {
-        crate::i18n!(match self {
+        widget_text(match self {
             EntryKind::Text => "history-op-splice",
             EntryKind::Details => "history-op-edit-meta",
             EntryKind::Move => "history-op-move",

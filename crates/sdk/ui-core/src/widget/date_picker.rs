@@ -11,6 +11,7 @@
 //! [`DatePicker::from_state`], or be observed with `on_change` for an
 //! app-owned durable mutation.
 
+use crate::i18n::widget_text;
 use crate::widget::{AppModel, ModelPath};
 
 mod feed;
@@ -691,7 +692,7 @@ impl Widget for DatePicker {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let node = AccessNode::new(Role::ComboBox)
-            .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
+            .with_optional_name(self.accessible_name.as_ref().map(|name| widget_text(name)))
             .with_value(self.selected.format("%Y-%m-%d").to_string())
             .with_state(
                 AccessState::new()

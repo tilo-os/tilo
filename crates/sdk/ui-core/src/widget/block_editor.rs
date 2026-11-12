@@ -3,6 +3,7 @@
 //! promotion (`# ` -> H1, etc). No demotion once a block is a heading, and promotion only fires on
 //! an *empty* paragraph, matching the slash-menu convention.
 
+use crate::i18n::{widget_format, widget_text};
 use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
@@ -1026,7 +1027,7 @@ impl BlockEditor {
             blocks_list: None,
             local_author: None,
             kbd_sel_anchor: None,
-            empty_hint: crate::i18n!("block-editor-empty"),
+            empty_hint: widget_text("block-editor-empty"),
             formula_preview_rects: Vec::new(),
             table_preview_rects: Vec::new(),
             table_editors: HashMap::new(),
@@ -3340,12 +3341,12 @@ impl BlockEditor {
                         .with_value(source)
                         .with_children(vec![
                             AccessNode::new(Role::ToggleButton)
-                                .with_name(crate::i18n!("block-a11y-formula-source"))
+                                .with_name(widget_text("block-a11y-formula-source"))
                                 .with_state(AccessState::new().checked(
                                     chrome.descriptor.mode == crate::math::FormulaMode::Source,
                                 )),
                             AccessNode::new(Role::ToggleButton)
-                                .with_name(crate::i18n!("block-a11y-formula-visual"))
+                                .with_name(widget_text("block-a11y-formula-visual"))
                                 .with_state(AccessState::new().checked(
                                     chrome.descriptor.mode == crate::math::FormulaMode::Visual,
                                 )),
@@ -3365,8 +3366,13 @@ impl BlockEditor {
                     Some(
                         AccessNode::new(Role::Button)
                             .with_name(language.map_or_else(
-                                || crate::i18n!("block-editor-copy-code-hint"),
-                                |lang| crate::i18n!("block-a11y-copy-lang", "lang" => lang.to_string()),
+                                || widget_text("block-editor-copy-code-hint"),
+                                |lang| {
+                                    widget_format(
+                                        "block-a11y-copy-lang",
+                                        &[("lang", lang.to_string().into())],
+                                    )
+                                },
                             ))
                             .with_action_target(self.code_copy_run_target(*start, *end)?)
                             .with_bounds(*bounds)
@@ -3397,7 +3403,7 @@ impl BlockEditor {
         let mentions = self.mention_picker.access_rows();
         if !mentions.is_empty() {
             let mut list = AccessNode::new(crate::a11y::Role::List)
-                .with_name(crate::i18n!("widget-mention-list"));
+                .with_name(widget_text("widget-mention-list"));
             list.semantic_key = Some("editor.mention-picker".into());
             list.bounds = self.mention_picker.rect().map(Into::into);
             list.children = mentions;
@@ -3425,7 +3431,7 @@ impl BlockEditor {
         // Every block's controls carry the same labels: look each up once,
         // not once per block per frame.
         let labels = AccessRowContext {
-            change_type: crate::i18n!("block-editor-change-type"),
+            change_type: widget_text("block-editor-change-type"),
             text: crate::i18n::I18nManager::lookup("widget-block-text", None),
             indent: crate::i18n::I18nManager::lookup("widget-block-indent", None),
             outdent: crate::i18n::I18nManager::lookup("widget-block-outdent", None),
@@ -3590,7 +3596,7 @@ impl BlockEditor {
         } = *inputs;
         let mut block_children = vec![
             AccessNode::new(Role::Button)
-                .with_name(crate::i18n!("block-a11y-move-up"))
+                .with_name(widget_text("block-a11y-move-up"))
                 .with_action_target(Self::block_move_target(&block.id, "up"))
                 .with_bounds(bounds)
                 .with_state(
@@ -3599,7 +3605,7 @@ impl BlockEditor {
                         .disabled(up_disabled),
                 ),
             AccessNode::new(Role::Button)
-                .with_name(crate::i18n!("block-a11y-move-down"))
+                .with_name(widget_text("block-a11y-move-down"))
                 .with_action_target(Self::block_move_target(&block.id, "down"))
                 .with_bounds(bounds)
                 .with_state(
@@ -3651,8 +3657,11 @@ impl BlockEditor {
                 .map_or(line, |rect| rect);
             block_children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-a11y-open-embed", "title" => name))
-                    .with_description(crate::i18n!("block-a11y-embed-description"))
+                    .with_name(widget_format(
+                        "block-a11y-open-embed",
+                        &[("title", name.into())],
+                    ))
+                    .with_description(widget_text("block-a11y-embed-description"))
                     .with_action_target(target.action_target())
                     .with_bounds(card_bounds)
                     .with_state(AccessState::new().focusable(true)),
@@ -3713,15 +3722,17 @@ impl BlockEditor {
                             }
                             AccessNode::new(Role::Cell)
                                 .with_name(if row_index == 0 {
-                                    crate::i18n!(
+                                    widget_format(
                                         "block-a11y-table-column",
-                                        "column" => column_index.saturating_add(1)
+                                        &[("column", column_index.saturating_add(1).into())],
                                     )
                                 } else {
-                                    crate::i18n!(
+                                    widget_format(
                                         "block-a11y-table-cell",
-                                        "row" => row_index,
-                                        "column" => column_index.saturating_add(1)
+                                        &[
+                                            ("row", row_index.into()),
+                                            ("column", column_index.saturating_add(1).into()),
+                                        ],
                                     )
                                 })
                                 .with_description(decode_table_cell(
@@ -3733,16 +3744,16 @@ impl BlockEditor {
                         .collect();
                     AccessNode::new(Role::Row)
                         .with_name(if row_index == 0 {
-                            crate::i18n!("block-a11y-table-header-row")
+                            widget_text("block-a11y-table-header-row")
                         } else {
-                            crate::i18n!("block-a11y-table-row", "row" => row_index)
+                            widget_format("block-a11y-table-row", &[("row", row_index.into())])
                         })
                         .with_children(cells)
                 })
                 .collect();
             block_children.push(
                 AccessNode::new(Role::Table)
-                    .with_name(crate::i18n!("block-a11y-table"))
+                    .with_name(widget_text("block-a11y-table"))
                     .with_value(block.text())
                     .with_bounds(table_bounds)
                     .with_children(rows),
@@ -3763,7 +3774,7 @@ impl BlockEditor {
             if image.editing {
                 block_children.push(
                     AccessNode::new(Role::MultilineTextInput)
-                        .with_name(crate::i18n!("notes-image-source"))
+                        .with_name(widget_text("notes-image-source"))
                         .with_value(block.text())
                         .with_action_target(format!("notes.image-source:{}", block.id))
                         .with_bounds(line)
@@ -3789,7 +3800,7 @@ impl BlockEditor {
             block_children.push(
                 AccessNode::new(Role::Image)
                     .with_name(if alt.is_empty() {
-                        crate::i18n!("block-image-untitled")
+                        widget_text("block-image-untitled")
                     } else {
                         alt.to_owned()
                     })
@@ -3800,11 +3811,11 @@ impl BlockEditor {
         for span in block.line.marks() {
             let (name, target) = match &span.mark {
                 Mark::Link(id) if !id.is_nil() => (
-                    crate::i18n!("block-a11y-open-link"),
+                    widget_text("block-a11y-open-link"),
                     page_link_action_target(*id),
                 ),
                 Mark::ExternalLink(url) => (
-                    crate::i18n!("block-a11y-open-external"),
+                    widget_text("block-a11y-open-external"),
                     external_link_action_target(url),
                 ),
                 Mark::ResourceLink(href) => (
@@ -3843,10 +3854,15 @@ impl BlockEditor {
         // in the kind's own words, which the role alone does not say.
         let said = block.text().lines().next().unwrap_or_default().trim();
         let name = if said.is_empty() {
-            crate::i18n!(
+            widget_format(
                 "block-a11y-block",
-                "kind" => accessible_block_name(&block.kind, Some(ordinal)),
-                "position" => position
+                &[
+                    (
+                        "kind",
+                        accessible_block_name(&block.kind, Some(ordinal)).into(),
+                    ),
+                    ("position", position.into()),
+                ],
             )
         } else {
             said.to_owned()
@@ -3879,7 +3895,10 @@ impl BlockEditor {
         // Also in words, which every screen reader reads: the platform
         // bridge does not carry a group's level.
         if level > 1 {
-            group.with_description(crate::i18n!("block-a11y-level", "level" => level))
+            group.with_description(widget_format(
+                "block-a11y-level",
+                &[("level", level.into())],
+            ))
         } else {
             group
         }
@@ -4706,7 +4725,7 @@ impl BlockEditor {
     fn document_access_node(&self) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
         AccessNode::new(Role::Document)
-            .with_description(crate::i18n!("block-a11y-document"))
+            .with_description(widget_text("block-a11y-document"))
             .with_state(
                 AccessState::new()
                     .focusable(self.is_focusable())
@@ -6173,7 +6192,7 @@ fn draw_formula_preview(
     if source.trim().is_empty() {
         text_renderer.draw_text(
             scene,
-            &crate::i18n!("block-formula-empty"),
+            &widget_text("block-formula-empty"),
             12.0,
             theme.tokens.colors.text_dim,
             transform.pre_translate((rect.x0 + 8.0, rect.y0 + 8.0).into()),
@@ -6209,8 +6228,10 @@ fn draw_formula_preview(
         theme.tokens.colors.text_primary,
     );
     if let Some(diagnostic) = parsed.diagnostics.first() {
-        let mut message =
-            crate::i18n!("block-formula-diagnostic", "message" => diagnostic.message.clone());
+        let mut message = widget_format(
+            "block-formula-diagnostic",
+            &[("message", diagnostic.message.clone().into())],
+        );
         if message.chars().count() > 90 {
             let mut truncated: String = message.chars().take(89).collect();
             truncated.push('…');
@@ -6260,12 +6281,12 @@ fn draw_formula_chrome(
     for (rect, label, selected) in [
         (
             chrome.source_button,
-            crate::i18n!("block-formula-source"),
+            widget_text("block-formula-source"),
             chrome.descriptor.mode == crate::math::FormulaMode::Source,
         ),
         (
             chrome.visual_button,
-            crate::i18n!("block-formula-visual"),
+            widget_text("block-formula-visual"),
             chrome.descriptor.mode == crate::math::FormulaMode::Visual,
         ),
     ] {
@@ -6609,7 +6630,7 @@ fn kind_to_str(kind: &BlockKind) -> String {
 }
 
 fn accessible_kind_name(kind: &BlockKind) -> String {
-    crate::i18n!(match kind {
+    widget_text(match kind {
         BlockKind::Paragraph => "block-kind-paragraph",
         BlockKind::Quote => "block-kind-quote",
         BlockKind::Heading(_) => "block-kind-heading",
@@ -6633,9 +6654,10 @@ fn accessible_block_name(kind: &BlockKind, ordinal: Option<u32>) -> String {
             accessible_kind_name(kind),
             list_marker::ordinal_label(ordinal.unwrap_or(1), *indent)
         ),
-        BlockKind::Callout(callout) => {
-            crate::i18n!("block-kind-named-callout", "name" => callout.label())
-        }
+        BlockKind::Callout(callout) => widget_format(
+            "block-kind-named-callout",
+            &[("name", callout.label().into())],
+        ),
         _ => accessible_kind_name(kind),
     }
 }
@@ -7818,7 +7840,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     // What the picture is (its description), and, once loading gave up,
     // why it is not shown; never its storage address.
     let label = if alt.is_empty() {
-        crate::i18n!("block-image-untitled")
+        widget_text("block-image-untitled")
     } else {
         alt.to_owned()
     };
@@ -7837,7 +7859,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     {
         ctx.text_renderer.draw_style(
             ctx.scene,
-            &crate::i18n!("block-image-missing"),
+            &widget_text("block-image-missing"),
             ctx.theme.tokens.colors.text_dim,
             ctx.transform
                 .pre_translate((rect.x0 + 58.0 * scale, rect.y0 + 42.0 * scale).into()),
@@ -9463,9 +9485,9 @@ impl Widget for BlockEditor {
                     Card::Page(id) => self.transclusion_previews.get(&id).map_or_else(
                         || {
                             (
-                                crate::i18n!("block-embed-missing-title"),
+                                widget_text("block-embed-missing-title"),
                                 vec![tilo_ui_graph::rich::Run {
-                                    text: crate::i18n!("block-embed-missing"),
+                                    text: widget_text("block-embed-missing"),
                                     reference: None,
                                 }],
                             )
@@ -10005,7 +10027,7 @@ impl Widget for BlockEditor {
                 ctx.theme.tokens.colors.text_dim,
                 1.5 * self.text_scale,
             );
-            let code_label = crate::i18n!("block-kind-code-short");
+            let code_label = widget_text("block-kind-code-short");
             let language = match self.blocks.get(*start).map(|block| &block.kind) {
                 Some(BlockKind::CodeBlock { lang: Some(lang) }) if !lang.is_empty() => {
                     lang.as_str()
@@ -10340,7 +10362,7 @@ impl Widget for BlockEditor {
             .map(visible)
             .find(|rect| rect.contains(point))
         {
-            return Some((rect, crate::i18n!("block-editor-change-type")));
+            return Some((rect, widget_text("block-editor-change-type")));
         }
         for (rect, start, _) in &self.code_copy_hits {
             let copy_rect = visible(*rect);
@@ -10355,9 +10377,9 @@ impl Widget for BlockEditor {
                 return Some((
                     copy_rect,
                     if copied {
-                        crate::i18n!("block-editor-code-copied")
+                        widget_text("block-editor-code-copied")
                     } else {
-                        crate::i18n!("block-editor-copy-code-hint")
+                        widget_text("block-editor-copy-code-hint")
                     },
                 ));
             }

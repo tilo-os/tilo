@@ -9,6 +9,7 @@
 //!   screen's.
 //! - [`ToastKind`] maps to `Theme::tokens.colors.semantic.*`.
 
+use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
 use crate::time::Duration;
 use vello::Scene;
@@ -1161,7 +1162,7 @@ fn paint_reply_field(
     if faded {
         scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, transform, &rect);
     }
-    let placeholder = crate::i18n!("toast-reply-placeholder");
+    let placeholder = widget_text("toast-reply-placeholder");
     let face = FieldFace::new(rect, card.reply_text)
         .placeholder(&placeholder)
         .text_role(TextRole::Caption)

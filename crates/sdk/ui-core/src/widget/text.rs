@@ -1,4 +1,5 @@
 use crate::i18n::ArgValue;
+use crate::i18n::widget_text;
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{
@@ -361,7 +362,7 @@ impl Text {
     /// supplied via [`with_arg`](Self::with_arg) / [`with_args`](Self::with_args).
     pub(crate) fn resolved_label(&self) -> String {
         if self.args.is_empty() {
-            crate::i18n!(&self.label)
+            widget_text(&self.label)
         } else {
             let args: Vec<(&str, ArgValue)> = self
                 .args

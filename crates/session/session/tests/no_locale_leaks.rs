@@ -132,7 +132,7 @@ fn resolved(
     keys(window)
         .into_iter()
         .map(|key| {
-            let said = I18nManager::lookup(&key, None);
+            let said = ui::i18n::widget_text(&key);
             (key, said)
         })
         .collect()
@@ -210,7 +210,7 @@ fn a_seeded_packages_words_do_not_make_the_session_speak_its_language() {
     I18nManager::add_shared_resource(&seed[0].0, seed[0].1.clone());
     assert_eq!(show_all(), "Show all 13");
     assert_eq!(
-        I18nManager::lookup("block-editor-empty", None),
+        ui::i18n::widget_text("block-editor-empty"),
         "Write something…"
     );
 
@@ -232,7 +232,7 @@ fn toolkit_words_read_in_the_windows_language() {
     I18nManager::install("en-US", "de-DE", &shipped_source(window)).expect("search installs");
     assert_eq!(show_all(), "Show all 13");
     assert_eq!(
-        I18nManager::lookup("block-editor-empty", None),
+        ui::i18n::widget_text("block-editor-empty"),
         "Write something…"
     );
 
@@ -240,7 +240,7 @@ fn toolkit_words_read_in_the_windows_language() {
     I18nManager::install("en-US", "de-DE", &with_pack(window)).expect("search installs in both");
     assert_eq!(show_all(), "Alle 13 zeigen");
     assert_eq!(
-        I18nManager::lookup("block-editor-empty", None),
+        ui::i18n::widget_text("block-editor-empty"),
         "Etwas schreiben…"
     );
 }

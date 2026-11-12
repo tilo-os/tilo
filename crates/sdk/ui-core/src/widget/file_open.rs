@@ -12,6 +12,7 @@
 //! Open action and file chooser, which reports a file it cannot read. The
 //! surface reads nothing and grants no access.
 
+use crate::i18n::widget_text;
 use std::path::PathBuf;
 
 use vello::kurbo::{Point, Rect};
@@ -84,9 +85,9 @@ impl FileOpenSurface {
                 EmptyState::paint_focused_with_documents(ctx, bounds, content, cursor, focused);
             return crate::widget::PaintedStack { action, documents };
         }
-        let hint = crate::i18n!("file-open-drop-hint");
+        let hint = widget_text("file-open-drop-hint");
         if self.hovering {
-            let release = crate::i18n!("file-open-release");
+            let release = widget_text("file-open-release");
             DropZoneFace::new(&release)
                 .icon(content.icon.unwrap_or(crate::icons::Icon::Download))
                 .drag_over(true)

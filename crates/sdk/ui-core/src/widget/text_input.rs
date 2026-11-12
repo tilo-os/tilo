@@ -2,6 +2,7 @@
 //! Text and caret both centre against the same `line_height = font_size * 1.25` band
 //! (`text_baseline_centred_with_caret`), so glyphs don't drift below the caret.
 
+use crate::i18n::widget_text;
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashSet;
@@ -3104,7 +3105,7 @@ impl TextInput {
         let text_transform =
             transform * Affine::translate((self.single_origin.x, self.single_origin.y));
         if self.shows_placeholder() {
-            let placeholder = crate::i18n!(&self.placeholder);
+            let placeholder = widget_text(&self.placeholder);
             tr.draw_style(
                 scene,
                 &placeholder,
@@ -3387,7 +3388,7 @@ impl TextInput {
         }
 
         if self.shows_placeholder() {
-            let placeholder = crate::i18n!(&self.placeholder);
+            let placeholder = widget_text(&self.placeholder);
             #[allow(
                 clippy::arithmetic_side_effects,
                 reason = "Affine transform composition over f64 screen coordinates"
@@ -7029,12 +7030,12 @@ impl Widget for TextInput {
             node = node.with_text_selection(self.core.anchor(), self.core.caret());
         }
         if !self.accessible_name.is_empty() {
-            node = node.with_name(crate::i18n!(&self.accessible_name));
+            node = node.with_name(widget_text(&self.accessible_name));
         } else if !self.placeholder.is_empty() {
             // A visible placeholder is already the app author's concise field
             // description. Reuse it as the accessible name by default; an
             // explicit name still wins when the prompt is merely an example.
-            node = node.with_name(crate::i18n!(&self.placeholder));
+            node = node.with_name(widget_text(&self.placeholder));
         }
         if let (Some(rect), Some(accessory)) = (self.accessory_rect(), self.accessory.as_ref()) {
             let (role, checked) = match accessory.action {
@@ -7043,7 +7044,7 @@ impl Widget for TextInput {
             };
             node = node.with_children(vec![
                 AccessNode::new(role)
-                    .with_name(crate::i18n!(&accessory.name))
+                    .with_name(widget_text(&accessory.name))
                     .with_bounds(rect)
                     .with_state(AccessState {
                         disabled: !self.accessory_ready(),

@@ -11,6 +11,7 @@
 
 use super::{Point, Rect, TOOLBAR_LEAD_GAP, TabBar, TextRenderer, Theme};
 use crate::a11y::AccessNode;
+use crate::i18n::widget_format;
 use crate::widget::{ChipFace, ChipLead, ChipStyle};
 use tilo_desktop_model::ownership::OpenedBy;
 use vello::Scene;
@@ -42,9 +43,9 @@ fn agent_colour(run: &OpenedBy) -> vello::peniko::Color {
 fn opened_by_tip(run: &OpenedBy) -> String {
     let title = run.title.trim();
     if title.is_empty() || title == run.label {
-        crate::i18n!("tab-opened-by", "agent" => run.label.as_str())
+        widget_format("tab-opened-by", &[("agent", run.label.as_str().into())])
     } else {
-        crate::i18n!("tab-opened-by-run", "run" => title)
+        widget_format("tab-opened-by-run", &[("run", title.into())])
     }
 }
 

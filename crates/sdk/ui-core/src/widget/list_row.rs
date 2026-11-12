@@ -25,6 +25,7 @@
 //!
 //! [`row_bleed`]: crate::chrome::row_bleed
 
+use crate::i18n::widget_text;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -870,7 +871,7 @@ impl<'a> ListRowFace<'a> {
     /// placeholder, so its row stays visible and pressable until it has one.
     fn shown_title(&self) -> Cow<'_, str> {
         if self.untitled() {
-            Cow::Owned(crate::i18n!("list-row-untitled"))
+            Cow::Owned(widget_text("list-row-untitled"))
         } else {
             Cow::Borrowed(self.title)
         }

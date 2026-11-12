@@ -7,6 +7,7 @@
 //! ([`ActionPalette::set_entries`]) and takes back which one the person chose
 //! ([`ActionPalette::take_outcome`]).
 
+use crate::i18n::{widget_format, widget_text};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -680,7 +681,7 @@ impl ActionPalette {
         self.results.set_empty_text(self.empty_results_title());
         let nothing_matched = !self.is_searching() && !self.query().trim().is_empty();
         self.results
-            .set_empty_hint(nothing_matched.then(|| crate::i18n!("palette-no-results-hint")));
+            .set_empty_hint(nothing_matched.then(|| widget_text("palette-no-results-hint")));
     }
 
     /// Whether the card says it is still searching: the host set
@@ -696,11 +697,11 @@ impl ActionPalette {
 
     fn empty_results_title(&self) -> String {
         if self.is_searching() {
-            crate::i18n!("palette-searching")
+            widget_text("palette-searching")
         } else if self.query().is_empty() {
-            crate::i18n!("palette-empty")
+            widget_text("palette-empty")
         } else {
-            crate::i18n!("palette-no-results", "query" => self.query())
+            widget_format("palette-no-results", &[("query", self.query().into())])
         }
     }
 
@@ -1197,7 +1198,7 @@ impl ActionPalette {
         use crate::a11y::{AccessNode, AccessState, Role};
         let open = self.is_open();
         let mut node = AccessNode::new(Role::Dialog)
-            .with_name(crate::i18n!("palette-name"))
+            .with_name(widget_text("palette-name"))
             .with_state(AccessState {
                 focusable: true,
                 focused: self.is_presented(),
@@ -1245,7 +1246,7 @@ impl ActionPalette {
         }
         let mut children = vec![
             query_node,
-            list.with_name(crate::i18n!("palette-results"))
+            list.with_name(widget_text("palette-results"))
                 .with_bounds(self.list_rect()),
         ];
         if let (Some(token), Some(action)) = (self.field.scope_token(), &self.scope_token_action) {

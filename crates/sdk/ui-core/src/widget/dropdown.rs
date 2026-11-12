@@ -26,6 +26,7 @@
 //! events to it exclusively — how the out-of-layout list becomes hit-testable and click-outside
 //! dismissal works.
 
+use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
 use crate::widget::autocomplete::{Suggestion, SuggestionList};
 use crate::widget::{AppModel, EventCtx, ModelPath};
@@ -711,7 +712,7 @@ impl Dropdown {
         });
         let search = if self.supports_filter() {
             field_width_for(
-                [crate::i18n!("dropdown-search-placeholder").as_str()],
+                [widget_text("dropdown-search-placeholder").as_str()],
                 true,
                 &self.label_style,
                 text,
@@ -803,8 +804,8 @@ impl Dropdown {
         self.rows_at = rows_at;
         // A list that filters keeps room for its empty-result line, so it
         // keeps its width while a query narrows it.
-        let hint = (rows.is_empty() || self.supports_filter())
-            .then(|| crate::i18n!("dropdown-no-matches"));
+        let hint =
+            (rows.is_empty() || self.supports_filter()).then(|| widget_text("dropdown-no-matches"));
         self.list.set_rows(rows);
         self.list.set_status(hint);
         self.list.set_anchor(self.rect);
@@ -1415,7 +1416,7 @@ impl Widget for Dropdown {
                 QueryView {
                     text: &self.filter,
                     selection: &self.filter_selection,
-                    placeholder: &crate::i18n!("dropdown-search-placeholder"),
+                    placeholder: &widget_text("dropdown-search-placeholder"),
                     show_caret: self.is_focused,
                 },
                 content,
@@ -1613,7 +1614,7 @@ impl Widget for Dropdown {
             Some(if self.name_resolved {
                 name.clone()
             } else {
-                crate::i18n!(name)
+                widget_text(name)
             })
         } else if let Some(caption) = &self.caption {
             Some(caption.clone())
@@ -1654,7 +1655,7 @@ impl Widget for Dropdown {
             node = node.with_action_target(self.test_id().unwrap_or("dropdown"));
         }
         if self.open && self.supports_filter() {
-            node = node.with_description(crate::i18n!("dropdown-search-description"));
+            node = node.with_description(widget_text("dropdown-search-description"));
         }
         if self.open {
             node = node

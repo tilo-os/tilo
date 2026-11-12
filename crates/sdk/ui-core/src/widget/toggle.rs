@@ -1,6 +1,7 @@
 use super::bool_control::{
     BoolControl, bool_control_api, bool_control_capabilities, bool_control_widget_methods,
 };
+use crate::i18n::widget_text;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Interaction;
@@ -656,7 +657,7 @@ pub fn toggle_accessibility(
     AccessNode::new(Role::Switch)
         .with_optional_name(
             accessible_name
-                .map(|name| crate::i18n!(name))
+                .map(|name| widget_text(name))
                 .filter(|name| !name.is_empty()),
         )
         .with_state(

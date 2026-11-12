@@ -634,7 +634,7 @@ pub trait Widget {
     /// [`AccessState`](crate::a11y::AccessState). Default `None` means
     /// presentational: the node is skipped and children reparent onto the
     /// parent. State must be **derived, not stored** so it can't drift from
-    /// `draw`; names must already be [`i18n!`](macro@crate::i18n)-resolved.
+    /// `draw`; names must already be [`widget_text`](crate::i18n::widget_text)-resolved.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         None
     }

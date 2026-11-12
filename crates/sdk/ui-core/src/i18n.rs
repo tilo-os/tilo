@@ -1057,7 +1057,7 @@ impl I18nManager {
     /// message without errors wins; if every candidate reports errors the
     /// first best-effort rendering is returned, and a key no bundle defines
     /// resolves to itself.
-    pub fn lookup(key: &str, args: Option<&FluentArgs>) -> String {
+    pub(crate) fn lookup(key: &str, args: Option<&FluentArgs>) -> String {
         if args.is_some() {
             return Self::resolve_lookup(key, args);
         }
@@ -1738,22 +1738,6 @@ macro_rules! embedded_catalog {
         #[allow(dead_code, reason = "a crate may resolve only plain or only interpolated copy")]
         $vis fn t_args(key: &str, args: &[(&str, $crate::i18n::ArgValue)]) -> String {
             CATALOG.t_args(key, args)
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! i18n {
-    ($key:expr) => {
-        $crate::i18n::I18nManager::lookup($key, None)
-    };
-    ($key:expr, $($name:expr => $val:expr),*) => {
-        {
-            let mut args = fluent::FluentArgs::new();
-            $(
-                args.set($name, $val);
-            )*
-            $crate::i18n::I18nManager::lookup($key, Some(&args))
         }
     };
 }

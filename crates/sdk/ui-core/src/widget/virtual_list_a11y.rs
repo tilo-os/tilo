@@ -6,6 +6,7 @@
 //! so a reader hears what folding it away would hide. An action on such a node comes back to
 //! the list by its [`super::groups::HEADING_TARGET`].
 
+use crate::i18n::widget_text;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -228,7 +229,7 @@ impl<M: ListModel> VirtualList<M> {
             .filter(|field| field.key == row.key)
             .and_then(|field| {
                 Widget::accessibility(&field.input).map(|mut input| {
-                    input.name = Some(crate::i18n!("tree-rename-field"));
+                    input.name = Some(widget_text("tree-rename-field"));
                     input.bounds = Some(field.input.get_rect().into());
                     input
                 })

@@ -1,6 +1,7 @@
 use super::bool_control::{
     BoolControl, bool_control_api, bool_control_capabilities, bool_control_widget_methods,
 };
+use crate::i18n::widget_text;
 use crate::text_render::TextRenderer;
 use crate::text_render::TextStyle;
 use crate::theme::Theme;
@@ -721,11 +722,11 @@ impl Widget for Checkbox {
         });
         let label_limit = available_width.map(|width| (width - target - gap).max(0.0));
         let (label_width, label_height) =
-            text_renderer.measure_style(&crate::i18n!(label), label_limit, &self.label_style);
+            text_renderer.measure_style(&widget_text(label), label_limit, &self.label_style);
         // An intrinsic box is as wide as its label needs, within the room.
         let hugged = self.intrinsic.then(|| {
             let (natural, _) =
-                text_renderer.measure_style(&crate::i18n!(label), None, &self.label_style);
+                text_renderer.measure_style(&widget_text(label), None, &self.label_style);
             let natural = target + gap + natural.ceil();
             available_width.map_or(natural, |room| natural.min(room))
         });
@@ -784,7 +785,7 @@ impl Widget for Checkbox {
         let face = if self.radio { face.radio() } else { face };
         Self::paint(scene, transform, theme, &face);
         if let Some(label) = self.label.as_ref() {
-            let label = crate::i18n!(label);
+            let label = widget_text(label);
             let gap = f64::from(LABEL_GAP);
             let x = self.control.rect.x0 + target + gap;
             let max_width = (self.control.rect.x1 - x).max(0.0);
@@ -859,7 +860,7 @@ impl Widget for Checkbox {
             .control
             .accessible_name
             .as_ref()
-            .map(|n| crate::i18n!(n))
+            .map(|n| widget_text(n))
             .filter(|n| !n.is_empty());
         let mut state = AccessState::new()
             .focusable(self.is_focusable())

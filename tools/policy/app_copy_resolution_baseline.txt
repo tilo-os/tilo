@@ -1,4 +1,0 @@
-# App files whose copy still goes through the `i18n!` macro, which
-# resolves on the thread's manager without loading the app's catalogue
-# (tools/policy/check_app_copy_resolution.py). Each file converts to
-# the crate's CATALOG.t / CATALOG.t_args; counts only shrink.

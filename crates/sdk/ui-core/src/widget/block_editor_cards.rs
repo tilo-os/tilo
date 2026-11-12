@@ -2,6 +2,7 @@
 //! record any app keeps, each shown as the thing's title and the start of its content, opening
 //! what it names. One card for both, so a record reads as a page embed does.
 
+use crate::i18n::widget_text;
 use std::collections::HashMap;
 
 use vello::Scene;
@@ -375,7 +376,7 @@ impl BlockEditor {
                 Card::Page(id) => self.transclusion_previews.get(id).map_or_else(
                     || {
                         vec![tilo_ui_graph::rich::Run {
-                            text: crate::i18n!("block-embed-missing"),
+                            text: widget_text("block-embed-missing"),
                             reference: None,
                         }]
                     },

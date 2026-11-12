@@ -1,4 +1,5 @@
 use super::*;
+use crate::i18n::widget_text;
 use crate::testing::Dispatch;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, transaction::Transactable};
 
@@ -239,7 +240,7 @@ fn dropdown_language_shared_scrollbar_and_search_field_are_interactive() {
     let insets = 2.0 * f64::from(tokens.spacing.s2 + tokens.spacing.s3);
     let hint_width = f64::from(
         text.measure_style(
-            &crate::i18n!("dropdown-no-matches"),
+            &widget_text("dropdown-no-matches"),
             None,
             &frame.theme().text(TextRole::Body),
         )

@@ -17,6 +17,7 @@
 //! [`take_navigation`](ActionPalette::take_navigation).
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
+use crate::i18n::widget_text;
 use crate::widget::ModelPath;
 use tilo_sort::CompactSort as _;
 
@@ -744,7 +745,7 @@ impl ActionPalette {
             bypass_fuzzy: false,
             searching: false,
             ranked_generation: crate::search::engine_generation(),
-            query_placeholder: crate::i18n!("palette-placeholder"),
+            query_placeholder: widget_text("palette-placeholder"),
             host_step: None,
             saved_host_query: String::new(),
             outcome: None,

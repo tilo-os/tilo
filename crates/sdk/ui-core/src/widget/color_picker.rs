@@ -21,6 +21,7 @@
 //! comes from theme tokens.
 
 use crate::color_compat::ColorCompat;
+use crate::i18n::widget_text;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -1354,7 +1355,7 @@ impl Widget for ColorPicker {
         use crate::a11y::{AccessNode, AccessState, Role};
         let value = AccessNode::new(Role::ComboBox)
             .with_action_target(TARGET_VALUE)
-            .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
+            .with_optional_name(self.accessible_name.as_ref().map(|name| widget_text(name)))
             .with_value(self.hex_string())
             .with_state(
                 AccessState::new()
@@ -1394,7 +1395,7 @@ impl Widget for ColorPicker {
         let name = self
             .confirm_title
             .clone()
-            .or_else(|| self.accessible_name.as_ref().map(|name| crate::i18n!(name)));
+            .or_else(|| self.accessible_name.as_ref().map(|name| widget_text(name)));
         Some(
             AccessNode::new(Role::Group)
                 .with_optional_name(name)

@@ -9,6 +9,7 @@
 //! each event and arms a timer for [`ScreenReaderChord::deadline`], then
 //! calls [`ScreenReaderChord::tick`] when it fires.
 
+use crate::i18n::widget_text;
 use crate::time::{Duration, Instant};
 
 /// How long both volume keys are held before the screen reader toggles.
@@ -179,7 +180,7 @@ pub fn state_words(on: bool) -> String {
     } else {
         ("screen-reader-turned-off", "Screen reader off")
     };
-    let resolved = crate::i18n!(key);
+    let resolved = widget_text(key);
     if resolved == key {
         english.to_owned()
     } else {

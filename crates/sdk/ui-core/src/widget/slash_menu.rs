@@ -9,6 +9,7 @@
 //! card a shortcut opens over the whole app; this is a compact popover
 //! anchored at the caret.
 
+use crate::i18n::widget_text;
 use crate::icons::Icon;
 use crate::widget::block_editor::{BlockKind, CalloutKind};
 use crate::widget::filter_menu::{FilterMenu, MenuEntry, MenuSpec};
@@ -65,7 +66,7 @@ fn row(
     value: SlashCommand,
 ) -> MenuEntry<SlashCommand> {
     MenuEntry {
-        label: crate::i18n!(key),
+        label: widget_text(key),
         keywords,
         value,
         icon: Some(icon),
