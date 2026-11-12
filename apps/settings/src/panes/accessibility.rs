@@ -777,14 +777,25 @@ mod tests {
         app.harness().resize((1400, 4000)).unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::Accessibility);
         settle(&mut app);
-        assert!(app.harness().a11y_node_named("5×").is_some());
-        assert!(app.harness().a11y_node_named("Largest").is_some());
+        let magnifier = crate::testing::caption("a11y-magnifier");
+        let cursor = crate::testing::caption("a11y-cursor-size");
+        assert!(
+            crate::testing::shown_values(&mut app, &magnifier).contains(&"5×".to_owned()),
+            "the zoom the magnifier set is shown"
+        );
+        assert!(
+            crate::testing::shown_values(&mut app, &cursor).contains(&"Largest".to_owned()),
+            "the cursor size the section holds is shown"
+        );
 
         app.settings::<AccessibilitySettings>()
             .update(|access| access.magnifier_zoom = 3)
             .unwrap();
         settle(&mut app);
-        assert!(app.harness().a11y_node_named("3×").is_some());
+        assert!(
+            crate::testing::shown_values(&mut app, &magnifier).contains(&"3×".to_owned()),
+            "a zoom changed elsewhere is followed"
+        );
     }
 
     fn access_nodes(app: &mut TestApp<SettingsShell>) -> Vec<ui::a11y::AccessNode> {
