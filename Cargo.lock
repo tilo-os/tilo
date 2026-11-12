@@ -18214,6 +18214,7 @@ dependencies = [
 name = "tilo-content"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "rustix 1.1.6",
  "serde",
@@ -18224,6 +18225,7 @@ dependencies = [
  "tilo-content-types",
  "tilo-files",
  "tilo-paths",
+ "tilo-seal",
  "tracing",
 ]
 

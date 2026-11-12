@@ -410,3 +410,139 @@ fn durable_publish_syncs_the_directory_and_regenerable_does_not() {
     store.put(same_shard.as_bytes()).unwrap();
     assert_eq!(count(&backend.probes().dir_syncs), 0);
 }
+
+/// Every file under `root`, read whole.
+fn files_under(root: &std::path::Path) -> Vec<Vec<u8>> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(files_under(&path));
+        } else if let Ok(bytes) = std::fs::read(&path) {
+            found.push(bytes);
+        }
+    }
+    found
+}
+
+#[test]
+fn a_sealing_store_keeps_ciphertext_its_references_alone_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContentStore::in_dir(dir.path()).sealing();
+    let picture = [TINY_PNG, &vec![7_u8; 3 * 64 * 1024 + 5]].concat();
+    let reference = store.put(&picture).unwrap();
+
+    let parsed = ContentRef::parse(&reference).unwrap();
+    assert!(parsed.is_sealed());
+    assert_eq!(parsed.to_string(), reference);
+    assert_ne!(
+        parsed.address(),
+        hash_bytes(&picture),
+        "stored under the ciphertext's address"
+    );
+    assert_eq!(
+        content_address(&reference).as_deref(),
+        Some(parsed.address())
+    );
+    assert_eq!(store.read(&reference).as_deref(), Some(picture.as_slice()));
+    let mut streamed = Vec::new();
+    store
+        .open(&reference)
+        .unwrap()
+        .read_to_end(&mut streamed)
+        .unwrap();
+    assert_eq!(streamed, picture);
+    assert!(store.has(&reference));
+    assert_eq!(store.state(&reference), ContentState::Resolved);
+
+    let on_disk = files_under(dir.path());
+    assert!(!on_disk.is_empty());
+    assert!(
+        on_disk
+            .iter()
+            .all(|file| !file.windows(64).any(|w| w == &picture[..64])),
+        "nothing on disk holds the plaintext"
+    );
+    let stored = store.read(parsed.address()).unwrap();
+    assert!(
+        verify(parsed.address(), &stored),
+        "the address alone reads ciphertext"
+    );
+    assert_ne!(stored, picture);
+
+    // The same store opened without sealing (a host, another device) reads the
+    // sealed reference; the same bytes put again get a key of their own.
+    let plain = ContentStore::in_dir(dir.path());
+    assert_eq!(plain.read(&reference).as_deref(), Some(picture.as_slice()));
+    assert_ne!(store.put(&picture).unwrap(), reference);
+    let mut forged = parsed.address().to_owned();
+    forged.push_str(".AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    assert!(store.read(&forged).is_none(), "another key opens nothing");
+}
+
+#[test]
+fn plain_references_still_read_and_reseal_on_the_next_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = ContentStore::in_dir(dir.path());
+    let old = plain.put(TINY_PNG).unwrap();
+    assert_eq!(old, hash_bytes(TINY_PNG));
+    assert!(
+        plain.reseal(&old).is_none(),
+        "a store that does not seal keeps it"
+    );
+
+    let store = ContentStore::in_dir(dir.path()).sealing();
+    assert_eq!(
+        store.read(&old).as_deref(),
+        Some(TINY_PNG),
+        "an old reference reads"
+    );
+    let resealed = store.reseal(&old).unwrap();
+    assert!(is_sealed(&resealed));
+    assert!(store.reseal(&resealed).is_none());
+    assert_eq!(store.read(&resealed).as_deref(), Some(TINY_PNG));
+    assert!(store.reseal(&"0".repeat(64)).is_none(), "content not here");
+
+    // Once nothing names the plain copy, it goes; the sealed one stays.
+    let live = BTreeSet::from([resealed.clone()]);
+    let collected = store.collect_unreferenced(&live).unwrap();
+    assert_eq!(collected.hashes, vec![old.clone()]);
+    assert!(!store.has(&old));
+    assert_eq!(store.read(&resealed).as_deref(), Some(TINY_PNG));
+}
+
+#[test]
+fn inputs_persisted_into_a_sealing_store_answer_their_references() {
+    let mut inputs = ContentInputs::new();
+    let address = inputs.add(TINY_PNG);
+    let store = ContentStore::memory().sealing();
+    let references = store.put_inputs(&inputs).unwrap();
+    let reference = references.get(&address).unwrap();
+    assert!(is_sealed(reference));
+    assert_eq!(store.read(reference).as_deref(), Some(TINY_PNG));
+    assert!(!store.has(&address), "nothing kept in the clear");
+
+    let plain = ContentStore::memory();
+    assert_eq!(
+        plain.put_inputs(&inputs).unwrap().get(&address),
+        Some(&address)
+    );
+}
+
+#[test]
+fn references_parse_strictly() {
+    let address = "a".repeat(64);
+    assert!(valid_reference(&address));
+    assert!(!is_sealed(&address));
+    assert!(!valid_reference(&format!("{address}.short")));
+    assert!(!valid_reference(&format!(
+        "{}.{}",
+        "a".repeat(63),
+        "A".repeat(43)
+    )));
+    assert!(valid_reference(&format!("{address}.{}", "A".repeat(43))));
+    assert_eq!(
+        content_address(&format!("{}.{}", "B".repeat(64), "A".repeat(43))),
+        Some("b".repeat(64))
+    );
+}
