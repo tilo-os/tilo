@@ -520,6 +520,7 @@ for line in sys.stdin.read().splitlines():
     }
     resident_before=$(vm_resident)
     if ! hosted_terminal --gui; then
+      echo "the VM on its host: ${resident_before:-?} MiB before the app, $(vm_resident || true) MiB after" >&2
       echo '--- the apps session in the VM said:' >&2
       sudo -n podman exec tilo-sh-vm-host-0 sh -c \
         'find /var /srv /mnt -name apps.log -path "*/vms/*" 2>/dev/null | while read -r log; do echo "$log:"; tail -80 "$log"; done' \
