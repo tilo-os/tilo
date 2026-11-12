@@ -146,6 +146,25 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) and (binary(chat_2x2) or binary(device_branch))"
 setup = "chat-siblings"
 
+# Tasks' own package, which the closed-app test starts without a window, and the launcher the
+# session starts it through (it looks for one beside itself first): the app's code is what writes
+# the workspace's tracker there, so the record the agent's step changes is the app's.
+[scripts.setup.tasks-siblings]
+command = [
+    "bash", "tools/build-sibling-binaries.sh",
+    "tasks:tasks", "launcher:tilo-launcher",
+]
+
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-session) and binary(closed_tasks)"
+setup = "tasks-siblings"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-session) and binary(closed_tasks)"
+setup = "tasks-siblings"
+
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-ntfs-helper)"

@@ -87,13 +87,14 @@ exclude = [
 isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle", "tilo-session"] }
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 # The apps the session's tests start (`tilo_test_env::sibling_binary`), as the session-siblings
-# setup in .config/nextest.toml names them for both packages, and for the session the three the
-# chat-siblings setup names (Chat, the launcher that starts it beside the session, the runtime it
-# runs on, for `chat_2x2`): built once by this family's build and kept with its test binaries,
+# setup in .config/nextest.toml names them for both packages, and for the session the four the
+# chat-siblings and tasks-siblings setups name (Chat, the launcher that starts it beside the
+# session, the runtime it runs on, for `chat_2x2`, and Tasks for `closed_tasks`): built once by
+# this family's build and kept with its test binaries,
 # each shard is handed them (NEXTEST_BIN_EXE_<bin>) and the setups build nothing. The app host's
 # trust test installs with the installer it finds beside its own build (`tilo-install`), which
 # tools/ci/nextest.sh built only where it was named the package: a shard names none.
-starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings"], app-host = ["install:tilo-install"] }
+starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings"], app-host = ["install:tilo-install"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 [[cargo]]
