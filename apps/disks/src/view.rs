@@ -725,7 +725,7 @@ fn attribute_table(attrs: &[SmartAttr]) -> DataTable<SmartAttr> {
             .with_kind(TextKind::Numeric)
             .with_text(|attr: &SmartAttr| attr.value.clone()),
         ColumnDef::new("status", "Status", ColumnWidth::Auto)
-            .with_text(|attr: &SmartAttr| severity_label(attr.severity).to_owned()),
+            .with_text(|attr: &SmartAttr| severity_label(attr.severity)),
     ]);
     let mut table = DataTable::new(columns)
         .with_id("disks-attributes")
