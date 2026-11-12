@@ -141,3 +141,16 @@ reason = "Sample content in a theme preview."
 file = "apps/sheets/src/app/annotations.rs"
 text = "Ag"
 reason = "A sample word measured to lay out a card; never shown."
+
+# A headless screenshot's sample content: the words are part of the picture
+# the shot shows, not this window's own copy.
+
+[[allow]]
+file = "apps/chat/src/app/scenarios.rs"
+text = "That's the one. Starting a huddle to walk through the grid — jump in. Moving it to 3pm so the west-coast folks can make it."
+reason = "Sample conversation a headless screenshot stages, never a person's own window."
+
+[[allow]]
+file = "apps/mail/src/compose.rs"
+text = "Launch order\\n\\\n            Thanks both. The new order works for me: website first, then the press kit, then the email campaign.\\n\\\n            Website copy final by Wednesday\\n\\\n            Press kit review on Thursday\\n\\\n            Email campaign goes out last\\n\\\n            Let’s not send the campaign before the website is live."
+reason = "Sample mail the headless screenshot opens, never a person's own window."
