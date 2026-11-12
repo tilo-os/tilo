@@ -1232,8 +1232,8 @@ mod tests {
             flow.poll();
             assert!(flow.presentation().pending);
             assert_eq!(
-                crate::setup::strings::t(flow.presentation().title_key),
-                "Cancelling download…"
+                flow.presentation().title_key,
+                "imager-setup-status-cancelling-download"
             );
             continue_tx.send(()).unwrap();
             wait_for(&mut flow, Phase::Cancelled);

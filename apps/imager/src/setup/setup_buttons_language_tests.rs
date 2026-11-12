@@ -50,16 +50,22 @@ fn the_setup_buttons_read_in_the_windows_language() {
         .filter_map(|(_, node)| node.label().map(str::to_owned))
         .collect();
     catalog.set_locale(&previous);
-    for german in ["Tilo installieren", "Tilo herunterladen"] {
+    // The fixture offers no download, so the review's download card says so in
+    // German instead of showing a start button.
+    for german in [
+        "Tilo installieren",
+        "Zurzeit wird kein Tilo-Download angeboten.",
+    ] {
         assert!(
             labels.iter().any(|label| label == german),
             "{german} is missing from {labels:?}"
         );
     }
     assert!(
-        labels
-            .iter()
-            .all(|label| !matches!(label.as_str(), "Install Tilo" | "Download Tilo")),
+        labels.iter().all(|label| !matches!(
+            label.as_str(),
+            "Install Tilo" | "Download Tilo" | "No Tilo download is offered right now."
+        )),
         "the source language is left in the German window: {labels:?}"
     );
 }

@@ -3060,10 +3060,11 @@ impl InstallerApp {
             children.push(Box::new(
                 Row::new()
                     .with_padding(0.0, 0.0)
-                    .push(Box::new(ActionButton::new(
-                        "installer-media-back",
-                        self.back_control(),
-                    )))
+                    .push(Box::new(
+                        ActionButton::new("installer-preview-back", self.back_control())
+                            .with_icon(ui::icons::Icon::ChevronLeft)
+                            .with_test_id("installer.back"),
+                    ))
                     .push(Box::new(Spacer::new())),
             ));
         }
