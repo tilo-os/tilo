@@ -775,7 +775,7 @@ impl Apps {
     /// app shows there, and standing over the desk when `floated` — and plan the window that fills
     /// it: the session starts it once the desk asks back, the tab being the window's instance
     /// ([`Self::start_asked`]). `reveal` is the item the window shows, when the app named one.
-    /// Nothing comes when the desk holds no tab of the app to open beside.
+    /// Nothing comes when the desk holds no tab of the app to open beside. Whether a tab is held.
     pub fn ask_window(
         &self,
         launch: &Launch,
@@ -783,13 +783,13 @@ impl Apps {
         background: bool,
         floated: bool,
         reveal: Option<&str>,
-    ) {
+    ) -> bool {
         let Some(desktop) = self.desktop.borrow().clone() else {
-            return;
+            return false;
         };
         let app = launch.app();
         if !desktop.with_policy(|policy| policy.hold(app, anchor, background, floated)) {
-            return;
+            return false;
         }
         self.state
             .borrow_mut()
@@ -800,6 +800,7 @@ impl Apps {
                 launch: launch.clone(),
                 reveal: reveal.map(str::to_owned),
             });
+        true
     }
 
     /// The tab the window `app` opened on `item` stands in, while it is on the desk.
@@ -1910,6 +1911,27 @@ impl AppActions for Apps {
             serde_json::Map::new(),
             place,
         )
+    }
+
+    /// A window of the app's own, beside the one it has, opening on `item`: the desk holds its
+    /// tab, as for the app's own ask for another window. An app with no window to open beside
+    /// opens the item where its `open` does, which starts it.
+    fn open_beside(
+        &self,
+        target: RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        item: &str,
+    ) -> Result<(), DoorError> {
+        if let Some((_, app)) = application_provider(&target.provider) {
+            let launch = Launch::Package {
+                app: app.to_owned(),
+                open: None,
+            };
+            if self.ask_window(&launch, None, false, false, Some(item)) {
+                return Ok(());
+            }
+        }
+        self.invoke(target, arguments)
     }
 
     fn cancel(&self, _app: &str, _workspace: &str, _invocation: &str) -> Result<(), DoorError> {

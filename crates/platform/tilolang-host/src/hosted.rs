@@ -1627,6 +1627,7 @@ impl Hosted {
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
         let shown = self.shown();
         let resources = surface.with_addressed(surface.resources(Some(&shown)), &address.resource);
+        let by_person = invoker.kind == ActorKind::Person;
         let caller = caller_of(&invoker);
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
         let encoded = encode(&resources, address, argument);
@@ -1707,6 +1708,11 @@ impl Hosted {
             let open = <OpenEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
                 .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
             self.instance.open_requests().borrow_mut().push(open);
+            // A person who chose it comes to see it: the window showing it comes forward. An
+            // agent's `open` leaves the person where they are.
+            if by_person {
+                self.instance.activate_window();
+            }
             return Ok(tilo_actions::ActionOutput::default());
         }
         Err(Refused::new(

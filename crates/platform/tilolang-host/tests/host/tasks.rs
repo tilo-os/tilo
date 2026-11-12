@@ -258,16 +258,9 @@ fn choose_place(host: &mut TilolangHost, window: &mut Window, label: &str) {
     settle(host, window);
 }
 
-/// A task's entry in the session's search index opens the window at the task: the `open` it
-/// names is the task's own, which takes the window to the place that holds it — the Inbox, for
-/// one with no day — rather than the app's, which nothing publishes.
-#[test]
-fn a_task_found_by_search_opens_the_window_at_its_place() {
-    let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-    let (mut host, mut window, sent, inbox, _route) = running_app("ada", &app, bundle);
-    settle(&mut host, &mut window);
-    // Typed into the Inbox's entry, as a person adds a task with no day.
-    choose_place(&mut host, &mut window, "Inbox");
+/// Type `title` into the Inbox's entry, as a person adds a task with no day.
+fn add_to_inbox(host: &mut TilolangHost, window: &mut Window, title: &str) {
+    choose_place(host, window, "Inbox");
     let entry = node_with(
         window.root.as_ref().expect("the window shows"),
         "placeholder",
@@ -285,9 +278,22 @@ fn a_task_found_by_search_opens_the_window_at_its_place() {
         lane: Lane::Root,
         key: entry.key,
         event: submit,
-        value: Some(patch::Value::text("Book the ferry")),
+        value: Some(patch::Value::text(title)),
     }]);
+    settle(host, window);
+}
+
+/// A task's entry in the session's search index opens it in a window that shows none of its
+/// items: the window stands on Today, so the Inbox task is published by no window, and the entry
+/// names the `open` of the record that holds it, which every window showing the record publishes
+/// and which a person choosing it in the palette runs as it is. Told the task, it takes the window
+/// to the place that holds it — the Inbox, for one with no day — and opens the task there.
+#[test]
+fn a_task_no_window_shows_opens_from_search_through_its_record() {
+    let (app, bundle) = shipped(&shipped_dir().join("tasks"));
+    let (mut host, mut window, sent, inbox, _route) = running_app("ada", &app, bundle);
     settle(&mut host, &mut window);
+    add_to_inbox(&mut host, &mut window, "Book the ferry");
     let task = tasks_of(host.instances().next().expect("the instance runs"))
         .first()
         .cloned()
@@ -313,13 +319,41 @@ fn a_task_found_by_search_opens_the_window_at_its_place() {
     )
     .unwrap_or_else(|| panic!("the task is found by its name: {published}"));
     let open = entry.action.expect("a hit opens what it names");
-    assert_eq!(open.resource, entry.resource, "the task's own `open`");
-    deliver(
-        &inbox,
-        42,
-        &tilo_actions::ActionAddress::new(open.resource, open.action),
-        "ada",
+    let published_open = |resource: &str| {
+        hosted
+            .published()
+            .iter()
+            .find(|action| action.address.resource == resource && action.address.action == "open")
+            .cloned()
+    };
+    assert!(
+        published_open(&entry.resource).is_none(),
+        "the window on Today publishes nothing of the Inbox task"
     );
+    let record = published_open(&open.resource).unwrap_or_else(|| {
+        panic!(
+            "the hit names an `open` the window publishes: {}",
+            open.resource
+        )
+    });
+    assert_eq!(
+        record.prompt_param(),
+        None,
+        "chosen as it is, the record's `open` asks for nothing"
+    );
+    let arguments = serde_json::json!({ "anchor": entry.resource }).to_string();
+    inbox.borrow_mut().push_back(CollabEvent::Invocation {
+        id: 42,
+        invocation: tilo_actions::InvocationId::new(),
+        resource: open.resource,
+        action: open.action,
+        argument: Some(format!(
+            "{}{arguments}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX
+        )),
+        actor: "ada".to_owned(),
+        context: None,
+    });
     settle(&mut host, &mut window);
     assert!(
         matches!(
@@ -333,6 +367,11 @@ fn a_task_found_by_search_opens_the_window_at_its_place() {
         shown_title(&window).as_deref(),
         Some("Inbox"),
         "the task has no day: the window shows it in the Inbox"
+    );
+    assert_eq!(
+        window.in_place.as_ref().map(|shown| shown.id.as_str()),
+        Some(path),
+        "the window shows the task as its page"
     );
 }
 

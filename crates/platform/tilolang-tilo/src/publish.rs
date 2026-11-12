@@ -396,13 +396,21 @@ impl ActionTypes {
     /// direct edits of its type ([`edit_types`]) and the actions on its type. A root and an
     /// item are published alike: an item's edits are the same typed field edits, spliced into
     /// the record by the item's id there ([`edit_action`]).
-    fn resource(&self, type_name: &str, id: &str, label: String) -> ResourceSpec {
+    ///
+    /// A `root` record's `open` also takes the item under it to show, which a window that shows
+    /// none of the record's items does not publish: a search hit on such an item opens it there.
+    fn resource(&self, type_name: &str, id: &str, label: String, root: bool) -> ResourceSpec {
+        let open = if root {
+            root_open_spec(id)
+        } else {
+            open_spec(id)
+        };
         let mut resource = ResourceSpec::new(
             resource_id(&self.meta.app, id),
             self.meta.kind_of(type_name),
             label,
         )
-        .with_action(open_spec(id));
+        .with_action(open);
         let Some(of_type) = self.on_type.get(type_name) else {
             return resource;
         };
@@ -511,7 +519,7 @@ fn open_with_spec(ty: &Arc<ActionType>, anchor: &str, view: &str) -> ActionSpec 
 /// that type.
 #[must_use]
 pub fn publish_record(types: &ActionTypes, type_name: &str, id: &str, label: &str) -> ResourceSpec {
-    types.resource(type_name, id, label.to_owned())
+    types.resource(type_name, id, label.to_owned(), true)
 }
 
 /// The `open` view action of the published resource `anchor`: what a search hit invokes.
@@ -521,6 +529,29 @@ fn open_spec(anchor: &str) -> ActionSpec {
         anchor: anchor.to_owned(),
     }
     .bound()
+}
+
+/// The `open` of the root record `anchor`: it opens the record, or the item under it a caller
+/// names (`anchor`, as a search hit on the item does). A person choosing it asks for nothing: left
+/// out, the item is the record itself.
+fn root_open_spec(anchor: &str) -> ActionSpec {
+    use tilo_resource::Effect as _;
+    let open = crate::effects::OpenEffect::Open {
+        anchor: anchor.to_owned(),
+    };
+    let params = crate::effects::OpenEffect::declaration(open.id())
+        .map(|declared| {
+            declared
+                .params
+                .into_iter()
+                .map(|mut param| {
+                    param.required = false;
+                    param
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    open.bound_asking_params(params).with_immediate_per_target()
 }
 
 /// The resource of a root record with the items of its collections as child resources, each
@@ -568,7 +599,7 @@ fn item_resources(
 fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &str) -> ResourceSpec {
     let type_name = &item.schema().name;
     let label = item_label(item).unwrap_or_else(|| types.untitled_of(type_name));
-    let mut resource = types.resource(type_name, path, label);
+    let mut resource = types.resource(type_name, path, label, false);
     for child in item_resources(types, item, path) {
         resource = resource.with_child(child);
     }
@@ -883,7 +914,7 @@ fn indexed_item(
         .flatten()
         .and_then(|(text, _)| reader.said(path, text))
         .unwrap_or_else(|| types.untitled(schema));
-    let mut resource = types.resource(&schema.name, path, label);
+    let mut resource = types.resource(&schema.name, path, label, false);
     for child in indexed_items(types, view, reader, path, schema, reached) {
         resource = resource.with_child(child);
     }

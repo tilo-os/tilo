@@ -189,7 +189,7 @@ const OPEN_ACTION: &str = "open";
 
 /// Every hit of the workspace as the session's persistent search index keeps it: one [`IndexEntry`]
 /// per resource with text, short metadata only (never a prose body), keyed by the resource's
-/// published id and opening it through its own `open` action. This is what
+/// published id and opening it through its record's `open` action. This is what
 /// a live tilolang instance publishes on its connection, so a Mail message or a note is found by
 /// a word of its body through the system's one search, whether or not the app runs.
 fn entries_of(
@@ -238,8 +238,9 @@ pub fn index_entry_at(host: &Host, meta: &Meta, path: &str) -> Option<IndexEntry
 
 /// The index's entry of the resource `resource` with `texts`: short metadata first (a sender, a
 /// subject), then long prose (a body), so the index keeps a bounded number of fields
-/// ([`IndexEntry::bounded`]) with the metadata that ranks highest. A hit opens through the
-/// resource's own `open`, bound to it: the item a hit names is the one its window shows.
+/// ([`IndexEntry::bounded`]) with the metadata that ranks highest. A hit opens through the `open`
+/// of the record that holds the resource, which every window showing anything of the record
+/// publishes: the caller names the resource as the item to show, which no window may show yet.
 fn entry(
     resource: &str,
     title: &str,
@@ -265,7 +266,7 @@ fn entry(
         key: resource.to_owned(),
         resource: resource.to_owned(),
         action: Some(IndexAction {
-            resource: resource.to_owned(),
+            resource: record_of(resource).to_owned(),
             action: OPEN_ACTION.to_owned(),
         }),
         title: title.to_owned(),
@@ -279,6 +280,14 @@ fn entry(
         ..IndexEntry::default()
     };
     entry.bounded()
+}
+
+/// The published record that holds the published resource `resource`: an item's path goes on
+/// from its record's id after a `/`.
+fn record_of(resource: &str) -> &str {
+    resource
+        .split_once('/')
+        .map_or(resource, |(record, _)| record)
 }
 
 /// The longest text an entry keeps as a short field: a name, a subject, a sender.

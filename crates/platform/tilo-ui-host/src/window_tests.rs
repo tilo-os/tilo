@@ -1527,6 +1527,72 @@ fn listed_rows(items: &[(&str, &str)]) -> Vec<ToUi> {
     }]
 }
 
+/// A window whose own list shows an item as its page is named by the item, as its row names it
+/// — a task opened from search reads "Pay rent" in the desktop's tab — and by its page again once
+/// the list shows none.
+#[test]
+fn a_window_showing_an_item_as_its_page_is_named_by_the_item() {
+    let (mut app, mut window) = window();
+    let page = list_page();
+    let Some(ToUi::Open { tree, .. }) = page.first() else {
+        panic!("the page opens the window");
+    };
+    let mut opened = tree.clone();
+    send(&mut app, &page);
+    window.receive();
+    send(
+        &mut app,
+        &listed_rows(&[
+            ("root/tasks:t1", "Call the landlord"),
+            ("root/tasks:t2", "Pay rent"),
+        ]),
+    );
+    window.receive();
+    let unopened = window.title().map(str::to_owned);
+    assert_ne!(unopened.as_deref(), Some("Pay rent"));
+    node_of(&mut opened, &kind("VirtualList"))
+        .expect("the page's list")
+        .props
+        .insert(
+            "open".to_owned(),
+            Value::Ref(ResourceRef {
+                id: "root/tasks:t2".to_owned(),
+                ty: "tasks.Task".to_owned(),
+            }),
+        );
+    send(
+        &mut app,
+        &[ToUi::Open {
+            lane: Lane::Root,
+            target: doc(),
+            tree: opened,
+            front: None,
+        }],
+    );
+    window.receive();
+    send(
+        &mut app,
+        &listed_rows(&[
+            ("root/tasks:t1", "Call the landlord"),
+            ("root/tasks:t2", "Pay rent"),
+        ]),
+    );
+    window.receive();
+    assert!(window.failed().is_none(), "{:?}", window.failed());
+    assert_eq!(
+        window.title(),
+        Some("Pay rent"),
+        "named by the item it shows"
+    );
+    send(&mut app, &page);
+    window.receive();
+    assert_eq!(
+        window.title().map(str::to_owned),
+        unopened,
+        "named by its page again"
+    );
+}
+
 /// A choice of several rows is the person's own while it holds: the rows the app sends again
 /// after a press leave it as it is, and only the host's own putting away of the choice ends it.
 #[test]
