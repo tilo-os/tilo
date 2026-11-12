@@ -460,8 +460,9 @@ if grep -qx 'Cargo.lock' <<< "$staged_names" \
    && ! grep -qE '(^|/)Cargo\.toml$' <<< "$lock_staged_names"; then
   python3 "$root/tools/ci/check_lock_update.py" --root "$root" || fail=1
 fi
-# A vendored crate's own lock file is a build artifact, not ours.
-if grep -qE '^vendor/[^/]+/Cargo\.lock$' <<< "$staged_names"; then
+# A vendored crate's own lock file is a build artifact, not ours; untracking
+# one is the fix, so only an added or changed one fails.
+if git diff --cached --name-only --diff-filter=d | grep -qE '^vendor/[^/]+/Cargo\.lock$'; then
   note "a vendored crate's Cargo.lock is staged; it is a build artifact"
   fail=1
 fi
