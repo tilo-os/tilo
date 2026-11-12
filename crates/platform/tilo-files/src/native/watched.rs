@@ -190,6 +190,20 @@ impl<T: Send + Sync + 'static> Watched<T> {
         )
     }
 
+    /// The latest value with the generation of the read that produced it, taken together so the
+    /// two always describe the same reading. The generation is a number that only ever rises, one
+    /// per read that was kept, so two values read at different times are told apart even after the
+    /// older one was freed and a new one happened to land at its address. Callers key caches on it.
+    #[must_use]
+    pub fn snapshot(&self) -> (u64, Arc<T>) {
+        let value = self
+            .shared
+            .value
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        (value.0, Arc::clone(&value.1))
+    }
+
     /// Read the value again on this thread, now: for a writer in this
     /// process, which must not see its own change late. Reads the disk.
     pub fn refresh(&self) {
