@@ -47,6 +47,7 @@ use crate::vmbuild;
 mod admin;
 mod artifact;
 mod branch;
+mod branch_admit;
 mod builder;
 mod device;
 #[cfg(test)]

@@ -184,6 +184,13 @@ pub struct VmEntry {
     /// The VM this one was branched from (`vm branch`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branched_from: Option<String>,
+    /// The VM whose workspaces `vm branch` has not yet seen take this
+    /// branch in: it re-keys at its first boot, and only a workspace's host
+    /// admits a new device (`vm branch --no-admit`, or an admission that
+    /// failed). The next `vm branch` of that VM boots it once beside it to
+    /// have it taken in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaits_host: Option<String>,
 }
 
 /// Where a device answers over the peer network (`tilo-vm guide devices`,
