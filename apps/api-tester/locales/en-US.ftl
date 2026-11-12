@@ -114,4 +114,22 @@ api-tester-copy-request = Copy request
 api-tester-new-collection-button = New collection
 api-tester-reset-area = Reset request area
 api-tester-size-more-than = More than { $size }
+
+## What the request builder's selectors are called
+api-tester-auth-none = No Auth
+api-tester-auth-bearer = Bearer Token
+api-tester-auth-basic = Basic Auth
+api-tester-auth-api-key = API Key
+api-tester-auth-stored = Stored Authentication
+api-tester-body-none = None
+api-tester-body-json = JSON
+api-tester-body-form = Form
+api-tester-body-raw = Raw
+api-tester-tab-params = Params
+api-tester-tab-headers = Headers
+api-tester-tab-auth = Auth
+api-tester-tab-body = Body
+api-tester-view-pretty = Pretty
+api-tester-view-raw = Raw
+api-tester-view-headers = Headers
 api-tester-split-label = Resize the request and the response
