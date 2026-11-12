@@ -275,13 +275,6 @@ pub(crate) fn device_of(id: u32) -> Option<String> {
     replica_of(id).map(|joined| joined.borrow().device.clone())
 }
 
-/// The heads of the saved document `bytes`, when it holds any change: the
-/// host's empty document for a record a member is creating holds none.
-fn heads_of(bytes: &[u8]) -> Option<Vec<ui::automerge::ChangeHash>> {
-    let heads = AutoCommit::load(bytes).ok()?.get_heads();
-    (!heads.is_empty()).then_some(heads)
-}
-
 /// Whether peer `id`'s workspace holds record `record` (wire form) of `app`:
 /// open in a mount, or delivered and stored for whoever opens it.
 pub(crate) fn has_record(id: u32, app: &str, record: &str) -> bool {
@@ -987,7 +980,9 @@ impl Joined {
                 kept.as_deref(),
             );
             let applied = match read {
-                Ok(RecordReading::Captured { bytes, .. }) => self.apply(&route, bytes, &mut woken),
+                Ok(RecordReading::Captured { bytes, heads, .. }) => {
+                    self.apply(&route, (bytes, &heads), &mut woken)
+                }
                 Ok(RecordReading::Changes { bytes, heads, .. }) => {
                     self.apply_kept_changes(&route, bytes, &heads, &mut woken)
                 }
@@ -1201,12 +1196,12 @@ impl Joined {
         }
     }
 
-    /// Merge `bytes`, the replica's whole document of `route`, into the open record, the
-    /// desktop, or the record's stored document for whoever opens it.
+    /// Merge `bytes`, the replica's whole document of `route`, standing at `heads`, into the
+    /// open record, the desktop, or the record's stored document for whoever opens it.
     fn apply(
         &mut self,
         route: &DocumentRoute,
-        bytes: Vec<u8>,
+        (bytes, heads): (Vec<u8>, &[[u8; 32]]),
         woken: &mut HashSet<u64>,
     ) -> Result<(), String> {
         if route.app_id == DESKTOP_APP {
@@ -1244,7 +1239,7 @@ impl Joined {
         // The host takes up a record a member created with an empty
         // document of its own before the member's content arrives: no
         // record yet, which a page opening it would refuse.
-        let Some(heads) = self.store_unopened(&app, &record, bytes)? else {
+        let Some(heads) = self.store_unopened(&app, &record, bytes, heads)? else {
             return Ok(());
         };
         self.kept_for_opening(&app, record, heads, woken);
@@ -1338,15 +1333,16 @@ impl Joined {
         }
     }
 
-    /// Merge the replica's document `bytes` into the record's stored document for whoever
-    /// opens it next, and answer its heads once it holds any change. Into an empty store it
-    /// is kept as it came: opening the record loads and checks it once. A document with no
-    /// change in it is no record yet and is not kept.
+    /// Merge the replica's document `bytes`, which stands at `heads`, into the record's stored
+    /// document for whoever opens it next, and answer its heads once it holds any change. Into
+    /// an empty store it is kept as it came, unloaded: opening the record loads and checks it
+    /// once. A document with no change in it is no record yet and is not kept.
     fn store_unopened(
         &self,
         app: &str,
         record: &str,
         bytes: Vec<u8>,
+        heads: &[[u8; 32]],
     ) -> Result<Option<Vec<ui::automerge::ChangeHash>>, String> {
         let key = storage_key(app, &self.uuid, record)?;
         let stored = self.store.read(&key).map_err(|error| error.to_string())?;
@@ -1355,9 +1351,14 @@ impl Joined {
             .map(|stored| stored.bytes)
             .filter(|bytes| !bytes.is_empty());
         let Some(stored) = stored else {
-            let Some(heads) = heads_of(&bytes) else {
+            if heads.is_empty() {
                 return Ok(None);
-            };
+            }
+            let heads = heads
+                .iter()
+                .copied()
+                .map(ui::automerge::ChangeHash)
+                .collect();
             return self
                 .store
                 .write(&key, WriteOp::Replace(bytes), writer.as_deref())
