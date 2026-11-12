@@ -326,14 +326,16 @@ impl SettingsPane {
             ),
         ];
         if let Some(request) = &self.autofill_request {
-            for (id, label, description, addresses) in [
+            for (id, row, label, description, addresses) in [
                 (
+                    "browser.credentials.open",
                     "settings.row.passwords",
                     "browser-settings-passwords",
                     "browser-settings-passwords-detail",
                     false,
                 ),
                 (
+                    "browser.address.open",
                     "settings.row.autofill",
                     "browser-settings-autofill",
                     "browser-settings-autofill-detail",
@@ -342,7 +344,7 @@ impl SettingsPane {
             ] {
                 let request = request.clone();
                 privacy_rows.push(setting_row_described(
-                    id,
+                    row,
                     crate::resource::CATALOG.t(label),
                     crate::resource::CATALOG.t(description),
                     Box::new(

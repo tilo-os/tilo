@@ -673,7 +673,7 @@ impl EditForm {
             phones = phones.content(self.typed_row(TypeTarget::Phone(i), Slot::Phone(i), shared));
         }
         phones = phones.content(Self::add_button(
-            "contacts.form.add.phone",
+            "contacts.form.add.add-phone",
             &crate::account_editor::CATALOG.t("contacts-add-phone"),
             RowKind::Phone,
             shared,
@@ -684,7 +684,7 @@ impl EditForm {
             emails = emails.content(self.typed_row(TypeTarget::Email(i), Slot::Email(i), shared));
         }
         emails = emails.content(Self::add_button(
-            "contacts.form.add.email",
+            "contacts.form.add.add-email",
             &crate::account_editor::CATALOG.t("contacts-add-email"),
             RowKind::Email,
             shared,
@@ -698,7 +698,7 @@ impl EditForm {
                 .content(self.pair(Slot::AddrPostal(i), Slot::AddrCountry(i), shared));
         }
         addresses = addresses.content(Self::add_button(
-            "contacts.form.add.address",
+            "contacts.form.add.add-address",
             &crate::account_editor::CATALOG.t("contacts-add-address"),
             RowKind::Address,
             shared,
