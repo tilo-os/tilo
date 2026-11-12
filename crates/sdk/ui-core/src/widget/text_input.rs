@@ -644,6 +644,10 @@ pub struct TextInput {
     /// Enter's submit, published as the field's view action `submit`
     /// ([`Self::on_submit_view`]) and the resource it announces.
     submit_view: Option<(ActionEmitter<()>, tilo_actions::ResourceSpec)>,
+    /// The words a submit published and its own handler has not answered yet: an entry clears
+    /// itself as it submits, so what it sent is held here for the answer, never read back from
+    /// the field once it stands empty.
+    submitted: Option<String>,
     /// A committed edit, published as the field's view action `change`
     /// ([`Self::on_change_view`]) and answered by its own handler.
     change_verb: Option<super::control_verb::ControlVerb<String>>,
@@ -749,7 +753,10 @@ const SUBMIT_TEXT: &str = "tilo.ui.text.submit";
 /// The operation type of a field's committed edit.
 const CHANGE_TEXT: &str = "tilo.ui.text.change";
 
-/// What a `tilo.ui.text.submit` operation carries: the field it submits.
+/// What a `tilo.ui.text.submit` operation carries: the field it submits. An entry lets go of
+/// what it sent as it submits ([`TextInput::fire_submit`]), so what it held is read from the
+/// field's own record of the submission it is waiting to have answered (`submitted`), never from
+/// the text the field shows by then.
 #[derive(serde::Deserialize)]
 struct SubmitPayload {
     control: String,
@@ -968,6 +975,7 @@ impl TextInput {
             selection_event: None,
             submit_action: None,
             submit_view: None,
+            submitted: None,
             change_verb: None,
             accessory: None,
             content_sized: false,
@@ -1769,6 +1777,20 @@ impl TextInput {
         if !self.dirty || self.last_notified_text == self.text {
             return;
         }
+        self.report_change(physical_text);
+    }
+
+    /// Tell the field's listeners what it holds now — the action it is bound to, the field's own
+    /// state, and its change verb (or callback) — and record what was told.
+    ///
+    /// The one writer of [`Self::last_notified_text`] once a field is built: every path that
+    /// reports an edit comes through here, so the text a listener hears is the text the field
+    /// records as told, and a path that set the field's text itself (a programmatic seed, a
+    /// document's own value) records it without telling anyone by not calling this at all.
+    /// Callers decide whether what they report is a person's edit ([`Self::notify_user_change`],
+    /// which asks the dirty mark) or a state the person's own action caused (an entry letting go
+    /// of what it sent).
+    fn report_change(&mut self, physical_text: bool) {
         self.last_notified_text.clone_from(&self.text);
         if let Some(action) = &mut self.action {
             let _ = crate::bound_dispatch::with_physical_text(physical_text, || {
@@ -1793,19 +1815,21 @@ impl TextInput {
         }
     }
 
-    /// Insert `s` at the caret as the user's edit.
+    /// Insert `s` at the caret as the user's edit, reporting it once as any typed edit is: a host
+    /// splicing text a person chose (a touch keyboard's key, a passcode's keypad, an emoji from a
+    /// palette) gives the field the same edit a keystroke gives it, and the field's listeners hear
+    /// it as they hear a keystroke.
     pub fn insert_at_cursor(&mut self, s: &str) {
         self.repaint = true;
         self.insert_str(s);
-        self.last_notified_text.clone_from(&self.text);
-        self.publish_local_state();
+        self.notify_user_change(false);
     }
 
-    /// Delete the selected text in a host-owned local projection.
+    /// Delete the selected text in a host-owned local projection, reporting it once as any typed
+    /// edit is.
     pub(super) fn delete_local_selection(&mut self) {
         self.delete_selection();
-        self.last_notified_text.clone_from(&self.text);
-        self.publish_local_state();
+        self.notify_user_change(false);
     }
 
     pub fn cursor_pos(&self) -> usize {
@@ -4460,6 +4484,11 @@ impl TextInput {
         }
         let control = self.test_id().unwrap_or("text_input").to_owned();
         if let Some((action, _)) = &mut self.submit_view {
+            if self.entry {
+                // What was submitted, kept for the answer below: the entry lets go of the words
+                // as it submits, so the answer must not read the field for them.
+                self.submitted = Some(text.clone());
+            }
             if let Err(error) = action.emit(()) {
                 tracing::warn!(%error, %control, "a field refused its submit");
             }
@@ -4467,8 +4496,11 @@ impl TextInput {
             callback(&text);
         }
         if self.entry {
+            // What the field showed before it let go: the clear is a change only for an entry
+            // that held something (one submitted empty cleared nothing, and says nothing).
+            let sent = std::mem::take(&mut self.text);
             self.set_text("");
-            self.report_cleared();
+            self.report_cleared(!sent.trim().is_empty());
         }
     }
 
@@ -4479,13 +4511,12 @@ impl TextInput {
     ///
     /// The submit ran before this ([`Self::fire_submit`]), so the action a press runs has the
     /// words; only the state it is bound to is cleared after them.
-    fn report_cleared(&mut self) {
-        if let Some(verb) = &mut self.change_verb {
-            verb.emit(String::new());
-            return;
-        }
-        if let Some(callback) = self.on_change.as_mut() {
-            callback("");
+    fn report_cleared(&mut self, cleared: bool) {
+        // `set_text` records what it shows without telling anyone; the entry's clear is the
+        // person's edit all the same, so it goes through the one path that tells the field's
+        // listeners and records what it told.
+        if cleared {
+            self.report_change(false);
         }
     }
 
@@ -5995,7 +6026,11 @@ impl crate::widget::ResourceOperations for TextInput {
         if payload.control != self.test_id().unwrap_or("text_input") {
             return Ok(None);
         }
-        let text = self.text.clone();
+        // What was submitted as it stood, never the text the field shows now: an entry let go of
+        // its words when it submitted them, so reading back would hand on an empty message (the
+        // words `fire_submit` kept for this answer). An ordinary field still holds them, and one
+        // another writer submitted (a script, an agent) takes what the field holds.
+        let text = self.submitted.take().unwrap_or_else(|| self.text.clone());
         if let Some(callback) = self.on_submit.as_mut() {
             callback(&text);
         }
