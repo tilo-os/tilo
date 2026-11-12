@@ -23,7 +23,7 @@ mapped = true
 [[capabilities.UserNamespace.tests]]
 # The seed test mounts in a private mount namespace.
 probe = "mount-namespace"
-filter = "package(tilo-install-helpers) and test(=native_home_seeds)"
+filter = "package(tilo-install-helpers) and test(=native_python::native_home_seeds)"
 
 [[capabilities.UserNamespace.tests]]
 # The tool builder's sandbox: root of a user namespace with an overlay.
