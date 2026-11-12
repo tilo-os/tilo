@@ -277,10 +277,6 @@ export function lineParts(line, tipLabel = 'Tip') {
   return {label: line?.kind === 'tip' ? tipLabel : null, text: line?.text ?? ''};
 }
 
-/** Said when the desktop stops drawing; the cause goes to the console.
- * The locale file words it as `arrival-failed-stopped-drawing`. */
-export const STOPPED_DRAWING = 'The desktop stopped working. Try again to start it.';
-
 /** `text` with each `{ $name }` filled from `args`; a placeholder `args`
  * lacks stays as written. */
 export function fill(text, args = {}) {
@@ -292,48 +288,6 @@ export function fill(text, args = {}) {
  * English `fallback` where the locale lacks it. */
 export function localized(messages, id, fallback, args) {
   return fill(messages?.get(id) ?? fallback, args);
-}
-
-/** What a failure says, by case: the locale file's `arrival-failed-<case>`
- * (naming the workspace) or `arrival-failed-<case>-unnamed` (where the page
- * does not know its name), else the English here. */
-export const FAILURES = {
-  'custody-busy': [
-    'Every device this browser keeps for { $workspace } is open in another tab. Close one of those tabs, then try again.',
-    'Every device this browser keeps for the workspace is open in another tab. Close one of those tabs, then try again.',
-  ],
-  removed: [
-    'You were removed from { $workspace }. To come back, ask someone in it for a new invitation.',
-    'You were removed from this workspace. To come back, ask someone in it for a new invitation.',
-  ],
-  'invitation-only': [
-    'You need an invitation to join { $workspace } for now. Ask someone in it for an invite link, then open it here.',
-    'You need an invitation to join this workspace for now. Ask someone in it for an invite link, then open it here.',
-  ],
-  'cooling-down': [
-    '{ $workspace } is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.',
-    'This workspace is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.',
-  ],
-  unreachable: [
-    'Can’t reach { $workspace } right now. Check your connection, then try again.',
-    'Can’t reach the workspace right now. Check your connection, then try again.',
-  ],
-  desktop: [
-    'You got into { $workspace }, but its desktop did not start in this tab. Try again.',
-    'You got into the workspace, but its desktop did not start in this tab. Try again.',
-  ],
-  general: [
-    'Something went wrong opening { $workspace }. Try again, or come back later.',
-    'Something went wrong opening the workspace. Try again, or come back later.',
-  ],
-};
-
-/** Failure `kind` (a key of `FAILURES`) in `messages`' words. */
-function failure(kind, workspace, messages) {
-  const [named, unnamed] = FAILURES[kind];
-  return workspace
-    ? localized(messages, `arrival-failed-${kind}`, named, {workspace})
-    : localized(messages, `arrival-failed-${kind}-unnamed`, unnamed);
 }
 
 /** Whether `error` is a host's door turning this person away for a while
@@ -402,45 +356,6 @@ export function inviteLinkTarget(text, base = globalThis.location?.href) {
  * getting in. */
 export function stoppedInside(admitted, arrival) {
   return Boolean(admitted) && arrival !== 'done';
-}
-
-/** Whether `error` is the network failing: a fetch that never answered, a
- * host's door that refused or failed, a connection that dropped. */
-function unreachable(error) {
-  if (error?.name === 'HostAdmissionError') return true;
-  return /fetch|network|connect|timed? ?out|websocket|offline|HTTP \d{3}|load failed/i
-    .test(String(error?.message ?? error ?? ''));
-}
-
-/**
- * What a page that could not get in says, in plain words, beside its Try
- * again button, in the person's language (`messages`, the locale file the
- * arrival screen reads). A refusal says itself (it is written for people);
- * the network failing names the workspace where the page knows it (else
- * Tilo, while Tilo itself was still loading); a desktop that did not start
- * once the host let the person in (`admitted`) says so; anything else stays
- * general, its cause left to the console.
- */
-export function failureMessage(error, {workspace = null, loaded = true, admitted = false, messages = null} = {}) {
-  // Taken out of the workspace by its people: said in the person's words.
-  if (['AdmissionError', 'HostAdmissionError'].includes(error?.name) && error.code === 'removed') {
-    return failure('removed', workspace, messages);
-  }
-  // A workspace taking people by invitation, opened without one.
-  if (['AdmissionError', 'HostAdmissionError'].includes(error?.name) && error.code === 'invitation-only') {
-    return failure('invitation-only', workspace, messages);
-  }
-  if (error?.name === 'AdmissionError') return error.message;
-  if (error?.name === 'CustodyError' && error.code === 'custody-busy') {
-    // Each tab is a device of its own; this is only said where this tab
-    // could not become one (every device key in use, and no way here to
-    // certify another).
-    return failure('custody-busy', workspace, messages);
-  }
-  if (refusedByHost(error)) return failure('cooling-down', workspace, messages);
-  const name = workspace || (loaded ? null : 'Tilo');
-  if (unreachable(error)) return failure('unreachable', name, messages);
-  return failure(admitted ? 'desktop' : 'general', name, messages);
 }
 
 /** The language the desktop speaks before the person chooses one in

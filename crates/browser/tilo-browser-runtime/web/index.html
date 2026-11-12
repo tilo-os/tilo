@@ -271,6 +271,10 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     /* Fading out, it no longer takes the pointer: a click on the desktop as it shows reaches it. */
     [data-arrival=done] #arrival { opacity: 0; visibility: hidden; pointer-events: none; }
     #arrival > p, #arrival-note, html:not([data-arrival=done]) #status { position: fixed; z-index: 2; left: 50%; top: calc(50% + 22px); transform: translateX(-50%); width: min(36em, calc(100% - 48px)); margin: 0; text-align: center; line-height: 1.5; color: #c4c4cc; }
+    /* Stopped before the page's modules ran (stall.inline.js): its words
+       grow upwards from just above Try again, so a sentence of any length
+       never runs under the button. */
+    [data-arrival=stopped] #status { top: auto; bottom: calc(50% - 64px); }
     #arrival > p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity 240ms ease-out; }
     #arrival > p.shown { opacity: 1; }
     #arrival > p .label { color: #9b9ba3; margin-right: .5em; }
@@ -357,6 +361,45 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .tilo-entry-card { z-index: 3; }
     /* A workspace that turned this browser away for good: only its card shows. */
     [data-refusal] #surface, [data-refusal] #bar { visibility: hidden; }
+    /* Stopped (failure-screen.mjs): the one failure screen, in the
+       reconnect screen's language. What stopped the page as a heading,
+       its cause and what to do in one paragraph, the action that gets the
+       person in, their other workspaces as a quieter second choice, and
+       the technical details folded below. Nothing else of the arrival
+       screen shows under it, and no card over it; #status keeps its words
+       for screen readers. */
+    #arrival-failure { display: none; }
+    [data-failure] #arrival-failure { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 190px)) 24px 32px; overflow-y: auto; text-align: center; background: #121214; }
+    [data-failure] :is(#arrival, #arrival-note, #arrival-retry, #arrival-own, #arrival-reconnect, .tilo-entry-card) { display: none; }
+    [data-failure] #status { position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .failure-main { display: flex; flex-direction: column; align-items: center; width: min(420px, 100%); }
+    .failure-main > svg { display: block; margin-bottom: 24px; }
+    #arrival-failure h1 { margin: 0 0 10px; font-size: 22px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; color: #ececf0; text-wrap: balance; overflow-wrap: anywhere; }
+    #arrival-failure-body { margin: 0 0 24px; font-size: 15px; line-height: 1.5; color: #a8a8b2; text-wrap: pretty; overflow-wrap: anywhere; }
+    .failure-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+    .failure-actions button { box-sizing: border-box; min-width: 136px; height: 40px; padding: 0 18px; font: inherit; font-size: 15px; font-weight: 500; border-radius: 8px; cursor: pointer; }
+    .failure-actions button[hidden] { display: none; }
+    .failure-actions .failure-primary { border: 0; background: #f2f2f4; color: #121214; }
+    .failure-actions .failure-primary:hover { background: #ffffff; }
+    .failure-actions .failure-secondary { border: 1px solid #34363d; background: transparent; color: #d4d4d8; }
+    .failure-actions .failure-secondary:hover { background: #26282e; }
+    .failure-actions button:focus-visible, #arrival-failure-others button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
+    #arrival-failure-elsewhere { width: 100%; margin-top: 32px; padding-top: 20px; border-top: 1px solid #23252a; }
+    #arrival-failure-elsewhere[hidden] { display: none; }
+    #arrival-failure-others-heading { margin: 0 0 8px; font-size: 13px; line-height: 1.5; color: #8f8f99; }
+    #arrival-failure-others { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+    #arrival-failure-others button { width: 100%; box-sizing: border-box; padding: 10px 12px; font: inherit; font-size: 15px; text-align: left; border-radius: 8px; border: 1px solid #23252a; background: #17181c; color: #d4d4d8; cursor: pointer; overflow-wrap: anywhere; }
+    #arrival-failure-others .failure-note { display: block; font-size: 13px; color: #8f8f99; }
+    #arrival-failure-others button:hover { background: #1f2025; border-color: #34363d; }
+    #arrival-failure-details[hidden] { display: none; }
+    [data-failure] #arrival-failure-details { margin-top: 24px; }
+    #arrival-failure-elsewhere:not([hidden]) + #arrival-failure-details { border-top: 0; padding-top: 0; }
+    @media (max-width: 480px) {
+      [data-failure] #arrival-failure { padding-top: max(32px, calc(38vh - 190px)); }
+      #arrival-failure h1 { font-size: 20px; }
+      .failure-actions { flex-direction: column; align-self: stretch; }
+      .failure-actions button { width: 100%; }
+    }
     /* Not let in yet, and trying again (reconnect.mjs): one calm screen
        for every reason, in the door's language. What happened in plain
        words, a quiet countdown, Try now, and the technical details folded
@@ -378,14 +421,16 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .reconnect-spinner { display: none; width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgb(18 18 20 / 25%); border-top-color: #121214; animation: tilo-spin 800ms linear infinite; }
     #arrival-reconnect-now[aria-busy=true] .reconnect-spinner { display: block; }
     @keyframes tilo-spin { to { transform: rotate(360deg); } }
-    #arrival-reconnect-details { width: 100%; margin-top: 32px; padding-top: 16px; border-top: 1px solid #23252a; }
-    #arrival-reconnect-details summary { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 2px; font-size: 13px; color: #8f8f99; cursor: pointer; list-style: none; }
-    #arrival-reconnect-details summary::-webkit-details-marker { display: none; }
-    #arrival-reconnect-details summary::before { content: ''; width: 5px; height: 5px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform 120ms ease-out; }
-    #arrival-reconnect-details[open] summary::before { transform: rotate(45deg); }
-    #arrival-reconnect-details summary:hover { color: #c4c4cc; }
-    #arrival-reconnect-details summary:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
-    #arrival-reconnect-text { margin: 12px 0 10px; padding: 10px 12px; border-radius: 8px; border: 1px solid #23252a; background: #17181c; color: #b4b4bd; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+    #arrival-reconnect-host { display: block; margin-top: 16px; font-size: 14px; }
+    #arrival-reconnect-host[hidden] { display: none; }
+    :is(#arrival-reconnect-details, #arrival-failure-details) { width: 100%; margin-top: 32px; padding-top: 16px; border-top: 1px solid #23252a; }
+    :is(#arrival-reconnect-details, #arrival-failure-details) summary { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 2px; font-size: 13px; color: #8f8f99; cursor: pointer; list-style: none; }
+    :is(#arrival-reconnect-details, #arrival-failure-details) summary::-webkit-details-marker { display: none; }
+    :is(#arrival-reconnect-details, #arrival-failure-details) summary::before { content: ''; width: 5px; height: 5px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform 120ms ease-out; }
+    :is(#arrival-reconnect-details, #arrival-failure-details)[open] summary::before { transform: rotate(45deg); }
+    :is(#arrival-reconnect-details, #arrival-failure-details) summary:hover { color: #c4c4cc; }
+    :is(#arrival-reconnect-details, #arrival-failure-details) summary:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
+    :is(#arrival-reconnect-text, #arrival-failure-text) { margin: 12px 0 10px; padding: 10px 12px; border-radius: 8px; border: 1px solid #23252a; background: #17181c; color: #b4b4bd; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
     .reconnect-copy { font: inherit; font-size: 13px; padding: 0; border: 0; background: none; color: #c9d3ff; cursor: pointer; text-decoration: underline; text-decoration-color: rgb(201 211 255 / 35%); text-underline-offset: 3px; }
     .reconnect-copy:hover { color: #e4e9ff; text-decoration-color: currentColor; }
     .reconnect-copy:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 3px; border-radius: 2px; }
@@ -395,7 +440,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     }
     @media (prefers-reduced-motion: reduce) {
       .reconnect-main > svg, .reconnect-spinner { animation: none; }
-      #arrival-reconnect-details summary::before { transition: none; }
+      :is(#arrival-reconnect-details, #arrival-failure-details) summary::before { transition: none; }
     }
     @media (prefers-reduced-motion: reduce) {
       #arrival { transition: none; }
@@ -622,7 +667,8 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
   <button id="arrival-retry" type="button">Try again</button>
   <button id="arrival-own" type="button">Open your own desktop</button>
   <section id="arrival-door" aria-labelledby="arrival-door-heading"><div class="door-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-door-heading"></h1><p id="arrival-door-body"></p><form id="arrival-wait" class="door-field" novalidate><input id="arrival-wait-email" name="email" type="email" inputmode="email" autocomplete="email" spellcheck="false" autocapitalize="off" maxlength="254" placeholder="you@example.com" aria-label="Email" aria-describedby="arrival-wait-note"><button type="submit">Join the wait list</button></form><p id="arrival-wait-done" role="status"></p><p id="arrival-wait-again-line" class="door-note" hidden><span id="arrival-wait-again-prompt"></span> <button id="arrival-wait-again" class="door-link" type="button"></button></p><p id="arrival-wait-off" class="door-note"><span id="arrival-wait-change"></span> <button id="arrival-wait-leave" class="door-link" type="button"></button></p><p id="arrival-wait-note" class="door-note"></p><p id="arrival-wait-contact" class="door-note"></p><div class="door-alt"><p id="arrival-sign-in"><span id="arrival-sign-in-ask">Already have a Tilo identity?</span> <button id="arrival-sign-in-button" class="door-link" type="button">Sign in</button></p><p id="arrival-sign-in-note" role="alert"></p><p><button id="arrival-invite-toggle" class="door-link" type="button" aria-expanded="false" aria-controls="arrival-invite">Have an invite link?</button></p><form id="arrival-invite" class="door-field" hidden><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite link" aria-label="Invite link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form></div></div><div class="door-foot"></div></section>
-  <section id="arrival-reconnect" aria-labelledby="arrival-reconnect-heading"><div class="reconnect-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-reconnect-heading"></h1><p id="arrival-reconnect-body"></p><p id="arrival-reconnect-next" aria-hidden="true"></p><p id="arrival-reconnect-said" class="reconnect-said" role="status" aria-live="polite"></p><button id="arrival-reconnect-now" type="button" aria-busy="false"><span class="reconnect-spinner" aria-hidden="true"></span><span id="arrival-reconnect-now-label">Try now</span></button><details id="arrival-reconnect-details"><summary id="arrival-reconnect-summary">Technical details</summary><pre id="arrival-reconnect-text"></pre><button id="arrival-reconnect-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
+  <section id="arrival-failure" aria-labelledby="arrival-failure-heading"><div class="failure-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-failure-heading"></h1><p id="arrival-failure-body"></p><div class="failure-actions"><button id="arrival-failure-host" type="button" hidden></button><button id="arrival-failure-retry" type="button" hidden>Try again</button></div><div id="arrival-failure-elsewhere" hidden><p id="arrival-failure-others-heading"></p><ul id="arrival-failure-others"></ul></div><details id="arrival-failure-details" hidden><summary id="arrival-failure-summary">Technical details</summary><pre id="arrival-failure-text"></pre><button id="arrival-failure-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
+  <section id="arrival-reconnect" aria-labelledby="arrival-reconnect-heading"><div class="reconnect-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-reconnect-heading"></h1><p id="arrival-reconnect-body"></p><p id="arrival-reconnect-next" aria-hidden="true"></p><p id="arrival-reconnect-said" class="reconnect-said" role="status" aria-live="polite"></p><button id="arrival-reconnect-now" type="button" aria-busy="false"><span class="reconnect-spinner" aria-hidden="true"></span><span id="arrival-reconnect-now-label">Try now</span></button><a id="arrival-reconnect-host" class="reconnect-copy" target="_blank" rel="noopener" hidden></a><details id="arrival-reconnect-details"><summary id="arrival-reconnect-summary">Technical details</summary><pre id="arrival-reconnect-text"></pre><button id="arrival-reconnect-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
   <div id="bar"><span id="status" role="status">Loading Tilo…</span></div>
   <script type="module">
     // A Tilo link under this entry: desktop mode. The route is in the

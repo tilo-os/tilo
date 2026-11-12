@@ -18,7 +18,7 @@
  */
 import {AdmissionError} from './admission.mjs';
 import {answerAgentQuestions} from './agent-questions.mjs';
-import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING, stoppedInside} from './arrival.mjs';
+import {doorCopy, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, stoppedInside} from './arrival.mjs';
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './door-wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
@@ -32,8 +32,9 @@ import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
-import {createReconnect, domReconnectView} from './reconnect.mjs';
+import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
 import {followConnection} from './connection-status.mjs';
+import {domFailureView, failureCause, failureDetails, failureScreen, namedOrigin, unanswered} from './failure-screen.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
@@ -703,6 +704,9 @@ function rendererCard({reason, steps}) {
 function reportErrors() {
   let door = null;
   let sent = 0;
+  /** Errors the page already reported with their cause (`failed`), which
+   * reach the window again only because the page throws them on. */
+  const told = new WeakSet();
   const report = (kind, message, stack, at = {}) => {
     if (!door || sent++ >= 5) return;
     try {
@@ -712,10 +716,15 @@ function reportErrors() {
       })], {type: 'text/plain'}));
     } catch { /* Reporting must never throw. */ }
   };
-  addEventListener('error', event => report('error', event.message, event.error?.stack,
-    {source: event.filename, line: event.lineno, column: event.colno}));
-  addEventListener('unhandledrejection', event => report('unhandledrejection', event.reason?.message ?? event.reason, event.reason?.stack));
-  return {at: next => { if (!door && typeof next === 'string' && next) door = next; }, report};
+  const fresh = error => !(error && typeof error === 'object' && told.has(error));
+  addEventListener('error', event => { if (fresh(event.error)) report('error', event.message, event.error?.stack,
+    {source: event.filename, line: event.lineno, column: event.colno}); });
+  addEventListener('unhandledrejection', event => { if (fresh(event.reason)) report('unhandledrejection', event.reason?.message ?? event.reason, event.reason?.stack); });
+  return {
+    at: next => { if (!door && typeof next === 'string' && next) door = next; },
+    report,
+    reported: error => { if (error && typeof error === 'object') told.add(error); },
+  };
 }
 
 export async function startEntryPage({mode}) {
@@ -758,6 +767,32 @@ export async function startEntryPage({mode}) {
     onTryNow: () => reconnect.tryNow()})});
   /** What this page did not catch, for the site's host to log. */
   const pageErrors = reportErrors();
+  /** The page's one failure screen (failure-screen.mjs). */
+  let failureReported = false;
+  const failureView = domFailureView({messages: () => messages, onRetry: () => location.reload()});
+  /** The host the page was reaching when `error` stopped it: the one the
+   * error names, else the workspace's. */
+  const failingHost = error => (typeof error?.origin === 'string' && error.origin) || namedOrigin(error) || visitedAt?.host?.origin
+    || (admitting?.scope?.kind === 'room' ? admitting.scope.host : null) || admitting?.entry?.home?.host?.origin || null;
+  /**
+   * Stop on the failure screen: `error`'s cause in plain words, the action
+   * that gets the person in, their other workspaces, and the details. The
+   * site's host hears the cause too (`<door>errors`).
+   */
+  const showFailure = async ({error, settled = null, admitted: inside = false, drawn = false, step = null, workspace = null, messages: words = messages}) => {
+    const host = failingHost(error);
+    const cause = failureCause(error, {settled, admitted: inside, drawn, online: navigator.onLine !== false,
+      siteAnswers: unanswered(error) ? await siteAnswers() : true, hostIsSite: host === location.origin});
+    const screen = failureScreen(cause, {workspace, host, step, error, messages: words});
+    const others = embed || mode !== 'desktop' || !admitting?.entry ? [] : await otherWorkspaces({...admitting, runtime});
+    failureView.show({screen, others, details: failureDetails({cause, host, step, error, build: PAGE_BUILD})});
+    // Offline, the page tries again by itself once the browser is back.
+    if (cause === 'offline') addEventListener('online', () => location.reload(), {once: true});
+    // Once a page: a desktop that stops draws its failure, and the mount
+    // that throws for the same cause redraws it.
+    if (!failureReported) pageErrors.report('failed', `${cause}: ${describeError(error)}`, error?.stack, {source: host ?? ''});
+    failureReported = true;
+  };
   // A panic that named no window is the page's own crash, which the host
   // hears: it reaches the door's log the same way, before the page starts over.
   reportPageErrors((kind, message) => pageErrors.report(kind, message));
@@ -870,9 +905,11 @@ export async function startEntryPage({mode}) {
         status.textContent = `${state.phase}${state.error ? `: ${state.error}` : ''} · frames ${state.frames ?? 0}${state.persistence ? ` · ${state.persistence}` : ''}`
           + (said.state === 'online' ? '' : ` · ${said.state}${said.detail ? `: ${said.detail}` : ''}`);
       } else if (['failed', 'crashed'].includes(state.phase)) {
-        // The cause is for the console; the person gets what to do.
+        // The failure screen says what stopped, and the console keeps the cause.
         if (state.error) console.warn('desktop:', state.error);
-        status.textContent = localized(messages, 'arrival-failed-stopped-drawing', STOPPED_DRAWING);
+        const drawn = root.arrival === 'done';
+        void showFailure({error: new Error(state.error || `the desktop ${state.phase}`), admitted: true, drawn,
+          step: drawn ? null : 'draw', workspace: workspaceName});
       } else if (state.phase === 'presented' && [loading, opening, drawing].includes(status.textContent)) {
         // Only the page's own loading note: a visit message stays.
         status.textContent = '';
@@ -901,7 +938,7 @@ export async function startEntryPage({mode}) {
         // The bar is the page's own note while it arrives, so only a line
         // still of its own is replaced: a visit message stays, and so does
         // the note about a desktop that stopped while the session was fine.
-        const own = [loading, opening, drawing, STOPPED_DRAWING].includes(status.textContent);
+        const own = [loading, opening, drawing].includes(status.textContent);
         if (!own && !reading.cleared) return;
         status.textContent = reading.cleared ? '' : reading.sentence;
       },
@@ -1154,8 +1191,9 @@ export async function startEntryPage({mode}) {
     } catch (error) {
       console.warn('joining a listed workspace:', error);
       const messages = await localeMessagesSoon();
-      const said = failureMessage(error, {workspace: joined?.name ?? null, loaded: Boolean(runtime), admitted: true, messages});
-      await card(said ?? 'That workspace did not let this page in.', [['Close', null]]);
+      const cause = failureCause(error, {online: navigator.onLine !== false});
+      const screen = failureScreen(cause, {workspace: joined?.name ?? null, host: failingHost(error), error, messages});
+      await card(`${screen.heading}. ${screen.body}`, [['Close', null]]);
     }
   };
   try {
@@ -1458,7 +1496,7 @@ export async function startEntryPage({mode}) {
     if (!admitted && hostUnreachable(error)) {
       console.warn('admission: the host did not answer yet, trying again', error?.message);
       const {attempt, since} = retryUnreachable();
-      const origin = visitedAt?.host?.origin ?? admitting?.entry?.home?.host?.origin ?? admitting?.scope?.host ?? location.origin;
+      const origin = failingHost(error) ?? location.origin;
       await reconnect.wait({error, attempt, since, origin, build: PAGE_BUILD,
         retryAfterMs: Number.isFinite(error?.retryAfter) ? error.retryAfter * 1000 : 0});
       location.reload();
@@ -1467,55 +1505,37 @@ export async function startEntryPage({mode}) {
     if (embed) tell('idle');
     // Stopped after the host let the person in: opening the desktop failed.
     const inside = stoppedInside(admitted, root.arrival);
-    // Plain words and a way to try again (index.html); the cause, thrown
-    // on, reaches the console and the host's error report.
+    // How far the page got, for the failure screen to say where it stopped.
+    const step = root.arrival;
     // The workspace's name as its people last set it, where the workspace's desktop
     // reached the page; else the name the page was served or remembered.
     const named = (typeof admitted?.workspaceName === 'string' && admitted.workspaceName) || workspaceName;
     const messages = await localeMessagesSoon();
-    const said = failureMessage(error, {workspace: named, loaded: Boolean(runtime), admitted: inside, messages});
     // A refusal is the host's answer, which trying again does not change.
-    // Marked together with its words: a page that says it was refused
-    // while still reading "Loading Tilo…" tells a reader nothing. Stopped
-    // only then too: stopped with no answer yet reads as a failure, which
-    // shows Try again and gives it the keyboard before a refusal hides it.
     arrive('stopped');
     document.documentElement.dataset.entry = error instanceof AdmissionError || refusedByHost(error) ? 'refused' : 'failed';
-    status.textContent = said;
-    // Turned away for coming without an invitation: a place to open the
-    // one they get.
-    if (error?.code === 'invitation-only') offerDoor({messages, named, error, workspace: visitedAt ?? admitting?.entry?.home});
+    // Turned away for coming without an invitation: the door is a page of
+    // its own, with its own ways in, and nothing else is shown over it.
+    if (error?.code === 'invitation-only') {
+      const screen = failureScreen('invitation-only', {workspace: named, messages});
+      status.textContent = `${screen.heading}. ${screen.body}`;
+      offerDoor({messages, named, error, workspace: visitedAt ?? admitting?.entry?.home});
+      if (admitting && !embed) void offerOwnDesktop({...admitting, runtime});
+      // Its answer, not a failure of this page to report as an uncaught
+      // error (every stranger at such a door would send one).
+      return;
+    }
     const known = admitting && remembering(() => rememberedWorkspace(admitting.scope));
     // A declined or unusable invitation, a damaged link or this browser's
     // device key held by another tab says nothing about the workspace.
     const local = error?.name === 'CustodyError' || (error instanceof AdmissionError && !['no-access', 'refused', 'host-changed', 'removed'].includes(error.code));
-    if (known && !local) {
-      // A workspace this browser was a member of: forgotten when its origin says
-      // another host holds it now; else said what is known, and no longer
-      // reopened on a bare entry.
-      const settled = await settleWorkspace(known, runtime);
-      if (settled === 'gone') {
-        status.textContent = `${known.name ?? 'This workspace'} no longer exists: its host was set up again since this browser opened it.`;
-      } else if (settled === 'deleted') {
-        status.textContent = refusalText('workspace-deleted', known.name);
-      } else if (error instanceof AdmissionError && error.code === 'no-access') {
-        status.textContent = `${known.name ?? 'This workspace'} did not let this browser in. You may have been removed from it, or it no longer exists.`;
-      }
-    }
-    // The door of a workspace taking people by invitation is a page of its own,
-    // with its own ways in: nothing else is offered over it.
-    if (!embed && mode === 'desktop' && admitting && error?.code !== 'invitation-only') {
-      const refused = document.documentElement.dataset.entry === 'refused';
-      void offerOtherWorkspaces({...admitting, runtime}).then(offered => {
-        // Nothing to try again and nowhere else of theirs to go: the
-        // person's own desktop, where they have one.
-        if (!offered && refused) void offerOwnDesktop({...admitting, runtime});
-      });
-    }
-    // Turned away at the door of a workspace taking people by invitation: its
-    // answer, shown above, not a failure of this page to report as an
-    // uncaught error (every stranger at such a door would send one).
-    if (error?.code === 'invitation-only') return;
+    // A workspace this browser was a member of: forgotten when its origin says
+    // another host holds it now, and no longer reopened on a bare entry.
+    const settled = known && !local ? await settleWorkspace(known, runtime) : null;
+    await showFailure({error, settled, admitted: inside, step, workspace: named ?? known?.name ?? null, messages});
+    // The cause reaches the console and, once, the site's host (above):
+    // thrown on, it is not reported a second time as uncaught.
+    pageErrors.reported(error);
     throw error;
   }
 }
@@ -1826,20 +1846,35 @@ async function offerOwnDesktop({entry, runtime}) {
   document.documentElement.dataset.ownDesktop = '';
 }
 
-/** After a failure to open `scope`, offer the person's other workspaces;
- * resolves to whether there were any to offer. */
-async function offerOtherWorkspaces({scope, entry, runtime}) {
+/** The person's other workspaces, as the failure screen lists them after
+ * a failure to open `scope` (`failure-screen.mjs`): their own desktop where
+ * they have one, their home and the workspaces this browser entered. */
+async function otherWorkspaces({scope, entry, runtime}) {
   const link = runtime ? grammar(runtime, entry) : null;
-  const choices = (remembering(() => workspaceChoices({home: entry.home, homeWorkspace: homeWorkspaceOf(entry),
-    entered: enteredWorkspaces(), current: scope})) ?? []).filter(choice => choice.home || link);
-  if (!choices.length) return false;
-  const choice = await card('Open another of your workspaces',
-    [...choices.map(option => [option.unavailable ? `${option.name} (did not open last time)` : option.name, option]), ['Not now', null]]);
-  if (!choice) return true;
-  // The own desktop is no workspace a bare entry could reopen: the choice kept stays.
-  if (!choice.own) remembering(() => chooseWorkspace(choice.home ? null : choice));
-  loadPage(choiceUrl(choice, entry, link));
-  return true;
+  const own = await ownDesktopAllowed(entry?.home);
+  const choices = remembering(() => workspaceChoices({home: entry.home, homeWorkspace: homeWorkspaceOf(entry),
+    entered: enteredWorkspaces(), current: scope, own})) ?? [];
+  return choices.filter(choice => choice.home || choice.own || link).map(choice => ({
+    label: choice.own ? 'Your own desktop' : choice.name,
+    note: choice.unavailable ? 'Didn’t open last time' : null,
+    open: () => {
+      // The own desktop is no workspace a bare entry could reopen: the choice kept stays.
+      if (!choice.own) remembering(() => chooseWorkspace(choice.home ? null : choice));
+      loadPage(choice.own && !link ? new URL('#/me', entry.base).href : choiceUrl(choice, entry, link));
+    },
+  }));
+}
+
+/** Whether this site still answers, once the page stopped: a host that does
+ * not answer while the site does is that host's problem, not the
+ * connection's. */
+async function siteAnswers(url = location.href) {
+  try {
+    await fetch(url, {method: 'HEAD', cache: 'no-store', credentials: 'omit', signal: AbortSignal.timeout(4000)});
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Offer to set up the machine an `install` link names (`machine-setup.mjs`). */
