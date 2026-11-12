@@ -75,6 +75,8 @@ export interface PageAction {
   seq: number;
   time_ms: number;
   actor: string;
+  device: string;
+  device_name: string;
   how: string;
   action: string;
   ok: boolean;

@@ -21,6 +21,14 @@
 //! by name, as a value and in a group. So an actor cannot set down what it
 //! never did, and a reviewer reads who did what.
 //!
+//! An actor that works from another of the person's devices is set down
+//! with that device beside its name (`device`, `device_name`): the one the
+//! agent door verified its connection came from, which the action system
+//! says on the invoker of each of its actions
+//! ([`ui::tilo_actions::ActionInvoker::device`]). The window writes it from
+//! there, never from what the engine lists, and the record's door refuses an
+//! entry that names any other device than its author's.
+//!
 //! Never a secret: what was written into a secret field is not in what the
 //! engine lists, whatever wrote it, and the entry says so (`secret`). The
 //! record keeps of such an entry that the field was set and none of its
@@ -55,7 +63,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 use ui::framework::PersonRecord;
-use ui::tilo_actions::{ActionInvoker, ActorKind};
+use ui::tilo_actions::{ActionInvoker, ActorKind, InvokerDevice};
 use ui::tilo_resource::{self, ActionCx, Atom, Map, Model, Refusal, resource};
 use ui::webview::{PageActor, PageFailure, PageRecordNote, PageReply, PageRequest};
 
@@ -104,6 +112,13 @@ pub struct PageAction {
     pub time_ms: u64,
     /// The name its actor acted under; empty for the person at the window.
     pub actor: Atom,
+    /// The other device of the person's its actor worked from, by its key in
+    /// hex: the device the agent door verified the actor's connection came
+    /// from. Empty for an actor on the device whose engine runs the page,
+    /// and for the person.
+    pub device: Atom,
+    /// What that device's certificate calls it; empty when it names none.
+    pub device_name: Atom,
     /// `input` for what was typed straight into the page and `hold` for what
     /// the window held the page from sending; empty for an action.
     pub how: Atom,
@@ -206,7 +221,10 @@ impl PageRecord {
     /// The window writes each action as whoever did it: the entry's actor
     /// is the name of the invoker its change is authored by, and what a
     /// person typed or did at the window is authored by a person. An entry
-    /// under another's name is refused.
+    /// under another's name is refused. So is one that names another device
+    /// than the door set on that invoker: an actor is recorded as working
+    /// from the device its connection was verified to come from, and from
+    /// none when the door named none.
     #[action(housekeeping, by_app)]
     pub fn set_down(
         &mut self,
@@ -224,6 +242,14 @@ impl PageRecord {
         if !action.is_by(cx.author(), cx.actor_kind()) {
             return Err(Refusal::new(
                 "a page action is set down by the actor who did it",
+            ));
+        }
+        let admitted_from = ui::tilo_actions::invoking_context()
+            .and_then(|context| context.invoker)
+            .and_then(|invoker| invoker.device);
+        if !action.is_from(admitted_from.as_ref()) {
+            return Err(Refusal::new(
+                "a page action names the device its actor was admitted from",
             ));
         }
         let known = self.tabs.get(&tab).cloned();
@@ -384,6 +410,8 @@ impl PageAction {
             seq,
             time_ms: entry.get("time_ms").and_then(whole).unwrap_or(0),
             actor: text("actor", MAX_NAME_BYTES),
+            device: text("device", MAX_NAME_BYTES),
+            device_name: text("device_name", MAX_NAME_BYTES),
             how,
             action,
             ok,
@@ -423,8 +451,22 @@ impl PageAction {
             .is_some_and(|named| named.as_str() == self.actor.0)
     }
 
+    /// Whether this action names the device its actor was admitted from:
+    /// `device`, the one the door set on the invoker the change is authored
+    /// by, and no device for an invoker the door named none for.
+    fn is_from(&self, device: Option<&InvokerDevice>) -> bool {
+        match device {
+            Some(device) => {
+                self.device.0 == clipped(&device.id, MAX_NAME_BYTES)
+                    && self.device_name.0 == clipped(&device.name, MAX_NAME_BYTES)
+            }
+            None => self.device.0.is_empty() && self.device_name.0.is_empty(),
+        }
+    }
+
     /// The action as the engine lists one: what [`Self::of`] kept, under the
-    /// names it was listed by.
+    /// names it was listed by. The device its actor worked from stands
+    /// beside the actor, where the record keeps one.
     pub fn entry(&self) -> Value {
         let mut entry = serde_json::Map::new();
         let mut say = |key: &str, text: &Atom| {
@@ -445,6 +487,12 @@ impl PageAction {
             entry.insert("time_ms".into(), self.time_ms.into());
         }
         entry.insert("actor".into(), self.actor.0.clone().into());
+        if !self.device.0.is_empty() {
+            entry.insert("device".into(), self.device.0.clone().into());
+            if !self.device_name.0.is_empty() {
+                entry.insert("device_name".into(), self.device_name.0.clone().into());
+            }
+        }
         entry.insert("ok".into(), self.ok.into());
         if !self.role.0.is_empty() || !self.name.0.is_empty() {
             let mut target = serde_json::Map::new();
@@ -756,9 +804,27 @@ impl TabRecorder {
             if seq <= self.cursor {
                 continue;
             }
+            let actor = listed
+                .get("actor")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let typed = listed.get("how").and_then(Value::as_str) == Some("input");
+            // Who the action is written as: its actor, as the door admitted
+            // it; the person for what was typed and for the unnamed actor.
+            let by = (!typed && !actor.is_empty()).then(|| self.invoker(actor));
             let mut entry = listed.clone();
             if let Some(fields) = entry.as_object_mut() {
                 fields.insert("seq".into(), self.base.saturating_add(seq).into());
+                // Where an actor works from is what the door that admitted
+                // it says, never what the engine lists.
+                fields.remove("device");
+                fields.remove("device_name");
+                if let Some(device) = by.as_ref().and_then(|by| by.device.as_ref()) {
+                    fields.insert("device".into(), device.id.clone().into());
+                    if !device.name.is_empty() {
+                        fields.insert("device_name".into(), device.name.clone().into());
+                    }
+                }
             }
             self.withhold(&mut entry);
             // An entry the record cannot keep is passed over, not waited on.
@@ -766,20 +832,14 @@ impl TabRecorder {
                 self.cursor = seq;
                 continue;
             }
-            let actor = listed
-                .get("actor")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let typed = listed.get("how").and_then(Value::as_str) == Some("input");
             let invoke = PageRecord::SET_DOWN.with(page_actions::SetDown {
                 tab: self.tab.clone(),
                 device: self.device.clone(),
                 entry,
             });
-            let written = if typed || actor.is_empty() {
-                record.invoke(&invoke)
-            } else {
-                record.invoke_as(&self.invoker(actor), &invoke)
+            let written = match &by {
+                Some(by) => record.invoke_as(by, &invoke),
+                None => record.invoke(&invoke),
             };
             if let Err(error) = written {
                 // It is read from the engine again with the next action.
@@ -871,6 +931,97 @@ impl TabRecorder {
         }
     }
 
+    /// Say on `set`, who set a field as the engine's review of the page
+    /// says it, the other device that actor worked from. The engine knows
+    /// actors by name alone, so the device is the one the tab's record keeps
+    /// with the action that set the field, and, until that action is
+    /// written, the one its actor was admitted from. A field an actor on
+    /// this device set, or no actor's action, names none.
+    fn name_device(&self, set: &mut Value) {
+        let Some(fields) = set.as_object_mut() else {
+            return;
+        };
+        let by_action = fields.get("how").and_then(Value::as_str) == Some("action");
+        let actor = fields
+            .get("by")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let place = fields.get("seq").and_then(whole);
+        self.say_device(fields, by_action.then_some(actor.as_str()), place);
+    }
+
+    /// Say on each entry of `listing`, the engine's own list of what it set
+    /// down, the other device the entry's actor worked from, as
+    /// [`Self::name_device`] says it of who set a field: what the review
+    /// screen reads to draw the tab's record. What a person typed names
+    /// none.
+    pub(crate) fn name_devices(&self, listing: Option<&mut Value>) {
+        let Some(Value::Array(entries)) = listing.and_then(|listing| listing.get_mut("entries"))
+        else {
+            return;
+        };
+        for entry in entries {
+            let Some(fields) = entry.as_object_mut() else {
+                continue;
+            };
+            let typed = fields.get("how").and_then(Value::as_str) == Some("input");
+            let actor = fields
+                .get("actor")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            // The engine counts its own record; the tab's stands `base`
+            // further on.
+            let place = fields
+                .get("seq")
+                .and_then(whole)
+                .map(|seq| self.base.saturating_add(seq));
+            self.say_device(fields, (!typed).then_some(actor.as_str()), place);
+        }
+    }
+
+    /// Write into `said`, an entry or who set a field, the device `actor`
+    /// worked from when it did the action at `place` of the tab's record,
+    /// and take out whatever device it named before: only this window says
+    /// one, from what the door that admitted the actor said.
+    fn say_device(
+        &self,
+        said: &mut serde_json::Map<String, Value>,
+        actor: Option<&str>,
+        place: Option<u64>,
+    ) {
+        said.remove("device");
+        said.remove("device_name");
+        let Some(actor) = actor.filter(|actor| !actor.is_empty()) else {
+            return;
+        };
+        let kept = place.and_then(|place| {
+            self.record.as_ref()?.with(|state| {
+                state
+                    .actions
+                    .get(&action_key(&self.tab, place))
+                    .filter(|kept| kept.actor.0 == actor)
+                    .map(|kept| (kept.device.0.clone(), kept.device_name.0.clone()))
+            })
+        });
+        let (device, name) = kept.unwrap_or_else(|| {
+            self.actors
+                .iter()
+                .find(|(named, _)| named == actor)
+                .and_then(|(_, invoker)| invoker.device.as_ref())
+                .map(|device| (device.id.clone(), device.name.clone()))
+                .unwrap_or_default()
+        });
+        if device.is_empty() {
+            return;
+        }
+        said.insert("device".into(), device.into());
+        if !name.is_empty() {
+            said.insert("device_name".into(), name.into());
+        }
+    }
+
     /// An engine's answer with every place in it named as the tab's record
     /// counts it, and whether it says something was set down that this
     /// window should read.
@@ -888,6 +1039,7 @@ impl TabRecorder {
                     for field in fields {
                         if let Some(set) = field.get_mut("set") {
                             self.replace(set);
+                            self.name_device(set);
                         }
                     }
                 }

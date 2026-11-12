@@ -14,7 +14,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::{
-    ActionAddress, ActionInvoker, ActorKind, InteractionActor, InvocationUpdate,
+    ActionAddress, ActionInvoker, ActorKind, InteractionActor, InvocationUpdate, InvokerDevice,
 };
 use ui::tilo_resource::history;
 use ui::tilo_resource::{Effect as _, Invoke};
@@ -59,6 +59,19 @@ fn agent(principal: &str) -> ActionInvoker {
 /// the door of a record of Ada's own takes actions from, beside Ada.
 fn agent_for_ada(principal: &str) -> ActionInvoker {
     ActionInvoker::admitted(&InteractionActor::new(principal, ActorKind::Agent).acting_for(ada()))
+}
+
+/// Ada's laptop, another of her devices, as the agent door of the device
+/// that runs the page verified it for a connection that came from there.
+fn laptop() -> InvokerDevice {
+    InvokerDevice::certified([0x5c; 32], "Studio laptop")
+}
+
+/// An agent the action door admitted that works from `device`, another of
+/// Ada's devices: what the host says of an agent whose connection its agent
+/// door verified to come from there.
+fn agent_on(principal: &str, device: &InvokerDevice) -> ActionInvoker {
+    agent(principal).from_device(Some(device.clone()))
 }
 
 /// What a call through the door comes to when nothing answers it in time.
@@ -388,6 +401,154 @@ fn what_two_agents_did_is_the_record_in_order_under_their_names() {
     assert!(
         published(&app.harness().resources(), RESOURCE),
         "{RESOURCE} is published"
+    );
+}
+
+/// An agent fills the field `name`, as the engine sets it down at `seq`
+/// under the agent's name: the engine knows an actor by its name alone.
+fn field_filled(seq: u64, actor: &str, name: &str) -> Value {
+    json!({"seq": seq, "time_ms": 1_700_000_000_000_u64 + seq, "actor": actor,
+        "action": "fill", "ok": true, "message": format!("Filled textbox \"{name}\""),
+        "url": PAGE, "target": {"role": "textbox", "name": name}, "text": name})
+}
+
+/// The actor and the device each entry names, with the device's name.
+fn named_in(entries: &Value) -> Vec<(String, Option<String>, Option<String>)> {
+    let said = |entry: &Value, key: &str| entry.get(key).and_then(Value::as_str).map(str::to_owned);
+    entries
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|entry| {
+            (
+                said(entry, "actor").unwrap_or_default(),
+                said(entry, "device"),
+                said(entry, "device_name"),
+            )
+        })
+        .collect()
+}
+
+/// Agents on three machines work in one tab: two on Ada's laptop, one on a
+/// device of hers that names itself nothing, one on the device that runs
+/// the page. The record names, beside each actor, the device the door
+/// verified it came from, and none for the one here, whatever the engine
+/// lists. An actor's name stays the principal the door admitted, so two
+/// agents of one device are two actors and one agent is the same actor
+/// across its actions. The record's read, the review of the page's fields
+/// and the record's history say the same.
+#[test]
+fn an_agent_from_another_device_is_set_down_with_the_device_it_was_admitted_from() {
+    let engine = TestEngine::new();
+    let mut app = open(&engine);
+    let laptop = laptop();
+    let unnamed = InvokerDevice::certified([0x40; 32], "");
+    let first = agent_on("agent:task-a1", &laptop);
+    let second = agent_on("agent:task-a2", &laptop);
+    let third = agent_on("agent:task-d1", &unnamed);
+    let here = agent("agent:task-b1");
+    // The engine is told a device by nobody, and one it lists is nothing a
+    // door verified: here it says the agent on this device is on the laptop.
+    let mut forged = field_filled(4, "agent:task-b1", "Arrival");
+    forged["device"] = laptop.id.clone().into();
+    forged["device_name"] = "Studio laptop".into();
+    for (by, listed) in [
+        (&first, field_filled(1, "agent:task-a1", "Given names")),
+        (&second, field_filled(2, "agent:task-a2", "Family name")),
+        (&third, field_filled(3, "agent:task-d1", "Passport number")),
+        (&here, forged),
+        (&first, field_filled(5, "agent:task-a1", "Nationality")),
+    ] {
+        engine_sets_down(&engine, &listed);
+        act(&mut app, Some(by), &fill("d1e2", "an answer")).expect("the fill answers");
+    }
+    app.settle();
+
+    let on_laptop = |actor: &str| {
+        (
+            actor.to_owned(),
+            Some(laptop.id.clone()),
+            Some("Studio laptop".to_owned()),
+        )
+    };
+    let expected = [
+        on_laptop("agent:task-a1"),
+        on_laptop("agent:task-a2"),
+        ("agent:task-d1".to_owned(), Some(unnamed.id.clone()), None),
+        ("agent:task-b1".to_owned(), None, None),
+        on_laptop("agent:task-a1"),
+    ];
+    let record = record(&mut app);
+    let tab = only_tab(&record);
+    let kept = Value::Array(record.with(|state| state.page(&tab, 0).entries));
+    assert_eq!(named_in(&kept), expected, "{kept}");
+
+    // A reviewer's read of the record answers the same.
+    let read = review(&mut app, None);
+    assert_eq!(named_in(&read["data"]["entries"]), expected, "{read}");
+
+    // The review of the page's fields says who set each as the engine says
+    // it, by name and place, and the window names the device beside it.
+    let set = |actor: &str, seq: u64| json!({"how": "action", "by": actor, "seq": seq});
+    let field = |name: &str, set: Value| {
+        json!({"element": "d1e2", "role": "textbox", "name": name, "value": name,
+            "form": "form1", "question": name, "set": set})
+    };
+    engine.set_page_data(
+        "fields",
+        json!({"fields": [
+            field("Given names", set("agent:task-a1", 1)),
+            field("Passport number", set("agent:task-d1", 3)),
+            field("Arrival", set("agent:task-b1", 4)),
+            field("Notes", json!({"how": "input"})),
+        ]}),
+    );
+    let fields = act(
+        &mut app,
+        None,
+        &BrowserEffect::ReadPageFields { frame: None },
+    )
+    .expect("the fields answer");
+    let who: Vec<Value> = fields["data"]["fields"]
+        .as_array()
+        .expect("fields")
+        .iter()
+        .map(|field| field["set"].clone())
+        .collect();
+    assert_eq!(
+        who,
+        [
+            json!({"how": "action", "by": "agent:task-a1", "seq": 1,
+                "device": laptop.id, "device_name": "Studio laptop"}),
+            json!({"how": "action", "by": "agent:task-d1", "seq": 3, "device": unnamed.id}),
+            json!({"how": "action", "by": "agent:task-b1", "seq": 4}),
+            json!({"how": "input"}),
+        ]
+    );
+
+    // Each action is its agent's change of the record, and the change says
+    // the device too.
+    let from: Vec<Option<InvokerDevice>> = record
+        .record()
+        .read(|doc| {
+            let mut doc = doc.clone();
+            history::versions(&mut doc)
+                .into_iter()
+                .filter_map(|version| version.context?.invoker)
+                .filter(|invoker| invoker.kind == ActorKind::Agent)
+                .map(|invoker| invoker.device)
+                .collect()
+        })
+        .expect("the record is open");
+    assert_eq!(
+        from,
+        [
+            Some(laptop.clone()),
+            Some(laptop.clone()),
+            Some(unnamed),
+            None,
+            Some(laptop),
+        ]
     );
 }
 
@@ -1199,6 +1360,57 @@ fn an_action_is_written_only_as_the_actor_who_did_it() {
     set_down(&record, None, "tab-d", own).unwrap();
     assert!(set_down(&record, None, "tab-a", clicked(2)).is_err());
     assert_eq!(record.with(|state| state.actions.len()), 4);
+}
+
+/// An action names the device the door set on the invoker it is written
+/// as, and no other: not one for an agent on this device, not another
+/// device or another name of it for an agent from the laptop, not none for
+/// that agent, and none for what the person did.
+#[test]
+fn an_action_names_only_the_device_its_actor_was_admitted_from() {
+    let laptop = laptop();
+    let on = |device: &str, name: &str| {
+        let mut entry = clicked(1);
+        entry["device"] = device.into();
+        if !name.is_empty() {
+            entry["device_name"] = name.into();
+        }
+        entry
+    };
+    let from_laptop = on(&laptop.id, "Studio laptop");
+    let here = agent("agent:ada");
+    let there = agent_on("agent:ada", &laptop);
+    let own = json!({"seq": 1, "actor": "", "action": "click", "ok": true,
+        "device": laptop.id, "device_name": "Studio laptop"});
+
+    let (_app, record) = quiet_window();
+    let forged = [
+        (Some(&here), from_laptop.clone()),
+        (Some(&there), on(&"66".repeat(32), "Studio laptop")),
+        (Some(&there), on(&laptop.id, "Build box")),
+        (Some(&there), on(&laptop.id, "")),
+        (Some(&there), clicked(1)),
+        (None, own),
+    ];
+    for (by, entry) in forged {
+        let refused = set_down(&record, by, "tab-a", entry.clone()).unwrap_err();
+        assert!(
+            refused.contains("the device its actor was admitted from"),
+            "{entry}: {refused}"
+        );
+    }
+    assert!(record.with(|state| state.actions.is_empty()));
+
+    set_down(&record, Some(&there), "tab-a", from_laptop.clone()).unwrap();
+    set_down(&record, Some(&here), "tab-b", clicked(1)).unwrap();
+    assert_eq!(
+        record.with(|state| state.page("tab-a", 0).entries),
+        [from_laptop]
+    );
+    assert_eq!(
+        record.with(|state| state.page("tab-b", 0).entries),
+        [clicked(1)]
+    );
 }
 
 /// The record is bounded as the engine bounds its own: a tab keeps its

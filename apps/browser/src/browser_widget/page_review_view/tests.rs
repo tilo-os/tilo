@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::{ActionInvoker, ActionSpec, ActorKind, InvocationUpdate, ResourceSpec};
+use ui::tilo_actions::{
+    ActionInvoker, ActionSpec, ActorKind, InvocationUpdate, InvokerDevice, ResourceSpec,
+};
 use ui::tilo_resource::Effect as _;
 use ui::webview::test_engine::TestEngine;
 use ui::webview::{PageRequest, WebViewCommand, WebViewEngine as _};
@@ -376,6 +378,81 @@ fn each_answer_shows_under_the_agent_that_set_it_as_the_agents_work() {
                 PageRequest::Fields { .. } | PageRequest::Forms { .. } | PageRequest::Ledger { .. }
             ))
             .all(|(actor, _)| actor.is_none())
+    );
+}
+
+/// An agent that works from another of the person's devices is shown with
+/// that device, in who set a field and in who did an action: by the
+/// device's name, or by the start of its key where it has none. An agent on
+/// this device is shown by its name alone.
+#[test]
+fn an_agent_from_another_device_shows_with_the_device_it_works_from() {
+    let (engine, mut app) = window();
+    let laptop = InvokerDevice::certified([0x5c; 32], "Studio laptop");
+    let unnamed = InvokerDevice::certified([0x40; 32], "");
+    let ada = agent("agent:ada").from_device(Some(laptop));
+    let ben = agent("agent:ben").from_device(Some(unnamed));
+    let cy = agent("agent:cy");
+    invoke(&mut app, None, &BrowserEffect::ReviewPage);
+
+    // Each answers one question. The engine names each by its name alone.
+    let answers = [
+        (&ada, "agent:ada", "Given names", "Maria Elena"),
+        (&ben, "agent:ben", "Passport number", "P7K290XB4"),
+        (&cy, "agent:cy", "Arrival", "2027-02-03"),
+    ];
+    let mut record = Vec::new();
+    for (index, (by, actor, question, answer)) in answers.iter().enumerate() {
+        record.push(
+            json!({"seq": index + 1, "actor": actor, "action": "fill_form",
+            "ok": true, "answers": [{"name": question, "value": answer}]}),
+        );
+        let held: Vec<Answer<'_>> = answers
+            .iter()
+            .enumerate()
+            .map(|(place, (_, actor, question, answer))| {
+                if place <= index {
+                    (
+                        *question,
+                        "text",
+                        *answer,
+                        self::by(actor, place as u64 + 1),
+                    )
+                } else {
+                    (*question, "text", "", Value::Null)
+                }
+            })
+            .collect();
+        page_holds(&engine, &held, &record);
+        invoke(&mut app, Some(by), &fill_form(question, answer));
+    }
+
+    eventually(&mut app, "the review names each agent's device", |app| {
+        row_says(app, "Given names", &["Set by ada on Studio laptop"])
+            && row_says(app, "Passport number", &["Set by ben on 40404040"])
+            && row_says(app, "Arrival", &["2027-02-03", "Set by cy"])
+    });
+    let arrival = row(&mut app, "Arrival").expect("Cy's row");
+    assert!(
+        !arrival.contains(" on "),
+        "an agent on this device: {arrival}"
+    );
+
+    // What was done in the tab, in order, with who did it and from where.
+    let texts = app.texts();
+    let done: Vec<&str> = texts
+        .iter()
+        .zip(texts.iter().skip(1))
+        .filter(|(name, _)| *name == "Answered 1 question")
+        .map(|(_, said)| said.as_str())
+        .collect();
+    assert_eq!(
+        done,
+        [
+            "Given names, By ada on Studio laptop",
+            "Passport number, By ben on 40404040",
+            "Arrival, By cy"
+        ]
     );
 }
 

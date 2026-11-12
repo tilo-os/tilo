@@ -244,6 +244,8 @@ fields = [
   { name = "seq", type = "int" },
   { name = "time_ms", type = "int" },
   { name = "actor", type = "text" },
+  { name = "device", type = "text" },
+  { name = "device_name", type = "text" },
   { name = "how", type = "text" },
   { name = "action", type = "text" },
   { name = "ok", type = "bool" },

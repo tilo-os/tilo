@@ -106,7 +106,15 @@ impl BrowserWidget {
         if self.reads_page_record(request_id) {
             return Some(result);
         }
-        let (result, news) = self.page_record.placed(result);
+        let (mut result, news) = self.page_record.placed(result);
+        // The review screen draws the tab's record from the engine's own
+        // list of it, which names actors and no device: the window says the
+        // device each worked from, as the record keeps it.
+        if self.reads_review_record(request_id)
+            && let Ok(reply) = &mut result
+        {
+            self.page_record.name_devices(reply.data.as_mut());
+        }
         if news {
             self.pull_page_record();
         }

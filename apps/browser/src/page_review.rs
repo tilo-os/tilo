@@ -14,12 +14,50 @@ use serde_json::Value;
 /// record holds.
 const MAX_STEPS: usize = 1000;
 
+/// Another of the person's devices an actor worked from, as the tab's record
+/// keeps it: the device the agent door verified the actor's connection came
+/// from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Device {
+    /// Its key, in hex.
+    pub(crate) id: String,
+    /// What its certificate calls it; empty when it names none.
+    pub(crate) name: String,
+}
+
+impl Device {
+    /// The device `said` names beside an actor (a record entry, or who set a
+    /// field); `None` for an actor on the device that runs the page.
+    fn read(said: &Value) -> Option<Self> {
+        let id = text(said, "device").trim();
+        (!id.is_empty()).then(|| Self {
+            id: id.to_owned(),
+            name: text(said, "device_name").trim().to_owned(),
+        })
+    }
+
+    /// The device as a person reads it: its name, or the start of its key
+    /// when it has none.
+    pub(crate) fn label(&self) -> &str {
+        if self.name.is_empty() {
+            self.id.get(..8).unwrap_or(&self.id)
+        } else {
+            &self.name
+        }
+    }
+}
+
 /// Who set what a question holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SetBy {
     /// An actor's action: the name the action door admitted it under, empty
-    /// for the person at the window, and the action's place in the record.
-    Action { actor: String, seq: u64 },
+    /// for the person at the window, the other device it worked from, and
+    /// the action's place in the record.
+    Action {
+        actor: String,
+        device: Option<Device>,
+        seq: u64,
+    },
     /// Typed straight into the page, as a person does.
     Input,
     /// The page's own script.
@@ -189,6 +227,7 @@ fn set_of(field: &Value) -> Option<(SetBy, bool)> {
     let by = match text(set, "how") {
         "action" => SetBy::Action {
             actor: text(set, "by").to_owned(),
+            device: Device::read(set),
             seq: whole(set.get("seq")).unwrap_or(0),
         },
         "input" => SetBy::Input,
@@ -506,6 +545,9 @@ pub(crate) struct Step {
     /// Who asked: the name the action door admitted them under, empty for
     /// the person at the window.
     pub(crate) actor: String,
+    /// The other device they worked from; `None` on the device that runs the
+    /// page.
+    pub(crate) device: Option<Device>,
     /// What was asked, by the engine's name for it (`fill`, `click`); empty
     /// for what was typed straight into the page.
     pub(crate) action: String,
@@ -567,6 +609,7 @@ impl Step {
         Some(Self {
             seq: whole(entry.get("seq"))?,
             actor: text(entry, "actor").to_owned(),
+            device: Device::read(entry),
             action: text(entry, "action").to_owned(),
             kind,
             leaving: if matches!(kind, StepKind::Hold(_)) {
@@ -724,6 +767,7 @@ mod tests {
             given.set,
             SetBy::Action {
                 actor: "agent:ada".into(),
+                device: None,
                 seq: 1
             }
         );
@@ -738,6 +782,7 @@ mod tests {
             refused.set,
             SetBy::Action {
                 actor: "agent:ben".into(),
+                device: None,
                 seq: 2
             }
         );
@@ -992,5 +1037,53 @@ mod tests {
         assert_eq!(given.holds, Holds::Text("Ada".into()));
         assert_eq!(given.element.as_deref(), Some("d3e3"));
         assert_eq!(review.forms[3].questions[0].name, "Search");
+    }
+
+    /// Who set a field and who did a step are read with the other device
+    /// they worked from, where the answer names one: by its name, or by the
+    /// start of its key when it has none.
+    #[test]
+    fn an_actor_is_read_with_the_device_it_worked_from() {
+        let (laptop, unnamed) = ("5c".repeat(32), "40".repeat(32));
+        let field = |name: &str, set: Value| {
+            json!({"element": "d1e2", "role": "textbox", "name": name, "value": "x",
+                "form": "form1", "question": name, "set": set})
+        };
+        let fields = json!({"fields": [
+            field("Given names", json!({"how": "action", "by": "agent:task-a", "seq": 1,
+                "device": laptop, "device_name": "Studio laptop"})),
+            field("Passport number", json!({"how": "action", "by": "agent:task-d", "seq": 2,
+                "device": unnamed})),
+            field("Arrival", json!({"how": "action", "by": "agent:task-b", "seq": 3})),
+        ]});
+        let review = Fields::read(None, &fields);
+        let from = |name: &str| match &question(&review, name).set {
+            SetBy::Action { device, .. } => device.clone(),
+            other => panic!("{name} was set by an action: {other:?}"),
+        };
+        let given = from("Given names").expect("a device");
+        assert_eq!(
+            (given.id.as_str(), given.name.as_str(), given.label()),
+            (laptop.as_str(), "Studio laptop", "Studio laptop")
+        );
+        let passport = from("Passport number").expect("a device");
+        assert_eq!((passport.name.as_str(), passport.label()), ("", "40404040"));
+        assert_eq!(from("Arrival"), None, "an actor on this device");
+
+        let mut record = Record::default();
+        record.take(&json!({"entries": [
+            {"seq": 1, "actor": "agent:task-a", "device": laptop,
+                "device_name": "Studio laptop", "action": "fill_form", "ok": true},
+            {"seq": 2, "actor": "agent:task-b", "action": "click", "ok": true},
+            // A name alone names no device.
+            {"seq": 3, "actor": "agent:task-c", "device_name": "Studio laptop",
+                "action": "click", "ok": true},
+        ], "next": 3}));
+        let devices: Vec<Option<&str>> = record
+            .steps
+            .iter()
+            .map(|step| step.device.as_ref().map(Device::label))
+            .collect();
+        assert_eq!(devices, [Some("Studio laptop"), None, None]);
     }
 }

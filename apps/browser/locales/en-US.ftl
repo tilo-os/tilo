@@ -299,6 +299,7 @@ browser-review-earlier = { $count ->
 }
 browser-review-by = By { $name }
 browser-review-by-you = By you
+browser-review-actor-on-device = { $name } on { $device }
 browser-review-failed = Failed
 browser-review-did-click = Clicked { $target }
 browser-review-did-fill = Filled { $target }

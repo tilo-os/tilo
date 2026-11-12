@@ -86,6 +86,8 @@ class PageAction(TypedDict):
     seq: int
     time_ms: int
     actor: str
+    device: str
+    device_name: str
     how: str
     action: str
     ok: bool
