@@ -18,7 +18,7 @@ A session binds its Wayland socket, its doors and its files under `$XDG_RUNTIME_
 | Path | Written by | Read by |
 |---|---|---|
 | `wayland-display` | the compositor, when it binds its socket (`Compositor::listen`) | everything that starts a program beside the session: `tilo-app dev`, `scripts/agent-loop/session.py`, `spawn-headless.sh` |
-| `workspace-id` | the session, on every workspace switch | `tilo-app dev`, which joins that workspace; `scripts/agent-loop/session.py`, which waits for it |
+| `workspace-id` | the session, on every workspace switch | `tilo-app dev`, which names it to the session's file chooser with the app; `scripts/agent-loop/session.py`, which waits for it |
 | `agent.sock` | the session's agent door, for a session that owns the machine | `tilo-runtime-mcp --connect`, `tilolang repl --door` |
 | `test-control.sock` | a development build, or `--test-control PATH` | `tilo-control`, every harness here |
 | `admin-control.sock` | a session that owns the machine, for the device's owner | `tilo-control --socket …` (semantic ops only) |
@@ -35,7 +35,7 @@ TILO_TEST_CONTROL=/run/user/1000/tilo-session/test-control.sock
 TILO_ADMIN_CONTROL=/run/user/1000/tilo-session/admin-control.sock
 ```
 
-A session started as a real login also exports `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP=tilo:GNOME`, `XDG_SESSION_DESKTOP=tilo` and `XDG_SESSION_TYPE=wayland` to the systemd user manager and D-Bus activation (`crates/session/session/src/env.rs`). A nested or headless run exports nothing: it must never repoint the surrounding desktop's user manager at its own socket.
+A session that runs as a real login — its environment already names the Tilo desktop — also exports `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP=tilo:GNOME`, `XDG_SESSION_DESKTOP=tilo` and `XDG_SESSION_TYPE=wayland` to the systemd user manager and D-Bus activation, so a service those start finds the display (`crates/session/session/src/env.rs`). A nested session exports nothing, and a harness beside a live desktop clears `XDG_CURRENT_DESKTOP` before starting one (`spawn-headless.sh` does), so a test session never repoints that desktop's user manager at its own socket.
 
 ## Layer 1: a session with no display
 
@@ -327,7 +327,7 @@ with Session(state) as session:                    # fresh desktop, headless
 
 ## An app under development: `tilo-app dev`
 
-`tilo-app dev APP_DIR` builds an app, installs it into a private dev session and restarts it on every source change, so an agent (or a person) can drive the app it is writing. It joins the workspace the session publishes in `workspace-id`, on the display from `wayland-display`.
+`tilo-app dev APP_DIR` builds an app, runs it in the session beside it and restarts it on every source change, so an agent (or a person) can drive the app it is writing. It draws on the display from `wayland-display` and reads the workspace in front from `workspace-id`, which it names to the app and to the session's file chooser; a window it opens lands in that workspace, as the session places any window that arrives without a launcher naming one.
 
 `scripts/agent-loop/session.py` wraps that for an agent: `start` puts a headless session and a `tilo-app dev` on a private home, runtime profile and identity; `mcp` is the MCP endpoint for that session on stdio; `usage` and `report` say what each connection cost and what the agent made, from the app's own `history`, `inspect` and `look` actions.
 

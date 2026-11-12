@@ -199,7 +199,8 @@ def start(args) -> int:
     display_file = session.run / "tilo-session" / "wayland-display"
     wait_for(display_file, session_process, args.timeout, "the session")
     env["WAYLAND_DISPLAY"] = display_file.read_text().strip()
-    # The workspace in front, which the app joins, is up once its workspace is.
+    # The desk's workspace in front is up with it, and `tilo-app dev` reads it
+    # for the app it starts.
     wait_for(display_file.with_name("workspace-id"), session_process, args.timeout, "the session")
     # The app sees the desktop a Tilo login gives its apps, so it leaves
     # History and its title to the session's chrome as it does there, rather
