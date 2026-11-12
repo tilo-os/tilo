@@ -326,6 +326,12 @@ impl Helper {
         if let Some(registry) = registry() {
             command.env("GST_REGISTRY_1_0", registry);
         }
+        // The catalog this host verified: the helper sets a title's text
+        // before it confines itself, and the environment that named the
+        // catalog here is not passed.
+        if let Some(catalog) = ui::font_catalog::catalog_root() {
+            command.env(ui::font_catalog::OVERRIDE_ENV, catalog);
+        }
         command.envs(FIXED_ENV.iter().copied());
         let child = command
             .spawn()
