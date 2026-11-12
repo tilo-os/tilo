@@ -165,6 +165,8 @@ impl NestedBackend {
             state.enable_dmabuf_capture(node.dev_id(), render_formats);
         }
 
+        present_without_waiting(&mut window)?;
+
         let size = window.window_size();
         let mut output_config = OutputConfig::new(OUTPUT_NAME, size.w.max(1), size.h.max(1))
             .with_scale(
@@ -221,6 +223,49 @@ const fn flip(transform: Transform) -> Transform {
         Transform::_270 => Transform::Flipped270,
         Transform::Flipped270 => Transform::_270,
     }
+}
+
+/// Present the window's frames without waiting for the desktop to ask for the next one.
+///
+/// EGL's default swap interval is 1, and on Wayland that makes a swap wait for the desktop's frame
+/// callback for the frame before. A desktop sends none to a window it does not show (hidden,
+/// another workspace, not mapped yet), so the swap blocks the session's whole loop: its clients,
+/// its input, its agent door and its control socket all stop after the first frame. The session
+/// paces its own frames (`next_frame`, one refresh apart, and none while idle), so the swap only
+/// hands the frame over.
+fn present_without_waiting(window: &mut WinitGraphicsBackend<GlesRenderer>) -> Result<(), Error> {
+    let display = window
+        .renderer()
+        .egl_context()
+        .display()
+        .get_display_handle();
+    // The interval belongs to the surface current on the context: make the window's current
+    // (the renderer's own bind only makes it current as a frame is drawn).
+    // The surface and the renderer are separate fields of the window; `renderer` borrows the
+    // whole window mutably, so the surface is reached through a pointer taken first.
+    let surface: *const smithay::backend::egl::EGLSurface = window.egl_surface();
+    // SAFETY: the context and surface are the window's own, on the thread that draws it, and the
+    // surface outlives this call (the window holds it and is not moved or dropped here).
+    unsafe {
+        window
+            .renderer()
+            .egl_context()
+            .make_current_with_surface(&*surface)
+    }
+    .map_err(|error| failed("make the window current", error))?;
+    // SAFETY: the display is the window's own, alive for this call, with its context and surface
+    // current just above.
+    let set = unsafe { smithay::backend::egl::ffi::egl::SwapInterval(**display, 0) };
+    if set == smithay::backend::egl::ffi::egl::FALSE {
+        // SAFETY: asked right after the refused call, on the same thread.
+        let error = unsafe { smithay::backend::egl::ffi::egl::GetError() };
+        return Err(failed(
+            "present without waiting",
+            format!("eglSwapInterval(0): {error:#x}"),
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: WinitEvent) {
