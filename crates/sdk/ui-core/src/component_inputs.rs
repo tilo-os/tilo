@@ -94,7 +94,7 @@ enum Key {
     /// A record of the store and id this names.
     Record(usize, u64),
     /// The settings document this names.
-    Versioned(usize),
+    Versioned(u64),
     /// State several views share that belongs to no scope ([`Shared`]).
     Shared(usize),
 }
