@@ -389,7 +389,7 @@ impl AppTabs {
                 desktop.with_policy(|policy| policy.release_tab(made.tab));
                 continue;
             };
-            let workspace = apps.workspace_named(&made.workspace);
+            let workspace = apps.workspace_of(Some(made.tab));
             if let Err(error) = apps.start_beside(
                 &due.launch,
                 &workspace,

@@ -758,8 +758,8 @@ impl Apps {
         started
     }
 
-    /// The launches the desktop queued: each named app is planned against the workspace in front
-    /// and started.
+    /// The launches the desktop queued: each named app is planned against the workspace whose tab
+    /// the desk made for its window, and started there.
     fn start_asked(&self) {
         let Some(desktop) = self.desktop.borrow().clone() else {
             return;
@@ -784,7 +784,7 @@ impl Apps {
                 continue;
             }
             let launch = as_this_machine_knows_it(launch);
-            let workspace = self.active_workspace();
+            let workspace = self.workspace_of(asked.tab);
             let started = self.start_at(&launch, &workspace, asked.tab);
             match &started {
                 // The window is coming, or the app's own window came forward in place of a second
@@ -1022,23 +1022,44 @@ impl Apps {
         }
     }
 
-    /// The workspace a launch from the desktop belongs to: the one in front,
-    /// with what the person granted apps in it and the policy that decides
-    /// what they may do in them.
+    /// The workspace a launch that names none belongs to: the one in front, with what the person
+    /// granted apps in it and the policy that decides what they may do in them, or a launch into no
+    /// workspace at all when the desk shows none.
     fn active_workspace(&self) -> Workspace {
-        let Some(desktop) = self.desktop.borrow().clone() else {
-            return Workspace::under(&runtime_dir(), String::new());
-        };
-        let handle = desktop.with_policy(|policy| policy.handle().clone());
-        let person = self.state.borrow().person.clone();
-        let mut launched = handle.read(|tree| {
-            tree.active_workspace().map_or_else(
-                || Workspace::under(&runtime_dir(), String::new()),
-                Self::launching_into,
-            )
+        let front = self.desktop.borrow().clone().and_then(|desktop| {
+            let handle = desktop.with_policy(|policy| policy.handle().clone());
+            handle.read(|tree| {
+                tree.active_workspace()
+                    .map(|workspace| workspace.id().to_string())
+            })
         });
-        launched.person = person;
-        launched
+        front.map_or_else(
+            || Workspace::under(&runtime_dir(), String::new()),
+            |workspace| self.workspace_named(&workspace),
+        )
+    }
+
+    /// The workspace the window in `tab` belongs to: the one the desk made its tab in, with what
+    /// the person granted apps there. A window's tab is its place, so where the desk stands now is
+    /// no part of the answer — a workspace that arrived, or a switch made while the desk was on its
+    /// way, would otherwise start the app in another workspace's records and grants, and the desk
+    /// would carry the window out of the workspace the person opened it in. The workspace in front
+    /// answers only for a window the desk holds no tab for.
+    pub(crate) fn workspace_of(&self, tab: Option<u64>) -> Workspace {
+        tab.and_then(|tab| {
+            let desktop = self.desktop.borrow().clone()?;
+            let handle = desktop.with_policy(|policy| policy.handle().clone());
+            handle.read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .find(|held| held.tabs().any(|shown| shown.id == tab))
+                    .map(|held| held.id().to_string())
+            })
+        })
+        .map_or_else(
+            || self.active_workspace(),
+            |workspace| self.workspace_named(&workspace),
+        )
     }
 
     /// The workspace named `workspace` , with its grants when the desktop holds it and none when it
