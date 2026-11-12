@@ -1,6 +1,6 @@
 //! The resource state views read, kept current as the document changes.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use tilo_resource::{Delta, Demand, Doc, ModelError, Place, Reader, Resource};
@@ -19,6 +19,14 @@ pub struct Live<R: Resource> {
     inner: Rc<RefCell<Reader<R>>>,
     changes: Rc<RefCell<Changes>>,
     places: Rc<RefCell<Places<R>>>,
+    /// What the reader holds — its revision and its loads — as a generation
+    /// that moves whenever either does. It belongs to no scope
+    /// ([`ui_core::component_inputs::Shared`]), so a component's pass that
+    /// read the state follows it and runs again when the framework reads more
+    /// of the document, instead of resting on a state it no longer shows.
+    generation: ui_core::component_inputs::Shared,
+    /// The revision and loads `generation` last stood for.
+    held: Cell<(u64, u64)>,
 }
 
 /// Where each participant's last action left them ([`Resource::lands`]):
@@ -121,17 +129,42 @@ impl<R: Resource> Clone for Live<R> {
             inner: Rc::clone(&self.inner),
             changes: Rc::clone(&self.changes),
             places: Rc::clone(&self.places),
+            generation: self.generation.clone(),
+            held: self.held.clone(),
         }
     }
 }
 
 impl<R: Resource> Live<R> {
     pub(crate) fn new(reader: Reader<R>) -> Self {
+        let held = (reader.revision(), reader.loads());
         Self {
             inner: Rc::new(RefCell::new(reader)),
             changes: Changes::shared(),
             places: Rc::default(),
+            generation: ui_core::component_inputs::Shared::new(0),
+            held: Cell::new(held),
         }
+    }
+
+    /// Note what the reader holds now: a view that read the state follows
+    /// this, so its pass takes up what the framework read after it.
+    #[inline(never)]
+    fn note_held(&self) {
+        let held = {
+            let reader = self.inner.borrow();
+            (reader.revision(), reader.loads())
+        };
+        if self.held.get() != held {
+            self.held.set(held);
+            self.generation.moved();
+        }
+    }
+
+    /// Follow the state this reads: the component's pass runs again when the
+    /// framework reads more of it ([`Self::note_held`]).
+    fn followed(&self) {
+        let _ = self.generation.read();
     }
 
     /// Note that `action` was applied for `participant`; where it left them
@@ -196,6 +229,7 @@ impl<R: Resource> Live<R> {
     /// framework reads the whole resource again instead; read through
     /// [`with`](Self::with) or call this again when you need it.
     pub fn get(&self) -> Rc<R::State> {
+        self.followed();
         Rc::clone(self.inner.borrow().state())
     }
 
@@ -204,6 +238,7 @@ impl<R: Resource> Live<R> {
     /// reports the last state that read as if it were what the document
     /// holds.
     pub fn get_checked(&self) -> Option<Rc<R::State>> {
+        self.followed();
         let inner = self.inner.borrow();
         inner
             .unreadable()
@@ -213,18 +248,21 @@ impl<R: Resource> Live<R> {
 
     /// Read the current state.
     pub fn with<T>(&self, read: impl FnOnce(&R::State) -> T) -> T {
+        self.followed();
         read(self.inner.borrow().state())
     }
 
     /// Why the document stopped reading as the resource, if it did: the
     /// state is then the last one that read, and views show this instead.
     pub fn unreadable(&self) -> Option<tilo_resource::Unreadable> {
+        self.followed();
         self.inner.borrow().unreadable().cloned()
     }
 
     /// Increases whenever what the state says changes. A view reading
     /// more of the same document ([`Self::demand`]) is no new revision.
     pub fn revision(&self) -> u64 {
+        self.followed();
         self.inner.borrow().revision()
     }
 
@@ -232,6 +270,7 @@ impl<R: Resource> Live<R> {
     /// not hold yet: what a view of a large resource holds moved, not what
     /// the resource says.
     pub fn loads(&self) -> u64 {
+        self.followed();
         self.inner.borrow().loads()
     }
 
@@ -264,7 +303,9 @@ impl<R: Resource> Live<R> {
     where
         R::State: Clone,
     {
-        self.inner.borrow_mut().demand(doc, demand)
+        let read = self.inner.borrow_mut().demand(doc, demand);
+        self.note_held();
+        read
     }
 
     /// Take `state` as the state now, read elsewhere than from a document
@@ -273,6 +314,7 @@ impl<R: Resource> Live<R> {
     pub(crate) fn replace(&self, state: R::State) {
         self.inner.borrow_mut().replace(state);
         self.changes.borrow_mut().note(Delta::everything());
+        self.note_held();
     }
 
     /// Ask everything bound to the state to take it again, unchanged. After
@@ -281,6 +323,7 @@ impl<R: Resource> Live<R> {
     pub(crate) fn represent(&self) {
         self.inner.borrow_mut().represent();
         self.changes.borrow_mut().note(Delta::everything());
+        self.note_held();
     }
 
     /// What views currently demand.
@@ -301,6 +344,8 @@ impl<R: Resource> Live<R> {
         if moved {
             note_synced(&self.changes, reader.last_delta());
         }
+        drop(reader);
+        self.note_held();
         Ok(moved)
     }
 
@@ -314,6 +359,8 @@ impl<R: Resource> Live<R> {
         if moved {
             note_synced(&self.changes, reader.last_delta());
         }
+        drop(reader);
+        self.note_held();
         Ok(moved)
     }
 }

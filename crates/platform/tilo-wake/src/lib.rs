@@ -1008,7 +1008,10 @@ mod tests {
             waking_channel::<u32>()
         };
         drop(replies);
-        assert!(sender.send(1).is_err(), "a gone receiver wakes nobody");
+        assert!(sender.send(1).is_err(), "the message reaches nobody");
+        // Announced before it could be received, as every message is; a wake
+        // no owner takes up costs a closed window nothing.
+        assert!(rx.try_recv().is_ok(), "the attempt was announced");
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
         let (sender, replies) = {
             let _entry = scope.enter();
