@@ -70,10 +70,10 @@ pub enum ContentRefusal {
     NotReadable(String),
 }
 
-/// The hash a `tilo.content:<hash>` reference names, when `value` is one.
+/// The content reference a `tilo.content:<reference>` names, when `value` is one.
 #[must_use]
 pub fn reference_hash(value: &str) -> Option<&str> {
-    tilo_actions::content_hash(value.trim()).filter(|hash| tilo_content::valid_hash(hash))
+    tilo_actions::content_hash(value.trim()).filter(|hash| tilo_content::valid_reference(hash))
 }
 
 /// The bytes the content reference `address` names, read from the store of
@@ -102,17 +102,16 @@ pub fn read_reference(address: &str) -> Result<Vec<u8>, ContentRefusal> {
 /// As [`read_reference`].
 pub fn read_hash(hash: &str) -> Result<Vec<u8>, ContentRefusal> {
     let named = tilo_actions::content_resource(hash).unwrap_or_else(|| hash.to_owned());
-    if !tilo_content::valid_hash(hash) {
+    if !tilo_content::valid_reference(hash) {
         return Err(ContentRefusal::NotAReference(named));
     }
     let store = current().ok_or_else(|| ContentRefusal::NoStore(named.clone()))?;
     if !store.workspace_scoped() {
         return Err(ContentRefusal::NotInWorkspace(named));
     }
-    store
-        .read(hash)
-        .filter(|bytes| tilo_content::verify(hash, bytes))
-        .ok_or(ContentRefusal::NotReadable(named))
+    // The store verifies what it reads against the address, and opens
+    // sealed content with the reference's key.
+    store.read(hash).ok_or(ContentRefusal::NotReadable(named))
 }
 
 /// The schema of a byte parameter: the bytes inline, as integers, or a

@@ -338,6 +338,17 @@ impl ContentStore {
         }
     }
 
+    /// This store, keeping what it stores under its own address, unsealed: for code that must name
+    /// content alike wherever it runs (an action applying on every replica). Sealed references
+    /// still read.
+    #[must_use]
+    pub fn unsealed(self) -> Self {
+        Self {
+            seals: false,
+            ..self
+        }
+    }
+
     /// Whether this store seals what it stores ([`Self::sealing`]).
     pub const fn seals(&self) -> bool {
         self.seals

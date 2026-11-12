@@ -439,5 +439,6 @@ pub use workspace::{WorkspaceHandle, WorkspaceRecord};
 pub mod content {
     pub use tilo_content::{
         ContentStore, ImageFormat, hash_bytes, image_format, image_size, valid_hash,
+        valid_reference,
     };
 }

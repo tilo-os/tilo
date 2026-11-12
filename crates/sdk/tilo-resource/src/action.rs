@@ -208,9 +208,15 @@ impl ActionCx {
     /// a replica that applies the action reads the bytes through its own
     /// window's store. `None` where no window applies it (a tool writing a
     /// document directly).
+    ///
+    /// What an action stores here is kept under its own address, unsealed:
+    /// every replica applying the action must name it alike, and a key
+    /// drawn while applying would differ on each. Content to seal is put
+    /// by whoever invokes the action, into the window's store, and the
+    /// action carries the sealed reference it answered.
     #[must_use]
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
-        crate::content::current()
+        crate::content::current().map(tilo_content::ContentStore::unsealed)
     }
 }
 

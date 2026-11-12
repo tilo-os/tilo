@@ -695,7 +695,7 @@ impl HostContext {
         // The app's surface is content too: whoever decides its changes
         // reads it by the hash its ops name.
         if let Some(bytes) = crate::app_surface::bytes_of(&self.app_id)
-            && let Err(error) = store.put(bytes)
+            && let Err(error) = store.put_public(bytes)
         {
             tracing::warn!(%error, "the app's surface could not be kept");
         }
@@ -705,8 +705,9 @@ impl HostContext {
         let read = store.clone();
         tilo_actions::keep_content_in(
             move |content: tilo_actions::ContentParts| {
+                // Named by their own address in the recorded action.
                 for (_, bytes) in content {
-                    if let Err(error) = keep.put(&bytes) {
+                    if let Err(error) = keep.put_public(&bytes) {
                         tracing::warn!(%error, "an action's content could not be kept");
                     }
                 }

@@ -1061,7 +1061,7 @@ pub(crate) fn prepare_file_post(
     let hash = tilo_actions::content_hash(address)
         .unwrap_or(address)
         .to_owned();
-    if !tilo_content::valid_hash(&hash) {
+    if !tilo_content::valid_reference(&hash) {
         return Err(format!(
             "{address:?} is not a content address: post what another step handed over"
         ));
@@ -1145,7 +1145,7 @@ pub(crate) fn valid_attached(attached: &tilo_reference::Attached) -> bool {
         }
         Attached::Image { name, blob, w, h } => {
             valid_name(name)
-                && tilo_content::valid_hash(blob)
+                && tilo_content::valid_reference(blob)
                 && (1..=MAX_ATTACHMENT_DIMENSION).contains(w)
                 && (1..=MAX_ATTACHMENT_DIMENSION).contains(h)
         }
@@ -1157,13 +1157,13 @@ pub(crate) fn valid_attached(attached: &tilo_reference::Attached) -> bool {
             size,
         } => {
             valid_name(name)
-                && tilo_content::valid_hash(blob)
+                && tilo_content::valid_reference(blob)
                 && bytes(*size)
                 && *w <= MAX_ATTACHMENT_DIMENSION
                 && *h <= MAX_ATTACHMENT_DIMENSION
         }
         Attached::File { name, blob, size } => {
-            valid_name(name) && tilo_content::valid_hash(blob) && bytes(*size)
+            valid_name(name) && tilo_content::valid_reference(blob) && bytes(*size)
         }
     }
 }

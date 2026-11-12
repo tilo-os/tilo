@@ -65,7 +65,7 @@ pub fn replay_launch(
 ) -> tilo_actions::remote::ApplicationLaunch {
     tilo_actions::remote::ApplicationLaunch::with_content(
         recording.app.clone(),
-        recording.hash.to_ascii_lowercase(),
+        recording.hash.clone(),
     )
 }
 

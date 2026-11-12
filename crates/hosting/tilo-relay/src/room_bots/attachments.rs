@@ -176,13 +176,19 @@ pub fn referenced(part: &[u8]) -> Vec<Referenced> {
         .flat_map(|message| {
             message.attachments.iter().filter_map(move |attached| {
                 Some(Referenced {
-                    hash: attached.blob()?.to_ascii_lowercase(),
+                    hash: tilo_content::content_address(attached.blob()?)?,
                     member: message.author.0.clone(),
                     size: attached.size(),
                 })
             })
         })
         .collect()
+}
+
+/// The address content `reference` is stored under, as the host keeps it:
+/// the host holds a sealed file's ciphertext, never its key.
+fn address(reference: &str) -> String {
+    tilo_content::content_address(reference).unwrap_or_else(|| reference.to_ascii_lowercase())
 }
 
 /// The pictures and recordings of the feedback reports filed in `record`,
@@ -199,12 +205,12 @@ pub fn reported(record: &[u8]) -> Vec<Referenced> {
         .flat_map(|(submission, author)| {
             let feedback = &submission.feedback;
             let picture = feedback.screenshot.as_ref().map(|picture| Referenced {
-                hash: picture.hash.to_ascii_lowercase(),
+                hash: address(&picture.hash),
                 member: author.0.clone(),
                 size: None,
             });
             let recording = feedback.recording.as_ref().map(|recording| Referenced {
-                hash: recording.hash.to_ascii_lowercase(),
+                hash: address(&recording.hash),
                 member: author.0.clone(),
                 size: Some(u64::from(recording.bytes)),
             });

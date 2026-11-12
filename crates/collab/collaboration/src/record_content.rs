@@ -326,6 +326,12 @@ impl ContentLane {
 
 /// A record's content store: the store a host lent the app, with content
 /// the record references travelling on the record's route.
+///
+/// This is where it is decided that what a record references is sealed
+/// ([`ContentStore::sealing`]): every app keeps its record's content
+/// through it, and only the record's readers hold the keys its references
+/// carry. Below it, this device's store, the route and the record's host
+/// hold and carry ciphertext alone.
 pub struct RecordContent {
     local: ContentStore,
     lane: Arc<ContentLane>,
@@ -334,7 +340,7 @@ pub struct RecordContent {
 impl RecordContent {
     /// `local`, joined to the route `lane` reaches.
     pub fn store(local: ContentStore, lane: Arc<ContentLane>) -> ContentStore {
-        ContentStore::from_backend(Arc::new(Self { local, lane }))
+        ContentStore::from_backend(Arc::new(Self { local, lane })).sealing()
     }
 
     /// Keep what arrived, verified against the address it arrived under.
