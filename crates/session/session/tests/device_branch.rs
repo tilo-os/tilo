@@ -272,7 +272,7 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
 const CHAT: &str = "so.tilo.chat";
 
 /// A row the desk lists of Chat's `open-direct-conversation`, by its provider and id.
-fn chat_row(device: &crate::common::people::Device) -> (String, String) {
+fn chat_row(device: &Device) -> (String, String) {
     let mut found = None;
     tilo_test_env::wait_until(format!("{} listing Chat's actions", device.label), || {
         found = device.actions()["answer"]["actions"]
@@ -301,7 +301,7 @@ const MODEL_PROVIDERS: &str = "so.tilo.model-providers";
 const LOGIN: &str = "Branch mail";
 
 /// The logins Passwords on `device` lists, by name, as its own `list-logins` answers.
-fn logins(device: &common::people::Device) -> Vec<String> {
+fn logins(device: &Device) -> Vec<String> {
     let answer = device.app_act(PASSWORDS, "list-logins", &serde_json::json!({}));
     let update = &answer["answer"]["receipt"]["update"];
     assert_eq!(
@@ -387,7 +387,7 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
 
 /// Wait until `site` took `device` in as a device of its person's own: the workspace's record names
 /// this device, and its apps join there as it.
-fn wait_admitted(device: &common::people::Device, site: &Site) {
+fn wait_admitted(device: &Device, site: &Site) {
     let admitted = format!(
         "the host admitted this device and the workspace is held here workspace={}",
         site.workspace
