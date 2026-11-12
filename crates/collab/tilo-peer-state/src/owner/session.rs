@@ -84,7 +84,7 @@ impl Connect {
                 return Err("native custody differs from enrollment".into());
             }
             view.peer()
-                .permissions(cert.device_public_key, std::time::SystemTime::now())
+                .permissions(cert.device_public_key, tilo_clock::wall())
                 .map_err(|error| error.to_string())?;
             if !view.peer().certificates().contains(&cert) {
                 return Err("selected certificate differs from current admitted roster".into());
@@ -278,7 +278,7 @@ impl Scope {
             return Err("native publication custody changed".into());
         }
         view.peer()
-            .permissions(selected.device_public_key, std::time::SystemTime::now())
+            .permissions(selected.device_public_key, tilo_clock::wall())
             .map(|_| ())
             .map_err(|error| error.to_string())
     }
@@ -316,7 +316,7 @@ pub fn app_write(
     let standing = owner
         .with_current(workspace, |view| {
             view.peer()
-                .permissions(author, std::time::SystemTime::now())
+                .permissions(author, tilo_clock::wall())
                 .map(crate::MemberAuthority::standing)
                 .map_err(|error| error.to_string())
         })
@@ -466,7 +466,7 @@ impl Input {
             .owner
             .with_current(self.workspace(), |view| {
                 view.peer()
-                    .permissions(self.heard.author, std::time::SystemTime::now())
+                    .permissions(self.heard.author, tilo_clock::wall())
                     .map(crate::MemberAuthority::standing)
                     .map_err(|error| error.to_string())
             })

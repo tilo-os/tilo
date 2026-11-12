@@ -110,38 +110,44 @@ impl Store {
             .get(pending.id())
             .map_or_else(|| "this connection".to_owned(), |c| c.name.clone());
         let mut key = None;
+        let named = |key: &str| {
+            crate::resource::CATALOG.t_args(
+                key,
+                &[("connection", ui::i18n::ArgValue::Text(name.clone()))],
+            )
+        };
         let (title, detail, primary, destructive) = match &pending {
             PendingConfirmation::Disconnect { .. } => (
-                format!("Close the session to {name}?"),
-                "The live session ends and its scrollback goes with it. The saved connection stays.".to_owned(),
-                "Close session",
+                named("remote-disconnect-title"),
+                crate::resource::CATALOG.t("remote-disconnect-detail"),
+                crate::resource::CATALOG.t("remote-disconnect-confirm"),
                 false,
             ),
             PendingConfirmation::Delete { .. } => (
-                format!("Delete {name}?"),
-                "The saved connection is removed for everyone you share it with. The machine itself is not changed.".to_owned(),
-                "Delete connection",
+                named("remote-delete-title"),
+                crate::resource::CATALOG.t("remote-delete-detail"),
+                crate::resource::CATALOG.t("remote-delete-confirm"),
                 true,
             ),
             PendingConfirmation::Connect { .. } => (
-                format!("Connect to {name}?"),
-                "This opens a live session. Remote checks the saved address and access again before anything is sent.".to_owned(),
-                "Connect",
+                named("remote-connect-title"),
+                crate::resource::CATALOG.t("remote-connect-detail"),
+                crate::resource::CATALOG.t("remote-connect-confirm"),
                 false,
             ),
             PendingConfirmation::TrustSshHostKey { observed, .. } => {
                 key = Some(format!("{} {}", observed.algorithm, observed.fingerprint));
                 (
-                    format!("Trust the SSH key of {name}?"),
-                    "Check this key with the machine's owner before you trust it. Only this device remembers it.".to_owned(),
-                    "Trust key",
+                    named("remote-trust-key-title"),
+                    crate::resource::CATALOG.t("remote-trust-key-detail"),
+                    crate::resource::CATALOG.t("remote-trust-key-confirm"),
                     false,
                 )
             }
             PendingConfirmation::ForgetSshHostKey { .. } => (
-                format!("Forget the SSH key of {name}?"),
-                "Only this device's saved key is removed. Reconnect to check and trust the new key.".to_owned(),
-                "Forget key",
+                named("remote-forget-key-title"),
+                crate::resource::CATALOG.t("remote-forget-key-detail"),
+                crate::resource::CATALOG.t("remote-forget-key-confirm"),
                 true,
             ),
         };
@@ -160,7 +166,7 @@ impl Store {
         let cancel = Rc::clone(&self.requests);
         let dismiss = Rc::clone(&self.requests);
         Some(
-            ModalDialog::new(title, body)
+            ModalDialog::new(&title, body)
                 .with_test_id("remote.confirmation")
                 .primary_action(primary, move || {
                     confirm.borrow_mut().push(Action::ConfirmPending);

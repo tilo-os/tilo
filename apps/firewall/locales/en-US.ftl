@@ -65,3 +65,19 @@ firewall-interfaces = Interfaces
 firewall-delete-rule-body = { $rule } over { $protocol } from { $source } will no longer be { $action }.
 firewall-state-allowed = allowed
 firewall-state-denied = denied
+
+## What the window shows
+firewall-make-active = Make active zone
+firewall-masquerade-on = On
+firewall-masquerade-off = Off
+firewall-edit-rule = Edit the { $rule } rule
+firewall-delete-rule-action = Delete the { $rule } rule
+firewall-edit-rule-in-zone = Edit the rule in { $zone }
+firewall-add-rule-to-zone = Add a rule to { $zone }
+firewall-refresh = Refresh
+firewall-stop-title = Turn off the firewall?
+firewall-stop-body = No rules will be enforced until you turn it on again. If this machine is reachable from a network you do not control, that connection can reach it without the rules you set.
+firewall-stop-confirm = Turn off the firewall
+firewall-panic-title = Enter panic mode?
+firewall-panic-body = All incoming and outgoing traffic is dropped, including the remote session you may be using to fix this machine. Anything already connected is cut.
+firewall-panic-confirm = Drop all traffic

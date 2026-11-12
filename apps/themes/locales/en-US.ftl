@@ -116,3 +116,11 @@ themes-preview-presence = Presence
 
 ## Facts, property labels and section titles
 themes-contrast-low = Too little contrast: { $findings }
+
+## What the window shows
+themes-contrast-every-pairing-meets = Every pairing meets its contrast floor.
+
+themes-preview-label-desktop = Preview of { $theme }
+themes-preview-label-list = List preview of { $theme }
+themes-preview-label-dialog = Dialog preview of { $theme }
+themes-preview-label-presence = Presence colours of { $theme }

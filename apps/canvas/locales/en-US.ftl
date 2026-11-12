@@ -485,3 +485,6 @@ canvas-pictures-decoding = This needs a picture that is still being decoded. Ask
 
 ## Facts, property labels and section titles
 canvas-a11y-artwork = { $width } by { $height } units, { $layers } layers, { $marks } marks, { $selected } selected; inspect lists them and look shows them
+
+## What the window shows
+canvas-resource-artwork = Artwork

@@ -631,3 +631,17 @@ files-app-kind-flatpak = Flatpak
 files-app-kind-appimage = AppImage
 files-app-kind-program = Program
 files-app-kind-system = System
+
+## What the window shows
+files-cannot-read = Cannot read { $path }: { $detail }
+files-is-a-folder = { $path } is a folder, not a file
+files-is-too-large = too large
+files-not-a-folder = { $path } is not a folder Files can open
+files-terminal-failed = Could not open a terminal here: { $detail }
+files-location-gone = The location is no longer available
+files-template-gone = The template is no longer available
+files-entry-gone = The entry is no longer visible
+files-sharing-unavailable = Sharing is unavailable for this file
+files-folder-missing = { $path } is not an existing folder.
+files-copy-failed = Copy failed: { $detail }
+files-resource-nearby = Nearby

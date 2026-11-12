@@ -99,3 +99,6 @@ sheets-a11y-worksheet = Worksheet; selected range { $range }; { $columns } colum
 sheets-a11y-row = Row { $row }
 sheets-a11y-cell = Column { $column }, row { $row }
 sheets-a11y-column = Column { $letter }
+
+## What the window shows
+sheets-no-replies = No replies

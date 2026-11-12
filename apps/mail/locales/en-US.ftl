@@ -197,3 +197,22 @@ mail-status-selection-cancelled = Attachment selection cancelled
 mail-status-selection-composer-closed = Attachment selection cancelled because the composer was closed
 mail-status-picker-disconnected = Attachment picker disconnected before selecting a file
 mail-status-choose-file = Choose a file to attach
+
+## What the window shows
+mail-attachment-not-downloaded = Attachment content is not downloaded yet
+mail-draft-subject = Draft: { $subject }
+mail-not-sent-yet = This message has not been sent yet.
+mail-no-subject = No subject
+mail-to = To { $recipient }
+mail-preview = Preview
+mail-preview-unread = Preview, still unread
+
+mail-row-name = { $sender }: { $subject }
+mail-list-name = { $folder } messages
+mail-selected-count = { $count } selected
+mail-bulk-select-all = Select all visible messages
+mail-bulk-archive = Archive selected messages
+mail-bulk-read = Mark selected messages read
+mail-bulk-unread = Mark selected messages unread
+mail-bulk-purge = Delete selected trashed messages permanently
+mail-bulk-delete = Move selected messages to Trash

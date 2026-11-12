@@ -114,6 +114,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/check_workflow_package_paths.py": "tools/tests/test_workflow_package_paths.py",
     "tools/policy/check_workflow_timeouts.py": "tools/tests/test_workflow_timeouts.py",
     "tools/policy/check_ui_clock_contract.py": "tools/tests/test_ui_clock_contract.py",
+    "tools/policy/check_clock_contract.py": "tools/tests/test_clock_contract.py",
     "tools/policy/judged.py": "tools/tests/test_staged_judgement.py",
     "tools/policy/check_motion_library.py": "tools/tests/test_motion_library.py",
     "tools/policy/check_formats.py": "tools/tests/test_formats_contract.py",
@@ -157,9 +158,6 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "tools/tests/test_cargo_download_cache_action.py",
         "tools/tests/test_ci_native_mold.py",
         "tools/tests/test_cosign_install_action.py",
-    ),
-    ".forgejo/workflows/build-kernel.yml": (
-        "os/tests/workflow_dependency_invariants.sh",
     ),
     ".forgejo/workflows/check.yml": (
         "tools/tests/test_ci_check_aggregate.py",

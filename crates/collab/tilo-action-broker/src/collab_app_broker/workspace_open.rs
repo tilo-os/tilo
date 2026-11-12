@@ -131,7 +131,7 @@ impl AppBrokerState {
             )?;
             return Ok(());
         };
-        let deadline = Instant::now()
+        let deadline = tilo_clock::now()
             .checked_add(CONNECT_WAIT)
             .unwrap_or_else(Instant::now);
         self.workspace_opens.lock().push(Opening {
@@ -233,7 +233,6 @@ mod tests {
     use crate::services::{LaunchContent, LaunchPlace, Launched};
     use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
     use std::sync::{Arc, Mutex};
-    use std::time::Instant;
     use tilo_actions::InvocationUpdate;
     use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 
@@ -512,7 +511,9 @@ mod tests {
                     state.launch_disconnected(81);
                 }
                 2 => {
-                    state.expire_workspace_opens(Instant::now().checked_add(CONNECT_WAIT).unwrap());
+                    state.expire_workspace_opens(
+                        tilo_clock::now().checked_add(CONNECT_WAIT).unwrap(),
+                    );
                 }
                 _ => {}
             }
@@ -692,7 +693,7 @@ mod tests {
         // Peer 10 of the same app connects with no ticket: not the open's.
         state.launch_published(&offering(10), None);
 
-        let now = Instant::now();
+        let now = tilo_clock::now();
         state.expire_workspace_opens(now);
         assert!(accepted(&state, silent) && accepted(&state, quiet));
         state.expire_workspace_opens(now.checked_add(CONNECT_WAIT).unwrap());

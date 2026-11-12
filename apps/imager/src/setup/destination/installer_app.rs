@@ -1822,7 +1822,10 @@ impl InstallerApp {
                 Ok(false) => (PREFLIGHT_FAIL_PREFIX, detail),
                 Err(error) => (
                     PREFLIGHT_FAIL_PREFIX,
-                    format!("Could not launch the prepared-storage check: {error}"),
+                    CATALOG.t_args(
+                        "imager-installer-preflight-failed",
+                        &[("detail", ui::i18n::ArgValue::Text(error.to_string()))],
+                    ),
                 ),
             };
             mailbox.post(format!("{prefix}{request}:{message}"));
@@ -2231,8 +2234,11 @@ impl InstallerApp {
 
         if self.network.is_busy() {
             let operation = match &self.network.phase {
-                NetworkPhase::Connecting(ssid) => format!("Connecting to {ssid}…"),
-                _ => "Checking networks…".to_string(),
+                NetworkPhase::Connecting(ssid) => CATALOG.t_args(
+                    "imager-installer-connecting",
+                    &[("network", ui::i18n::ArgValue::Text(ssid.clone()))],
+                ),
+                _ => CATALOG.t("imager-installer-checking-networks"),
             };
             children.push(Box::new(
                 Row::new().push(Box::new(Spinner::new())).push(Box::new(
@@ -2332,13 +2338,13 @@ impl InstallerApp {
             ));
         } else {
             for (i, network) in self.network.snapshot.networks.iter().take(5).enumerate() {
-                let state = if network.connected {
-                    "Connected"
+                let state = CATALOG.t(if network.connected {
+                    "imager-network-connected"
                 } else if network.secure {
-                    "Secured"
+                    "imager-network-secured"
                 } else {
-                    "Open"
-                };
+                    "imager-network-open"
+                });
                 let selected = self.network.selected_ssid.as_deref() == Some(network.ssid.as_str());
                 let control = self.control(DestinationEffect::SelectNetwork {
                     ssid: network.ssid.clone(),
@@ -2586,7 +2592,7 @@ impl InstallerApp {
     fn alongside_storage_guidance(&self) -> String {
         let plans = self.guided_alongside_plans();
         let mut message = if self.selected_disk_ref().is_none() {
-            "Select a disk to see its alongside options.".to_string()
+            CATALOG.t("imager-installer-select-disk")
         } else if !self.selected_disk_can_install_alongside() {
             self.alongside_unavailable_message(&plans)
         } else if self.uses_guided_alongside() {
@@ -2595,7 +2601,7 @@ impl InstallerApp {
                 .map(|plan| self.alongside_allocation_summary(plan))
                 .unwrap_or_default()
         } else {
-            "Format only the prepared Tilo boot and root partitions; preserve the existing EFI and other OS partitions.".to_string()
+            CATALOG.t("imager-installer-format-prepared")
         };
         if self
             .selected_disk_ref()
@@ -3162,7 +3168,7 @@ impl InstallerApp {
         let disk_value = match self.selected_disk_ref() {
             Some(d) if d.model.is_empty() => format!("{} ({})", d.name, capacity(d)),
             Some(d) => format!("{} ({}, {})", d.name, capacity(d), d.model),
-            None => "<no disk>".to_string(),
+            None => CATALOG.t("imager-installer-no-disk"),
         };
         let mut summary = Vec::new();
         summary.push(Property::new(
@@ -3334,7 +3340,10 @@ impl InstallerApp {
         let impact = if self.install_method == InstallMethod::Alongside {
             alongside_install_impact(self.uses_guided_alongside(), &dev)
         } else {
-            format!("This will ERASE {dev} and all data on it.")
+            CATALOG.t_args(
+                "imager-installer-erase",
+                &[("device", ui::i18n::ArgValue::Text(dev.to_string()))],
+            )
         };
         children.push(Box::new(
             Text::new(&impact)
@@ -3396,13 +3405,15 @@ impl InstallerApp {
                         .with_role(TextRole::Title)
                         .with_live(Politeness::Polite),
                 ));
-                let completion = match self.internal_host() {
-                    Some(host) => format!(
-                        "Installation complete. Restart to start Tilo; {} stays the default in the firmware boot order. The temporary installer space is returned to Tilo after you first sign in. Signed system updates will be checked automatically after first boot when online; no update was downloaded during this install.",
-                        host.display_name()
-                    ),
-                    None => "Installation complete. Remove the installer medium, then reboot. Signed system updates will be checked automatically after first boot when online; no update was downloaded during this install.".to_string(),
-                };
+                let completion = self.internal_host().map_or_else(
+                    || CATALOG.t("imager-installer-complete"),
+                    |host| {
+                        CATALOG.t_args(
+                            "imager-installer-complete-host",
+                            &[("host", ui::i18n::ArgValue::Text(host.display_name()))],
+                        )
+                    },
+                );
                 children.push(Box::new(
                     Text::new(&completion)
                         .with_role(TextRole::Caption)
@@ -3735,13 +3746,13 @@ impl InstallerApp {
             // ordinary rules, which keep the running-system disk unavailable.
             self.internal_handoff = None;
         }
-        self.status = if self.disks.is_empty() {
-            "Disk list refreshed; no installable disks were found.".to_string()
+        self.status = CATALOG.t(if self.disks.is_empty() {
+            "imager-installer-refresh-none"
         } else if self.selected_disk.is_some() {
-            "Disk list refreshed. Review the destination before continuing.".to_string()
+            "imager-installer-refresh-review"
         } else {
-            "Disk list refreshed. Select a destination again.".to_string()
-        };
+            "imager-installer-refresh-select"
+        });
         self.dirty_structure = true;
         self.focus_reset = true;
     }

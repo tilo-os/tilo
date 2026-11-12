@@ -269,6 +269,7 @@ fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
         Some(NotificationPerson {
             name: "Ada".into(),
             identity: "mailto:ada@example.org".into(),
+            agent: false,
         })
     );
     assert!(named.rings, "a call rings");

@@ -401,7 +401,7 @@ impl ApiTesterApp {
         ui::widget::Button::icon_only(
             "api.reset-request-area",
             ui::icons::Icon::AlignEndHorizontal,
-            "Reset request area",
+            &crate::locales::CATALOG.t("api-tester-reset-area"),
         )
         .on_view(move || reset.set(true))
         .enabled_from(&sink.area_resized)

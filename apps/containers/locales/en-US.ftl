@@ -37,3 +37,18 @@ containers-images-summary = { $count ->
    *[other] { $count } images use { $size } of disk space.
 }
 containers-volumes-in-use = { $in_use } of { $total } volumes are in use.
+
+## What the window shows
+containers-logs-unavailable = Log output is unavailable: { $detail }
+containers-logs-empty = The container hasn't written any log output.
+containers-usage-waiting = Usage appears while the container runs.
+containers-usage-unavailable = Usage is unavailable. Podman did not return a telemetry sample.
+containers-cpu = CPU
+containers-memory = Memory (RSS)
+containers-processes = Processes
+containers-open-shell = Open shell
+containers-start = Start
+containers-stop-download = Stop the download
+containers-new = New container
+containers-close-details = Close details
+containers-demo-unavailable = Distrobox actions are unavailable in demo mode

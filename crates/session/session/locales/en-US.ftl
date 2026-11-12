@@ -402,3 +402,10 @@ mention-notice-channel = { $name } mentioned you in { $channel }
 mention-notice = { $name } mentioned you
 mention-notice-someone = Someone
 mention-notice-open = Open
+
+## What the window names
+session-resource-keyboard = On-screen keyboard
+session-resource-diagnostics = Session diagnostics
+session-resource-window-menu = Window menu
+session-resource-surfaces = Surfaces
+session-resource-keyboard-focus = Keyboard focus

@@ -23,6 +23,7 @@ use ui::framework::views::{
     Chip, FacetMenu, FacetOffer, FieldDecl, FieldRole, FilterKind, Form, Item, KindDecl, OpenFacet,
     QueryEngine, QuerySpec, RemoteError, RemoteSection, RemoteSource, ResultGroup, facet_bar,
 };
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::widget::{
@@ -35,6 +36,7 @@ use vello::peniko::{BlendMode, Fill};
 use super::{Action, BooksApp, ShelfCard, ShelfGrid, View, button_width, paint_scroll_thumb};
 use crate::library_index::{BookUnreachable, LibraryIndex, Read};
 use crate::model::Book;
+use crate::resource::CATALOG;
 use crate::search_provider::{
     ANNOTATION_KIND, AUTHOR_FACET, BOOK_FACET, BOOK_KIND, BookSearch, CHAPTER_KIND, LOCATION_KIND,
 };
@@ -1000,6 +1002,38 @@ impl BooksApp {
     /// One result as a row: a passage by its words, a chapter or a note by
     /// its name, each with where it is; a store book with its author and
     /// the button that gets it.
+    /// The row's action and its name: a store book is got, a hit opened.
+    fn row_action(
+        item: &Item,
+        store: Option<&crate::store::StoreBook>,
+        title: &str,
+    ) -> (Action, String) {
+        match store {
+            Some(book) => (Action::GetBook(book.id), Self::get_label(book)),
+            None => (
+                Action::OpenHit(item.id.clone()),
+                CATALOG.t_args(
+                    "ebook-query-open",
+                    &[("title", ArgValue::Text(title.to_owned()))],
+                ),
+            ),
+        }
+    }
+
+    /// What the button that gets `book` from the store says.
+    fn get_label(book: &crate::store::StoreBook) -> String {
+        CATALOG.t_args(
+            "ebook-query-get",
+            &[
+                ("book", ui::i18n::ArgValue::Text(book.title.clone())),
+                (
+                    "store",
+                    ui::i18n::ArgValue::Text(crate::store::STORE_LABEL.to_owned()),
+                ),
+            ],
+        )
+    }
+
     fn query_row(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -1025,17 +1059,11 @@ impl BooksApp {
             .and_then(|entry| entry.icon.as_deref())
             .and_then(Icon::from_name)
             .unwrap_or(Icon::FileText);
-        let (action, label) = match &store {
-            Some(book) => (
-                Action::GetBook(book.id),
-                format!("Get {} from {}", book.title, crate::store::STORE_LABEL),
-            ),
-            None => (Action::OpenHit(item.id.clone()), format!("Open {title}")),
-        };
+        let (action, label) = Self::row_action(item, store.as_ref(), &title);
         let id = item.id.clone();
         let row_index = self.query.rows.len();
-        let get_label = "Get";
-        let get_width = ButtonFace::new(Rect::ZERO, get_label)
+        let get_label = CATALOG.t("ebook-get");
+        let get_width = ButtonFace::new(Rect::ZERO, &get_label)
             .control_size(ControlSize::Small)
             .intrinsic_width(ctx.text, theme);
         // A store book's cover once it has arrived; its placeholder, the
@@ -1102,7 +1130,7 @@ impl BooksApp {
                 );
                 self.button(
                     ctx,
-                    ButtonFace::new(button, get_label)
+                    ButtonFace::new(button, &get_label)
                         .control_size(ControlSize::Small)
                         .role(ButtonRole::Secondary),
                     action,

@@ -31,7 +31,6 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::SystemTime,
 };
 use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 
@@ -291,7 +290,7 @@ pub fn open_file_with(
     let owner = NativeWorkspaceOwner::restore(
         Arc::clone(&store) as Arc<dyn Store>,
         authority,
-        SystemTime::now(),
+        tilo_clock::wall(),
     )?;
     if whole || migrated {
         // The split layout of a record written as one file, or the form of

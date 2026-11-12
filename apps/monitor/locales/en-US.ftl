@@ -39,3 +39,10 @@ monitor-host-name = Host name
 monitor-section-system = System
 monitor-legend-in-use = In use { $percent }
 monitor-section-memory = Memory
+
+## What the window shows
+monitor-cpu-total = Total { $percent }
+monitor-cpu-core = Core { $core }
+monitor-memory-swap = Swap
+monitor-section-network = Network
+monitor-section-disk = Disk

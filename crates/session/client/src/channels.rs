@@ -23,7 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tilo_clock::{SystemTime, UNIX_EPOCH};
+use tilo_clock::UNIX_EPOCH;
 
 use crate::plane::{Cmd, RosterDevice, Topic, topic_of};
 
@@ -723,7 +723,7 @@ pub struct Member {
 /// holds of each. A device the workspace removed, or whose certificate ran out, is not one, and
 /// what it sent or would receive is refused from then on.
 pub fn members_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Vec<Member>, String> {
-    let now = SystemTime::now();
+    let now = tilo_clock::wall();
     engine.owner().with_current(workspace, |view| {
         let admitted: BTreeSet<[u8; 32]> = view
             .peer()

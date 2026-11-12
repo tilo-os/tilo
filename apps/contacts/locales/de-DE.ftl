@@ -95,3 +95,16 @@ contacts-keep-this-card = Diese Karte behalten
 contacts-keep-other-card = Die andere Karte behalten
 contacts-importing = Kontakte werden importiert
 contacts-exporting = Kontakte werden exportiert
+
+## What the window shows
+contacts-changes-lost = Deine Änderungen gehen verloren, wenn du sie nicht speicherst.
+contacts-import-same-identity = Die importierte Karte hat dieselbe Identität wie { $existing } in deinem Adressbuch, aber andere Angaben.
+contacts-cards-share = Diese Karten teilen { $facts }. Diese Karte bleibt, mit allen Telefonnummern, E-Mail-Adressen, Anschriften und Gruppen beider.
+contacts-select-all = Alle auswählen
+contacts-select-none = Keine auswählen
+contacts-remove-field = { $field } entfernen
+contacts-add-phone = Telefonnummer hinzufügen
+contacts-add-email = E-Mail-Adresse hinzufügen
+contacts-add-address = Anschrift hinzufügen
+contacts-hide-calendar = Kalender ausblenden
+contacts-choose-from-calendar = Aus dem Kalender wählen

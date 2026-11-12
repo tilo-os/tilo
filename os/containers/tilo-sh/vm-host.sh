@@ -42,6 +42,15 @@
 #                                       machine: the hosts' member devices and
 #                                       the plans file are written there, for
 #                                       the relay to read
+#   TILO_SH_RELAY_SECRETS_VIEW=/run/secrets
+#                                       where that relay reads them (the image
+#                                       mounts them at /run/secrets; the
+#                                       native stack's relay reads them in the
+#                                       stack's own state)
+#   TILO_SH_RELAY_ROOMS_VIEW=/run/tilo-rooms
+#                                       where that relay reads its own state
+#                                       (the image's volume, or natively the
+#                                       stack's state)
 #   TILO_SH_RELAY_ROOT=<state>/secrets/room-root-lounge
 #                                       the relay's owner root, 64 hex
 #                                       characters: what certifies the member
@@ -69,22 +78,25 @@ relay_iroh=${TILO_SH_RELAY_IROH:-127.0.0.1:24104}
 relay_root=${TILO_SH_RELAY_ROOT:-$secrets/room-root-lounge}
 relay_state=${TILO_SH_RELAY_STATE:-$state/rooms/lounge/relay}
 enroll=${TILO_SH_TILO_ENROLL:-tilo-enroll}
-# What the host holds awake at once: the memory of the size it places, as the
-# size table gives it (crates/runtime/legacy-vm/src/hosted/size.rs: small
-# 4 GiB, default 8 GiB, large 16 GiB, xlarge 32 GiB), beside the host's own
-# few hundred megabytes. A VM woken past a short budget waits for room rather
-# than running, so a host that places 8 GiB VMs needs more than 8 GiB here.
+# What the host holds awake at once: the size's warm template (a template is
+# counted at its size's whole memory, since warming it fills its guest), a
+# clone of that template awake beside it (a third of a gigabyte, measured), and
+# the host's own reserve (its service keeps 2 GiB free). A host that admits the
+# template and then refuses the VM it is for wakes that workspace cold, which is
+# the boot the template exists to save, so the size's own memory alone is not
+# enough here: 8 GiB VMs need more than 10 GiB.
 case ${TILO_SH_HOSTED_VM_SIZE:-default} in
   small) size_memory_mib=4096 ;;
   large) size_memory_mib=16384 ;;
   xlarge) size_memory_mib=32768 ;;
   *) size_memory_mib=8192 ;;
 esac
-memory_mib=${TILO_SH_VM_HOST_MEMORY_MIB:-$((size_memory_mib + 2048))}
-# The relay's own view of what this host writes for it: the stack mounts its
-# secrets at /run/secrets and the relay's state at /run/tilo-rooms.
-relay_secrets=/run/secrets
-relay_rooms=/run/tilo-rooms
+memory_mib=${TILO_SH_VM_HOST_MEMORY_MIB:-$((size_memory_mib + 3072))}
+# The relay's own view of what this host writes for it: the image's secrets
+# volume and state volume, or, for the stack that runs the relay natively, the
+# paths of its state (TILO_SH_RELAY_SECRETS_VIEW, TILO_SH_RELAY_ROOMS_VIEW).
+relay_secrets=${TILO_SH_RELAY_SECRETS_VIEW:-/run/secrets}
+relay_rooms=${TILO_SH_RELAY_ROOMS_VIEW:-/run/tilo-rooms}
 # A VM host's state disk is 512 GiB on the cloud: a sparse file that size
 # holds the same, since only what is written is stored.
 state_size=${TILO_SH_VM_HOST_STATE_SIZE:-512G}

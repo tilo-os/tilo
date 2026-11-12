@@ -611,3 +611,7 @@ invite-revoked = Der Link gilt nicht mehr.
 invite-no-answer = Kein Link erstellt: Der Arbeitsbereich hat nicht geantwortet.
 invite-failed = Kein Link erstellt: { $reason }
 invite-revoke-failed = Der Link wurde nicht zurückgenommen: { $reason }
+
+## What the window names
+sheets-room-activity = { $people } gerade hier
+sheets-room-person = Person { $number }

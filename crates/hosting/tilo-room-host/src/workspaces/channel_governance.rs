@@ -6,8 +6,6 @@
 
 use std::sync::Arc;
 
-use web_time::SystemTime;
-
 use super::{Carried, Workspaces};
 
 /// Notices one workspace hands its channel service at once; a device asks
@@ -138,7 +136,7 @@ impl Workspaces {
                 governed
                     .peer()
                     .governance()
-                    .governed_access(SystemTime::now())
+                    .governed_access(tilo_clock::wall())
                     .is_ok_and(|access| access.member_devices.contains(&author)),
             )
         };

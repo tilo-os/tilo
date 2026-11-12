@@ -348,26 +348,17 @@ class Session:
         that takes the work and carries it out on the session's next pass: its receipt says
         `accepted`, and the check proves what it did by the session's own state.
 
-        A session that answers `unavailable` is one that has not finished coming up — its identity
-        is not read yet — and a person pressed the row again a moment later; so does this, for as
-        long as any other wait here may take."""
+        Asked once: a session holds an action until its identity names the person at its seat, so
+        an `unavailable` here is the session's own answer, not a moment to press the row again."""
         argv = ["actions", "invoke", provider, ident, "--wait=30000"]
         if args is not None:
             argv += ["--args-json", json.dumps(args)]
-        end = time.monotonic() + HANG_BOUND
-        while True:
-            try:
-                answer = self.control_json(*argv)
-            except Failed as error:
-                if "unavailable" not in str(error) or time.monotonic() > end:
-                    raise
-                time.sleep(0.05)
-                continue
-            state = answer.get("receipt", {}).get("update", {}).get("state")
-            done = (None, "succeeded", "accepted") if job else (None, "succeeded")
-            if state not in done:
-                raise Failed(f"{provider} {ident} did not succeed: {json.dumps(answer)[:1500]}")
-            return answer
+        answer = self.control_json(*argv)
+        state = answer.get("receipt", {}).get("update", {}).get("state")
+        done = (None, "succeeded", "accepted") if job else (None, "succeeded")
+        if state not in done:
+            raise Failed(f"{provider} {ident} did not succeed: {json.dumps(answer)[:1500]}")
+        return answer
 
     def windows(self) -> list[dict]:
         return self.control_json("windows", "--json")

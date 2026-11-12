@@ -265,15 +265,19 @@ impl SettingsPane {
             ))
             .push(Box::new(Spacer::new()))
             .push(Box::new(button_with_action(
-                Button::new("settings.close", "Done").control_size(ui::widget::ControlSize::Large),
+                Button::new(
+                    "settings.close",
+                    &crate::resource::CATALOG.t("browser-settings-done"),
+                )
+                .control_size(ui::widget::ControlSize::Large),
                 self.actions.close.clone(),
             )));
 
         let general = card(
-            "General",
+            crate::resource::CATALOG.t("browser-settings-general"),
             rows(vec![
                 field_block(
-                    "Homepage",
+                    crate::resource::CATALOG.t("browser-settings-homepage-label"),
                     &self.presentation.homepage,
                     "settings.homepage_input",
                     DEFAULT_HOMEPAGE,
@@ -289,8 +293,9 @@ impl SettingsPane {
         let browsing_controls = browsing_data_controls(&self.actions, large_text);
         let mut privacy_rows = vec![
             setting_row_described(
-                "Block ads & trackers",
-                "Blocks ads, trackers, and YouTube video ads.",
+                "settings.row.adblock",
+                crate::resource::CATALOG.t("browser-settings-adblock"),
+                crate::resource::CATALOG.t("browser-settings-adblock-detail"),
                 Box::new(preference_toggle(
                     Toggle::from_state(&self.presentation.adblock)
                         .with_id("settings.adblock")
@@ -301,8 +306,9 @@ impl SettingsPane {
                 )),
             ),
             setting_row_described(
-                "Clear data when the browser closes",
-                "Wipe history and cookies on exit.",
+                "settings.row.clear-on-exit",
+                crate::resource::CATALOG.t("browser-settings-clear-on-exit-label"),
+                crate::resource::CATALOG.t("browser-settings-clear-on-exit-detail"),
                 Box::new(preference_toggle(
                     Toggle::from_state(&self.presentation.clear_on_exit)
                         .with_id("settings.clear_on_exit")
@@ -313,33 +319,37 @@ impl SettingsPane {
                 )),
             ),
             setting_row_described(
-                "Browsing data",
-                "History, and the cookies and files sites keep on this device.",
+                "settings.row.browsing-data",
+                crate::resource::CATALOG.t("browser-settings-browsing-data"),
+                crate::resource::CATALOG.t("browser-settings-browsing-data-detail"),
                 browsing_controls,
             ),
         ];
         if let Some(request) = &self.autofill_request {
-            for (id, label, description, addresses) in [
+            for (id, row, label, description, addresses) in [
                 (
                     "browser.credentials.open",
-                    "Passwords",
-                    "Sign-ins saved for sites on this device.",
+                    "settings.row.passwords",
+                    "browser-settings-passwords",
+                    "browser-settings-passwords-detail",
                     false,
                 ),
                 (
                     "browser.address.open",
-                    "Address autofill",
-                    "Fill address forms from your saved addresses.",
+                    "settings.row.autofill",
+                    "browser-settings-autofill",
+                    "browser-settings-autofill-detail",
                     true,
                 ),
             ] {
                 let request = request.clone();
                 privacy_rows.push(setting_row_described(
-                    label,
-                    description,
+                    row,
+                    crate::resource::CATALOG.t(label),
+                    crate::resource::CATALOG.t(description),
                     Box::new(
-                        Button::new(id, "Manage")
-                            .with_accessible_name(label)
+                        Button::new(id, &crate::resource::CATALOG.t("browser-settings-manage"))
+                            .with_accessible_name(&crate::resource::CATALOG.t(label))
                             .on_view(move || request.set(Some(addresses))),
                     ),
                 ));
@@ -348,7 +358,10 @@ impl SettingsPane {
         if let Some(error) = &self.history_clear_error {
             privacy_rows.push(Box::new(Text::new(error).with_role(ui::TextRole::Caption)));
         }
-        let privacy = card("Privacy & Security", rows(privacy_rows));
+        let privacy = card(
+            crate::resource::CATALOG.t("browser-settings-privacy"),
+            rows(privacy_rows),
+        );
 
         let mut body = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Group)
@@ -358,14 +371,18 @@ impl SettingsPane {
             .push(privacy);
         if let Some(request) = self.private_window_request.clone() {
             body = body.push(card(
-                "Windows",
+                crate::resource::CATALOG.t("browser-settings-windows"),
                 rows(vec![setting_row_described(
-                    "Private browsing",
-                    "Nothing from a private window is kept after it closes.",
+                    "settings.row.private",
+                    crate::resource::CATALOG.t("browser-settings-private"),
+                    crate::resource::CATALOG.t("browser-settings-private-detail"),
                     Box::new(
-                        Button::new("settings.new_private_window", "New private window")
-                            .control_size(ui::widget::ControlSize::Regular)
-                            .on_effect(move || request.set(true)),
+                        Button::new(
+                            "settings.new_private_window",
+                            &crate::resource::CATALOG.t("browser-settings-new-private-window"),
+                        )
+                        .control_size(ui::widget::ControlSize::Regular)
+                        .on_effect(move || request.set(true)),
                     ),
                 )]),
             ));
@@ -397,7 +414,7 @@ impl Default for SettingsPane {
 // the shared `Section`, matching the system Settings app.
 
 /// A named section uses the shared card's heading, inset and surface.
-fn card(title: &str, body: El) -> El {
+fn card(title: impl Into<String>, body: El) -> El {
     Box::new(Card::new(body).with_title(title))
 }
 
@@ -409,11 +426,15 @@ fn rows(items: Vec<El>) -> El {
 /// A label with a dim helper line beneath it, and its control at the
 /// trailing edge of the same row. The row moves the control under the text
 /// only when both do not fit (a narrow window, large text).
-fn setting_row_described(label: &str, description: &str, control: El) -> El {
-    let id = format!("settings.row.{}", label.to_lowercase().replace(' ', "-"));
+fn setting_row_described(
+    id: &str,
+    label: impl AsRef<str>,
+    description: impl AsRef<str>,
+    control: El,
+) -> El {
     Box::new(
-        ui::widget::ListRow::new(id, label)
-            .secondary(description)
+        ui::widget::ListRow::new(id, label.as_ref())
+            .secondary(description.as_ref())
             .trailing(control),
     )
 }
@@ -432,21 +453,28 @@ fn search_engine_row(
         None => chooser,
     };
     setting_row_described(
-        "Search engine",
-        "Searches from the address field go here.",
+        "settings.row.search-engine",
+        crate::resource::CATALOG.t("browser-settings-search-engine-label"),
+        crate::resource::CATALOG.t("browser-settings-search-engine-detail"),
         Box::new(chooser),
     )
 }
 
 fn browsing_data_controls(actions: &SettingsActionBindings, large_text: bool) -> El {
     let clear_history = Box::new(button_with_action(
-        Button::new("settings.clear_history", "Clear history")
-            .control_size(ui::widget::ControlSize::Large),
+        Button::new(
+            "settings.clear_history",
+            &crate::resource::CATALOG.t("browser-settings-clear-history"),
+        )
+        .control_size(ui::widget::ControlSize::Large),
         actions.clear_history.clone(),
     ));
     let clear_site_data = Box::new(button_with_action(
-        Button::new("settings.clear_cookies", "Clear site data")
-            .control_size(ui::widget::ControlSize::Large),
+        Button::new(
+            "settings.clear_cookies",
+            &crate::resource::CATALOG.t("browser-settings-clear-site-data"),
+        )
+        .control_size(ui::widget::ControlSize::Large),
         actions.clear_site_data.clone(),
     ));
     if large_text {
@@ -479,7 +507,7 @@ pub(crate) fn homepage_of(value: &str) -> Option<String> {
 /// A labelled full-width text field: a caption above a [`TextInput`] whose
 /// edits run `edit`.
 fn field_block(
-    label: &str,
+    label: impl AsRef<str>,
     state: &ui::LocalState<String>,
     id: &str,
     placeholder: &str,
@@ -496,7 +524,9 @@ fn field_block(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .push(Box::new(Text::new(label).with_role(ui::TextRole::Body)))
+            .push(Box::new(
+                Text::new(label.as_ref()).with_role(ui::TextRole::Body),
+            ))
             .push(Box::new(input)),
     )
 }

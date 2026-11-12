@@ -768,7 +768,7 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, editing: &Editing) -> Element {
                 return String::new();
             };
             if findings.is_empty() {
-                String::from("Every pairing meets its contrast floor.")
+                CATALOG.t("themes-contrast-every-pairing-meets")
             } else {
                 CATALOG.t_args(
                     "themes-contrast-low",

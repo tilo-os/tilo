@@ -10,8 +10,6 @@ use tilo_relay_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
 use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
-use std::time::SystemTime;
-
 use crate::handshake::{Doorway, EntryFuture};
 use crate::workspaces::pages::Presented;
 use crate::workspaces::{Carried, Workspaces};
@@ -149,7 +147,7 @@ impl Workspaces {
         // does not come back in by the admission it gave them before.
         let policy = governed
             .peer()
-            .permissions(self.inner.host.cert.device_public_key, SystemTime::now())
+            .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
             .ok()?
             .policy;
         if policy.is_blocked(&hex::encode(cert.user_public_key))
@@ -161,7 +159,7 @@ impl Workspaces {
         // stranger holds no permissions here.
         governed
             .peer()
-            .permissions(cert.device_public_key, SystemTime::now())
+            .permissions(cert.device_public_key, tilo_clock::wall())
             .ok()?;
         // An entry cut off between committing an admission and settling it
         // leaves the device in governance and out of the standings this
@@ -261,7 +259,7 @@ impl Workspaces {
                 let scope = governed
                     .peer()
                     .governance()
-                    .unit_scope(std::time::SystemTime::now(), &route)
+                    .unit_scope(tilo_clock::wall(), &route)
                     .ok();
                 let hint = self.transport_hint(&governed);
                 drop(governed);

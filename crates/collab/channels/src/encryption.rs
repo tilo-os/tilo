@@ -55,6 +55,12 @@ const TURN: Duration = Duration::from_secs(2);
 /// of each other are admitted in one commit rather than one each. A change
 /// after a quiet spell is committed at once.
 const COMMIT_SPACING: Duration = Duration::from_millis(500);
+/// How long the state a frame taken in left changed waits to be written
+/// ([`ChannelPeer::save_deferred`]). Sealing the state of a channel of hundreds
+/// takes tens of milliseconds, and the Welcome that admits a page arrives as it
+/// enters: written at once, it would hold back the page's first frame, which is
+/// drawn well within this. A device that stops before only asks again.
+const DEFERRED_SAVE: Duration = Duration::from_secs(2);
 /// Under the state root, the directory of a workspace's channels.
 #[cfg(not(target_arch = "wasm32"))]
 const CHANNELS_DIR: &str = "channels";
@@ -653,6 +659,9 @@ struct PeerEntry {
     /// frame from a device admitted a moment ago is judged again once the
     /// policy here names it.
     held: Vec<MlsGovernanceFrame>,
+    /// Since when the peer holds a change it has not written
+    /// ([`DEFERRED_SAVE`]).
+    unsaved_since: Option<Instant>,
 }
 
 /// A channel an endpoint asked about that this device could not open: no
@@ -1414,6 +1423,7 @@ impl ChannelEncryption {
             }
             self.publish(channel, transport);
             self.ask(channel, transport, now, wall);
+            self.save_deferred(channel, now);
         }
         // Unopened channels are re-checked with the policy, and a failed
         // open when its backoff is due.
@@ -1425,6 +1435,26 @@ impl ChannelEncryption {
         // A newly opened workspace brings its own expiries.
         if reconciled && epoch.is_some() {
             self.register_next_policy_change(wall);
+        }
+    }
+
+    /// Write what taking in a frame left unwritten in `channel`'s state once
+    /// it has waited [`DEFERRED_SAVE`].
+    fn save_deferred(&mut self, channel: ChannelId, now: Instant) {
+        let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
+            return;
+        };
+        if !entry.peer.has_unsaved() {
+            entry.unsaved_since = None;
+            return;
+        }
+        let since = *entry.unsaved_since.get_or_insert(now);
+        if now < since.checked_add(DEFERRED_SAVE).unwrap_or(since) {
+            return;
+        }
+        entry.unsaved_since = None;
+        if let Err(error) = entry.peer.save_deferred(&store.vault) {
+            tracing::warn!(%error, workspace = %entry.workspace, "channel state could not be written");
         }
     }
 
@@ -1491,8 +1521,15 @@ impl ChannelEncryption {
             .values()
             .filter_map(|entry| entry.retry.as_ref().map(|retry| retry.due))
             .min();
+        let unsaved = self
+            .peers
+            .values()
+            .filter_map(|entry| entry.unsaved_since)
+            .filter_map(|since| since.checked_add(DEFERRED_SAVE))
+            .min();
         policy
             .into_iter()
+            .chain(unsaved)
             .chain(turn)
             .chain(asking)
             .chain(founding)
@@ -1676,6 +1713,16 @@ impl ChannelEncryption {
                 true
             }
             PeerEvent::Removed => true,
+            PeerEvent::WelcomeRefused(refusal) => {
+                tracing::warn!(%refusal, %workspace, channel = %channel.0, ?signer, "channel Welcome refused");
+                // As a desynchronised device: the members that took the
+                // commit hold this device admitted with the key it asked
+                // with, so it asks with a fresh one.
+                entry.request = None;
+                entry.retry = Backoff::now(now, REQUEST_FIRST);
+                entry.fresh_at = now;
+                true
+            }
             PeerEvent::Desynchronised => {
                 // Ask again with a fresh member key; any participant admits
                 // a member asking with another key than it joined with.
@@ -2123,6 +2170,7 @@ impl ChannelEncryption {
                 },
                 wanted: true,
                 held: Vec::new(),
+                unsaved_since: None,
             },
         );
         self.register_gate(channel, gate);

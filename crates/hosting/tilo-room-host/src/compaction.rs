@@ -353,7 +353,7 @@ impl Compactor {
             let entry = growth.entry((workspace_id, channel)).or_default();
             entry.entries = entry.entries.saturating_add(1);
             entry.bytes = entry.bytes.saturating_add(len);
-            entry.last = Some(Instant::now());
+            entry.last = Some(tilo_clock::now());
             let due = entry.entries >= CHECK_ENTRIES || entry.bytes >= CHECK_BYTES;
             let schedule = due && !entry.scheduled;
             entry.scheduled |= schedule;
@@ -477,7 +477,7 @@ impl Compactor {
             self.0
                 .folding
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let held = Instant::now();
+            let held = tilo_clock::now();
             while held.elapsed() < *lock(&self.0.hold) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -692,7 +692,7 @@ impl Compactor {
         // it. The request overtakes deliveries still queued for a member or
         // left on disk while it lags, so a member that took them all is asked
         // first; after CATCH_UP any open one is.
-        let asked = Instant::now();
+        let asked = tilo_clock::now();
         let (device, tx) = loop {
             let runtime = workspace.lock().await;
             let open: Vec<_> = candidates
@@ -741,7 +741,7 @@ impl Compactor {
                 workspace_id,
                 channel,
                 device,
-                sent: Instant::now(),
+                sent: tilo_clock::now(),
             },
         );
         // The next request for this workspace goes to someone else first.

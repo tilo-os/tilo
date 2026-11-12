@@ -155,7 +155,7 @@ pub fn enroll_into(
         iroh_base::EndpointId::from_bytes(&certificate.device_public_key).unwrap(),
     );
     let hint = governor.hint(endpoint);
-    let now = SystemTime::now();
+    let now = tilo_clock::wall();
     let now_ns = ns(now).unwrap();
     // One workspace admits more than one device: each asks with an id of its own.
     let mut request_id = [0_u8; 32];
@@ -249,7 +249,7 @@ pub fn raw_fixture() -> (
     [u8; 32],
     SystemTime,
 ) {
-    raw_fixture_at(SystemTime::now())
+    raw_fixture_at(tilo_clock::wall())
 }
 /// The joining device's own key the raw fixture enrolls.
 #[must_use]
@@ -257,20 +257,26 @@ pub fn member_key() -> SigningKey {
     SigningKey::from_bytes(&[63; 32])
 }
 
+/// A governor's workspace, seeded, and a member's verified invitation into
+/// it, not yet admitted.
+struct Seeded {
+    governor_key: SigningKey,
+    governor: DeviceCert,
+    device: DeviceCert,
+    workspace_id: u64,
+    hint: join::TransportHint,
+    verified: join::VerifiedJoin,
+    proof: join::JoinProof,
+    redemption: join::VerifiedRedemption,
+    peer: StatePeer,
+}
+
 #[allow(
     clippy::too_many_lines,
-    reason = "one linear signed-enrollment fixture; splitting it would scatter the protocol \
+    reason = "one linear signed-invitation fixture; splitting it would scatter the protocol \
               steps each test depends on"
 )]
-pub fn raw_fixture_at(
-    now: SystemTime,
-) -> (
-    VerifiedNativeEnrollmentIntent,
-    join::JoinBootstrap,
-    Vec<NeighbourMsg>,
-    [u8; 32],
-    SystemTime,
-) {
+fn seeded(now: SystemTime) -> Seeded {
     let ns = u64::try_from(
         now.duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
@@ -371,6 +377,39 @@ pub fn raw_fixture_at(
     )
     .unwrap();
     peer.select_admission_v5().unwrap();
+    Seeded {
+        governor_key,
+        governor,
+        device,
+        workspace_id,
+        hint,
+        verified,
+        proof,
+        redemption,
+        peer,
+    }
+}
+
+pub fn raw_fixture_at(
+    now: SystemTime,
+) -> (
+    VerifiedNativeEnrollmentIntent,
+    join::JoinBootstrap,
+    Vec<NeighbourMsg>,
+    [u8; 32],
+    SystemTime,
+) {
+    let Seeded {
+        governor_key,
+        governor,
+        device,
+        workspace_id,
+        hint,
+        verified,
+        proof,
+        redemption,
+        mut peer,
+    } = seeded(now);
     assert!(
         peer.governance_mut()
             .admit_invited_member(&redemption, &governor_key, now)
@@ -434,6 +473,78 @@ pub fn raw_fixture_at(
     .unwrap();
     (intent, bootstrap, messages, governor.device_public_key, now)
 }
+/// A workspace a newcomer's host vouched for, as that newcomer's session is
+/// sent it in parts: its governance before the change admitting the
+/// newcomer, a member's write to one of its records, and then that change.
+pub struct LateAdmission {
+    /// The host's membership answer for the newcomer's device.
+    pub bootstrap: join::JoinBootstrap,
+    /// The newcomer's device key.
+    pub device_key: SigningKey,
+    /// The workspace's governance without the newcomer.
+    pub governance: NeighbourMsg,
+    /// The governor's write to [`APP`]'s record `""`.
+    pub record: NeighbourMsg,
+    /// The change of the governance that admits the newcomer.
+    pub admitting: NeighbourMsg,
+    /// The governor's device, which sent all three.
+    pub governor: [u8; 32],
+}
+
+/// [`LateAdmission`] at `now`.
+pub fn late_admission_at(now: SystemTime) -> LateAdmission {
+    let Seeded {
+        governor_key,
+        governor,
+        device,
+        workspace_id,
+        verified,
+        redemption,
+        mut peer,
+        ..
+    } = seeded(now);
+    let mut chat = AutoCommit::new();
+    chat.put(ROOT, "said", "hello").unwrap();
+    collab_types::CommitNamed::commit_edit(&mut chat, "chat", "said");
+    let record = peer
+        .publication_mut()
+        .publish_document(APP, "", chat.save(), &governor_key, now)
+        .unwrap();
+    let governance = peer.workspace_message();
+    let before = peer.workspace_heads().unwrap();
+    assert!(
+        peer.governance_mut()
+            .admit_invited_member(&redemption, &governor_key, now)
+            .unwrap()
+    );
+    let admitting = NeighbourMsg::SyncResp {
+        changes: peer.workspace_changes_since(&before),
+        room: WORKSPACE.into(),
+    };
+    let bootstrap = join::JoinBootstrap {
+        version: 1,
+        invite_id: verified.invite_id(),
+        device_cert: device,
+        role: join::MemberRole::Editor,
+        room: WORKSPACE.into(),
+        workspace_id,
+        host: governor.clone(),
+        certified_roster: peer.certificates(),
+        revocations: peer.revocations(),
+        records: peer.rows(),
+        governance_messages: Vec::new(),
+        generation: 1,
+    };
+    LateAdmission {
+        bootstrap,
+        device_key: member_key(),
+        governance,
+        record,
+        admitting,
+        governor: governor.device_public_key,
+    }
+}
+
 pub fn finalize(
     intent: VerifiedNativeEnrollmentIntent,
     pending: crate::owner::PendingEnrollmentId,

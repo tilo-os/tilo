@@ -113,3 +113,12 @@ backups-keep-hourly = Hourly snapshots to keep
 backups-keep-daily = Daily snapshots to keep
 backups-keep-weekly = Weekly snapshots to keep
 backups-keep-monthly = Monthly snapshots to keep
+
+## What the window shows
+backups-verifying-on = Verifying on { $destination }
+backups-copy-failed = Couldn’t copy to { $destination }: { $reason }
+backups-copy-failed-unrecorded = Couldn’t copy to { $destination }; no reason was recorded
+backups-restore = Restore…
+backups-verify = Verify files
+backups-restore-labelled = Restore “{ $snapshot }”
+backups-restore-from = Restore { $snapshot } from { $when }

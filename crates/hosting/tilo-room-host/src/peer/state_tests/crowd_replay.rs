@@ -95,7 +95,7 @@ async fn a_crowd_is_replayed_once_each_and_never_waits_on_a_stalled_page() {
     })
     .await;
 
-    let entering = std::time::Instant::now();
+    let entering = tilo_clock::now();
     let mut crowd_pages = tokio::task::JoinSet::new();
     for peer in crowd {
         let (fixture, peer) = (fixture.clone(), peer.clone());

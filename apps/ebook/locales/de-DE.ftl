@@ -93,3 +93,31 @@ ebook-a11y-annotations = { $annotations ->
 }
 ebook-a11y-contents = Inhalt: Kapitel { $chapter } von { $chapters }. Scrolle durch diese Liste, um alle Kapitel zu sehen.
 ebook-a11y-annotation-hit = { $kind } in Kapitel { $chapter } von { $title }
+
+## What the window shows
+ebook-view-library = Bücherbibliothek
+ebook-view-library-detail = Bücher ansehen und öffnen
+ebook-view-reader = Buchleser
+ebook-view-reader-detail = Das aktuelle Buch lesen und anmerken
+ebook-view-settings = Bucheinstellungen
+ebook-view-settings-detail = Leseschriften, Farben und Bibliotheksordner verwalten
+ebook-view-search = Bücher durchsuchen
+ebook-view-search-detail = Treffer in deinen Büchern und im Laden
+ebook-add-note-button = Notiz hinzufügen
+ebook-no-passage = Keine Textstelle
+ebook-query-get = { $book } aus { $store } holen
+ebook-query-open = { $title } öffnen
+ebook-duplicate = Duplizieren
+ebook-edit = Bearbeiten
+ebook-add-system-font = Systemschrift hinzufügen
+ebook-new-scheme = Neues Farbschema
+ebook-highlighted-passage = Markierte Textstelle
+ebook-selected-passage = Ausgewählte Textstelle
+ebook-manage-fonts = Schriften und Farbthemen verwalten
+ebook-close-appearance = Leseerscheinung schließen
+ebook-use-font = Schrift { $font } verwenden
+ebook-reading-theme = Lesethema { $theme }
+ebook-use-scheme = Farbthema { $scheme } verwenden
+ebook-untitled = Ohne Titel
+
+ebook-get = Holen

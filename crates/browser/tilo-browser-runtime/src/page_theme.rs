@@ -203,7 +203,7 @@ pub(crate) fn install(wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
 
 /// The browser's `MediaQueryList` for `query`.
 #[cfg(target_arch = "wasm32")]
-fn media_query(query: &str) -> Option<wasm_bindgen::JsValue> {
+pub(crate) fn media_query(query: &str) -> Option<wasm_bindgen::JsValue> {
     use wasm_bindgen::JsCast as _;
     let match_media = js_sys::Reflect::get(&js_sys::global(), &"matchMedia".into()).ok()?;
     let match_media = match_media.dyn_ref::<js_sys::Function>()?;

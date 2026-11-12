@@ -161,6 +161,9 @@ pub(crate) struct Personal {
     /// What the files this device's fleet is read from looked like when the list was last said:
     /// a fleet that moved since — a device this device's root just certified — is said again.
     pub(crate) fleet: Option<tilo_identity_host::device_fleet::FleetStamps>,
+    /// The workspaces whose host has not taken this device in yet that the person was told of:
+    /// once each, not on every ask that times out.
+    told_awaiting: BTreeSet<WorkspaceId>,
 }
 
 /// The parts of a desk [`Personal::publish_local`] reads.
@@ -280,6 +283,7 @@ impl Personal {
             kept: None,
             kept_on_hosts: false,
             fleet: None,
+            told_awaiting: BTreeSet::new(),
         };
         let read = personal
             .store
@@ -1136,6 +1140,26 @@ impl crate::Shared {
         }
     }
 
+    /// Tell the person, once, that `workspace` (`name` on their list) waits for its host to take
+    /// this device in: until then the workspace's apps take part in nothing here.
+    fn tell_awaited(&self, workspace: WorkspaceId, name: &str) {
+        let host = self
+            .engine
+            .as_ref()
+            .and_then(|engine| engine.awaited_host(workspace));
+        if let (Some(host), Some(personal)) = (host, &self.personal)
+            && personal.borrow_mut().told_awaiting.insert(workspace)
+        {
+            crate::directory::awaiting_notice(&*self.telling(), name, &host);
+            tracing::info!(
+                target: JOIN_FLOW_TARGET,
+                %workspace,
+                %host,
+                "the person is told this device waits for the workspace's host to take it in"
+            );
+        }
+    }
+
     /// Take what became of the invitations this session redeemed: the person lands in the workspace
     /// they joined once it is held here, or it is taken off the desk and the sheet says why.
     pub(crate) fn follow_enrollments(&self) {
@@ -1199,6 +1223,7 @@ impl crate::Shared {
                         %error,
                         "the person's workspace did not take this copied machine in as its own device"
                     );
+                    self.tell_awaited(enrolled.workspace_id, &listed);
                 }
                 Err(error) => {
                     tracing::info!(

@@ -1525,3 +1525,82 @@ fn a_shells_week_starts_on_the_persons_first_day() {
     );
     ui::format::region::install(before);
 }
+
+/// The framed canvas pans under a middle drag, and the window's well goes with it in the frame
+/// the drag is drawn in: the window policy reads the well, so a window stands in its frame
+/// wherever the person carries the canvas.
+#[test]
+fn a_canvas_pan_carries_the_windows_well_with_it() {
+    let (mut part, wells) = showing_one_window();
+    click(&mut part, "Showing Strips");
+    click(&mut part, "Frames");
+    for _ in 0..30 {
+        part.prepare_frame();
+    }
+    let before = wells.well("p1").expect("the place is a well on the canvas");
+    // A point on the canvas' ground, clear of the place: below and right of its well.
+    let (x, y) = (before.x1 + 40.0, before.y1 + 40.0);
+    part.pointer_motion(x, y);
+    part.prepare_frame();
+    part.pointer_button(0x112, true);
+    part.prepare_frame();
+    let mut seen = Vec::new();
+    for step in 1..=5 {
+        part.pointer_motion(x - 20.0 * f64::from(step), y - 10.0 * f64::from(step));
+        part.prepare_frame();
+        seen.push(wells.well("p1"));
+    }
+    part.pointer_button(0x112, false);
+    part.prepare_frame();
+    let after = wells.well("p1").expect("the place is still a well");
+    assert!(
+        (after.x0 - (before.x0 - 100.0)).abs() < 1.0 && (after.y0 - (before.y0 - 50.0)).abs() < 1.0,
+        "the well moved with the canvas: {before:?} -> {after:?}, along the way {seen:?}"
+    );
+}
+
+/// A window that arrives past the canvas' edge is shown: the canvas pans to it, and on every
+/// frame of the way each window's well has moved with the canvas, the one that stood there and
+/// the one arriving alike, so no window trails its frame.
+#[test]
+fn the_canvas_pans_to_a_window_arriving_past_its_edge_carrying_every_well() {
+    let wells = ui::widget::Wells::new();
+    let (mut part, link) = super::tests_support::part_as(reading(), Some(wells.clone()));
+    link.publish_arrangement(one_window_arrangement());
+    click(&mut part, "Showing Strips");
+    click(&mut part, "Frames");
+    for _ in 0..30 {
+        part.prepare_frame();
+    }
+    let mut arrangement = one_window_arrangement();
+    let mut far = arrangement.strips[0].clone();
+    far.key = "s2".to_owned();
+    far.canvas_x = 1100;
+    arrangement.strips.push(far);
+    let mut arriving = arrangement.places[0].clone();
+    arriving.key = "p2".to_owned();
+    arriving.strip = "s2".to_owned();
+    arrangement.places.push(arriving);
+    link.publish_arrangement(arrangement);
+    let started = std::time::Instant::now();
+    let mut frames = Vec::new();
+    while started.elapsed() < std::time::Duration::from_secs(2) {
+        part.prepare_frame();
+        if let (Some(one), Some(two)) = (wells.well("p1"), wells.well("p2")) {
+            frames.push((one, two));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(8));
+    }
+    let (_, last) = *frames.last().expect("the arriving place is a well");
+    assert!(
+        last.x0 >= 0.0 && last.x1 <= 1280.0,
+        "the window that arrived stands whole on the screen: {last:?}"
+    );
+    let apart = frames[0].1.x0 - frames[0].0.x0;
+    assert!(
+        frames
+            .iter()
+            .all(|(one, two)| ((two.x0 - one.x0) - apart).abs() < 1.0),
+        "every well moved with the canvas on every frame: {frames:?}"
+    );
+}

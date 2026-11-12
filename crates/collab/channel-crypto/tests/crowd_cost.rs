@@ -73,7 +73,8 @@ struct Cost {
     commits: usize,
     /// Bytes of the commit every member already in receives.
     members_commit_bytes: usize,
-    /// Writes of a member's state as it follows the commit.
+    /// Writes of a member's state as it follows the commit, the one put off
+    /// until after the page shows among them.
     member_writes: usize,
 }
 
@@ -141,6 +142,10 @@ fn admission(members: u32, arriving: u32) -> Cost {
             .receive((*frame).clone(), &allowed, &vault())
             .unwrap();
     }
+    // Taking the commit in writes nothing; the write follows once the page
+    // shows.
+    assert_eq!(follower_states.writes(), follower_before);
+    follower.save_deferred(&vault()).unwrap();
     Cost {
         committer_writes,
         commits: members_copy.len(),
@@ -183,7 +188,7 @@ fn a_crowd_asking_together_is_admitted_in_one_commit() {
 
 /// The signatures a device admitted to a channel of `members` checks in
 /// full while taking in its Welcome, and those of the tree's leaves it
-/// leaves to the committer ([`channel_crypto::welcome`]).
+/// leaves unchecked ([`channel_crypto::welcome`]).
 fn joining(members: u32) -> (u64, u64) {
     let channel = ChannelId::new();
     let mut committer = ChannelPeer::create_now(None, channel, Box::new(key(0)), &vault()).unwrap();
@@ -217,8 +222,8 @@ fn joining(members: u32) -> (u64, u64) {
 }
 
 /// A newcomer joining a channel of 300 checks as many signatures in full as
-/// one joining a channel of 30: the tree's leaves, one per member, are the
-/// committer's to have checked. Only the tree's hash, which every leaf goes
+/// one joining a channel of 30: the tree's leaves, one per member, go
+/// unchecked. Only the tree's hash, which every leaf goes
 /// into, still grows with the channel.
 #[test]
 fn joining_checks_the_same_signatures_at_300_members_as_at_30() {

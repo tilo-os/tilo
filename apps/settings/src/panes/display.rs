@@ -1179,7 +1179,12 @@ impl DisplayModel {
             }),
         )
         .err()
-        .map(|error| format!("the brightness probe could not start: {error}"));
+        .map(|error| {
+            crate::i18n::t_args(
+                "display-brightness-failed",
+                &[("detail", ui::i18n::ArgValue::Text(error.to_string()))],
+            )
+        });
         let control: Arc<dyn BrightnessControl> =
             Arc::new(SystemBrightness(dispatcher_or_real(None)));
         let (brightness_tx, brightness_rx) = crate::channel::channel::<f32>();
@@ -1771,7 +1776,10 @@ impl DisplayModel {
             .filter(|target| target.connector != output.connector)
         {
             if mirror {
-                choices.push(format!("Mirror {}", target.label));
+                choices.push(crate::i18n::t_args(
+                    "display-mirror",
+                    &[("display", ui::i18n::ArgValue::Text(target.label.clone()))],
+                ));
             } else {
                 choices.extend(
                     ["Left", "Right", "Above", "Below"]
@@ -2274,7 +2282,10 @@ impl DisplayModel {
                 Ok(applied) => self.brightness = applied,
                 Err(error) => {
                     warn!(target: "tilo::settings", op = "set_brightness", %error, requested, "display worker dispatch failed");
-                    self.notice = Some(format!("Brightness could not be changed: {error}"));
+                    self.notice = Some(crate::i18n::t_args(
+                        "display-brightness-failed",
+                        &[("detail", ui::i18n::ArgValue::Text(error))],
+                    ));
                 }
             }
             self.changed = true;

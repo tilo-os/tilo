@@ -990,7 +990,7 @@ mod tests {
 
     #[test]
     fn agent_work_says_it_is_working_then_folds_what_it_did_under_the_answer() {
-        let working = |state| AgentWorkPresentation::of(&AgentWork::new(state, 42), false);
+        let working = |state| AgentWorkPresentation::of(&AgentWork::new(state, 42), false, false);
         let doing = AgentWorkState::Doing {
             did: "Add function".into(),
             about: "the revenue curve".into(),
@@ -1008,6 +1008,12 @@ mod tests {
         assert_eq!(
             working(AgentWorkState::Refused).unwrap().summary.as_deref(),
             Some("Could not complete this request")
+        );
+        // A refused run whose reply carries the failure in its own words
+        // says it once: the card adds no second failure.
+        assert_eq!(
+            AgentWorkPresentation::of(&AgentWork::new(AgentWorkState::Refused, 42), false, true),
+            None
         );
         // An answer with nothing done is the reply's words alone.
         let complete = AgentWorkState::ProviderFinished {
@@ -1044,16 +1050,19 @@ mod tests {
         ];
         // While it works, every dispatched operation shows as it happens.
         let running = AgentWork::new(AgentWorkState::Taken, 42).with_trace(steps.clone());
-        let shown = AgentWorkPresentation::of(&running, false).unwrap();
+        let shown = AgentWorkPresentation::of(&running, false, false).unwrap();
         assert_eq!(shown.did, None);
         assert_eq!(shown.steps, lines);
         // Done, it is one line that opens the list.
         let done = AgentWork::new(complete, 42).with_trace(steps);
-        let folded = AgentWorkPresentation::of(&done, false).unwrap();
+        let folded = AgentWorkPresentation::of(&done, false, false).unwrap();
         assert_eq!(folded.summary, None);
         assert_eq!(folded.did.as_deref(), Some("Did 3 things"));
         assert!(folded.steps.is_empty());
-        assert_eq!(AgentWorkPresentation::of(&done, true).unwrap().steps, lines);
+        assert_eq!(
+            AgentWorkPresentation::of(&done, true, false).unwrap().steps,
+            lines
+        );
     }
 
     #[test]
@@ -1075,7 +1084,7 @@ mod tests {
             42,
         )
         .with_trace(steps);
-        let presentation = AgentWorkPresentation::of(&work, true).unwrap();
+        let presentation = AgentWorkPresentation::of(&work, true, false).unwrap();
         assert_eq!(presentation.steps.len(), 7);
         for (index, line) in presentation.steps.iter().enumerate() {
             assert_eq!(*line, format!("Applied: Action {index}"));

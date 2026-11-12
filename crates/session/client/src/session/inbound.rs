@@ -26,13 +26,59 @@ pub(super) struct GovernanceBatch {
 const GOVERNANCE_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 impl Task {
-    /// Tell this device's readers that `route` changed in its replica.
-    pub(super) fn landed(&self, route: &DocumentRoute, author: Option<[u8; 32]>) {
+    /// Tell this device's readers that `route` changed in its replica, once
+    /// the replica's governance admits this device: they read the record as
+    /// this device, and a read before its own admission arrived would be
+    /// refused as a stranger's and not be asked again. Until then the record
+    /// waits, and lands as the governance admitting this device does
+    /// ([`Self::follow_governance`]).
+    pub(super) fn landed(&mut self, route: &DocumentRoute, author: Option<[u8; 32]>) {
+        if !self.reads_as_member(route) {
+            self.unadmitted.insert(route.clone(), author);
+            return;
+        }
         self.engine.arrivals().landed();
         self.reports.emit(&crate::Event::Landed {
             author,
             route: route.clone(),
         });
+    }
+
+    /// Whether this device reads `route`'s workspace as a member: its replica's
+    /// governance admitted it on this session. Once it did, every landing goes
+    /// to the readers, and a read the workspace refuses later is refused there.
+    fn reads_as_member(&mut self, route: &DocumentRoute) -> bool {
+        let Ok(workspace_id) = route.workspace_id() else {
+            return true;
+        };
+        if self.admitted_here.contains(&workspace_id) {
+            return true;
+        }
+        if !self.replicas.admits_this_device(workspace_id) {
+            return false;
+        }
+        self.admitted_here.insert(workspace_id);
+        true
+    }
+
+    /// The records of `workspace_id` that landed before its governance admitted
+    /// this device, landed now that it does.
+    fn land_admitted(&mut self, workspace_id: u64) {
+        if self.admitted_here.contains(&workspace_id)
+            || !self.replicas.admits_this_device(workspace_id)
+        {
+            return;
+        }
+        self.admitted_here.insert(workspace_id);
+        let waiting: Vec<(DocumentRoute, Option<[u8; 32]>)> = self
+            .unadmitted
+            .extract_if(.., |route, _| {
+                route.workspace_id().ok() == Some(workspace_id)
+            })
+            .collect();
+        for (route, author) in waiting {
+            self.landed(&route, author);
+        }
     }
 
     /// The host no longer lets this device into `workspace_id`, for
@@ -180,7 +226,7 @@ impl Task {
         self.keep_arrived();
         match self
             .replicas
-            .bootstrap(workspace_id, bootstrap, web_time::SystemTime::now())
+            .bootstrap(workspace_id, bootstrap, tilo_clock::wall())
         {
             Ok(true) => self.follow_governance(workspace_id),
             Ok(false) => {}
@@ -206,6 +252,7 @@ impl Task {
     /// and the channel commits that waited for a participant it now admits.
     pub(super) fn follow_governance(&mut self, workspace_id: u64) {
         self.planes_due.insert(workspace_id);
+        self.land_admitted(workspace_id);
         if let Some((workspace, members)) = self.replicas.members(workspace_id) {
             if self.reports.status().room_members.get(&workspace) != members.as_ref() {
                 self.reports.change(|status| match members {
@@ -335,9 +382,9 @@ impl Task {
         message: neighbour_wire::NeighbourMsg,
     ) -> bool {
         // Governance the replica refuses is not the workspace's.
-        let Ok(report) =
-            self.replicas
-                .admit(workspace_id, author, message, web_time::SystemTime::now())
+        let Ok(report) = self
+            .replicas
+            .admit(workspace_id, author, message, tilo_clock::wall())
         else {
             return false;
         };
@@ -434,7 +481,7 @@ impl Task {
                 .collect();
             match self
                 .replicas
-                .keep(workspace_id, documents, web_time::SystemTime::now())
+                .keep(workspace_id, documents, tilo_clock::wall())
             {
                 Ok(reports) => {
                     for (document, report) in run.into_iter().zip(reports) {

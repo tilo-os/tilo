@@ -605,7 +605,7 @@ impl CameraApp {
         let heading = f64::from(local.text(TextRole::Subheading).line_height_px())
             + 2.0 * f64::from(spacing.s3);
         let row = ListRowFace::new("Scan")
-            .secondary("Kind")
+            .secondary(&CATALOG.t("camera-scan-kind"))
             .meta("now")
             .leading(RowLeading::Icon(Icon::Link))
             .height(tr, &local);

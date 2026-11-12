@@ -811,7 +811,7 @@ impl PlayerState {
         let source = media::Source::from_contents(&file.name, &file.bytes)
             .map_err(|e| format!("could not stage {}: {e}", file.name))?;
         let title = if file.name.is_empty() {
-            "selected video".to_string()
+            CATALOG.t("video-player-selected-video")
         } else {
             file.name.clone()
         };

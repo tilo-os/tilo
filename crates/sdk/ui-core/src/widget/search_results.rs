@@ -279,6 +279,15 @@ fn line_count(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
+/// The number a group's heading shows, when the number is worth reading. A
+/// group of one row saying "1" restates the row's own presence; a group of
+/// several says how many, and a group the list cut short says how many it
+/// left out. `None` leaves the heading to its name alone.
+fn heading_count(group: &SearchGroup) -> Option<usize> {
+    let total = group.total.unwrap_or(group.results.len());
+    (total > 1 || total > group.results.len()).then_some(total)
+}
+
 /// A group's heading: its label on the band's bottom edge, and its count at
 /// the trailing end.
 fn draw_header(
@@ -745,11 +754,7 @@ impl SearchResultsView {
                 heads.push(if group.section.is_some() {
                     (group.kind.clone(), None, HeaderLevel::Subgroup)
                 } else {
-                    (
-                        group.kind.clone(),
-                        Some(group.total.unwrap_or(group.results.len())),
-                        HeaderLevel::Group,
-                    )
+                    (group.kind.clone(), heading_count(group), HeaderLevel::Group)
                 });
             }
             let headed = !heads.is_empty();
@@ -2103,6 +2108,47 @@ mod tests {
                 theme.name
             );
         }
+    }
+
+    /// The counts the headings draw, in order.
+    fn heading_counts(view: &SearchResultsView) -> Vec<Option<usize>> {
+        view.list
+            .rows()
+            .iter()
+            .filter_map(|row| match row {
+                Row::Header { count, .. } => Some(*count),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A count on a heading is news: a group of one row saying "1" restates the row standing
+    /// under it, so the heading names the group alone; a group of several says how many, and a
+    /// group the card cut short says how many it has in all.
+    #[test]
+    fn a_group_heading_counts_only_where_the_number_says_something() {
+        let mut view = SearchResultsView::new();
+        view.set_results(vec![SearchResult::new("Web", "Tilo", "w:1")]);
+        assert_eq!(heading_counts(&view), vec![None], "one row counts nothing");
+
+        view.set_results(vec![
+            SearchResult::new("Mail", "Invoice", "m:1"),
+            SearchResult::new("Mail", "Receipt", "m:2"),
+        ]);
+        assert_eq!(heading_counts(&view), vec![Some(2)], "two rows say so");
+
+        view.set_groups(vec![SearchGroup {
+            total: Some(46),
+            ..SearchGroup::new("Files", vec![SearchResult::new("Files", "plan.pdf", "f:1")])
+        }]);
+        assert_eq!(
+            heading_counts(&view),
+            vec![Some(46)],
+            "a group the card cut short says how many it has"
+        );
+
+        view.set_groups(vec![]);
+        assert!(heading_counts(&view).is_empty());
     }
 
     fn view_from(query: &str) -> SearchResultsView {

@@ -485,7 +485,7 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
                 crate::timing::event("join.replay", phase, summary.total_frames);
                 crate::timing::event(
                     "join.replay_write",
-                    phase.and_then(|_| std::time::Instant::now().checked_sub(writing)),
+                    phase.and_then(|_| tilo_clock::now().checked_sub(writing)),
                     summary.total_frames,
                 );
                 let cutting = crate::timing::start();

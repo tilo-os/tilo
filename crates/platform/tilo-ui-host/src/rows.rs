@@ -54,6 +54,9 @@ pub struct RemoteRows {
     asked: Option<Asked>,
     /// Rows the list shows that the app is still to be asked for.
     wanted: Option<Asked>,
+    /// The words of the heading over its rows (`ui.Card`, `ui.Section`, the window's title),
+    /// where one heads them: a row's day fact that says the same day is the heading's to say.
+    under: Option<String>,
     /// The app was asked for rows and has not answered: the list keeps taking frames until it
     /// does, so what it shows is never a frame behind what it asked for.
     awaiting: bool,
@@ -95,7 +98,14 @@ impl RemoteRows {
             asked: None,
             wanted: None,
             awaiting: false,
+            under: None,
         }
+    }
+
+    /// The heading over its rows, as the tree says it above the list: what a row's day fact
+    /// standing under it leaves to it.
+    pub fn under(&mut self, heading: Option<String>) {
+        self.under = heading;
     }
 
     /// Whether the list shows a range the app is still to be asked for: the window owes the
@@ -345,6 +355,35 @@ impl RemoteRows {
     }
 }
 
+/// The virtual lists of a view's tree, by key, with the kind of the component each holds its
+/// rows as (`ui.ListItem`, a tree's `ui.TreeViewNode`).
+pub fn lists(tree: &UiNode) -> Vec<(String, String, Option<String>)> {
+    lists_under(tree, None)
+}
+
+/// Every virtual list of `tree` standing under `under`, the words of the heading over it.
+pub fn lists_under(tree: &UiNode, under: Option<&str>) -> Vec<(String, String, Option<String>)> {
+    fn walk(node: &UiNode, heading: Option<&str>, out: &mut Vec<(String, String, Option<String>)>) {
+        let here = crate::date::heading_of(node)
+            .or_else(|| crate::date::group_heading(node))
+            .or_else(|| heading.map(str::to_owned));
+        if tilo_render_protocol::patch::is_virtual_list(&node.kind) {
+            let item = if node.kind == "ui.TreeView" {
+                crate::adapter::kind("TreeViewNode")
+            } else {
+                crate::adapter::kind("ListItem")
+            };
+            out.push((node.key.clone(), item, here.clone()));
+        }
+        for child in &node.children {
+            walk(child, here.as_deref(), out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(tree, under, &mut out);
+    out
+}
+
 /// The first node of `kind` at or under `node`.
 pub(crate) fn find_kind<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
     if node.kind == kind {
@@ -405,7 +444,8 @@ impl RowSource for RemoteRows {
             let Ok(mut reconciler) = self.reconciler.try_borrow_mut() else {
                 return Ok(false);
             };
-            let mut source = NodeSource::new(&row, description, &mut reconciler);
+            let mut source =
+                NodeSource::under_heading(&row, description, &mut reconciler, self.under.clone());
             read(&mut source)?;
         }
         // The row's controls hold the states their bindings keep now that it is read: show
@@ -560,6 +600,75 @@ mod tests {
         );
         rows.refresh_bound();
         assert!(rows.take_changes().is_empty(), "read once");
+    }
+
+    /// A row's day fact that says the day of the heading over its list is the heading's: what
+    /// the list reads of the row leaves it out, and keeps the time of day it is due.
+    #[test]
+    fn a_row_under_the_heading_its_list_says_keeps_only_its_time() {
+        let today = ui::clock::today();
+        let day = today.format("%Y-%m-%d").to_string();
+        let mut rows = RemoteRows::new(
+            Lane::Root,
+            "list",
+            &kind("ListItem"),
+            "",
+            Rc::new(RefCell::new(Reconciler::new(Rc::default()))),
+            Rc::default(),
+        );
+        // The instant today's person's clock shows at nine.
+        let at_nine = {
+            use chrono::TimeZone;
+            chrono::Local
+                .with_ymd_and_hms(2026, 6, 30, 9, 0, 0)
+                .single()
+                .expect("nine in the morning exists")
+                .to_utc()
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        };
+        let mut item = UiNode::empty(&kind("ListItem"), "list/v/a");
+        let mut row = UiNode::empty(&kind("ListRow"), "list/v/a/row");
+        for (name, value) in [
+            ("title", Value::text("Water the plants")),
+            ("meta", Value::text(&day)),
+            ("meta:as", Value::text("date")),
+            ("meta:time", Value::text(&at_nine)),
+        ] {
+            row.props.insert(name.to_owned(), value);
+        }
+        item.children.push(row);
+        rows.rows(1, 0, vec!["list/v/a".into()], vec![item]);
+        let meta = |rows: &mut RemoteRows| {
+            let mut meta = None;
+            rows.read("list/v/a", &mut |source| {
+                source.components("row", &mut |row| {
+                    meta = row.prop("meta");
+                    Ok(())
+                })?;
+                Ok(())
+            })
+            .expect("the row is read");
+            meta
+        };
+        let said = |meta: Option<ui::component::Value>| match meta {
+            Some(ui::component::Value::Text(text)) => text,
+            other => panic!("the row states its day as words: {other:?}"),
+        };
+        assert_eq!(
+            said(meta(&mut rows)),
+            ui::format::day_fact_today(
+                today,
+                Some(chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("nine"))
+            )
+            .text,
+            "under no heading the row says the day it is due, with the time"
+        );
+        rows.under(Some(ui::format::day_fact_today(today, None).text));
+        assert_eq!(
+            said(meta(&mut rows)),
+            ui::format::time(&chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("nine")),
+            "the heading says the day: the row keeps the time of day it is due"
+        );
     }
 
     #[test]

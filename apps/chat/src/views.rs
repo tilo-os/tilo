@@ -920,7 +920,7 @@ fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
 /// the turn ends.
 fn writing_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
     let label = if work.detail.trim().is_empty() {
-        "Writing…".to_owned()
+        crate::i18n::CATALOG.t("chat-writing")
     } else {
         work.detail.trim().to_owned()
     };

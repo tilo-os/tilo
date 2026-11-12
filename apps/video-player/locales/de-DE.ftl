@@ -53,3 +53,6 @@ video-play = { $title } abspielen
 ## Fakten, Eigenschaftsnamen und Bereichstitel
 video-player-too-large = { $title } war zu groß, um nach dem Neuladen wieder geöffnet zu werden (über { $size })
 video-title = Videoplayer
+
+## What the window shows
+video-player-selected-video = Ausgewähltes Video

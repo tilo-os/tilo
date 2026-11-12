@@ -29,7 +29,11 @@ pub(super) struct AgentWorkPresentation {
 impl AgentWorkPresentation {
     /// What `work` shows, with its list of operations `open` or folded;
     /// `None` when there is nothing to add to the reply's own words.
-    pub(super) fn of(work: &AgentWork, open: bool) -> Option<Self> {
+    ///
+    /// `words` says whether the reply itself carries text. A refused run puts
+    /// its failure into that text, so the card does not say the same failure
+    /// again: the reply has one failure surface, not two.
+    pub(super) fn of(work: &AgentWork, open: bool, words: bool) -> Option<Self> {
         use crate::i18n::{t, t_args};
         let state = work
             .stream
@@ -45,7 +49,7 @@ impl AgentWorkPresentation {
                 Some(t_args("chat-agent-work-waiting", &[("app", app.into())]))
             }
             AgentWorkState::Done { .. } => None,
-            AgentWorkState::Refused => Some(t("chat-agent-work-refused")),
+            AgentWorkState::Refused => (!words).then(|| t("chat-agent-work-refused")),
             AgentWorkState::ProviderFinished { outcome } => {
                 use crate::agent_stream::AgentFinish;
                 match outcome {
@@ -127,8 +131,9 @@ fn line_style(line: Line, theme: &Theme) -> (ui::TextStyle, vello::peniko::Color
 }
 
 /// Everything the work says, read aloud with the reply: the folded list too.
-pub(crate) fn agent_work_accessible_description(work: &AgentWork) -> String {
-    AgentWorkPresentation::of(work, true)
+/// `words` says whether the reply itself carries text, as it does when drawn.
+pub(crate) fn agent_work_accessible_description(work: &AgentWork, words: bool) -> String {
+    AgentWorkPresentation::of(work, true, words)
         .map(|shown| {
             shown
                 .lines()
@@ -156,8 +161,9 @@ pub(super) fn measure_agent_work(
     work: &AgentWork,
     open: bool,
     width: f32,
+    words: bool,
 ) -> f64 {
-    let Some(shown) = AgentWorkPresentation::of(work, open) else {
+    let Some(shown) = AgentWorkPresentation::of(work, open, words) else {
         return 0.0;
     };
     let inset = inset(&shown, theme);
@@ -181,8 +187,9 @@ pub(super) fn draw_agent_work(
     work: &AgentWork,
     open: bool,
     area: Rect,
+    words: bool,
 ) -> bool {
-    let Some(shown) = AgentWorkPresentation::of(work, open) else {
+    let Some(shown) = AgentWorkPresentation::of(work, open, words) else {
         return false;
     };
     let theme = paint.theme;

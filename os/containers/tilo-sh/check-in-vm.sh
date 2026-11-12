@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# check.sh as t's tilo-sh-local check runs it: in a micro-VM, as root, it
-# makes an unprivileged user and runs the stack and the check as that user,
-# so the stack runs under rootless podman exactly as on a developer's machine
-# (rootful podman, for one, gives the web entry no pasta network).
+# check.sh as t's tilo-sh-local-vm check runs it: in a micro-VM, as root, it
+# makes an unprivileged user and runs the check as that user, so this checkout's
+# programs run the way they run on a developer's machine, not as root.
+#
+# The VM host is the one thing here that needs root (KVM, a raw block device,
+# rootful podman); the stack starts it through this user's sudo, the way the
+# machine's own owner would.
 #
 # usage: check-in-vm.sh WORK
 # Everything else comes from the environment t gives the check (TILO_SH_*).
@@ -13,19 +16,9 @@ user=tilo-sh
 [[ $EUID == 0 ]] || { echo 'check-in-vm.sh makes a user, so it runs as root (in a VM)' >&2; exit 2; }
 
 id "$user" >/dev/null 2>&1 || useradd --create-home "$user"
-grep -q "^$user:" /etc/subuid || echo "$user:200000:65536" >> /etc/subuid
-grep -q "^$user:" /etc/subgid || echo "$user:200000:65536" >> /etc/subgid
-# Rootless podman maps the user's subordinate ids through these two, which
-# work only setuid root (or with their file capabilities, which the image's
-# setup layer does not keep).
-chmod u+s /usr/bin/newuidmap /usr/bin/newgidmap
-# The web entry's network (pasta) opens the tun device in the user's
-# namespace, which a distribution's /dev/net/tun lets anyone do (0666) and
-# the VM's does not.
-chmod 0666 /dev/net/tun
 # The stack starts its VM host (Firecracker, a raw block device, cgroups) as
-# root when it can, through sudo: this user may, without a password, as the
-# machine's owner could.
+# root through sudo: this user may, without a password, as the machine's owner
+# could.
 echo "$user ALL=(root) NOPASSWD: ALL" > "/etc/sudoers.d/tilo-sh"
 chmod 0440 "/etc/sudoers.d/tilo-sh"
 runtime=/tmp/run-$user
@@ -34,25 +27,10 @@ mkdir -p "$work"
 find "$work" -mindepth 1 -delete
 chown "$user:$user" "$work"
 
-# The stack's state, its container storage among it, on a disk filesystem
-# of its own: the VM's root (the user's home) is overlayfs and its build
-# directory virtiofs, and rootless podman can neither stack overlay storage
-# on the one nor map its user namespace's ids onto the other. A sparse ext4
-# image, loop-mounted, is an ordinary disk to it.
+# The stack's state: the Lounge's, the door's, and what the check writes.
 state=${TILO_SH_STATE:?}
 mkdir -p "$state"
-if ! mountpoint -q "$state"; then
-  rm -f "$state.ext4"
-  truncate -s 24G "$state.ext4"
-  mkfs.ext4 -q -F "$state.ext4"
-  mount -o loop "$state.ext4" "$state"
-fi
 chown "$user:$user" "$state"
-home=$(getent passwd "$user" | cut -d: -f6)
-install -d -o "$user" -g "$user" "$home/.config" "$home/.config/containers"
-printf '[storage]\ndriver = "overlay"\ngraphroot = "%s/containers"\nrunroot = "%s/containers"\n' \
-  "$state" "$runtime" > "$home/.config/containers/storage.conf"
-chown "$user:$user" "$home/.config/containers/storage.conf"
 
 # The image's Chromium is Playwright's, in root's cache: named for the user,
 # whose own home has none, and made reachable.

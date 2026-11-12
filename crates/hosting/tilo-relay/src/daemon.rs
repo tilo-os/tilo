@@ -547,6 +547,9 @@ impl Relay {
             }
             None => (None, relay_mode),
         };
+        // A host told to use no relay never reaches one: waiting for it below
+        // would only hold every start back by the whole wait.
+        let relayless = endpoint.is_none() && matches!(relay_mode, Some(iroh::RelayMode::Disabled));
         let endpoint = match endpoint {
             Some(endpoint) => endpoint,
             None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
@@ -577,7 +580,9 @@ impl Relay {
         // endpoint knows only once it has connected to one. The workspaces opened
         // below name it straight away, and a host that has none yet names it when
         // it makes its first, so wait for the relay before serving either.
-        tilo_room_host::workspaces::await_relay(&endpoint).await;
+        if !relayless {
+            tilo_room_host::workspaces::await_relay(&endpoint).await;
+        }
         let (sessions, governed) = crate::host::HostSessions::open(
             crate::host::HostConfig {
                 state_root: cfg.state_root.clone(),

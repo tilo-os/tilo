@@ -1813,6 +1813,54 @@ fn channel_state_and_gates_survive_a_restart() {
     }
 }
 
+/// A device that stops before the join it took in was written (a page
+/// closed as it entered) holds the state it asked with when it comes back:
+/// it asks again and is admitted again. A join that was written stays.
+#[test]
+fn a_join_lost_before_it_was_written_is_asked_for_again() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let channel = ChannelId::new();
+    let policy = Policy::default();
+    policy.allowed.lock().unwrap().insert(public(6));
+    policy.allowed.lock().unwrap().insert(public(5));
+    let (owner_dir, tablet_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut now = Instant::now();
+    let step = |devices: &mut [&mut Device], now: &mut Instant| {
+        *now = now.checked_add(Duration::from_millis(250)).unwrap();
+        for device in devices.iter_mut() {
+            device.service.pump(&device.endpoint, *now, 1_000);
+        }
+    };
+    let mut owner = device(&workspace, workspace_id, 0, 5, &policy, owner_dir.path());
+    {
+        let mut tablet = device(&workspace, workspace_id, 1, 6, &policy, tablet_dir.path());
+        owner.service.access(workspace_id, channel, now);
+        tablet.service.access(workspace_id, channel, now);
+        for _ in 0..40 {
+            if ready_epoch(&tablet.service.access(workspace_id, channel, now)).is_some() {
+                break;
+            }
+            step(&mut [&mut owner, &mut tablet], &mut now);
+        }
+        assert!(ready_epoch(&tablet.service.access(workspace_id, channel, now)).is_some());
+        assert!(tablet.service.peers[&channel].peer.has_unsaved());
+    }
+    let mut tablet = device(&workspace, workspace_id, 1, 6, &policy, tablet_dir.path());
+    assert!(
+        ready_epoch(&tablet.service.access(workspace_id, channel, now)).is_none(),
+        "the join was not written"
+    );
+    run(&mut [&mut owner, &mut tablet], &mut now, 120);
+    assert!(ready_epoch(&tablet.service.access(workspace_id, channel, now)).is_some());
+    // Written once it waited: a restart now keeps it.
+    run(&mut [&mut owner, &mut tablet], &mut now, 3);
+    assert!(!tablet.service.peers[&channel].peer.has_unsaved());
+    drop(tablet);
+    let mut tablet = device(&workspace, workspace_id, 1, 6, &policy, tablet_dir.path());
+    assert!(ready_epoch(&tablet.service.access(workspace_id, channel, now)).is_some());
+}
+
 /// Key loss: a laptop is lost with all its channel state. Restoring the
 /// person's identity backup on a replacement machine brings back the
 /// root identity, not the lost device key; onboarding certifies a new

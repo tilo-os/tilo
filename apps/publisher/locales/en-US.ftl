@@ -49,3 +49,6 @@ publisher-key-export-cancelled = Export cancelled
 publisher-status-heading = Application status
 publisher-status-empty = No application status has been checked in this window yet.
 publisher-proof-empty = Name a domain or forge account to see where its proof goes.
+
+## What the window shows
+publisher-publish-at = Publish at { $place }

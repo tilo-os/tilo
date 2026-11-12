@@ -193,6 +193,12 @@ struct Painted {
 }
 
 impl DeskWidgets {
+    /// Queue `ask` for the host, and ask it for the pass that answers it
+    /// ([`crate::desktop_host::ask`]).
+    fn ask(&self, asked: DesktopAsk) {
+        crate::desktop_host::ask(&self.handle, &self.asks, asked);
+    }
+
     /// The desk's widgets, showing what `prefs` says.
     #[must_use]
     pub fn new(
@@ -781,11 +787,8 @@ impl DeskWidgets {
             Part::Pin => self.toggle_pin(id),
             Part::Remove => self.remove(id),
             Part::Collapse => self.board.close(),
-            Part::Person(person) => self
-                .asks
-                .borrow_mut()
-                .push(DesktopAsk::Intent(ChromeIntent::ShowPerson(person))),
-            Part::Music(action) => self.asks.borrow_mut().push(DesktopAsk::Music(action)),
+            Part::Person(person) => self.ask(DesktopAsk::Intent(ChromeIntent::ShowPerson(person))),
+            Part::Music(action) => self.ask(DesktopAsk::Music(action)),
             Part::Body if form == Form::Glance => self.board.open(id),
             // A resize ends where the hand lets go; a click on the handle does nothing, as does a
             // tap on an open card.

@@ -4044,8 +4044,8 @@ default = false
 
 [[check]]
 name = "os-assembler-x86_64"
-run = "bash os/image/assembler.sh x86_64 /target/os/x86_64/assembler"
-needs = ["image-rpms-x86_64"]
+run = "bash os/image/assembler.sh x86_64 /target/os/x86_64/assembler /target/publish/rpm-snapshot/x86_64"
+needs = ["rpm-snapshot-x86_64", "image-rpms-x86_64"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/os/x86_64/assembler/**"]
@@ -4235,8 +4235,8 @@ default = false
 
 [[check]]
 name = "os-assembler-aarch64"
-run = "bash os/image/assembler.sh aarch64 /target/os/aarch64/assembler"
-needs = ["image-rpms-aarch64"]
+run = "bash os/image/assembler.sh aarch64 /target/os/aarch64/assembler /target/publish/rpm-snapshot/aarch64"
+needs = ["rpm-snapshot-aarch64", "image-rpms-aarch64"]
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/os/aarch64/assembler/**"]
@@ -4927,30 +4927,64 @@ requires = ["arch=x86_64"]
 outputs = ["/target/tilo-sh-tools/**"]
 default = false
 
-# tilo.sh, whole, on one machine, and used end to end (os/containers/tilo-sh/check.sh): the
-# Lounge, front door and web entry images of this commit run under podman with the environment
-# production's manifests give them, a fresh startup identity approves a server key on the local
-# site in a headless Chromium, the visa run makes workspaces, mints a one-workspace MCP, has the
-# agent fill the form, a reviewer join by invitation and approve, and revoked keys refused; then
-# fresh visitors' entry into the Lounge is timed. What it found (pages, logs, report.json with
-# the bring-up and entry times) stays in /target/tilo-sh-local. The VM host is not in it: it needs
-# a privileged host with KVM, which a micro-VM step is not.
+# The programs the local tilo.sh stack's checks run, and its relay's laid-out context: built once
+# here, at the release's code and opt-level without its whole-program link (Cargo.toml's
+# `lounge-gate`), so a check's bring-up compiles nothing. The relay and its Discord worker are
+# lounge-gate-binaries' (the Lounge's page checks run those); this adds the door, the fake Discord,
+# the context's bots, surfaces and font catalog.
+[[check]]
+name = "tilo-sh-binaries"
+run = "bash tools/ci/publish/tilo-sh-binaries.sh /target/publish/tilo-sh /target/publish/lounge-gate/binaries /target/publish/lounge/fonts"
+needs = ["lounge-gate-binaries", "lounge-fonts"]
+env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/tilo-sh/**"]
+git = true
+default = false
+
+# Production's Caddy, which serves the local stack's relay and site as its tls container and web
+# entry image do: the one pinned release (os/containers/tilo-sh/caddy.env), fetched and checked
+# here, so a check's bring-up downloads nothing.
+[[check]]
+name = "tilo-sh-caddy"
+run = "bash tools/ci/publish/tilo-sh-caddy.sh /target/publish/tilo-sh-caddy"
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/tilo-sh-caddy/**"]
+default = false
+
+# tilo.sh, whole, on one machine, and used end to end (os/containers/tilo-sh/check.sh): this
+# commit's programs and site, laid out as their images lay them out and served behind production's
+# Caddy with the environment production's manifests give them. A fresh startup identity approves
+# a server key on the local site in a headless Chromium, the visa run makes workspaces, mints a
+# one-workspace MCP, has the agent fill the form, a reviewer join by invitation and approve, and
+# revoked keys refused; then fresh visitors' entry into the Lounge is timed. What it found (pages,
+# logs, report.json with the bring-up and entry times) stays in /target/tilo-sh-local. The VM host
+# is not in it: it needs a privileged host with KVM (tilo-sh-local-vm has one).
+#
+# It builds nothing: everything it runs is a need's output, so a change to the check itself
+# reruns the check alone. Nested, because the stack's services are sandboxed with bwrap, which
+# needs namespaces of its own.
 [[check]]
 name = "tilo-sh-local"
-run = "bash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local"
-setup = { run = "dnf install -y --setopt=install_weak_deps=False podman passt shadow-utils util-linux e2fsprogs python3-httpx && dnf clean all\nmkdir -p /etc/containers/containers.conf.d\nprintf '[engine]\\ncgroup_manager = \"cgroupfs\"\\nevents_logger = \"file\"\\n' > /etc/containers/containers.conf.d/tilo-sh-local.conf" }
-needs = ["image-lounge", "image-front-door", "image-web-entry", "cli-x86_64"]
-env = { TILO_SH_IMAGE_LOUNGE = "/target/publish/lounge/image.oci.tar", TILO_SH_IMAGE_DOOR = "/target/publish/front-door/image.oci.tar", TILO_SH_IMAGE_WEB = "/target/publish/web-entry/image.oci.tar", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-state", TILO_SH_FRESH = "1", TILO_SH_IMAGES = "1" }
+run = "bash os/containers/tilo-sh/check.sh /target/tilo-sh-local"
+needs = ["tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context", "cli-x86_64"]
+setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx && dnf clean all" }
+env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-state", TILO_SH_FRESH = "1" }
 requires = ["arch=x86_64"]
-isolation = "vm"
+isolation = "nested"
+# What a failure keeps of why: each service's log, and the pages and the
+# reports the steps made.
+evidence = ["/target/tilo-sh-local-state/logs/**", "/target/tilo-sh-local/**"]
 outputs = ["/target/tilo-sh-local/**"]
 timeout_secs = 3600
 default = false
 
 # The same stack with the VM hosts' own machines in it: tilo.sh's VM host (privileged, with its
-# loop-backed state disk and Firecracker) runs here, so a hosted workspace's Browser runs in the
-# workspace's VM, on the guest image this checkout built. A one-workspace key opens Browser and the
-# open is timed; the agent fills the visa test page with page actions and is asked nothing, the
+# loop-backed state disk and Firecracker) runs here from its image, so a hosted workspace's Browser
+# runs in the workspace's VM, on the guest image this checkout built, while the relay, the door and
+# the site beside it are this commit's programs. A one-workspace key opens Browser and the
+# open is timed; the VM it woke must be a clone of the host's warm template, not a cold boot; the
+# agent fills the visa test page with page actions and is asked nothing, the
 # person allows a submission and refuses another, a click on the submit button is held; a key
 # without the scope is asked about its first page actions; a reviewer joins by invitation and reads
 # the run in History; the page actions past the plans file's free ones are refused until the
@@ -4966,9 +5000,9 @@ default = false
 [[check]]
 name = "tilo-sh-local-vm"
 run = "bash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local-vm"
-setup = { run = "dnf install -y --setopt=install_weak_deps=False podman passt shadow-utils util-linux e2fsprogs xfsprogs python3-httpx && dnf clean all\nmkdir -p /etc/containers/containers.conf.d\nprintf '[engine]\\ncgroup_manager = \"cgroupfs\"\\nevents_logger = \"file\"\\n' > /etc/containers/containers.conf.d/tilo-sh-local.conf" }
-needs = ["image-lounge", "image-front-door", "image-web-entry", "cli-x86_64", "image-vm-host", "image-hosted-guest", "tilo-sh-tools"]
-env = { TILO_SH_IMAGE_LOUNGE = "/target/publish/lounge/image.oci.tar", TILO_SH_IMAGE_DOOR = "/target/publish/front-door/image.oci.tar", TILO_SH_IMAGE_WEB = "/target/publish/web-entry/image.oci.tar", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_IMAGES = "1", TILO_SH_VM_HOST = "1", TILO_SH_BROWSER_FREE_ACTIONS = "200", TILO_SH_TILO_ENROLL = "/target/tilo-sh-tools/tilo-enroll", TILO_SH_TILO_APPROVE = "/target/tilo-sh-tools/tilo-approve" }
+setup = { run = "dnf install -y --setopt=install_weak_deps=False podman util-linux xfsprogs python3-httpx && dnf clean all" }
+needs = ["tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context", "cli-x86_64", "image-vm-host", "image-hosted-guest", "tilo-sh-tools"]
+env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "1", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_BROWSER_FREE_ACTIONS = "200", TILO_SH_TILO_ENROLL = "/target/tilo-sh-tools/tilo-enroll", TILO_SH_TILO_APPROVE = "/target/tilo-sh-tools/tilo-approve" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/tilo-sh-local-vm/**"]

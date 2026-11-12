@@ -95,3 +95,16 @@ contacts-keep-this-card = Keep this card's
 contacts-keep-other-card = Keep the other card's
 contacts-importing = Importing contacts
 contacts-exporting = Exporting contacts
+
+## What the window shows
+contacts-changes-lost = Your changes are lost if you don't save them.
+contacts-import-same-identity = The imported card has the same identity as { $existing } in your book, but different details.
+contacts-cards-share = These cards share { $facts }. This card stays, with every phone number, email, address and group of both.
+contacts-select-all = Select all
+contacts-select-none = Select none
+contacts-remove-field = Remove { $field }
+contacts-add-phone = Add phone
+contacts-add-email = Add email
+contacts-add-address = Add address
+contacts-hide-calendar = Hide calendar
+contacts-choose-from-calendar = Choose from calendar

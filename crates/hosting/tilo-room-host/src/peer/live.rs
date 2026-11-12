@@ -514,7 +514,7 @@ pub(super) async fn route_record_content(
         && let Err(limited) = limits.admit_content(
             &peer.user_public_key,
             u64::try_from(frame.len()).unwrap_or(u64::MAX),
-            std::time::Instant::now(),
+            tilo_clock::now(),
         )
     {
         tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "dropped record content over the member limit");

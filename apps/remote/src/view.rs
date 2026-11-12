@@ -360,7 +360,11 @@ fn machine_section(requests: &Requests, fields: &FormFields, model: &FormModel) 
     section = section.field(with_problem(
         Field::new(
             "Name",
-            text_field(&fields.name, "remote.field:name", "Home server"),
+            text_field(
+                &fields.name,
+                "remote.field:name",
+                &CATALOG.t("remote-placeholder-name"),
+            ),
         ),
         model.problems.name.as_ref(),
     ));
@@ -368,8 +372,12 @@ fn machine_section(requests: &Requests, fields: &FormFields, model: &FormModel) 
         return section.field(with_problem(
             Field::new(
                 "Device",
-                text_field(&fields.host, "remote.field:host", "Device endpoint id")
-                    .with_kind(TextInputKind::Code),
+                text_field(
+                    &fields.host,
+                    "remote.field:host",
+                    &CATALOG.t("remote-placeholder-endpoint"),
+                )
+                .with_kind(TextInputKind::Code),
             ),
             model.problems.host.as_ref(),
         ));
@@ -378,23 +386,35 @@ fn machine_section(requests: &Requests, fields: &FormFields, model: &FormModel) 
         .field(with_problem(
             Field::new(
                 "Host",
-                text_field(&fields.host, "remote.field:host", "Host name or IP address")
-                    .with_kind(TextInputKind::Url),
+                text_field(
+                    &fields.host,
+                    "remote.field:host",
+                    &CATALOG.t("remote-placeholder-host"),
+                )
+                .with_kind(TextInputKind::Url),
             ),
             model.problems.host.as_ref(),
         ))
         .field(with_problem(
             Field::new(
                 "Port",
-                text_field(&fields.port, "remote.field:port", "Port")
-                    .with_kind(TextInputKind::Number)
-                    .with_char_filter(|c| c.is_ascii_digit()),
+                text_field(
+                    &fields.port,
+                    "remote.field:port",
+                    &CATALOG.t("remote-placeholder-port"),
+                )
+                .with_kind(TextInputKind::Number)
+                .with_char_filter(|c| c.is_ascii_digit()),
             ),
             model.problems.port.as_ref(),
         ));
     sign_in_fields(requests, fields, model, section).field(Field::new(
         "Group",
-        text_field(&fields.group, "remote.field:group", "Optional"),
+        text_field(
+            &fields.group,
+            "remote.field:group",
+            &CATALOG.t("remote-placeholder-optional"),
+        ),
     ))
 }
 
@@ -410,8 +430,12 @@ fn sign_in_fields(
     if matches!(model.kind, ConnectionKind::Ssh | ConnectionKind::Rdp) {
         section = section.field(Field::new(
             "User",
-            text_field(&fields.user, "remote.field:user", "User name")
-                .with_kind(TextInputKind::Username),
+            text_field(
+                &fields.user,
+                "remote.field:user",
+                &CATALOG.t("remote-placeholder-user"),
+            )
+            .with_kind(TextInputKind::Username),
         ));
     }
     if methods.len() > 1 {
@@ -426,13 +450,16 @@ fn sign_in_fields(
         section = section.field(Field::new("Sign in with", auth).with_trailing_control());
     }
     let (label, placeholder) = match model.auth {
-        AuthMethod::PublicKey => ("Key passphrase", "Optional"),
-        _ => ("Password", ""),
+        AuthMethod::PublicKey => (
+            CATALOG.t("remote-key-passphrase"),
+            CATALOG.t("remote-placeholder-optional"),
+        ),
+        _ => (CATALOG.t("remote-password"), String::new()),
     };
     section.field(
         Field::new(
             label,
-            text_field(&fields.secret, "remote.field:secret", placeholder)
+            text_field(&fields.secret, "remote.field:secret", &placeholder)
                 .with_kind(TextInputKind::Password),
         )
         .with_help("Kept on this device only."),
@@ -450,9 +477,12 @@ pub(crate) fn connection_form(
     let mut form = Form::new().section(machine_section(requests, fields, model));
     if let Some(id) = model.editing {
         form = form.with_actions(Actions::new(
-            Button::new("remote.form.delete", "Delete connection")
-                .role(ButtonRole::Destructive)
-                .on_view(queue(requests, Action::RequestDelete(id))),
+            Button::new(
+                "remote.form.delete",
+                &CATALOG.t("remote-delete-connection-button"),
+            )
+            .role(ButtonRole::Destructive)
+            .on_view(queue(requests, Action::RequestDelete(id))),
         ));
     }
     Box::new(FormPage::untitled(form))

@@ -210,6 +210,16 @@ has "$resolve_script" 'tag="set-$fingerprint-$arch"' \
   'fingerprint resolve looks up one architecture per tag'
 has "$resolve_script" 'image_platform" = "linux/$platform_arch"' \
   'fingerprint resolve verifies the image is of the architecture it resolves'
+has "$repo/os/dev/registry-manifest.py" 'add_unredirected_header("Authorization", f"Bearer {token}")' \
+  'the snapshot reader keeps its registry token off the blob store a blob GET redirects to'
+has "$rpms_build" 'export TILO_OCI_LAYERS=1' \
+  'the snapshot keeps its repository metadata in a layer of its own to be read alone'
+has "$repo/tools/ci/publish/oci-build.sh" 'build --layers="$layers"' \
+  'the image builder keeps a layer per instruction only where a check asks for it'
+has "$repo/os/dev/verify-rpm-snapshot-buildkit.py" 'def layer_manifest(host, repository, layer):' \
+  'the snapshot verifier reads a single-layer snapshot as it arrives'
+has "$snapshot" 'COPY --from=layers /slots/meta/ /' \
+  'the snapshot recipe copies its repository metadata last'
 # The relay image installs only from the snapshot rpm-snapshot resolved and verified.
 # It takes the published snapshot only as a digest-pinned reference; a build of a package set
 # a release tag has not published (the run's own image-rpms) records so and is never

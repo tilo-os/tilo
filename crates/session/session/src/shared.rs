@@ -50,9 +50,6 @@ impl Shared {
             self.handle.replace_tree(tree.clone());
             self.handle.set_opened_by(self.desktops.opened_by());
         }
-        // A window the person opens here is this device's to place: the record lacks it until the
-        // next write, and folding keeps it.
-        self.desktops.note_unrecorded(engine, &tree);
     }
 
     /// Run what waited for the person to finish their gesture or their typing: an arranging action
@@ -260,6 +257,9 @@ impl Shared {
         // through.
         let catalog = self.arrangement.borrow().targets();
         self.session_doors.keep_tabs(&self.handle);
+        if let Some(engine) = &self.engine {
+            self.session_doors.keep_awaiting(&self.handle, engine);
+        }
         self.session_doors.answer(
             &self.doors,
             &self.services,

@@ -61,7 +61,7 @@ impl VideoEditorApp {
         // is nothing to show at that size, and the HUD and safe-area guide
         // drawn at fixed offsets would land outside it; say so instead.
         if canvas.width() < MIN_CANVAS || canvas.height() < MIN_CANVAS {
-            let msg = "Not enough room for the preview";
+            let msg = &crate::resource::CATALOG.t("video-editor-preview-too-small");
             let style = theme.text(TextRole::Caption);
             let area = Rect::new(r.preview.x0, r.preview.y0, r.preview.x1, r.transport.y0);
             if area.height() > line_height(tr, &style) {

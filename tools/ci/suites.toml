@@ -280,7 +280,6 @@ suites = [
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_rpm_snapshot_fingerprint.py",
   "os/tests/test_kernel_build_environment.py",
-  "os/tests/test_open_snapshot_pr.py",
 ]
 
 [[group]]

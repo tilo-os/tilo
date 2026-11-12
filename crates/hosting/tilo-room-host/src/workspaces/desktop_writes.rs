@@ -12,7 +12,7 @@ use collab_types::DocumentMutation;
 use tilo_action_policy::ActionKind;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, act_node};
 
-use super::{GovernedWorkspace, SystemTime, Workspaces};
+use super::{GovernedWorkspace, Workspaces};
 use tilo_desktop_model::shared_record::guard::{self, DesktopGuard};
 
 pub(crate) use tilo_desktop_model::shared_record::guard::is_shared_desktop as is_desktop;
@@ -113,7 +113,7 @@ impl GovernedWorkspace {
             // anywhere, when the whole write is.
             collab_types::DocumentFrame::Segment(segment) => match self
                 .desktop_segments
-                .accept(envelope, segment, std::time::Instant::now())
+                .accept(envelope, segment, tilo_clock::now())
                 .map_err(|error| error.to_string())?
             {
                 None => Ok(Readable::Partial),
@@ -173,7 +173,7 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let member = governed
             .peer()
             .permissions(author, now)

@@ -62,7 +62,54 @@ worker=0
 b run "$container" -- bash -c 'DISCORD_GUILD_ID=not-a-discord-id exec /usr/local/bin/discord-worker' \
   >/dev/null || worker=$?
 [[ $worker == 1 ]] || fail "discord-worker does not start in the image (status $worker)"
+
+# And the image boots as its deployment runs it: the entrypoint, as uid 10001,
+# its state and its secret store on the volume /run/tilo-rooms (here the
+# image's writable /tmp, which stands in for it until the container is
+# mounted), answering the
+# readiness probe its ingress asks, which reports the revision the image was
+# built from. A program that starts and a host that serves are two things: the
+# label and the environment can agree while the host dies on the state it is
+# given.
+b run "$container" -- bash -c '
+  set -e
+  mkdir -p /tmp/tilo-rooms /tmp/tilo-secrets
+  od -An -tx1 -N32 /dev/urandom | tr -d " \n" > /tmp/tilo-secrets/room-root-lounge
+  chmod 0444 /tmp/tilo-secrets/room-root-lounge' \
+  || fail 'the image would not make its state and root files'
+port=18790
+b run \
+  -e TILO_ROOMS_STATE=/tmp/tilo-rooms \
+  -e TILO_SECRETS_DIR=/tmp/tilo-rooms/secrets \
+  -e TILO_ROOMS_PERSISTENT=lounge \
+  -e TILO_ROOMS_ROOT_FILE=/tmp/tilo-secrets/room-root-lounge \
+  -e "TILO_ROOMS_RELAY_ORIGIN=https://127.0.0.1:$port" \
+  -e "TILO_ROOMS_WEB_ENTRY=http://127.0.0.1:$port/" \
+  -e "TILO_ROOMS_HTTP=127.0.0.1:$port" \
+  -e TILO_ROOMS_RELAY_PLAIN=127.0.0.1:19780 \
+  -e TILO_ROOMS_WEB=127.0.0.1:19781 \
+  -e TILO_ROOMS_LIVE=127.0.0.1:19782 \
+  "$container" -- /usr/local/bin/tilo-lounge > "$scratch/lounge.log" 2>&1 &
+lounge=$!
+stop_lounge() {
+  kill "$lounge" 2>/dev/null || true
+  wait "$lounge" 2>/dev/null || true
+}
+trap 'stop_lounge; cleanup' EXIT
+mode=
+for _ in $(seq 1 60); do
+  mode=$(curl -fsS --max-time 2 "http://127.0.0.1:$port/mode" 2>/dev/null) && break
+  kill -0 "$lounge" 2>/dev/null || fail "the Lounge exited before answering /mode: $(tail -20 "$scratch/lounge.log")"
+  sleep 0.5
+done
+[[ -n $mode ]] || fail "the Lounge did not answer /mode: $(tail -20 "$scratch/lounge.log")"
+grep -Eq "\"revision\": *\"$revision\"" <<< "$mode" \
+  || fail "/mode does not report this build's revision: $mode"
+stop_lounge
+trap cleanup EXIT
 root=$(b mount "$container")
+[[ -f $root/tmp/tilo-rooms/lounge/room-id ]] || fail 'the Lounge kept no workspace id in its state'
+
 for program in tilo-relay discord-worker tilo-lounge; do
   [[ -x $root/usr/local/bin/$program ]] || fail "/usr/local/bin/$program is missing or not executable"
 done

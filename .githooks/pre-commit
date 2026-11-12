@@ -81,6 +81,7 @@ python3 "$root/tools/policy/check_catalogue_coverage.py"
 python3 "$root/tools/policy/check_app_copy_resolution.py"
 python3 "$root/tools/policy/check_ui_host_inputs_contract.py" --staged
 python3 "$root/tools/policy/check_ui_clock_contract.py" --staged
+python3 "$root/tools/policy/check_clock_contract.py" --staged
 python3 "$root/tools/policy/check_formats.py" --staged || fail=1
 python3 "$root/tools/policy/check_settings_writes.py" --staged || fail=1
 python3 "$root/tools/policy/check_swallowed_failures.py" --staged || fail=1

@@ -108,13 +108,15 @@ impl AppBrokerState {
             // The identity this device signs in with in a workspace is read where it is kept, so a
             // session that has not been told it yet answers `unavailable`, never "not allowed": the
             // person's own authority is not in question, the session simply has nothing to act as
-            // until its identity is set up.
+            // until its identity is set up. A host whose identity is still being read holds the
+            // action here and answers it once the identity names the person, so the first click of
+            // a login is served rather than refused.
             let certificate = self
                 .services
                 .local_person
                 .as_ref()
                 .ok_or_else(|| refused("this desk has no native identity to act under"))?
-                .certificate(workspace, person)
+                .certificate_when_named(workspace, person)
                 .map_err(|error| {
                     tracing::warn!(%error, "this device's identity is not ready for an action yet");
                     ActionHostError::Unavailable {

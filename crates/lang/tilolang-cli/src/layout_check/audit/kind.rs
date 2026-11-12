@@ -189,6 +189,11 @@ pub enum Kind {
     /// words, counting the same rows. The title names where the person is and how much stands
     /// there, so a heading that says it again over the first row says nothing twice.
     RepeatedGroupTitle,
+    /// A row's trailing day fact naming the day the heading over it names: the group, card or
+    /// section above the rows says the day, so the row that says it again adds neither a day
+    /// the person did not know nor one they can act on. A row keeps the time of day it is due,
+    /// and says nothing where it names no time.
+    RepeatedDayFact,
 }
 
 impl Kind {
@@ -249,6 +254,7 @@ impl Kind {
             Self::OfferedTwice => "offered-twice",
             Self::IndentedBody => "indented-body",
             Self::RepeatedGroupTitle => "repeated-group-title",
+            Self::RepeatedDayFact => "repeated-day-fact",
         }
     }
 }

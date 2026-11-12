@@ -64,7 +64,6 @@ from two_people import (  # noqa: E402
     joined,
     members_of,
     owner_of,
-    stand_in,
     workspaces,
 )
 
@@ -430,14 +429,11 @@ def main() -> int:
                       f"{peer_tasks_drawn} frames, then {frames(peer, TASKS)} after "
                       f"{CROSSING_BOUND:.0f} s; the peer's session says {stumbles(peer)}")
             peer.snapshot(out / "06-peer-task.png")
-            # A session's desk can end up in another workspace while the apps open, and this
-            # workspace's app actions are then out of reach of that session's own person. The
-            # desk is put back where the work is, and the drift is said rather than hidden.
+            # Opening the apps and typing the task leaves each desk where the person stood.
             for session in (host, peer):
-                moved = (front_workspace(session) or {}).get("room")
-                if moved != room:
-                    note(f"{session.tag}'s desk had moved to {moved}; standing it in {room}")
-                    stand_in(session, room)
+                standing = (front_workspace(session) or {}).get("room")
+                check(f"{session.tag}'s desk still stands where the task crosses",
+                      standing == room, f"{standing} of {room}")
             listed = tasks_content(peer, bound=30.0)
             check("the peer's own Tasks lists the task the host typed", task_title in listed,
                   f"{listed[:400]}; the peer's desk stands in "

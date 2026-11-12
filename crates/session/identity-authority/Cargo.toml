@@ -21,6 +21,7 @@ path = "src/lib.rs"
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tracing.workspace = true
 uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

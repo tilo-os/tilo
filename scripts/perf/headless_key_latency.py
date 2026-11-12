@@ -252,6 +252,9 @@ def measure(args: argparse.Namespace) -> dict:
     apps_module = real_apps()
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
+    # Each run starts from nothing: what earlier runs typed stays in the workspace's records, and
+    # a record whose history has filled up is no longer the one being measured.
+    shutil.rmtree(args.state, ignore_errors=True)
     apps_module.prepare(args.state, apps=args.apps, built=args.build,
                         remote=os.environ.get("TILO_NESTED_SESSION_BUILD_EXEC"))
     env = {"TILO_HEADLESS_SIZE": args.size}
@@ -363,7 +366,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state", type=Path,
                         default=Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
                         / "tilo-key-latency",
-                        help="the session's state directory (default: $XDG_CACHE_HOME/tilo-key-latency)")
+                        help="the session's state directory, emptied first "
+                             "(default: $XDG_CACHE_HOME/tilo-key-latency)")
     parser.add_argument("--out", type=Path, default=REPO / "target/key-latency")
     parser.add_argument("--label", default="run")
     parser.add_argument("--size", default="1280x800", help="the headless display, WxH")

@@ -598,12 +598,7 @@ impl Session {
         let (ours, theirs) = Channel::pair().unwrap();
         let watched = ours.as_fd().try_clone_to_owned().unwrap();
         let hosted = Hosted::with_record(
-            Spec {
-                app: app.to_owned(),
-                workspace: route.cluster_id.to_string(),
-                instance: 1,
-                person: person.to_owned(),
-            },
+            Spec::new(app, route.cluster_id.to_string(), 1, person),
             record,
             Arc::new(package(package_of(app))),
             &kept,

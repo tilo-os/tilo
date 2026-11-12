@@ -376,12 +376,7 @@ impl Hosted {
         let kept = host.kept(TASKS).unwrap();
         let (ours, theirs) = Channel::pair().unwrap();
         let hosted = HostedInstance::with_record(
-            Spec {
-                app: TASKS.to_owned(),
-                workspace: route.cluster_id.to_string(),
-                instance: 1,
-                person: "ada".to_owned(),
-            },
+            Spec::new(TASKS, route.cluster_id.to_string(), 1, "ada"),
             record,
             Arc::new(bundle.clone()),
             &kept,

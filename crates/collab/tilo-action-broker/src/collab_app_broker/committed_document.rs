@@ -359,12 +359,11 @@ impl Slot {
     /// Close the channel once an unacknowledged capture outlived its
     /// deadline; refuse every request on a closed channel.
     fn expire(&mut self) -> Result<(), String> {
-        if self.active.as_mut().is_some_and(|active| {
-            active
-                .capture
-                .check_deadline(std::time::Instant::now())
-                .is_err()
-        }) {
+        if self
+            .active
+            .as_mut()
+            .is_some_and(|active| active.capture.check_deadline(tilo_clock::now()).is_err())
+        {
             self.closed = true;
         }
         if self.closed {

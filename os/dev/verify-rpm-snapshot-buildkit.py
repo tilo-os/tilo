@@ -88,41 +88,49 @@ def docker_basic(host):
     return auth if isinstance(auth, str) and auth else None
 
 
+def registry_open(host, repository, path, accept=None, authorization=None):
+    """https://HOST/v2/REPOSITORY/PATH, open: the caller reads it and closes it."""
+    request = Request(f"https://{host}/v2/{repository}/{path}")
+    if accept:
+        request.add_header("Accept", accept)
+    if authorization:
+        # Not carried across a redirect to the blob store.
+        request.add_unredirected_header("Authorization", authorization)
+    return urlopen(request, timeout=120)
+
+
+def pull_token(host, repository, error):
+    """The registry's anonymous pull token, from a 401's challenge: anonymous, or the Docker
+    credentials for HOST where there are any."""
+    challenge = CHALLENGE.match(error.headers.get("WWW-Authenticate", "") if error.headers else "")
+    error.close()
+    if error.code != 401 or not challenge:
+        raise error
+    query = urlencode({k: v for k, v in (("service", challenge["service"]),
+                                          ("scope", f"repository:{repository}:pull")) if v})
+    token_request = Request(challenge["realm"] + "?" + query)
+    basic = docker_basic(host)
+    # Credentials go only to the registry's own token service.
+    if basic and urlparse(challenge["realm"]).hostname == host:
+        token_request.add_unredirected_header("Authorization", "Basic " + basic)
+    with urlopen(token_request, timeout=30) as response:
+        document = json.loads(response.read(1024 * 1024))
+    token = document.get("token") or document.get("access_token")
+    if not isinstance(token, str) or not token:
+        raise ValueError("registry returned no pull token")
+    return "Bearer " + token
+
+
 def registry_get(host, repository, path, limit, accept=None):
     """GET https://HOST/v2/REPOSITORY/PATH, at most LIMIT bytes of it, pulling with the registry's
-    token: anonymous, or from the Docker credentials for HOST where there are any."""
-    url = f"https://{host}/v2/{repository}/{path}"
-
-    def get(authorization=None):
-        request = Request(url)
-        if accept:
-            request.add_header("Accept", accept)
-        if authorization:
-            # Not carried across a redirect to the blob store.
-            request.add_unredirected_header("Authorization", authorization)
-        with urlopen(request, timeout=120) as response:
-            return response.read(limit + 1)
-
+    token."""
     try:
-        return get()
+        with registry_open(host, repository, path, accept) as response:
+            return response.read(limit + 1)
     except HTTPError as error:
-        challenge = CHALLENGE.match(error.headers.get("WWW-Authenticate", "") if error.headers else "")
-        error.close()
-        if error.code != 401 or not challenge:
-            raise
-        query = urlencode({k: v for k, v in (("service", challenge["service"]),
-                                              ("scope", f"repository:{repository}:pull")) if v})
-        token_request = Request(challenge["realm"] + "?" + query)
-        basic = docker_basic(host)
-        # Credentials go only to the registry's own token service.
-        if basic and urlparse(challenge["realm"]).hostname == host:
-            token_request.add_unredirected_header("Authorization", "Basic " + basic)
-        with urlopen(token_request, timeout=30) as response:
-            document = json.loads(response.read(1024 * 1024))
-        token = document.get("token") or document.get("access_token")
-        if not isinstance(token, str) or not token:
-            raise ValueError("registry returned no pull token")
-        return get("Bearer " + token)
+        token = pull_token(host, repository, error)
+        with registry_open(host, repository, path, accept, token) as response:
+            return response.read(limit + 1)
 
 
 def fetch_manifest(host, repository, digest):
@@ -141,6 +149,36 @@ def fetch_blob(host, repository, digest, size):
     return blob
 
 
+def layer_manifest(host, repository, layer):
+    """MANIFEST_PATH, read out of the layer blob LAYER and nothing after it.
+
+    An image whose builder keeps a layer per instruction carries the repository metadata as a
+    small last layer, which is read alone. One built as a single layer (t's builder keeps none
+    per instruction) is the same bytes in one blob: the tar is read as it arrives from the
+    registry, and reading stops at the file, so no more is downloaded than a build of the
+    snapshot would pull anyway.
+    """
+    digest, size = layer.get("digest"), layer.get("size")
+    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise ValueError("the snapshot layer has no sha256 digest")
+    if not isinstance(size, int) or size <= 0:
+        raise ValueError("the snapshot layer has no size")
+    try:
+        response = registry_open(host, repository, f"blobs/{digest}")
+    except HTTPError as error:
+        response = registry_open(host, repository, f"blobs/{digest}", authorization=pull_token(host, repository, error))
+    with response, gzip.GzipFile(fileobj=response) as compressed, \
+            tarfile.open(fileobj=compressed, mode="r|") as stream:
+        for entry in stream:
+            if Path(entry.name).as_posix() != MANIFEST_PATH or not entry.isreg():
+                continue
+            content = stream.extractfile(entry).read(MAX_METADATA_CONTENT + 1)
+            if len(content) > MAX_METADATA_CONTENT:
+                raise ValueError("the snapshot's package manifest exceeds its size bound")
+            return content.decode("utf-8")
+    raise ValueError("frozen RPM snapshot has no regular package manifest")
+
+
 def verify(ref):
     arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
     if arch is None:
@@ -151,22 +189,26 @@ def verify(ref):
     manifest = platform_manifest(ref, arch)
     layers = manifest.get("layers") or []
     last = layers[-1] if layers else {}
-    if (last.get("mediaType") not in LAYER_TYPES or not isinstance(last.get("size"), int)
-            or not 0 < last["size"] <= MAX_METADATA_LAYER
-            or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(last.get("digest")))):
-        raise ValueError("frozen RPM snapshot has no bounded metadata layer last")
-    blob = fetch_blob(match["host"], match["repo"], last["digest"], last["size"])
-    # A compressed-byte limit alone does not bound tar parsing or extraction.
-    with gzip.GzipFile(fileobj=io.BytesIO(blob)) as compressed:
-        content = compressed.read(MAX_METADATA_CONTENT + 1)
-    if len(content) > MAX_METADATA_CONTENT:
-        raise ValueError("expanded metadata layer exceeds its size bound")
-    with tarfile.open(fileobj=io.BytesIO(content), mode="r:") as layer:
-        members = [m for m in layer.getmembers()
-                   if Path(m.name).as_posix() == MANIFEST_PATH]
-        if len(members) != 1 or not members[0].isreg():
-            raise ValueError("frozen RPM snapshot has no regular package manifest")
-        actual = layer.extractfile(members[0]).read().decode("utf-8")
+    metadata_layer = (last.get("mediaType") in LAYER_TYPES and isinstance(last.get("size"), int)
+                      and 0 < last["size"] <= MAX_METADATA_LAYER
+                      and re.fullmatch(r"sha256:[0-9a-f]{64}", str(last.get("digest"))))
+    if metadata_layer:
+        blob = fetch_blob(match["host"], match["repo"], last["digest"], last["size"])
+        # A compressed-byte limit alone does not bound tar parsing or extraction.
+        with gzip.GzipFile(fileobj=io.BytesIO(blob)) as compressed:
+            content = compressed.read(MAX_METADATA_CONTENT + 1)
+        if len(content) > MAX_METADATA_CONTENT:
+            raise ValueError("expanded metadata layer exceeds its size bound")
+        with tarfile.open(fileobj=io.BytesIO(content), mode="r:") as layer:
+            members = [m for m in layer.getmembers()
+                       if Path(m.name).as_posix() == MANIFEST_PATH]
+            if len(members) != 1 or not members[0].isreg():
+                raise ValueError("frozen RPM snapshot has no regular package manifest")
+            actual = layer.extractfile(members[0]).read().decode("utf-8")
+    else:
+        if len(layers) != 1:
+            raise ValueError("frozen RPM snapshot has neither a bounded metadata layer last nor one layer")
+        actual = layer_manifest(match["host"], match["repo"], last)
     repo = Path(__file__).resolve().parents[2]
     expected = subprocess.check_output(
         [sys.executable, str(repo / "os/dev/derive-rpm-package-set.py")], text=True,

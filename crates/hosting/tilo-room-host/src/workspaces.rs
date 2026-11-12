@@ -481,7 +481,7 @@ impl GovernedWorkspace {
             record.authority.clone(),
             vec![record.authority.clone()],
             RevocationList::new(),
-            SystemTime::now(),
+            tilo_clock::wall(),
         )?;
         select_exact_admission(&mut peer)?;
         if !peer.has_governance() {
@@ -764,7 +764,7 @@ impl GovernedWorkspace {
         let members = self
             .peer()
             .governance()
-            .governed_members(SystemTime::now())
+            .governed_members(tilo_clock::wall())
             .unwrap_or_default();
         WorkspaceSummary {
             workspace: self.record.workspace.clone(),
@@ -1264,7 +1264,7 @@ impl Workspaces {
         for workspace in workspaces {
             let mut workspace = workspace.lock().await;
             workspace
-                .publish_brought_up(&self.inner.host.key, SystemTime::now())
+                .publish_brought_up(&self.inner.host.key, tilo_clock::wall())
                 .map_err(|e| format!("{}: brought up: {e}", workspace.workspace()))?;
             self.bind(&workspace)
                 .await
@@ -1391,7 +1391,7 @@ impl Workspaces {
                 name,
                 (&self.inner.host.cert, &self.inner.host.key),
                 device.as_ref(),
-                SystemTime::now(),
+                tilo_clock::wall(),
             )?,
             None => GovernedWorkspace::create(
                 &self.inner.dir,
@@ -1399,7 +1399,7 @@ impl Workspaces {
                 &self.inner.host.cert,
                 &self.inner.host.key,
                 device.as_ref(),
-                SystemTime::now(),
+                tilo_clock::wall(),
             )?,
         };
         self.bind(&workspace).await?;
@@ -1490,7 +1490,7 @@ impl Workspaces {
         {
             return Ok(governed.summary());
         }
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let key = &self.inner.host.key;
         let mut candidate = governed.peer().clone();
         candidate
@@ -1571,7 +1571,7 @@ impl Workspaces {
             .await
             .peer()
             .governance()
-            .governed_agents(SystemTime::now());
+            .governed_agents(tilo_clock::wall());
         agents.map_err(CollaborationError::new)
     }
 
@@ -1612,7 +1612,7 @@ impl Workspaces {
     ) -> Option<collab_types::role::Role> {
         let governed = self.workspace(workspace).await.ok()?;
         let governed = governed.lock().await;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let member = governed.peer().permissions(device, now).ok()?;
         drop(governed);
         member
@@ -1763,7 +1763,7 @@ impl Workspaces {
         &self,
         workspace: &str,
     ) -> Result<(u64, std::collections::BTreeMap<String, MemberMark>), CollaborationError> {
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let state = self.workspace(workspace).await?;
         let governed = state.lock().await;
         let policy = governed
@@ -1812,7 +1812,7 @@ impl Workspaces {
         &self,
         workspace: &str,
     ) -> Result<std::collections::BTreeSet<String>, CollaborationError> {
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let state = self.workspace(workspace).await?;
         let policy = state
             .lock()
@@ -2288,7 +2288,7 @@ impl Workspaces {
             self.join_soon(&mut workspace, app_id, record_id);
             return Ok(());
         }
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let member = workspace
             .peer()
             .permissions(author, now)
@@ -2372,7 +2372,7 @@ impl Workspaces {
                 return Err(self.unbuildable_windows(workspace.workspace(), missing));
             }
         }
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = workspace.peer().clone();
         let outcome = candidate.receive_from(
             tilo_peer_state::TransportOrigin::RetainedRelayDelta(author),
@@ -2448,7 +2448,7 @@ impl Workspaces {
             .ok_or_else(|| CollaborationError::new("the workspace is not hosted here"))?;
         let channel = neighbour_wire::app_document_channel(app, record);
         let state = self.workspace(workspace).await?;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let host = &self.inner.host;
         let (readable, keys) = {
             let workspace = state.lock().await;
@@ -2519,7 +2519,7 @@ impl Workspaces {
     /// Returns whether the workspace changed.
     fn forget_expired_devices(&self, workspace: &mut GovernedWorkspace) -> Result<bool, String> {
         let host = &self.inner.host;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = workspace.peer().clone();
         if !candidate
             .governance_mut()
@@ -2597,7 +2597,7 @@ impl Workspaces {
         reason: &str,
     ) -> Result<(), String> {
         let host = &self.inner.host;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = workspace.peer().clone();
         let filed = candidate
             .workspace_mut()
@@ -2651,7 +2651,7 @@ impl Workspaces {
             &self.inner.host.cert,
             message,
             &self.inner.host.key,
-            SystemTime::now(),
+            tilo_clock::wall(),
         );
         match cleared {
             Ok(changed) => changed,
@@ -2714,7 +2714,7 @@ impl Workspaces {
             tracing::debug!(workspace = %workspace.workspace(), "room settled without the devices whose certificates expired");
         }
         let accessing = crate::timing::start();
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let access: GovernedAccess = workspace.peer().governance().governed_access(now)?;
         crate::timing::event("room.settle.access_read", accessing, 0);
         let members = access.member_devices.clone();
@@ -2897,7 +2897,7 @@ pub(crate) fn member_bootstrap(
     use tilo_peer_state::join::{
         JoinBootstrap, JoinTransportResponse, MemberRole, OwnerBootstrapV1,
     };
-    let now = SystemTime::now();
+    let now = tilo_clock::wall();
     let role = peer
         .permissions(device.device_public_key, now)
         .map_or(collab_types::Role::Viewer, |authority| authority.role);

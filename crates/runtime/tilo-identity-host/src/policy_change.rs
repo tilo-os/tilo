@@ -9,6 +9,7 @@
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::Duration;
 use tilo_lock::MutexRecover as _;
 
 static EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -59,6 +60,34 @@ impl std::fmt::Debug for Watch {
         f.debug_struct("Watch")
             .field("armed", &self.0.armed.load(Ordering::Relaxed))
             .finish_non_exhaustive()
+    }
+}
+
+/// Wait at most `wait` for something every authorization decision here reads to change, or until
+/// it does when `wait` is `None`.
+///
+/// The identity store and the device fleet announce every write, and the policy clock announces
+/// what another process writes to the identity directories, so nothing here is polled. A change
+/// that arrived between the caller's read and this arming is already there to read, and this
+/// returns at once for it instead of waiting for one that came before.
+pub fn wait_for_a_change(wait: Option<Duration>) {
+    let (woken, wake) = std::sync::mpsc::channel();
+    let watch = Watch::new(move || {
+        let _ = woken.send(());
+    });
+    let seen = watch.arm();
+    // Start the watch on the identity directories: a record another login's process writes is
+    // announced as well.
+    let _ = identity_files_watched();
+    if epoch() == seen {
+        match wait {
+            Some(wait) => {
+                let _ = wake.recv_timeout(wait);
+            }
+            None => {
+                let _ = wake.recv();
+            }
+        }
     }
 }
 

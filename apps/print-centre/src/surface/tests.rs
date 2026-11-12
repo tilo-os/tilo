@@ -182,7 +182,10 @@ fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
         })
         .unwrap();
         let frame = app.harness().inspection_json().unwrap();
-        assert!(frame.contains("Confirm cancel"), "{frame}");
+        assert!(
+            frame.contains(&crate::locales::CATALOG.t("print-centre-confirm-cancel")),
+            "{frame}"
+        );
 
         // Steps with nothing to act on are refused: no search found a
         // printer to add, no page was scanned, no document is set up.

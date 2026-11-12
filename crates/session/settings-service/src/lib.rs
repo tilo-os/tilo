@@ -285,7 +285,7 @@ impl SettingsService {
 
     /// The settings people look for by name that search changes in place.
     fn index(&self, sections: &[ResourceSpec]) -> ResourceSpec {
-        ResourceSpec::new(INDEX, INDEX_KIND, "Settings").with_children(
+        ResourceSpec::new(INDEX, INDEX_KIND, crate::i18n::t("settings-resource")).with_children(
             index::SETTINGS
                 .iter()
                 .filter_map(|setting| self.publish(setting, sections)),

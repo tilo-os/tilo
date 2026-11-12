@@ -39,3 +39,10 @@ monitor-host-name = Rechnername
 monitor-section-system = System
 monitor-legend-in-use = In Benutzung: { $percent }
 monitor-section-memory = Speicher
+
+## What the window shows
+monitor-cpu-total = Gesamt { $percent }
+monitor-cpu-core = Kern { $core }
+monitor-memory-swap = Auslagerung
+monitor-section-network = Netzwerk
+monitor-section-disk = Datenträger

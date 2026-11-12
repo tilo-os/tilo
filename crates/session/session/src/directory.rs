@@ -241,6 +241,29 @@ pub(crate) fn joined_notice(notices: &dyn Notices, name: &str) {
     );
 }
 
+/// Say this device holds the workspace `name` but `host` , its host, has not taken it in yet: a
+/// machine copied from one of the person's devices is a device of its own, and its apps take part
+/// in nothing there until the host admits it, which it does once it can reach it. Only a device's
+/// session holds workspaces of its own to say this of.
+#[cfg(target_os = "linux")]
+pub(crate) fn awaiting_notice(notices: &dyn Notices, name: &str, host: &str) {
+    notices.show(
+        &Notice::new(
+            String::new(),
+            1,
+            tilo_desktop_surface::i18n::t_args(
+                "session-awaiting-admission",
+                &[("name", name.into())],
+            ),
+            tilo_desktop_surface::i18n::t_args(
+                "session-awaiting-admission-body",
+                &[("name", name.into()), ("host", host.into())],
+            ),
+        )
+        .about(NotificationIconKind::Workspace),
+    );
+}
+
 /// Say a join the person chose did not happen, and why, where they are: the workspace directory's
 /// own sentence, as a banner.
 fn failure_notice(notices: &dyn Notices, said: &str) {

@@ -49,3 +49,6 @@ publisher-key-export-cancelled = Export abgebrochen
 publisher-status-heading = Antragsstatus
 publisher-status-empty = In diesem Fenster wurde noch kein Antragsstatus geprüft.
 publisher-proof-empty = Nenne eine Domain oder ein Forge-Konto, um zu sehen, wohin sein Nachweis geht.
+
+## What the window shows
+publisher-publish-at = Veröffentlichen bei { $place }

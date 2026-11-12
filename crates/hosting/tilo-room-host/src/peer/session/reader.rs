@@ -300,7 +300,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                 EnvelopeV2::State(Envelope::Ping) => cx.heartbeats.owe(),
                 EnvelopeV2::State(env) => {
                     let kind = env.kind();
-                    let started = std::time::Instant::now();
+                    let started = tilo_clock::now();
                     self.handle_state_frame(env, inbound_budget, cx).await?;
                     let held = started.elapsed();
                     if held >= SLOW_STATE_FRAME {

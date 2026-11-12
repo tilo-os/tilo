@@ -59,7 +59,10 @@ fn notes(disk: &Disk) -> Vec<&'static str> {
 pub fn disk_row(disk: &Disk, control: &Control, selected: bool) -> Bound {
     let model = disk.model.trim();
     let title = if model.is_empty() {
-        format!("{} storage device", capacity(disk))
+        crate::CATALOG.t_args(
+            "imager-storage-device",
+            &[("size", ui::i18n::ArgValue::Text(capacity(disk)))],
+        )
     } else {
         model.to_string()
     };

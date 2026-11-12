@@ -127,9 +127,14 @@ struct Shell {
 }
 
 fn shell() -> Shell {
+    shell_at((1280, 800))
+}
+
+/// The page at `viewport`, a phone's or a laptop's.
+fn shell_at(viewport: (u32, u32)) -> Shell {
     let tree = desk_tree();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
-    let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), viewport);
     desk.relayout();
     let page = Rc::new(Page {
         handle: handle.clone(),
@@ -149,7 +154,7 @@ fn shell() -> Shell {
     let chrome = FrameHarness::for_root(
         ui::state::State::new(),
         chrome,
-        (1280, 800),
+        viewport,
         ui::Theme::light(),
     );
     let mut shell = Shell {
@@ -232,18 +237,42 @@ impl Shell {
         self.frames(3);
     }
 
-    /// The ask about keeping who they are, as the page's identity code puts it.
+    /// The ask about keeping who they are, as the page's identity code puts it: the question, the
+    /// answer that keeps them ("Keep with passkey"), and what answering brings.
     fn ask_to_keep(&mut self) {
         let action: tilo_desktop_surface::HostAction = serde_json::from_value(serde_json::json!({
-            "id": "save-recovery-key",
-            "title": "Remember me",
+            "id": "keep-identity",
+            "title": "Keep with passkey",
             "source": "identity",
         }))
         .unwrap();
-        self.page
-            .handle
-            .ask_personally(action, "Keep your name and work?".into(), String::new());
+        self.page.handle.ask_personally(
+            action,
+            "Keep your name and work?".into(),
+            "A passkey on this device brings you back as yourself, on any browser. Any time later: \
+             Ctrl+K, “Keep your name and work”."
+                .into(),
+        );
         self.frames(2);
+    }
+
+    /// The glyphs the bar sets for the words that start at `x` within `pill`, in `size`: a question
+    /// cut with an ellipsis sets fewer than the whole one.
+    fn glyphs_from(&self, pill: ui::kurbo::Rect, x: f64, size: f32) -> usize {
+        let scene = self.chrome.frame_render_input().scene;
+        scene
+            .encoding()
+            .resources
+            .glyph_runs
+            .iter()
+            .filter(|run| {
+                let [tx, ty] = run.transform.translation;
+                (run.font_size - size).abs() < 0.01
+                    && (f64::from(tx) - x).abs() < 0.5
+                    && (f64::from(ty) - pill.center().y).abs() <= pill.height() / 2.0 + 1.0
+            })
+            .map(|run| run.glyphs.len())
+            .sum()
     }
 }
 
@@ -336,4 +365,53 @@ fn the_face_opens_the_own_card_whatever_the_ask_beside_it() {
             .is_some_and(|ask| !ask.open),
         "the ask waits folded"
     );
+}
+
+/// The ask's question reads whole on the bar, on a laptop and on a phone: every glyph of "Keep
+/// your name and work?" stands in its pill, never cut short with an ellipsis. Where the bar cannot
+/// hold the question at all the ask waits as the face's dot, where the face's own card offers what
+/// it asks — a question nobody can finish reading is not asked.
+#[test]
+fn the_ask_reads_whole_on_the_bar_at_every_width() {
+    const QUESTION: &str = "Keep your name and work?";
+    let theme = ui::Theme::light();
+    let pad = f64::from(theme.tokens.spacing.s2);
+    let caption = theme.tokens.typography.size(ui::TextRole::Caption);
+    let whole = {
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut scene = ui::vello::Scene::new();
+        text.draw_style(
+            &mut scene,
+            QUESTION,
+            theme.tokens.colors.text_dim,
+            ui::kurbo::Affine::IDENTITY,
+            None,
+            &theme.text(ui::TextRole::Caption),
+        );
+        scene
+            .encoding()
+            .resources
+            .glyph_runs
+            .iter()
+            .map(|run| run.glyphs.len())
+            .sum::<usize>()
+    };
+    for viewport in [(1280, 800), (390, 844)] {
+        let mut shell = shell_at(viewport);
+        shell.ask_to_keep();
+        let bar = shell.chrome.root::<DesktopChrome>().bar();
+        let pill = bar.avatar_ask_rect();
+        if pill.is_zero_area() {
+            assert!(
+                !bar.own_avatar_rect().is_zero_area(),
+                "{viewport:?}: with no room for the question, the ask waits on the face"
+            );
+            continue;
+        }
+        assert_eq!(
+            shell.glyphs_from(pill, pill.x0 + pad, caption),
+            whole,
+            "{viewport:?}: the question stands whole in its pill {pill:?}, not cut short"
+        );
+    }
 }

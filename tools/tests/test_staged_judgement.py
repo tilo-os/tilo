@@ -110,6 +110,8 @@ class Case:
             return [entry.split(":", 1)[0] for entry in module.audit(repository.root, staged)]
         if self.check == "check_ui_clock_contract":
             return [v.path for v in module.audit(repository.root, staged)]
+        if self.check == "check_clock_contract":
+            return [v.path for v in module.audit(repository.root, staged)]
         if self.check == "check_formats":
             return [v.path for v in module.audit(repository.root, staged)]
         if self.check == "check_settings_writes":
@@ -217,6 +219,15 @@ CASES = (
         files={"crates/x/src/lib.rs": "pub fn run() {}\n"},
         violation={
             "crates/x/src/wide.rs": "#[allow(clippy::too_many_arguments)]\npub fn wide() {}\n",
+        },
+    ),
+    Case(
+        check="check_clock_contract",
+        files={"crates/collab/tilo-peer-state/src/lib.rs": "pub fn run() {}\n"},
+        violation={
+            "crates/collab/tilo-peer-state/src/wall.rs": (
+                "pub fn at() -> std::time::SystemTime { std::time::SystemTime::now() }\n"
+            ),
         },
     ),
 )
@@ -360,6 +371,7 @@ class HookWiringTests(unittest.TestCase):
         "check_app_text_contract",
         "check_ui_host_inputs_contract",
         "check_ui_clock_contract",
+        "check_clock_contract",
         "check_formats",
         "check_settings_writes",
         "check_swallowed_failures",

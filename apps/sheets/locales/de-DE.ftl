@@ -99,3 +99,6 @@ sheets-a11y-worksheet = Arbeitsblatt; ausgewählter Bereich { $range }; { $colum
 sheets-a11y-row = Zeile { $row }
 sheets-a11y-cell = Spalte { $column }, Zeile { $row }
 sheets-a11y-column = Spalte { $letter }
+
+## What the window shows
+sheets-no-replies = Keine Antworten

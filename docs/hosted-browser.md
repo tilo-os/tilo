@@ -42,10 +42,13 @@ GPU) with Browser and the Chromium engine runtime it requires.
 The session is **a device of the workspace**, and the narrowest one there
 is: the relay certifies a fresh device for it, confines it to that workspace
 and that window's record (see [Isolation](#isolation)), and refuses it once
-the session stops. It certifies it as the person's **stand-in**, the
-certificate their root signed for this host: only a stand-in may make a
-device. A host its person's owner runs holds their root (a deployment's root
-file), and makes itself that stand-in at start. It opens the Browser window
+the session stops. Only a stand-in may certify a device, and the workspace's
+customer gives the host none, so the session is a device of the **host's own
+person**, the one whose root the deployment holds (its root file): the host
+makes itself that person's stand-in at start and certifies its sessions with
+it. That device sits in the customer's workspace, but the relay confines it
+to the one Browser record and its page track; page actions on it still run
+as the calling agent, for the workspace's person. It opens the Browser window
 on the workspace's Browser record, so the window is live, published and
 subscribed like a Browser window on anyone's computer, and its page actions
 (`browser@<window>/page#read-page`, …) are the ones Browser already has.

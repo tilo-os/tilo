@@ -347,14 +347,14 @@ impl Decorator for TestColumns {
 
 /// The dial, what it is doing, and the one action.
 fn test_column(model: &Model, dial: &DialSource, run: Option<ActionBinding<()>>) -> Column {
-    let status = match model.phase {
-        Phase::Idle => "Ready to test",
-        Phase::Ping => "Measuring latency",
-        Phase::Download => "Measuring download",
-        Phase::Upload => "Measuring upload",
-        Phase::Complete => "Test complete",
-        Phase::Error => "Ready to try again",
-    };
+    let status = CATALOG.t(match model.phase {
+        Phase::Idle => "speed-test-idle",
+        Phase::Ping => "speed-test-measuring-latency",
+        Phase::Download => "speed-test-measuring-download",
+        Phase::Upload => "speed-test-measuring-upload",
+        Phase::Complete => "speed-test-complete",
+        Phase::Error => "speed-test-ready-again",
+    });
     let (label, role) = if model.is_running() {
         ("Stop test", ButtonRole::Secondary)
     } else {
@@ -371,7 +371,7 @@ fn test_column(model: &Model, dial: &DialSource, run: Option<ActionBinding<()>>)
         .with_rhythm(ui::tokens::Rhythm::Section)
         .push(centred(Box::new(Dial::new(dial, model))))
         .push(centred(Box::new(
-            Text::new(status).with_role(TextRole::Subheading),
+            Text::new(&status).with_role(TextRole::Subheading),
         )))
         .push(centred(Box::new(run)));
     if model.phase != Phase::Idle && model.phase != Phase::Error {
@@ -484,11 +484,17 @@ fn results_column(model: &Model) -> Column {
                 Box::new(
                     ListRow::new(
                         format!("history-{index}"),
-                        format!("{:.1} Mbps down", result.download),
+                        CATALOG.t_args(
+                            "speed-test-down",
+                            &[("rate", ui::i18n::ArgValue::Number(result.download))],
+                        ),
                     )
-                    .secondary(format!(
-                        "{:.1} Mbps up, {:.0} ms ping",
-                        result.upload, result.ping
+                    .secondary(CATALOG.t_args(
+                        "speed-test-up-and-ping",
+                        &[
+                            ("rate", ui::i18n::ArgValue::Number(result.upload)),
+                            ("ping", ui::i18n::ArgValue::Number(result.ping)),
+                        ],
                     ))
                     .meta(age_label(now, result.at)),
                 )

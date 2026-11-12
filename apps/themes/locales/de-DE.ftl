@@ -116,3 +116,11 @@ themes-preview-presence = Anwesenheit
 
 ## Fakten, Eigenschaftsnamen und Bereichstitel
 themes-contrast-low = Zu wenig Kontrast: { $findings }
+
+## What the window shows
+themes-contrast-every-pairing-meets = Jede Paarung erreicht ihre Kontrastgrenze.
+
+themes-preview-label-desktop = Vorschau von { $theme }
+themes-preview-label-list = Listenvorschau von { $theme }
+themes-preview-label-dialog = Dialogvorschau von { $theme }
+themes-preview-label-presence = Anwesenheitsfarben von { $theme }

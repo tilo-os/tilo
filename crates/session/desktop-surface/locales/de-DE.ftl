@@ -1123,6 +1123,8 @@ browser-new-workspace-name = Arbeitsbereich { $number }
 workspace-notice-joined = { $name } ist dazugekommen
 workspace-notice-agent-finished = { $agent } ist fertig
 workspace-notice-agent-card = Karte öffnen
+# Die Einträge, die der Lauf eines Agenten geändert hat, unter seiner Fertig-Meldung: zwei mit Namen und wie viele mehr.
+workspace-notice-agent-records-more = { $records } und { $count } weitere
 workspace-notice-agent-finished-changes = { $agent } ist fertig: { $count ->
     [one] 1 Änderung
    *[other] { $count } Änderungen
@@ -1326,6 +1328,8 @@ session-owner-deleted-workspace-body = Er ist von diesem Rechner verschwunden, u
 session-joined-workspace = Du bist { $name } beigetreten
 session-joined-workspace-body = Es ist jetzt geöffnet, mit allem, was seine Leute darin halten.
 session-join-failed-title = Arbeitsbereich konnte nicht beigetreten werden
+session-awaiting-admission = Dieses Gerät ist noch nicht in { $name }
+session-awaiting-admission-body = { $host } stellt { $name } bereit und muss dieses Gerät zuerst aufnehmen. Seine Apps warten hier, bis dieses Gerät { $host } einmal erreicht.
 desktop-no-workspace = Es gibt keinen Arbeitsbereich namens { $name }
 desktop-joined-workspace-unknown = Dieser Arbeitsbereich liegt in einem Arbeitsbereich, dem dieser Rechner nicht beitreten kann
 desk-first-workspace = Das ist der erste Arbeitsbereich

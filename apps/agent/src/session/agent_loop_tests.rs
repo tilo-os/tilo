@@ -1849,8 +1849,16 @@ fn a_run_with_no_model_says_so_and_never_blames_permissions() {
     let runtime_collab::TaskRunUpdate::Failed { message } = terminal(&sent) else {
         panic!("a run with nothing to do fails: {:?}", terminal(&sent));
     };
-    assert!(message.contains("No model is set up"), "{message}");
+    assert!(
+        message.contains("no model is set up"),
+        "the reply says the one thing that fixes it: {message}"
+    );
     assert!(message.contains("Agent models"), "{message}");
+    assert_eq!(
+        message.matches("model").count(),
+        2,
+        "the missing model is said once, not twice: {message}"
+    );
     assert!(
         !message.to_lowercase().contains("permission"),
         "a missing model never reads as a permission: {message}"

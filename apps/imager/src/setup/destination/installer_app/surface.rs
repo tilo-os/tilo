@@ -110,7 +110,7 @@ fn with_guidance(mut resource: ResourceSpec, id: &str, guidance: &str) -> Resour
             ResourceSpec::new(
                 format!("{id}.guidance:{index}"),
                 "installer.guidance",
-                "Installation guidance",
+                crate::CATALOG.t("imager-installer-guidance"),
             )
             .with_presentation(ResourcePresentation {
                 preview: Some(sentence.to_owned()),
@@ -269,17 +269,21 @@ impl InstallerApp {
     /// refused instead of reaching a stale handler.
     pub fn published(&self) -> Vec<ResourceSpec> {
         let gates = self.gates();
-        let mut root = ResourceSpec::new(PROVIDER, "installer.session", "Tilo installer")
-            .with_presentation(ResourcePresentation {
-                detail: Some(format!(
-                    "Step {} of {}: {}",
-                    step_index(self.step).saturating_add(1),
-                    STEP_LABELS.len(),
-                    step_name(self.step)
-                )),
-                badge: Some(self.install_state_name().to_owned()),
-                preview: None,
-            });
+        let mut root = ResourceSpec::new(
+            PROVIDER,
+            "installer.session",
+            crate::CATALOG.t("imager-installer-title"),
+        )
+        .with_presentation(ResourcePresentation {
+            detail: Some(format!(
+                "Step {} of {}: {}",
+                step_index(self.step).saturating_add(1),
+                STEP_LABELS.len(),
+                step_name(self.step)
+            )),
+            badge: Some(self.install_state_name().to_owned()),
+            preview: None,
+        });
         for spec in DestinationEffect::specs() {
             let spec = match gates.iter().find(|gate| gate.id == spec.id) {
                 Some(gate) => gate.overlay(spec),
@@ -310,10 +314,10 @@ impl InstallerApp {
                 if self.network.snapshot.connectivity
                     == imager_backend::destination::network::ConnectivityState::Full =>
             {
-                "Continue"
+                crate::CATALOG.t("imager-installer-continue")
             }
-            Step::Network => "Continue offline",
-            _ => "Next",
+            Step::Network => crate::CATALOG.t("imager-installer-continue-offline"),
+            _ => crate::CATALOG.t("imager-installer-next"),
         };
         let blocked = match self.step {
             Step::Review => Some((

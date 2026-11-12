@@ -40,14 +40,17 @@ pub(crate) fn new_collection(sink: &Sink) -> Element {
     let sink = sink.clone();
     Box::new(
         // It opens the form; the collection it creates is its own action.
-        Button::icon_only("api.new-collection", Icon::Plus, "New collection").on_own_device_effect(
-            move || {
-                sink.borrow_mut().push(Cmd::OpenForm(
-                    FormMode::NewCollection,
-                    FormTarget::default(),
-                ));
-            },
-        ),
+        Button::icon_only(
+            "api.new-collection",
+            Icon::Plus,
+            &crate::locales::CATALOG.t("api-tester-new-collection-button"),
+        )
+        .on_own_device_effect(move || {
+            sink.borrow_mut().push(Cmd::OpenForm(
+                FormMode::NewCollection,
+                FormTarget::default(),
+            ));
+        }),
     )
 }
 

@@ -2555,6 +2555,77 @@ fn grouped_list(title: &str, count: u32, heading: &str, rows: u32) -> Inspection
     stack_node("window", [0.0, 0.0, 400.0, 700.0], vec![shell])
 }
 
+/// A card titled `heading` over a row whose trailing fact says `fact`.
+fn day_fact_card(heading: Option<&str>, fact: &str) -> InspectionNode {
+    let mut row = node(
+        "ListRow",
+        "row",
+        [8.0, 48.0, 384.0, 40.0],
+        Some(Role::ListItem),
+    );
+    {
+        let access = row.semantics.as_mut().expect("the row's semantics");
+        access.name = Some("Water the plants".to_owned());
+        access.value = Some(fact.to_owned());
+    }
+    let mut children = Vec::new();
+    if let Some(heading) = heading {
+        let mut header = node(
+            "SectionHeader",
+            "header",
+            [8.0, 8.0, 200.0, 32.0],
+            Some(Role::Heading { level: 3 }),
+        );
+        header
+            .semantics
+            .as_mut()
+            .expect("the header's semantics")
+            .name = Some(heading.to_owned());
+        children.push(header);
+    }
+    children.push(row);
+    let mut card = node("Card", "card", [0.0, 0.0, 400.0, 200.0], Some(Role::Group));
+    card.children = children;
+    stack_node("window", [0.0, 0.0, 400.0, 700.0], vec![card])
+}
+
+/// A row whose trailing fact names the day the card over it names is caught; a fact naming
+/// another day, or a row under no heading at all, is not.
+#[test]
+fn a_rows_day_fact_naming_the_day_the_heading_says_is_caught() {
+    let repeats = |heading: Option<&str>, fact: &str| {
+        inspect(&day_fact_card(heading, fact), (400, 700), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::RepeatedDayFact)
+            .count()
+    };
+    assert_eq!(
+        repeats(Some("Today"), "Today"),
+        1,
+        "the card says Today, and the row says it again"
+    );
+    assert_eq!(
+        repeats(Some("Today"), "Today 09:00"),
+        1,
+        "the row keeps its time of day, and gives the day back to the heading"
+    );
+    assert_eq!(
+        repeats(Some("Today"), "Tomorrow"),
+        0,
+        "a row due another day says something the card does not"
+    );
+    assert_eq!(
+        repeats(Some("Fieldwork"), "Fieldwork"),
+        0,
+        "a card named for a thing says nothing of when anything is due"
+    );
+    assert_eq!(
+        repeats(None, "Today"),
+        0,
+        "under no heading the row's day is the row's to say"
+    );
+}
+
 /// A list whose one group heading says what the title over it already says is caught; a heading
 /// saying something else, or counting other rows, is not.
 #[test]

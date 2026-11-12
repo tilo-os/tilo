@@ -1273,7 +1273,11 @@ impl NotificationStack {
         // A person's notification leads with them; the app stays the small source line above the
         // title.
         if let Some(person) = &n.from {
-            card = card.person(&person.name, &person.identity);
+            card = if person.agent {
+                card.agent(&person.name, &person.identity)
+            } else {
+                card.person(&person.name, &person.identity)
+            };
         }
         let close = self.targets.interaction(&BannerTarget::Dismiss(n.id).key());
         card.close_hovered = close.hovered;

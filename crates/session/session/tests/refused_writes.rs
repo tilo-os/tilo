@@ -101,6 +101,74 @@ fn the_workspace_keeps_the_desk_its_device_writes() {
     );
 }
 
+/// A window a member opens on a workspace's desk stays where they opened it while the workspace has
+/// not taken it in yet: another member's change that reaches their device first is no close of it.
+/// The member's write lands as well, and both people's desks show both windows. A member who may
+/// not write keeps the window they opened on their own desk, however the record moves.
+#[test]
+fn a_window_a_member_opens_stays_while_another_member_changes_the_desk() {
+    let (site, _ada, bob, ada_laptop, bob_laptop) = two_people_at_a_site();
+    show(&ada_laptop, &site);
+    show(&bob_laptop, &site);
+    let _ada_first = ada_laptop.window(NOTES, "Ada's notes");
+    wait_shown(&site, &[&ada_laptop, &bob_laptop], "Ada's notes");
+
+    // Both open a window at once: each one's change reaches the other's device while its own is
+    // still on its way to the workspace and back.
+    let _bob_note = bob_laptop.window(NOTES, "Bob's notes");
+    let _ada_plan = ada_laptop.window(NOTES, "Ada's plan");
+    let both = ["Ada's notes", "Ada's plan", "Bob's notes"];
+    let mut seen = false;
+    waited(
+        "both people's windows on both desks",
+        &site,
+        &[&ada_laptop, &bob_laptop],
+        || {
+            let shown = titles_on(&bob_laptop, &site);
+            let holds = shown.contains(&"Bob's notes".to_owned());
+            assert!(
+                holds || !seen,
+                "Bob's window left the workspace's desk on his device: {shown:?}"
+            );
+            seen |= holds;
+            assert_eq!(
+                bob_laptop.showing().as_deref(),
+                Some(site.workspace.as_str()),
+                "Bob's desk left the workspace he opened the window in"
+            );
+            titles_at(&site) == both
+                && titles_on(&ada_laptop, &site) == both
+                && titles_on(&bob_laptop, &site) == both
+        },
+    );
+
+    // Bob may no longer write: what he opens now never reaches the workspace, and Ada's next change
+    // reaches his device all the same.
+    site.set_role(bob.public, WorkspaceRole::Viewer);
+    let _bob_draft = bob_laptop.window(NOTES, "Bob's draft");
+    waited("Bob's draft on his desk", &site, &[&bob_laptop], || {
+        titles_on(&bob_laptop, &site).contains(&"Bob's draft".to_owned())
+    });
+    let _ada_list = ada_laptop.window(NOTES, "Ada's list");
+    waited("Ada's list on Bob's desk", &site, &[&bob_laptop], || {
+        titles_on(&bob_laptop, &site).contains(&"Ada's list".to_owned())
+    });
+    assert!(
+        titles_on(&bob_laptop, &site).contains(&"Bob's draft".to_owned()),
+        "Bob's own window stays on his desk: {:?}",
+        titles_on(&bob_laptop, &site)
+    );
+    assert_eq!(
+        bob_laptop.showing().as_deref(),
+        Some(site.workspace.as_str()),
+        "Bob's desk stays in the workspace"
+    );
+    assert!(
+        !titles_at(&site).contains(&"Bob's draft".to_owned()),
+        "the site never holds what Bob may not write"
+    );
+}
+
 #[test]
 #[ignore = "the workspace's refusal does not reach the member whose write it is: the \
             site keeps nothing of a write it refuses, and tells the member's device \

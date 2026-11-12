@@ -69,6 +69,15 @@ pub fn desk_is_empty(tree: &DesktopTree) -> bool {
     })
 }
 
+/// Queue `ask` for the host, and ask it for the pass that answers it. What the person chose on the
+/// desk is carried out by the host on its next pass: a desk that drew the press and then went quiet
+/// would answer it only whenever something else woke the host, so the window it opens comes long
+/// after the press, and a person who presses again meanwhile gets a second one.
+pub(crate) fn ask(handle: &DesktopHandle, asks: &Rc<RefCell<Vec<DesktopAsk>>>, asked: DesktopAsk) {
+    asks.borrow_mut().push(asked);
+    handle.wake();
+}
+
 /// A node filling its parent, laid over its siblings.
 fn fill(taffy: &mut TaffyTree<()>, node: NodeId) {
     use taffy::{LengthPercentageAuto, Position, Size};
@@ -307,9 +316,11 @@ impl DeskLayer {
                     .into_iter()
                     .find(|action| action.slug() == card)
                 {
-                    self.asks
-                        .borrow_mut()
-                        .push(DesktopAsk::HostAction(card.host_id()));
+                    ask(
+                        &self.handle,
+                        &self.asks,
+                        DesktopAsk::HostAction(card.host_id()),
+                    );
                 } else {
                     return false;
                 }
@@ -332,13 +343,13 @@ impl DeskLayer {
                 let Ok(tab) = tab.parse() else {
                     return false;
                 };
-                self.asks.borrow_mut().push(DesktopAsk::WaitWindow(tab));
+                ask(&self.handle, &self.asks, DesktopAsk::WaitWindow(tab));
             }
             DeskEffect::ForceQuitApp { tab } => {
                 let Ok(tab) = tab.parse() else {
                     return false;
                 };
-                self.asks.borrow_mut().push(DesktopAsk::ForceQuitApp(tab));
+                ask(&self.handle, &self.asks, DesktopAsk::ForceQuitApp(tab));
             }
         }
         true
@@ -514,11 +525,11 @@ impl Widget for DeskLayer {
         if !*ctx.handled
             && let Some(at) = self.secondary_press(event)
         {
-            self.asks
-                .borrow_mut()
-                .push(DesktopAsk::Intent(ChromeIntent::ToggleWorkspaceMenu {
-                    at: Some(at),
-                }));
+            ask(
+                &self.handle,
+                &self.asks,
+                DesktopAsk::Intent(ChromeIntent::ToggleWorkspaceMenu { at: Some(at) }),
+            );
             *ctx.handled = true;
         }
     }

@@ -174,7 +174,7 @@ impl<'a> Membership<'a> {
             .commit_workspace_membership_command(
                 request,
                 identity.signer.as_ref(),
-                tilo_clock::SystemTime::now(),
+                tilo_clock::wall(),
             )
             .map(|_receipt| ())
     }
@@ -235,7 +235,7 @@ pub fn authorship(
     } else {
         // A workspace that lives only on this desk holds no governance here, so the desk's own
         // policy is where its authorship goes.
-        let now = tilo_clock::SystemTime::now()
+        let now = tilo_clock::wall()
             .duration_since(tilo_clock::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());
         edit_workspace(desk, id, |shown| author_on_desk(shown, app, now))?;

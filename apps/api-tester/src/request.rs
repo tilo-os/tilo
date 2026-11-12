@@ -135,21 +135,33 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
 /// Save and Send — or Cancel, while a request is on its way, so a server
 /// that never answers is never a locked app.
 pub(crate) fn request_actions(sink: &Sink, sending: bool) -> Element {
-    let save = Button::icon_only("api.save-request", Icon::Check, "Save request")
-        .tooltip("Save this request to a collection")
-        // It opens the save form; the save it leads to is its own action.
-        .on_own_device_effect(pusher(
-            sink,
-            Cmd::OpenForm(FormMode::SaveRequest, FormTarget::default()),
-        ));
+    let save = Button::icon_only(
+        "api.save-request",
+        Icon::Check,
+        &crate::locales::CATALOG.t("api-tester-save-request-button"),
+    )
+    .tooltip("Save this request to a collection")
+    // It opens the save form; the save it leads to is its own action.
+    .on_own_device_effect(pusher(
+        sink,
+        Cmd::OpenForm(FormMode::SaveRequest, FormTarget::default()),
+    ));
     let action = if sending {
         sink.effect(
-            Button::icon_only("api.cancel-send", Icon::X, "Cancel request")
-                .tooltip("Stop waiting for the server"),
+            Button::icon_only(
+                "api.cancel-send",
+                Icon::X,
+                &crate::locales::CATALOG.t("api-tester-cancel-request"),
+            )
+            .tooltip("Stop waiting for the server"),
             &crate::actions::ApiTesterEffect::CancelSend,
         )
     } else {
-        sink.send(Button::icon_only("api.send", Icon::Send, "Send"))
+        sink.send(Button::icon_only(
+            "api.send",
+            Icon::Send,
+            &crate::locales::CATALOG.t("api-tester-send"),
+        ))
     };
     Box::new(Row::new().push(Box::new(save)).push(Box::new(action)))
 }
@@ -240,14 +252,18 @@ pub(crate) fn panel(request: &Request, tab: RequestTab, blanks: &BlankRows, sink
     match tab {
         RequestTab::Params => table_panel(
             Table::Params,
-            "Query parameters",
+            &crate::locales::CATALOG.t("api-tester-query-parameters"),
             &request.params,
             blanks,
             sink,
         ),
-        RequestTab::Headers => {
-            table_panel(Table::Headers, "Headers", &request.headers, blanks, sink)
-        }
+        RequestTab::Headers => table_panel(
+            Table::Headers,
+            &crate::locales::CATALOG.t("api-tester-headers"),
+            &request.headers,
+            blanks,
+            sink,
+        ),
         RequestTab::Auth => auth_panel(request, sink),
         RequestTab::Body => body_panel(request, blanks, sink),
     }
@@ -325,28 +341,58 @@ fn auth_fields(auth: &Auth, sink: &Sink) -> Element {
         Auth::None => Box::new(column.push(body("This request does not use authentication."))),
         Auth::Bearer { token } => Box::new(column.push(Box::new(Field::new(
             "Token",
-            auth_input(sink, AuthField::Token, token, true, "Token"),
+            auth_input(
+                sink,
+                AuthField::Token,
+                token,
+                true,
+                &crate::locales::CATALOG.t("api-tester-token"),
+            ),
         )))),
         Auth::Basic { username, password } => Box::new(
             column
                 .push(Box::new(Field::new(
                     "Username",
-                    auth_input(sink, AuthField::Username, username, false, "Username"),
+                    auth_input(
+                        sink,
+                        AuthField::Username,
+                        username,
+                        false,
+                        &crate::locales::CATALOG.t("api-tester-username"),
+                    ),
                 )))
                 .push(Box::new(Field::new(
                     "Password",
-                    auth_input(sink, AuthField::Password, password, true, "Password"),
+                    auth_input(
+                        sink,
+                        AuthField::Password,
+                        password,
+                        true,
+                        &crate::locales::CATALOG.t("api-tester-password"),
+                    ),
                 ))),
         ),
         Auth::ApiKey { header, value } => Box::new(
             column
                 .push(Box::new(Field::new(
                     "Header name",
-                    auth_input(sink, AuthField::Header, header, false, "Header name"),
+                    auth_input(
+                        sink,
+                        AuthField::Header,
+                        header,
+                        false,
+                        &crate::locales::CATALOG.t("api-tester-header-name"),
+                    ),
                 )))
                 .push(Box::new(Field::new(
                     "Value",
-                    auth_input(sink, AuthField::Value, value, true, "Value"),
+                    auth_input(
+                        sink,
+                        AuthField::Value,
+                        value,
+                        true,
+                        &crate::locales::CATALOG.t("api-tester-value"),
+                    ),
                 ))),
         ),
     }

@@ -37,14 +37,22 @@ pub fn shown(node: &UiNode, name: &str) -> Option<String> {
 /// came. The day something was done on (`<name>_done`) reads as the day it happened
 /// (`Yesterday`, `Sunday`, `Jun 21`): what a heading over finished work says, never a day gone
 /// by.
+///
+/// A row's day fact standing under a heading that says the same day — the group, card or
+/// section above it — is the heading's to say: the row keeps only the time of day it is due
+/// (`09:00`), and says nothing where it names no time. That is no day fact of the row's own,
+/// and none where the row stands under no heading (`under`).
 #[must_use]
-pub fn shown_brief(node: &UiNode, name: &str) -> Option<String> {
+pub fn shown_brief(node: &UiNode, name: &str, under: Option<&str>) -> Option<String> {
     let value = node.props.get(name)?;
     let text = display(value);
     let Some(Value::Text(kind)) = node.props.get(&format!("{name}:as")) else {
         return Some(text);
     };
     let done = done_day(node, name);
+    if under.is_some_and(|heading| said_by_heading(node, name, heading)) {
+        return paired_time(node, name).map(|time| ui::format::time(&time));
+    }
     Some(match kind.as_str() {
         "date" if done => day_of(&text).map_or(text, ui::format::day_done_today),
         "date" => day_of(&text).map_or(text, |day| {
@@ -54,6 +62,107 @@ pub fn shown_brief(node: &UiNode, name: &str) -> Option<String> {
         "duration" => duration_of(&text).map_or(text, ui::format::duration),
         _ => text,
     })
+}
+
+/// The prop a row states the day it happened or is due in at its trailing edge, where its kind
+/// has one: the fact a heading over the row can say for it.
+fn trailing_day(node: &UiNode) -> Option<&'static str> {
+    match crate::adapter::component_name(&node.kind)? {
+        "ListRow" => Some("meta"),
+        "TreeViewRow" => Some("trailing"),
+        _ => None,
+    }
+}
+
+/// Whether `heading` says the day of the trailing day fact the row `node` states in `name`: the
+/// fact is the heading's to say, then, and no day fact of the row's own.
+fn said_by_heading(node: &UiNode, name: &str, heading: &str) -> bool {
+    if trailing_day(node) != Some(name) || done_day(node, name) {
+        return false;
+    }
+    node.props
+        .get(name)
+        .and_then(|value| day_of(&display(value)))
+        .is_some_and(|day| says_day(heading, day))
+}
+
+/// The day the heading over the rows `node` holds says, where it heads them by a day: its
+/// `group` prop. `None` where it names none, and where the group is the day a row was done on —
+/// a heading over finished work heads the day it was done, never the day a row is due.
+#[must_use]
+pub fn group_heading(node: &UiNode) -> Option<String> {
+    if done_day(node, "group") {
+        return None;
+    }
+    day_heading(node, "group")
+}
+
+/// The words the prop `name` of `node` reads as a heading over what it holds says the day in
+/// (`Today`, `Overdue since Jun 29`): the day fact without a time of day. `None` where the prop
+/// holds no day.
+fn day_heading(node: &UiNode, name: &str) -> Option<String> {
+    if !matches!(node.props.get(&format!("{name}:as")), Some(Value::Text(kind)) if kind == "date") {
+        return None;
+    }
+    let day = day_of(&display(node.props.get(name)?))?;
+    Some(ui::format::day_fact_today(day, None).text)
+}
+
+/// Whether `heading`, the words over a row, says `day`: the day fact without a time of day.
+fn says_day(heading: &str, day: NaiveDate) -> bool {
+    heading
+        .trim()
+        .eq_ignore_ascii_case(&ui::format::day_fact_today(day, None).text)
+}
+
+/// The words `node` heads what it holds with: a card's, a section's or a window's title. `None`
+/// for a node that heads nothing, and for a title with no words.
+#[must_use]
+pub fn heading_of(node: &UiNode) -> Option<String> {
+    match crate::adapter::component_name(&node.kind)? {
+        "Card" | "Section" | "NavShell" => {}
+        _ => return None,
+    }
+    match node.props.get("title") {
+        Some(Value::Text(words)) if !words.trim().is_empty() => Some(words.clone()),
+        _ => None,
+    }
+}
+
+/// The tree with each row's trailing day fact dropped where a heading over it says that day:
+/// the group, card or section above the rows says the day already, so the row keeps the time of
+/// day it is due (`09:00`), and shows nothing where it names no time.
+#[must_use]
+pub fn under_headings(node: UiNode) -> UiNode {
+    fn walk(mut node: UiNode, heading: Option<&str>) -> UiNode {
+        let here = heading_of(&node)
+            .or_else(|| group_heading(&node))
+            .or_else(|| heading.map(str::to_owned));
+        if let Some(name) = trailing_day(&node)
+            && here
+                .as_deref()
+                .is_some_and(|heading| said_by_heading(&node, name, heading))
+        {
+            match paired_time(&node, name) {
+                Some(time) => {
+                    node.props
+                        .insert(name.to_owned(), Value::text(ui::format::time(&time)));
+                }
+                None => {
+                    node.props.remove(name);
+                }
+            }
+            node.props.remove(&format!("{name}:as"));
+            node.props.remove(&format!("{name}:time"));
+        }
+        node.children = node
+            .children
+            .into_iter()
+            .map(|child| walk(child, here.as_deref()))
+            .collect();
+        node
+    }
+    walk(node, None)
 }
 
 /// Whether the prop `name` of `node` is the day the item was done on, as the view says with
@@ -99,7 +208,7 @@ pub fn shown_text(kind: &str, value: &str) -> String {
 /// The tone the prop `name` of `node` reads in, when it reads in one: a day gone by is overdue
 /// ([`Tone::Danger`]). `None` for anything else, and for a day that is not gone by.
 #[must_use]
-pub fn shown_tone(node: &UiNode, name: &str) -> Option<Tone> {
+pub fn shown_tone(node: &UiNode, name: &str, under: Option<&str>) -> Option<Tone> {
     let Some(Value::Text(kind)) = node.props.get(&format!("{name}:as")) else {
         return None;
     };
@@ -108,6 +217,10 @@ pub fn shown_tone(node: &UiNode, name: &str) -> Option<Tone> {
         return None;
     }
     let day = day_of(&display(node.props.get(name)?))?;
+    // A day the heading over the row says is no fact of the row's own: no tone of its own.
+    if under.is_some_and(|heading| says_day(heading, day)) && trailing_day(node) == Some(name) {
+        return None;
+    }
     let fact = ui::format::day_fact_today(day, paired_time(node, name));
     (fact.tone != Tone::Neutral).then_some(fact.tone)
 }
@@ -286,13 +399,17 @@ mod tests {
         let day = yesterday.format("%Y-%m-%d").to_string();
         let row = node(&[("value", &day), ("value:as", "date")]);
         assert_eq!(
-            shown_brief(&row, "value"),
+            shown_brief(&row, "value", None),
             Some(ui::format::day_fact_today(yesterday, None).text)
         );
-        assert_eq!(shown_tone(&row, "value"), Some(Tone::Danger));
+        assert_eq!(shown_tone(&row, "value", None), Some(Tone::Danger));
 
         let today_node = node(&[("value", &today.to_string()), ("value:as", "date")]);
-        assert_eq!(shown_tone(&today_node, "value"), None, "today is not late");
+        assert_eq!(
+            shown_tone(&today_node, "value", None),
+            None,
+            "today is not late"
+        );
     }
 
     #[test]
@@ -304,14 +421,212 @@ mod tests {
         // The runtime lowers a flag prop as a whole number, as the view's `true` reaches a node.
         row.props.insert("group_done".to_owned(), Value::Int(1));
         assert_eq!(
-            shown_brief(&row, "group"),
+            shown_brief(&row, "group", None),
             Some(ui::format::day_done_today(done)),
             "a heading over finished work says the day it happened"
         );
         assert_eq!(
-            shown_tone(&row, "group"),
+            shown_tone(&row, "group", None),
             None,
             "what was finished is history, not late"
+        );
+    }
+
+    /// A row of a kind that states a day fact at its trailing edge, of `props`.
+    fn row(kind: &str, props: &[(&str, &str)]) -> UiNode {
+        let mut row = node(props);
+        row.kind = crate::adapter::kind(kind);
+        row
+    }
+
+    /// The facts the first list row of `widget` shows, as a screen reader reads them.
+    fn row_facts(widget: &dyn ui::widget::Widget, found: &mut Option<String>) {
+        if let Some(list_row) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::ListRow>())
+        {
+            *found = list_row.accessibility().and_then(|access| access.value);
+            return;
+        }
+        for child in widget.children() {
+            row_facts(child, found);
+        }
+    }
+
+    /// The words the day fact of `day` says, as a heading over a row says it.
+    fn heading(day: NaiveDate) -> String {
+        ui::format::day_fact_today(day, None).text
+    }
+
+    #[test]
+    fn a_day_fact_a_heading_over_the_row_says_is_the_headings_to_say() {
+        let today = ui::clock::today();
+        let day = today.format("%Y-%m-%d").to_string();
+        let fact = row("ListRow", &[("meta", &day), ("meta:as", "date")]);
+        assert_eq!(
+            shown_brief(&fact, "meta", Some(&heading(today))),
+            None,
+            "the heading says the day: the row says nothing of its own"
+        );
+        assert_eq!(
+            shown_brief(&fact, "meta", None),
+            Some(heading(today)),
+            "under no heading the row says the day"
+        );
+        assert_eq!(
+            shown_brief(&fact, "meta", Some(&heading(today + chrono::Days::new(1)))),
+            Some(heading(today)),
+            "a heading naming another day leaves the row its own"
+        );
+        assert_eq!(
+            shown_tone(&fact, "meta", Some(&heading(today))),
+            None,
+            "a day the heading says is no fact of the row's, and reads in no tone"
+        );
+    }
+
+    #[test]
+    fn a_row_under_its_day_keeps_the_time_of_day_it_is_due() {
+        let today = ui::clock::today();
+        let day = today.format("%Y-%m-%d").to_string();
+        let at_nine = NaiveTime::from_hms_opt(9, 0, 0).expect("nine");
+        let timed = row(
+            "ListRow",
+            &[("meta", &day), ("meta:as", "date"), ("meta:time", &at(9))],
+        );
+        assert_eq!(
+            shown_brief(&timed, "meta", Some(&heading(today))).as_deref(),
+            Some(ui::format::time(&at_nine).as_str()),
+            "the day is the heading's, and the time of day is the row's"
+        );
+        assert_eq!(
+            shown_brief(&timed, "meta", None).as_deref(),
+            Some(
+                ui::format::day_fact_today(today, Some(at_nine))
+                    .text
+                    .as_str()
+            ),
+            "under no heading the day and its time read as one fact"
+        );
+    }
+
+    #[test]
+    fn the_tree_drops_a_rows_day_fact_a_heading_over_it_says() {
+        let today = ui::clock::today();
+        let day = today.format("%Y-%m-%d").to_string();
+        let later = (today + chrono::Days::new(2))
+            .format("%Y-%m-%d")
+            .to_string();
+        let mut card = row("Card", &[("title", &heading(today))]);
+        card.children.push(row(
+            "ListRow",
+            &[
+                ("title", "Water the plants"),
+                ("meta", &day),
+                ("meta:as", "date"),
+            ],
+        ));
+        card.children.push(row(
+            "ListRow",
+            &[
+                ("title", "Book the ferry"),
+                ("meta", &later),
+                ("meta:as", "date"),
+            ],
+        ));
+        let shown = under_headings(card);
+        assert!(
+            !shown.children[0].props.contains_key("meta"),
+            "the card says the day: the row says it no more"
+        );
+        assert_eq!(
+            shown.children[1].props.get("meta"),
+            Some(&Value::text(&later)),
+            "a row due another day keeps its own"
+        );
+        assert_eq!(
+            shown_brief(&shown.children[1], "meta", Some(&heading(today))),
+            Some(heading(today + chrono::Days::new(2))),
+            "and reads as that day under the card"
+        );
+    }
+
+    /// The facts a card's row shows on its trailing edge, as the window builds it: the tree is
+    /// the one a card of rows is — its title, the list it draws, and the rows within.
+    fn card_row_facts(title: &str, meta: &[(&str, &str)]) -> Option<String> {
+        let mut props = vec![("title", "Water the plants")];
+        props.extend_from_slice(meta);
+        let mut list = UiNode::empty("list", "card~rows");
+        list.children.push(row("ListRow", &props));
+        let mut card = row("Card", &[("title", title)]);
+        card.children.push(list);
+        let mut reconciler = crate::reconcile::Reconciler::new(std::rc::Rc::default());
+        let element = reconciler.build(&crate::reconcile::normalize(&card));
+        let mut found = None;
+        row_facts(element.as_ref(), &mut found);
+        found
+    }
+
+    #[test]
+    fn a_card_naming_the_day_shows_no_day_on_its_rows() {
+        let today = ui::clock::today();
+        let day = today.format("%Y-%m-%d").to_string();
+        let at_nine = NaiveTime::from_hms_opt(9, 0, 0).expect("nine");
+        assert_eq!(
+            card_row_facts(
+                &heading(today),
+                &[("meta", &day), ("meta:as", "date"), ("meta:time", &at(9))]
+            )
+            .as_deref(),
+            Some(ui::format::time(&at_nine).as_str()),
+            "the card says the day, so its row keeps the time of day it is due"
+        );
+        assert_eq!(
+            card_row_facts(&heading(today), &[("meta", &day), ("meta:as", "date")]),
+            None,
+            "a row with no time of day has nothing left to say under the card's day"
+        );
+        assert_eq!(
+            card_row_facts(
+                &heading(today + chrono::Days::new(2)),
+                &[("meta", &day), ("meta:as", "date")]
+            )
+            .as_deref(),
+            Some(heading(today).as_str()),
+            "a card naming another day leaves the row its own"
+        );
+    }
+
+    #[test]
+    fn the_tree_drops_a_rows_day_fact_a_group_over_it_says() {
+        let today = ui::clock::today();
+        let day = today.format("%Y-%m-%d").to_string();
+        let at_nine = NaiveTime::from_hms_opt(9, 0, 0).expect("nine");
+        let mut item = node(&[("group", &day), ("group:as", "date")]);
+        item.kind = crate::adapter::kind("ListItem");
+        item.children.push(row(
+            "ListRow",
+            &[
+                ("title", "Water the plants"),
+                ("meta", &day),
+                ("meta:as", "date"),
+                ("meta:time", &at(9)),
+            ],
+        ));
+        let shown = under_headings(item.clone());
+        assert_eq!(
+            shown.children[0].props.get("meta"),
+            Some(&Value::text(ui::format::time(&at_nine))),
+            "the group says the day: the row keeps the time of day it is due"
+        );
+
+        // A group of finished work heads the day a row was done on, never the day it is due.
+        item.props.insert("group_done".to_owned(), Value::Int(1));
+        let done = under_headings(item);
+        assert_eq!(
+            done.children[0].props.get("meta"),
+            Some(&Value::text(&day)),
+            "a day finished on is no day a row is due by"
         );
     }
 
@@ -327,12 +642,12 @@ mod tests {
             ("value:time", &at(9)),
         ]);
         assert_eq!(
-            shown_brief(&paired, "value"),
+            shown_brief(&paired, "value", None),
             Some(ui::format::day_fact_today(today, Some(time)).text)
         );
         assert_ne!(
-            shown_brief(&paired, "value"),
-            shown_brief(&alone, "value"),
+            shown_brief(&paired, "value", None),
+            shown_brief(&alone, "value", None),
             "the time of the day is part of the fact"
         );
         assert_eq!(
@@ -341,7 +656,7 @@ mod tests {
             "a form states the day and its time together"
         );
         assert_eq!(
-            shown_tone(&paired, "value"),
+            shown_tone(&paired, "value", None),
             None,
             "a day still to come is on time"
         );

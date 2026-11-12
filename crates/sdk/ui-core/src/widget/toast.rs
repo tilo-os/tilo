@@ -595,6 +595,9 @@ pub struct ToastCard<'a> {
     /// leads the card, in their presence colour, ahead of any glyph. Plain
     /// information with neither a person nor an icon leads with its text.
     pub person: Option<(&'a str, &'a str)>,
+    /// The card's `person` is an agent: its own square face in its client's tint
+    /// ([`crate::widget::AvatarFace::agent`]), as every other place shows it.
+    pub person_agent: bool,
     /// The sending application's own artwork, where a glyph cannot name it.
     /// A person's avatar leads ahead of it; a severity glyph wins over it,
     /// so an alert never loses its state colour.
@@ -645,6 +648,7 @@ impl<'a> ToastCard<'a> {
             kind,
             icon: None,
             person: None,
+            person_agent: false,
             app_image: None,
             alpha: 1.0,
             closable: false,
@@ -683,6 +687,14 @@ impl<'a> ToastCard<'a> {
     #[must_use]
     pub fn person(mut self, name: &'a str, identity: &'a str) -> Self {
         self.person = Some((name, identity));
+        self.person_agent = false;
+        self
+    }
+    /// Lead the card with the face of the agent it is from (`identity` its publisher).
+    #[must_use]
+    pub fn agent(mut self, name: &'a str, identity: &'a str) -> Self {
+        self.person = Some((name, identity));
+        self.person_agent = true;
         self
     }
     /// Lead plain information with the sending application's artwork.
@@ -805,13 +817,11 @@ pub fn minimum_card_height(
     card: &ToastCard<'_>,
 ) -> f64 {
     let (_, pad_y) = card_pad(theme);
-    let caption = single_line_text(card.caption);
-    let time = single_line_text(card.time);
-    let header = if caption.is_empty() { time } else { caption };
+    let text = CardText::of(card);
     let text_height: f64 = [
-        (header.as_str(), theme.text(TextRole::Caption)),
-        (card.title, theme.text(TextRole::Label).strong()),
-        (card.body, theme.text(TextRole::Caption)),
+        (text.caption.as_str(), theme.text(TextRole::Caption)),
+        (text.title.as_str(), theme.text(TextRole::Label).strong()),
+        (text.body.as_str(), theme.text(TextRole::Caption)),
     ]
     .into_iter()
     .map(|(text, style)| {
@@ -850,7 +860,11 @@ const TITLE_LINES: usize = 2;
 
 /// A card's text, normalised to the single lines (or wrapped body lines)
 /// it paints. The attribution line is the app's name and how long ago it
-/// arrived, sharing one line.
+/// arrived, sharing one line. A card without an app's name has no
+/// attribution line: how long ago it arrived follows its body ("Launch
+/// notes · just now"), or is the body, rather than standing alone over the
+/// title at the text column's end, which beside an action is the card's
+/// middle.
 struct CardText {
     caption: String,
     time: String,
@@ -860,11 +874,27 @@ struct CardText {
 
 impl CardText {
     fn of(card: &ToastCard<'_>) -> Self {
+        let caption = single_line_text(card.caption);
+        let time = single_line_text(card.time);
+        let body = single_line_text(card.body);
+        if caption.is_empty() && !time.is_empty() {
+            let body = if body.is_empty() {
+                time
+            } else {
+                format!("{body} \u{b7} {time}")
+            };
+            return Self {
+                caption,
+                time: String::new(),
+                title: single_line_text(card.title),
+                body,
+            };
+        }
         Self {
-            caption: single_line_text(card.caption),
-            time: single_line_text(card.time),
+            caption,
+            time,
             title: single_line_text(card.title),
-            body: single_line_text(card.body),
+            body,
         }
     }
 
@@ -1156,6 +1186,23 @@ pub fn paint_card(
     hit
 }
 
+/// The face a card from `name` leads with: an agent's own square face in its client's hue (the
+/// identity's for a client this build does not know), else the person's avatar.
+fn agent_or_person_face<'a>(
+    card: &ToastCard<'_>,
+    name: &'a str,
+    identity: &'a str,
+) -> crate::widget::AvatarFace<'a> {
+    let face = crate::widget::AvatarFace::new(name, identity);
+    if !card.person_agent {
+        return face;
+    }
+    match crate::tokens::colors::PresenceHue::of_agent_client(name) {
+        Some(hue) => face.hue(hue).agent(),
+        None => face.agent(),
+    }
+}
+
 /// The offered reply: the shared field face (its frame, its hover and
 /// focus edge, its placeholder), with the caret where the person is typing.
 fn paint_reply_field(
@@ -1242,7 +1289,7 @@ fn paint_leading(
                 &rect,
             );
         }
-        crate::widget::AvatarFace::new(name, identity).paint(ctx, rect);
+        agent_or_person_face(card, name, identity).paint(ctx, rect);
         if faded {
             ctx.scene.pop_layer();
         }

@@ -1648,8 +1648,17 @@ impl Widget for CalculatorApp {
                     .with_hashed_key("calculator.display");
                 if !self.model.expr.trim().is_empty() {
                     let outcome = match engine::evaluate(&self.model.expr, &self.model.ctx()) {
-                        Ok(value) => format!("Result {}", engine::format_number(value)),
-                        Err(error) => format!("Invalid expression: {error}"),
+                        Ok(value) => CATALOG.t_args(
+                            "calculator-result",
+                            &[(
+                                "value",
+                                ui::i18n::ArgValue::Text(engine::format_number(value)),
+                            )],
+                        ),
+                        Err(error) => CATALOG.t_args(
+                            "calculator-invalid-expression",
+                            &[("detail", ui::i18n::ArgValue::Text(error))],
+                        ),
                     };
                     display = display.with_children(vec![
                         AccessNode::new(Role::StaticText)
@@ -1884,8 +1893,8 @@ impl CalculatorApp {
     fn graph_accessibility(&self, kind: GraphKind) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
         let (title, slug) = match kind {
-            GraphKind::Curve2d => ("Functions", "2d"),
-            GraphKind::Surface3d => ("Surfaces", "3d"),
+            GraphKind::Curve2d => (CATALOG.t("calculator-graph-functions"), "2d"),
+            GraphKind::Surface3d => (CATALOG.t("calculator-graph-surfaces"), "3d"),
         };
         let rows = self.model.graphs(kind);
         let panel = self.panel(kind);

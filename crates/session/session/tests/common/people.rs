@@ -1801,7 +1801,7 @@ impl Chat<'_> {
 
     /// The app's answer to `operation` with `args` once it settled: the person's confirmation given
     /// where the action asked for it.
-    fn settled(&self, operation: &str, args: &Value) -> Value {
+    pub fn settled(&self, operation: &str, args: &Value) -> Value {
         let (provider, id) = self.action(operation);
         let answer = self.device.act_wait(&provider, &id, args);
         if answer["err"]["code"].as_str() == Some("needs_confirmation") {

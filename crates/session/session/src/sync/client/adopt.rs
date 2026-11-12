@@ -70,7 +70,7 @@ pub(super) async fn redeem(
                     request.workspace_id,
                     topic,
                     hint,
-                    std::time::SystemTime::now(),
+                    tilo_clock::wall(),
                 ),
             )
             .await
@@ -101,7 +101,7 @@ pub(super) async fn redeem(
     // be let into a workspace is told when it did not happen rather than left on a plane that
     // stopped taking work.
     tokio::time::timeout(SETTLE_WITHIN, async {
-        owner.install(&enrollment, std::time::SystemTime::now())?;
+        owner.install(&enrollment, tilo_clock::wall())?;
         take_part_in(&owner, request.workspace_id, link, plane, events).await
     })
     .await
@@ -269,7 +269,7 @@ pub(super) async fn enter(
             request.workspace_id,
             topic,
             request.host,
-            std::time::SystemTime::now(),
+            tilo_clock::wall(),
         ),
     )
     .await

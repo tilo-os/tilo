@@ -871,11 +871,11 @@ impl Widget for Music {
         let player_status = if let Some(error) = &self.playback_error {
             error.clone()
         } else if self.active_resolve_request.is_some() {
-            "Loading audio source".to_string()
+            CATALOG.t("music-a11y-loading-source")
         } else if self.pb.playing && !self.audio.is_playing_real() {
-            "Waiting for audio output".to_string()
+            CATALOG.t("music-a11y-waiting-output")
         } else {
-            "Playback controls".to_string()
+            CATALOG.t("music-a11y-playback-controls")
         };
         let player = AccessNode::new(Role::Group)
             .with_hashed_key("player")
@@ -947,23 +947,23 @@ impl Widget for Music {
             }
         }
         let page_name = match &self.view {
-            View::Home => "Home".to_string(),
+            View::Home => CATALOG.t("music-view-home"),
             View::Recommendations => crate::i18n::t("music-recommendations-title"),
-            View::Songs => "Songs".to_string(),
-            View::Albums => "Albums".to_string(),
-            View::Artists => "Artists".to_string(),
-            View::Playlists => "Playlists".to_string(),
-            View::Downloads => "Downloads".to_string(),
-            View::Liked => "Liked songs".to_string(),
-            View::Browse => "Browse".to_string(),
-            View::Queue => "Queue".to_string(),
-            View::Lyrics => "Lyrics".to_string(),
-            View::NowPlaying => "Now playing".to_string(),
-            View::Search => "Search".to_string(),
+            View::Songs => CATALOG.t("music-view-songs"),
+            View::Albums => CATALOG.t("music-view-albums"),
+            View::Artists => CATALOG.t("music-view-artists"),
+            View::Playlists => CATALOG.t("music-view-playlists"),
+            View::Downloads => CATALOG.t("music-view-downloads"),
+            View::Liked => CATALOG.t("music-view-liked"),
+            View::Browse => CATALOG.t("music-view-browse"),
+            View::Queue => CATALOG.t("music-view-queue"),
+            View::Lyrics => CATALOG.t("music-view-lyrics"),
+            View::NowPlaying => CATALOG.t("music-view-now-playing"),
+            View::Search => CATALOG.t("music-view-search"),
             View::Kept(id) => self
                 .kept_views()
                 .get(id)
-                .map_or_else(|| "Search".to_string(), |kept| kept.name.clone()),
+                .map_or_else(|| CATALOG.t("music-view-search"), |kept| kept.name.clone()),
             View::Album(id) => self.album_pages.get(id).map_or_else(
                 || self.lib.album_title(id).to_string(),
                 |page| page.title.clone(),
@@ -982,7 +982,7 @@ impl Widget for Music {
                         .find(|playlist| playlist.id == *id)
                         .map(|playlist| playlist.name.clone())
                 })
-                .unwrap_or_else(|| "Playlist".to_string()),
+                .unwrap_or_else(|| CATALOG.t("music-view-playlist-fallback")),
         };
 
         let mut list_items = Vec::new();
@@ -2417,7 +2417,7 @@ impl Music {
             View::Kept(id) => self
                 .kept_views()
                 .get(id)
-                .map_or_else(|| "Search".to_string(), |kept| kept.name.clone()),
+                .map_or_else(|| CATALOG.t("music-view-search"), |kept| kept.name.clone()),
             View::Album(id) => self
                 .album_pages
                 .get(id)
@@ -2456,7 +2456,7 @@ impl Music {
                     .map(|tk| tk.id.clone())
                     .collect();
                 if ids.is_empty() {
-                    return self.empty_library_page(ctx, body, y, "No songs yet");
+                    return self.empty_library_page(ctx, body, y, &CATALOG.t("music-no-songs"));
                 }
                 let rows = self.gather_tracks(&ids);
                 let y = y + look.section;
@@ -2465,14 +2465,14 @@ impl Music {
             View::Albums => {
                 let albums = self.gather_albums(None);
                 if albums.is_empty() {
-                    return self.empty_library_page(ctx, body, y, "No albums yet");
+                    return self.empty_library_page(ctx, body, y, &CATALOG.t("music-no-albums"));
                 }
                 self.draw_album_grid(ctx, look, body, y + look.gutter, &albums)
             }
             View::Artists => {
                 let artists = self.gather_artists();
                 if artists.is_empty() {
-                    return self.empty_library_page(ctx, body, y, "No artists yet");
+                    return self.empty_library_page(ctx, body, y, &CATALOG.t("music-no-artists"));
                 }
                 self.draw_artist_grid(ctx, look, body, y + look.gutter, &artists)
             }

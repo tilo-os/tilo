@@ -93,3 +93,31 @@ ebook-a11y-annotations = { $annotations ->
 }
 ebook-a11y-contents = Contents: chapter { $chapter } of { $chapters }. Scroll this list to browse every chapter.
 ebook-a11y-annotation-hit = { $kind } in chapter { $chapter } of { $title }
+
+## What the window shows
+ebook-view-library = Books library
+ebook-view-library-detail = Browse and open books
+ebook-view-reader = Book reader
+ebook-view-reader-detail = Read and annotate the current book
+ebook-view-settings = Book settings
+ebook-view-settings-detail = Manage reading fonts, colours, and library folders
+ebook-view-search = Search books
+ebook-view-search-detail = Results in your books and the store
+ebook-add-note-button = Add note
+ebook-no-passage = No passage
+ebook-query-get = Get { $book } from { $store }
+ebook-query-open = Open { $title }
+ebook-duplicate = Duplicate
+ebook-edit = Edit
+ebook-add-system-font = Add a system font
+ebook-new-scheme = New scheme
+ebook-highlighted-passage = Highlighted passage
+ebook-selected-passage = Selected passage
+ebook-manage-fonts = Manage fonts and colour themes
+ebook-close-appearance = Close reading appearance
+ebook-use-font = Use { $font } font
+ebook-reading-theme = { $theme } reading theme
+ebook-use-scheme = Use { $scheme } colour theme
+ebook-untitled = Untitled
+
+ebook-get = Get

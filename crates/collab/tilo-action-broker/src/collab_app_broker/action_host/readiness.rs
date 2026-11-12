@@ -5,7 +5,7 @@
 //! the workspace is waits for that pass rather than being refused for a workspace that is about to
 //! be the person's own.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::super::app_node;
 use super::{
@@ -30,10 +30,10 @@ impl AppBrokerState {
         caller: &Caller,
         workspace_id: &str,
     ) -> Option<(Workspace, BrokerActor)> {
-        let until = Instant::now().checked_add(WORKSPACE_OWNER_WAIT)?;
+        let until = tilo_clock::now().checked_add(WORKSPACE_OWNER_WAIT)?;
         let slice = WORKSPACE_OWNER_WAIT.div_f32(25.0);
         let mut sample = None;
-        while Instant::now() < until {
+        while tilo_clock::now() < until {
             if let Some((workspace, actor, _)) =
                 self.decide_for(caller, workspace_id, |workspace, policy, now| {
                     (workspace.clone(), policy.clone(), now)
@@ -44,24 +44,10 @@ impl AppBrokerState {
                 }
                 sample = Some((workspace, actor));
             }
-            wait_for_a_change(slice);
+            // The desk's publications, the identity store and the device fleet all announce.
+            tilo_identity_host::policy_change::wait_for_a_change(Some(slice));
         }
         sample
-    }
-}
-
-/// Wait at most `wait` for something every decision here reads to change: the desk's publications,
-/// the identity store and the device fleet all announce, so nothing is polled.
-pub(super) fn wait_for_a_change(wait: Duration) {
-    let (woken, wake) = std::sync::mpsc::channel();
-    let watch = tilo_identity_host::policy_change::Watch::new(move || {
-        let _ = woken.send(());
-    });
-    let seen = watch.arm();
-    // A change that arrived between reading the desk and arming the watch is not woken for: it is
-    // already there to read.
-    if tilo_identity_host::policy_change::epoch() == seen {
-        let _ = wake.recv_timeout(wait);
     }
 }
 

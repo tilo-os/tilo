@@ -65,3 +65,19 @@ firewall-interfaces = Schnittstellen
 firewall-delete-rule-body = { $rule } über { $protocol } von { $source } wird nicht mehr { $action }.
 firewall-state-allowed = zugelassen
 firewall-state-denied = abgelehnt
+
+## What the window shows
+firewall-make-active = Zur aktiven Zone machen
+firewall-masquerade-on = An
+firewall-masquerade-off = Aus
+firewall-edit-rule = Die Regel { $rule } bearbeiten
+firewall-delete-rule-action = Die Regel { $rule } löschen
+firewall-edit-rule-in-zone = Die Regel in { $zone } bearbeiten
+firewall-add-rule-to-zone = Eine Regel zu { $zone } hinzufügen
+firewall-refresh = Neu laden
+firewall-stop-title = Firewall ausschalten?
+firewall-stop-body = Bis du sie wieder einschaltest, wird keine Regel durchgesetzt. Ist dieser Rechner aus einem Netz erreichbar, das du nicht kontrollierst, kommt eine Verbindung von dort ohne deine Regeln an ihn heran.
+firewall-stop-confirm = Firewall ausschalten
+firewall-panic-title = Panikmodus einschalten?
+firewall-panic-body = Der gesamte ein- und ausgehende Verkehr wird verworfen, auch die entfernte Sitzung, mit der du diesen Rechner vielleicht gerade reparierst. Bestehende Verbindungen werden getrennt.
+firewall-panic-confirm = Gesamten Verkehr verwerfen

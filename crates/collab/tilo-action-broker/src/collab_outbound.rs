@@ -401,7 +401,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([1; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
+            tilo_clock::wall(),
             1,
         )
     }

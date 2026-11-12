@@ -441,6 +441,15 @@ impl DesktopHandle {
         navigation::snapshot_with(&shared.tree, generation, applications, &shared.presentation)
     }
 
+    /// Ask the host for the desk's next pass: something the desk was told to
+    /// do waits for it — a command, a search opening, a card chosen on the
+    /// empty desk, which the host carries out on that pass. A host that drew
+    /// the press and then went quiet would otherwise carry it out whenever
+    /// something else woke it.
+    pub fn wake(&self) {
+        self.shared.borrow().wake.wake();
+    }
+
     /// Admit `command` against the current tree and queue it for the next
     /// update pass. The host schedules a frame after an accepted command.
     ///
@@ -598,12 +607,16 @@ impl DesktopHandle {
 
     /// Ask the [`TileSource`] for `tab` 's content again on a coming update pass, as when the tab
     /// was first shown: for a host whose first answer was a notice (its record had not arrived).
-    /// The host schedules a frame.
+    /// The host is asked for that pass, so a window waiting for its record fills in when the record
+    /// comes rather than at the next frame something else asks for.
     pub fn rebuild(&self, tab: TabId) {
         let mut shared = self.shared.borrow_mut();
-        if !shared.rebuild.contains(&tab) {
-            shared.rebuild.push(tab);
+        if shared.rebuild.contains(&tab) {
+            return;
         }
+        shared.rebuild.push(tab);
+        drop(shared);
+        self.wake();
     }
 
     /// `tab` stands in for the app whose window did not come, saying why: what the person sees

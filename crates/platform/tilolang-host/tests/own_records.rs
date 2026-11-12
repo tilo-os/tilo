@@ -211,13 +211,7 @@ fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundl
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
     let hosted = Hosted::with_record(
-        Spec {
-            app: MAIL.to_owned(),
-            workspace: workspace.to_string(),
-            instance: 1,
-            person: person.to_owned(),
-            installed: std::collections::BTreeMap::new(),
-        },
+        Spec::new(MAIL, workspace.to_string(), 1, person),
         record,
         Arc::clone(bundle),
         &kept,

@@ -280,7 +280,13 @@ impl BottomPanel {
             .map(|(index, d)| {
                 let activated = Rc::clone(&self.activated);
                 let row = ListRow::new(format!("problem-{index}"), d.message.clone())
-                    .meta(format!("Ln {}, Col {}", d.line, d.col))
+                    .meta(crate::resource::CATALOG.t_args(
+                        "code-editor-cursor",
+                        &[
+                            ("line", ui::i18n::ArgValue::Number(d.line as f64)),
+                            ("column", ui::i18n::ArgValue::Number(d.col as f64)),
+                        ],
+                    ))
                     .on_view(move || activated.set(Some(index)));
                 let row = match d.severity {
                     Severity::Error => row.icon(ui::icons::Icon::Ban).error(),

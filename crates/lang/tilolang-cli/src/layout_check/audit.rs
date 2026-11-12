@@ -133,6 +133,59 @@ fn words(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Whether the row's fact `fact` says the day `heading` says: the day's own words, and the time
+/// of day it is due after them where it names one. Words no day reads as are no day heading,
+/// however they read: a card titled a thing says nothing of when anything is due.
+fn says_day(fact: &str, heading: &str, days: &[String]) -> bool {
+    if !days.iter().any(|day| day.eq_ignore_ascii_case(heading)) {
+        return false;
+    }
+    let fact = fact.trim();
+    fact.eq_ignore_ascii_case(heading)
+        || (fact
+            .get(..heading.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(heading))
+            && fact
+                .get(heading.len()..)
+                .is_some_and(|rest| rest.starts_with(' ')))
+}
+
+/// The words each day around today reads as a heading (`Today`, `Saturday`, `Jun 29`,
+/// `Overdue since Jun 29`): what a day heading over rows says.
+fn day_words() -> Vec<String> {
+    let today = ui::clock::today();
+    (-400..=400)
+        .filter_map(|days| today.checked_add_signed(chrono::Duration::days(days)))
+        .map(|day| ui::format::day_fact_today(day, None).text)
+        .collect()
+}
+
+/// The words a widget reads over what it holds: a card's or a section's title, or the group a
+/// list heads its rows by.
+fn heading_words(node: &InspectionNode) -> Option<String> {
+    if matches!(node.widget.as_str(), "Card" | SECTION) {
+        return node
+            .children
+            .iter()
+            .find(|child| child.widget == HEADING)
+            .map(words_of)
+            .filter(|said| !said.is_empty());
+    }
+    let access = node.semantics.as_ref()?;
+    access
+        .children
+        .iter()
+        .find(|child| {
+            child
+                .action_target
+                .as_deref()
+                .is_some_and(|target| target.starts_with(GROUP))
+        })
+        .and_then(|heading| heading.name.as_deref())
+        .map(words)
+        .filter(|said| !said.is_empty())
+}
+
 /// The words a box gives a screen reader: its own, or the first of what it holds.
 fn words_of(node: &InspectionNode) -> String {
     node.semantics
@@ -471,6 +524,10 @@ struct Walk<'a> {
     navigations: Vec<Navigation>,
     /// The one group heading a list draws over its rows.
     group_headings: Vec<GroupHeading>,
+    /// The words of the heading the node stands under: a card's, a section's, a list's group.
+    heading: Option<String>,
+    /// What each day around today reads as a heading, as a row's day fact reads.
+    days: Vec<String>,
     out: &'a mut Vec<Problem>,
 }
 
@@ -546,6 +603,8 @@ pub fn inspect(
         page_titles: Vec::new(),
         navigations: Vec::new(),
         group_headings: Vec::new(),
+        heading: None,
+        days: day_words(),
         out: &mut out,
     };
     walk.node(
@@ -776,6 +835,7 @@ impl Walk<'_> {
         self.empty_heading(node, keys, own);
         self.empty_surface(node, keys, own);
         self.rounded_on_edge(node, keys, own);
+        self.repeated_day_fact(node, keys);
         if under_page.is_some() {
             self.nested_scroller(node, keys, own);
         }
@@ -804,6 +864,7 @@ impl Walk<'_> {
         if geometric && !has_area(own.intersect(clip)) {
             return;
         }
+        let was_heading = self.heading_over(node);
         // A page scrolls the window's content under its heading; a list inside it scrolls rows
         // the page already scrolls.
         let under_page = self.page;
@@ -862,10 +923,7 @@ impl Walk<'_> {
             self.content_beside_sidebar(node, keys);
             self.navigation(node, keys, own.intersect(inner_clip));
         }
-        self.cramped_card(node, keys);
-        self.shown_twice(node, keys);
-        self.heading_rhythm(node, keys);
-        self.unruled_body(node, keys);
+        self.page_checks(node, keys);
         for child in &node.children {
             if floats(&child.widget) {
                 continue;
@@ -912,6 +970,58 @@ impl Walk<'_> {
         self.across = was_across;
         self.off_pixel = was_off_pixel;
         self.page = under_page;
+        self.heading = was_heading;
+    }
+
+    /// The checks of a page's own parts: cards standing cramped against a sibling, an item shown
+    /// twice, a heading crowded or a body unruled.
+    fn page_checks(&mut self, node: &InspectionNode, keys: &[String]) {
+        self.cramped_card(node, keys);
+        self.shown_twice(node, keys);
+        self.heading_rhythm(node, keys);
+        self.unruled_body(node, keys);
+    }
+
+    /// What the box `node` heads what it holds with, where it heads it — a card's or a section's
+    /// title, or the group a list heads its rows by — as the words its children then stand
+    /// under; the heading before it, to give back once they are read.
+    fn heading_over(&mut self, node: &InspectionNode) -> Option<String> {
+        let was = self.heading.clone();
+        if let Some(said) = heading_words(node) {
+            self.heading = Some(said);
+        }
+        was
+    }
+
+    /// A row's trailing day fact naming the day the heading over it names: the group, card or
+    /// section above the rows already says the day, so a row saying it again is noise — what it
+    /// keeps is the time of day it is due, and nothing where it names no time.
+    fn repeated_day_fact(&mut self, node: &InspectionNode, keys: &[String]) {
+        let Some(heading) = self.heading.as_deref() else {
+            return;
+        };
+        let Some(access) = node.semantics.as_ref() else {
+            return;
+        };
+        if access.role != ui::a11y::Role::ListItem {
+            return;
+        }
+        let Some(value) = access.value.as_deref() else {
+            return;
+        };
+        let Some(fact) = value
+            .split(", ")
+            .map(str::trim)
+            .find(|fact| says_day(fact, heading, &self.days))
+        else {
+            return;
+        };
+        self.push(
+            Kind::RepeatedDayFact,
+            node,
+            keys,
+            format!("the row's fact {fact:?} says the day the heading over it says ({heading:?})"),
+        );
     }
 
     /// A box with an edge between two device pixels: the outermost such box only, since what

@@ -361,22 +361,25 @@ impl DesktopHandle {
         std::mem::take(&mut self.shared.borrow_mut().host_choices)
     }
 
-    /// Open search, or close it when it is open. The host schedules a frame.
+    /// Open search, or close it when it is open. The host is asked for the pass that opens it.
     pub fn toggle_search(&self) {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Toggle);
+        self.wake();
     }
 
-    /// Close search, wherever it stands; nothing to close is nothing to do. The host schedules a
-    /// frame. A host that sees a press the desk's own hit test never reaches (a page's chrome
+    /// Close search, wherever it stands; nothing to close is nothing to do. The host is asked for
+    /// the pass that closes it. A host that sees a press the desk's own hit test never reaches (a page's chrome
     /// beside the canvas) dismisses the search holding the keyboard this way, as a press beside
     /// the card does on the desk itself, however often it asks.
     pub fn close_search(&self) {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Close);
+        self.wake();
     }
 
-    /// Open search at `scope` , with `query` typed. The host schedules a frame.
+    /// Open search at `scope` , with `query` typed. The host is asked for the pass that opens it.
     pub fn open_search(&self, scope: Scope, query: Option<String>) {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Open { scope, query });
+        self.wake();
     }
 
     /// The row the host carried out did not happen, for `why` : search opens again where it stood,
@@ -395,6 +398,8 @@ impl DesktopHandle {
             scope,
             query: Some(query),
         });
+        drop(shared);
+        self.wake();
         true
     }
 

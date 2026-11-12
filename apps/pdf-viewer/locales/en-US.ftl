@@ -271,3 +271,7 @@ pdf-a11y-comment = { $author } on page { $page }; { $replies ->
 pdf-a11y-signature-by = Signature by { $signer }
 pdf-a11y-signed = Signed { $date } on page { $page }
 pdf-drawn-signed = Signed { $date }
+
+## What the window shows
+pdf-viewer-untitled = Untitled document
+pdf-viewer-page-unreadable = Page { $page } cannot be read: { $detail }

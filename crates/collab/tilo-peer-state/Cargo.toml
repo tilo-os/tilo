@@ -15,6 +15,8 @@ test-support = ["dep:iroh-base", "tilo-workspace-join/test-support"]
 ignored = ["serde_bytes"]
 
 [dependencies]
+# Validity, expiry and deadlines read one clock on every target, the page's included.
+tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-actions = { path = "../actions" }
 fnv.workspace = true
@@ -75,7 +77,6 @@ getrandom.workspace = true
 rand_core.workspace = true
 # The device custody an enrollment presents to the issuing host.
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
-tilo-clock = { path = "../../platform/tilo-clock" }
 
 [dev-dependencies]
 # The closure-built action host a test dispatcher is.

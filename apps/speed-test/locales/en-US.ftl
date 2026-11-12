@@ -12,3 +12,13 @@ speed-test-server = Server
 
 speed-test-section-quality = Connection quality
 speed-test-section-connection = Connection
+
+## What the window shows
+speed-test-idle = Ready to test
+speed-test-measuring-latency = Measuring latency
+speed-test-measuring-download = Measuring download
+speed-test-measuring-upload = Measuring upload
+speed-test-complete = Test complete
+speed-test-ready-again = Ready to try again
+speed-test-down = { $rate } Mbps down
+speed-test-up-and-ping = { $rate } Mbps up, { $ping } ms ping

@@ -24,7 +24,7 @@ pub(crate) struct ReplayTicket {
 impl Drop for ReplayTicket {
     fn drop(&mut self) {
         if self.authority.reserved.is_some() {
-            let _ = self.authority.released.set(std::time::Instant::now());
+            let _ = self.authority.released.set(tilo_clock::now());
         }
         self.authority.cancelled.store(true, Ordering::SeqCst);
         // The owner holding this replay's entry can reclaim it now.
@@ -329,7 +329,7 @@ impl DetachedReplay {
         mut written: Option<WrittenBatch>,
         budget: &ReplayBudget,
     ) -> Result<ReplayAdvance, StoreError> {
-        let start = std::time::Instant::now();
+        let start = tilo_clock::now();
         loop {
             let advance = self.advance(authority, written.take(), budget)?;
             if !matches!(advance, ReplayAdvance::Preparing) || start.elapsed() >= super::SLICE {

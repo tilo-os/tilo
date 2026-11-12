@@ -79,9 +79,12 @@ pub(crate) struct SharedDesktops {
     /// when the device writes again rather than the fold laying it back into the desk, where no
     /// window fills it.
     written_windows: RefCell<HashMap<WorkspaceId, BTreeSet<u64>>>,
-    /// The windows this device's desk shows that the workspace's record does not hold yet: what it
-    /// opened since the last write, and what the next write adds.
-    unrecorded: RefCell<BTreeSet<u64>>,
+    /// The windows each workspace's record held when this desk was last laid out from it: a window
+    /// of this device's that is not among them is one it opened since, which the record has not
+    /// taken in yet — its write may still be on its way to the workspace and back — and the fold
+    /// keeps it where it stands. One that is among them and the record no longer holds is one
+    /// someone closed.
+    recorded: RefCell<HashMap<WorkspaceId, BTreeSet<u64>>>,
     /// Every workspace whose record this device has read: while each of the workspaces it holds is
     /// among them and neither the engine's revision nor this desk's own moved since, there is
     /// nothing to read again.
@@ -236,12 +239,24 @@ impl SharedDesktops {
             self.opened_by.borrow_mut().insert(room, desk.opened_by);
             let mine = |id: u64| local != 0 && peer_salt_of(id) == local;
             let closed = self.closed_since_written(room, workspace);
+            let recorded = self.recorded.borrow_mut().insert(room, tabs_of(&desk.tree));
+            // A desk this session has not laid out from the record yet keeps nothing apart: what it
+            // holds that the record does not may be what someone closed while it was away.
+            let opened_here = |id: u64| {
+                mine(id)
+                    && recorded
+                        .as_ref()
+                        .is_some_and(|recorded| !recorded.contains(&id))
+            };
             let kept = device::Kept {
                 // A strip this device made and left empty stays on its own desk: the record never
                 // holds an empty strip it made, and an empty row arriving here is nobody else's to
                 // see.
                 mine: &mine,
-                private: &|_: u64| false,
+                // A window this device opened that the record does not hold yet stays: another
+                // member's change that arrives before this device's own write comes back is no
+                // close of it.
+                private: &opened_here,
                 // A window this device closed is not laid back into its desk from the record: the
                 // write that follows takes its entry out instead.
                 closed: &|id| closed.contains(&id),
@@ -356,7 +371,7 @@ impl SharedDesktops {
         // anyone else moved is undone by it. This device's own layout stays: it is what the write
         // adds, and a fold that dropped it would write nothing at all.
         let laid_out = self.laid_into(room, &held, workspace);
-        let mine = |id: u64| peer_salt_of(id) == local || self.is_unrecorded(id);
+        let mine = |id: u64| peer_salt_of(id) == local;
         let by_tab: BTreeMap<u64, String> = notes.iter().cloned().collect();
         let records = |id: u64| by_tab.get(&id).cloned();
         let mut candidate = held.clone();
@@ -592,55 +607,11 @@ impl SharedDesktops {
         }
         base
     }
+}
 
-    /// Every window the desk of `tree` shows, this device's own, that a write made since the fold
-    /// would add to the record: what [`tilo_desktop_model::shared_record::device::Writer::mine`]
-    /// has to name as the record's next write.
-    pub(crate) fn note_unrecorded(&self, engine: &Engine, tree: &DesktopTree) {
-        let Some(workspace) = tree.workspaces.iter().find(|held| held.slot == tree.active) else {
-            return;
-        };
-        let room = workspace.id();
-        let Some(doc) = Self::record(engine, room, self.revision.borrow().get(&room).copied())
-            .ok()
-            .flatten()
-            .map(|(doc, _)| doc)
-        else {
-            return;
-        };
-        let Some(shared) = shared_record::read(&doc, None) else {
-            return;
-        };
-        let held: BTreeSet<u64> = shared
-            .tree
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .map(|tab| tab.id)
-            .collect();
-        let mut unrecorded = self.unrecorded.borrow_mut();
-        unrecorded.clear();
-        for tab in tree
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-        {
-            if !held.contains(&tab.id) && peer_salt_of(tab.id) == tree.salt {
-                unrecorded.insert(tab.id);
-            }
-        }
-    }
-
-    /// Whether `tab` is one this device opened and the record does not hold yet: what makes it this
-    /// device's to add there.
-    #[must_use]
-    pub(crate) fn is_unrecorded(&self, tab: u64) -> bool {
-        self.unrecorded.borrow().contains(&tab)
-    }
+/// Every window `desk`, a record's desktop, holds.
+fn tabs_of(desk: &DesktopTree) -> BTreeSet<u64> {
+    desk.workspaces.iter().flat_map(windows_of).collect()
 }
 
 /// Every window the desk of `workspace` shows.

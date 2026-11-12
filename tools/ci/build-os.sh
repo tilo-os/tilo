@@ -346,8 +346,8 @@ build_env_runtime() {
     return 0
   fi
   say "the environment runtime"
-  assembler "bash tools/ci/publish/rpm-snapshot-ref.sh /target/publish/rpm-snapshot"
-  mirrored buildah "bash tools/ci/publish/env-runtime.sh tree $arch /target/publish/rpm-snapshot /target/publish/rpms/$arch $trees"
+  assembler "bash tools/ci/publish/rpm-snapshot-ref.sh $arch /target/publish/rpm-snapshot/$arch"
+  mirrored buildah "bash tools/ci/publish/env-runtime.sh tree $arch /target/publish/rpm-snapshot/$arch /target/publish/rpms/$arch $trees"
   compile compile/target "bash tools/ci/publish/env-runtime.sh dev $arch $trees /target/os/$arch/compiled $out"
 }
 

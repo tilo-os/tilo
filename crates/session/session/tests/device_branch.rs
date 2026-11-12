@@ -176,3 +176,97 @@ fn a_device_restarted_keeps_writing_the_workspace_desk() {
     let _after = laptop.window(NOTES, "After the restart");
     wait_shown(&site, &[&laptop], "After the restart");
 }
+
+/// A copy started while the workspace's host is away is not the workspace's member yet: only the
+/// host admits a device, and it is away. The copy's apps take part in nothing there until then, so
+/// an action asked of one is refused at once, saying why, rather than waiting on an app that never
+/// answers; and the desk tells the person the workspace waits for its host (`e2e-branch` S07-b,
+/// where the branch booted while its source, the host, was stopped).
+#[test]
+fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
+    let ada = Person::new("Ada");
+    let mut site = Site::start(&ada, "Studio");
+    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP, CHAT]);
+    let mut laptop = ada.device("Ada's laptop");
+    laptop.install_chat();
+    let hers = site.invite(ada.public, WorkspaceRole::Editor);
+    laptop.join(&hers);
+    laptop.wait_holding(&site.workspace);
+    show(&laptop, &site);
+    laptop.open(CHAT);
+    laptop.wait_for_window(CHAT);
+    site.wait_for_record_of(CHAT, &laptop);
+    // Admitted, Chat runs what it is asked.
+    let me = hex::encode(ada.public);
+    let answer = laptop.chat().settled(
+        "open-direct-conversation",
+        &serde_json::json!({"public_key": me}),
+    );
+    let state = answer["answer"]["receipt"]["update"]["state"].as_str();
+    assert!(
+        matches!(state, Some("succeeded" | "failed")),
+        "the laptop's Chat did not run its action: {answer}"
+    );
+
+    laptop.stop();
+    let (mut copy, _) = ada.branch(&laptop);
+    site.stop();
+    copy.start();
+    copy.wait_holding(&site.workspace);
+    show(&copy, &site);
+    copy.open(CHAT);
+    copy.wait_for_window(CHAT);
+
+    // What the copy's desk offers of Chat is refused at once, with the reason.
+    let (provider, id) = chat_row(&copy);
+    let started = std::time::Instant::now();
+    let refused = copy.act(&provider, &id, &serde_json::json!({"public_key": me}));
+    let said = refused["err"]["message"].as_str().unwrap_or_default();
+    assert_eq!(
+        refused["err"]["code"], "remote_actions_unavailable",
+        "{refused}"
+    );
+    assert!(
+        said.contains("hasn't been admitted to") && said.contains("must be reachable once"),
+        "the refusal says why: {refused}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "refused at once, not after waiting on the app: {:?}",
+        started.elapsed()
+    );
+    // The desk tells the person, once, that the workspace waits for its host.
+    let told = "the person is told this device waits for the workspace's host to take it in";
+    tilo_test_env::wait_until(
+        format!(
+            "{} telling the person the workspace waits for its host",
+            copy.label
+        ),
+        || copy.log().contains(told),
+    );
+}
+
+/// The app whose actions the copy is asked to run.
+const CHAT: &str = "so.tilo.chat";
+
+/// A row the desk lists of Chat's `open-direct-conversation`, by its provider and id.
+fn chat_row(device: &common::people::Device) -> (String, String) {
+    let mut found = None;
+    tilo_test_env::wait_until(format!("{} listing Chat's actions", device.label), || {
+        found = device.actions()["answer"]["actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|row| {
+                row["application"] == CHAT && row["operation"] == "open-direct-conversation"
+            })
+            .map(|row| {
+                (
+                    row["provider"].as_str().unwrap_or_default().to_owned(),
+                    row["id"].as_str().unwrap_or_default().to_owned(),
+                )
+            });
+        found.is_some()
+    });
+    found.expect("a row of Chat's")
+}

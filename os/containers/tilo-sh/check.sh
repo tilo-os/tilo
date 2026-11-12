@@ -27,7 +27,11 @@
 #      port, the one destination besides the internet a VM is given;
 #   9. the guest this stack's VM host boots carries the Browser there: the
 #      headless session and the image's unprivileged browser user;
-#  10. a key opens Browser in a hosted workspace, timed to a live window;
+#  9b. the host warms the template that size's VMs start from, whose first boot
+#      is cold by necessity;
+#  10. a key opens Browser in a hosted workspace, timed to a live window, in a
+#      VM that woke as a clone of that template (the host's own measure of the
+#      wake is printed), never a cold boot of the guest image;
 #  11. the VM it runs in: every renderer sandboxed, the session running as the
 #      image's browser user, its device key, and what the page costs in memory
 #      (integration/vm-proofs.py);
@@ -42,8 +46,10 @@
 #      until the provider adds the account there.
 #
 # usage: check.sh [WORK]
-# The stack runs this checkout's programs natively, or the images with
-# TILO_SH_IMAGES=1 (stack.sh check --images; t's tilo-sh-local check). WORK keeps what it found (pages' consoles and screenshots, the visa run's
+# The stack runs this checkout's programs natively (the outputs a check hands
+# it: TILO_SH_PROGRAMS, TILO_SH_LOUNGE, TILO_SH_SITE, TILO_SH_CLI_DIR,
+# TILO_SH_CADDY, or this machine's own build). WORK keeps what it found
+# (pages' consoles and screenshots, the visa run's
 # log, report.json); default $TILO_SH_STATE/check. The stack is left up; it
 # is stopped first when TILO_SH_FRESH=1 (a new Lounge and door). The tilo
 # command is TILO_SH_TILO_BIN, else this checkout's release build the stack
@@ -57,8 +63,10 @@
 # each step's own seconds are printed beside it.
 # Needs what stack.sh needs, node, a headless Chromium (CHROME or
 # Playwright's), and uv (or python3 with httpx) for the Python SDK. With
-# TILO_SH_VM_HOST=1 it also needs /dev/kvm and root through sudo, and the
-# workspace guest image must carry the headless browser session.
+# TILO_SH_VM_HOST=1 the stack also runs its VM host, from the images
+# TILO_SH_IMAGE_VM_HOST and TILO_SH_HOSTED_GUEST name: that needs /dev/kvm,
+# root, podman and a loop device, and the guest image must carry the headless
+# browser session.
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd -- "$here/../../.." && pwd)
@@ -103,7 +111,6 @@ trap 'for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done' EXIT
 
 step 'bring the stack up'
 up_args=()
-[[ ${TILO_SH_IMAGES:-} == 1 ]] && up_args+=(--images)
 [[ ${TILO_SH_FRESH:-} == 1 ]] && up_args+=(--fresh)
 [[ ${TILO_SH_SEED:-} == 1 ]] && up_args+=(--seed)
 bash "$here/stack.sh" up "${up_args[@]}" || fail 'the stack did not come up'
@@ -146,7 +153,6 @@ fi
 hosted=${TILO_SH_VM_HOST:-0}
 hosted_report=$work/hosted/report.json
 if [[ $hosted == 1 ]]; then
-  [[ ${TILO_SH_IMAGES:-} == 1 ]] || fail 'TILO_SH_VM_HOST=1 runs the stack as its images: the VM host is one'
   [[ -e /dev/kvm ]] || fail '/dev/kvm: the hosted Browser runs in a VM, and this machine has none'
   # What the relay reads to place here: the account a card is on file for,
   # and the address a VM's browser session reaches the relay at.
@@ -211,6 +217,25 @@ if [[ $hosted == 1 ]]; then
     echo "ok: the guest carries the headless Browser session and its user"
   fi
 
+  # A workspace's VM starts as a clone of the host's warm template, which the
+  # host makes for a size once a VM of that size has run (step 9's). Its own
+  # first boot is cold by necessity, and a machine without the room behind it
+  # makes none at all, which the host's log says.
+  if runs_any 10 11 12; then
+    step '9b. the host warms the template a workspace VM starts from'
+    warmed=$SECONDS
+    template=
+    deadline=$((SECONDS + 180))
+    while ((SECONDS < deadline)); do
+      template=$(sudo -n podman logs tilo-sh-vm-host-0 2>&1 | sed -n 's/.*template is ready$/ready/p' | head -1)
+      [[ -z $template ]] || break
+      sleep 1
+    done
+    [[ -n $template ]] \
+      || fail "the VM host made no warm template in 180 s, so every workspace's VM boots cold: what it said is in sudo -n podman logs tilo-sh-vm-host-0 (a template is counted at the size's whole memory, and TILO_SH_VM_HOST_MEMORY_MIB is the room the host may use)"
+    echo "ok: the template was ready in $((SECONDS - warmed))s"
+  fi
+
   hosted_workspace= hosted_seconds=0
   hosted_run() { # PHASE
     TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
@@ -233,6 +258,26 @@ if [[ $hosted == 1 ]]; then
       fail "Browser did not open in the workspace's VM (see $work/hosted-open.log)"
     fi
     hosted_workspace=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workspace"])' "$hosted_report")
+    # How that VM woke, as the host measured it: a clone of the host's warm
+    # template, which is what makes a workspace's first Browser fast, or a
+    # cold boot of the guest image, which is the whole boot a person waits
+    # through. The host's line is `<workspace>/<environment> … wake <ms> ms
+    # (restored|booted) snapshot …`.
+    woke=$(python3 -c '
+import re, sys
+workspace = sys.argv[1]
+line = ""
+for candidate in sys.stdin.read().splitlines():
+    fields = candidate.split()
+    if fields and (fields[0] == workspace or fields[0].startswith(workspace + "/")):
+        line = candidate
+        break
+found = re.search(r"wake (.*?) snapshot", line)
+print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status 2>/dev/null)")
+    [[ -n $woke ]] || fail "the VM host says nothing of $hosted_workspace's wake: vm-host.sh status"
+    echo "ok: $hosted_workspace woke by $woke"
+    [[ $woke == *'(restored)' ]] \
+      || fail "$hosted_workspace woke by $woke: a workspace's VM starts as a clone of the host's warm template, and this one booted the guest image cold (the host's log says whether it could make a template)"
   fi
 
   if runs_any 11 12; then

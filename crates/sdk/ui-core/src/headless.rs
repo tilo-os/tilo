@@ -2841,6 +2841,7 @@ impl FrameHarness {
     /// Lift the parts that move as a whole out of every scene the draw pass produces from now on
     /// ([`crate::lift`]), for a host whose compositor poses them.
     pub fn lift_parts(&mut self, lift: bool) {
+        self.invalidate_local();
         self.lift_parts = lift;
     }
 
@@ -5166,8 +5167,8 @@ impl FrameHarness {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
-        let _motions = crate::motion::owning(self.motions.0);
         self.invalidate_local();
+        let _motions = crate::motion::owning(self.motions.0);
         // An action performed for someone lands at once (`motion`).
         crate::motion::note_source(crate::tokens::MotionSource::Action);
         self.settle_replayed_draws();
@@ -5534,8 +5535,8 @@ impl FrameHarness {
         name: &str,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
-        let _motions = crate::motion::owning(self.motions.0);
         self.invalidate_local();
+        let _motions = crate::motion::owning(self.motions.0);
         self.pump_component_wakes_checked()
             .map_err(|error| format!("owner layout readmission refused: {error:?}"))?;
         self.perform_semantic_named(name, None, action)
@@ -7123,8 +7124,8 @@ impl FrameHarness {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let _motions = crate::motion::owning(self.motions.0);
         self.invalidate_local();
+        let _motions = crate::motion::owning(self.motions.0);
         self.invoke_action(
             &tilo_actions::ActionAddress::new(resource, action),
             arguments,

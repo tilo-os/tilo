@@ -18,7 +18,7 @@ use tilo_relay_session::workspaces::{
     LIST_PERSONAL, PersonalList, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
-use web_time::{Duration as Wait, Instant};
+use web_time::Duration as Wait;
 
 use crate::session::{HOST_ITSELF, PeerConfig};
 use crate::{Cmd, Link, Outbox, TransportPhase};
@@ -217,7 +217,7 @@ impl Device {
 
     /// Whether the session is in `workspace_id`, waiting for its host to say so.
     pub async fn admitted(&self, workspace_id: u64) -> bool {
-        let started = Instant::now();
+        let started = tilo_clock::now();
         loop {
             let status = self.peer.status();
             if status.workspaces.get(&workspace_id) == Some(&true) {
@@ -304,7 +304,7 @@ impl Device {
     /// # Errors
     /// The host refused the session, or it did not connect in time.
     pub async fn connected(&self) -> Result<(), HostRefusal> {
-        let started = Instant::now();
+        let started = tilo_clock::now();
         loop {
             let status = self.peer.status();
             match status.phase {
@@ -749,7 +749,7 @@ pub async fn door_entry(
 /// The door or the workspace refused (the door's own code: `banned`, `removed`,
 /// `invitation-only`, `full` with the wait it asked for, `refused`), or no answer came in time.
 pub async fn entered(peer: &Link) -> Result<Admission, HostRefusal> {
-    let started = Instant::now();
+    let started = tilo_clock::now();
     let waits = ADMITTING.max(tilo_relay_protocol::entering::ENTERING_DEADLINE);
     loop {
         let status = peer.status();

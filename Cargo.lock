@@ -19357,6 +19357,7 @@ dependencies = [
  "tilo-identity-host",
  "tilo-test-env",
  "tilo-user-identity",
+ "tracing",
  "uuid",
  "workspace-hack",
 ]

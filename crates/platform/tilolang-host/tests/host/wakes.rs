@@ -67,13 +67,7 @@ fn an_idle_hosts_loop_does_not_wake_until_a_window_has_something() {
     }));
     let (ours, theirs) = Channel::pair().unwrap();
     host.open(
-        Spec {
-            app: APP.to_owned(),
-            workspace: route.cluster_id.to_string(),
-            instance: 2,
-            person: "grace".to_owned(),
-            installed: std::collections::BTreeMap::new(),
-        },
+        Spec::new(APP, route.cluster_id.to_string(), 2, "grace"),
         Arc::new(counter()),
         manager,
         ours,

@@ -320,7 +320,10 @@ fn tag_editor(core: &Shared, requests: &Requests, id: &SnippetId, tags: &[String
         let remove = Button::icon_only(
             &format!("snippets.snippet:{id}.tag:{tag}.remove"),
             Icon::X,
-            &format!("Remove the tag {tag}"),
+            &CATALOG.t_args(
+                "snippets-remove-tag",
+                &[("tag", ui::i18n::ArgValue::Text(tag.clone()))],
+            ),
         )
         .control_size(ControlSize::Small)
         .on_own_device_effect(move || {

@@ -273,7 +273,7 @@ impl Presence {
         let now = now_ms();
         let due = self.plane.borrow().next_due(now)?;
         let wait = (due - now).max(0.0) / 1_000.0;
-        Instant::now().checked_add(Duration::from_secs_f64(wait))
+        tilo_clock::now().checked_add(Duration::from_secs_f64(wait))
     }
 
     /// Say what `workspace`'s board owes now — the keepalives, the repeats and the loss repairs —

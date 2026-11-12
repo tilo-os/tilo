@@ -582,11 +582,8 @@ impl TilolangHost {
         .map_err(|error| AdmitError::Join(format!("{error:?}")))?;
         Ok(Stage::Joining {
             spec: Spec {
-                app: request.app,
-                workspace: request.room,
-                instance: request.instance,
-                person: request.person,
                 installed: request.installed,
+                ..Spec::new(request.app, request.room, request.instance, request.person)
             },
             bundle: Arc::new(bundle),
             manager,

@@ -5,6 +5,7 @@
 //! glyph controls share one size.
 use super::fixture::FixtureChrome;
 use super::*;
+use crate::chrome::AvatarAsk;
 use tilo_desktop_model::{Collaborator, DesktopTree, Workspace, WorkspaceSlot};
 use ui::widget::DrawChild;
 
@@ -17,6 +18,23 @@ struct Case {
     dark: bool,
     native: bool,
     others: &'static [(&'static str, &'static str, bool)],
+    /// The ask about keeping who they are, open on their avatar, as the page puts it.
+    ask: bool,
+}
+
+/// What the page asks the person, in the person's own words.
+const ASK_QUESTION: &str = "Keep your name and work?";
+
+/// The ask the page puts on the person's avatar: its words, its body and its answer.
+fn ask() -> AvatarAsk {
+    AvatarAsk {
+        question: ASK_QUESTION.into(),
+        detail: "A passkey on this device brings you back as yourself, on any browser. Any time \
+                 later: Ctrl+K, “Keep your name and work”."
+            .into(),
+        answer: "Keep with passkey".into(),
+        open: true,
+    }
 }
 
 fn tree(others: &[(&str, &str, bool)]) -> DesktopTree {
@@ -35,7 +53,7 @@ fn tree(others: &[(&str, &str, bool)]) -> DesktopTree {
     }
 }
 
-fn draw(case: &Case) -> TopBarChrome {
+fn draw(case: &Case) -> (TopBarChrome, usize) {
     let theme = if case.dark {
         Theme::dark()
     } else {
@@ -52,6 +70,9 @@ fn draw(case: &Case) -> TopBarChrome {
             identity: OWN.into(),
         });
         state.notifications_only = !case.native;
+        if case.ask {
+            state.ask = Some(ask());
+        }
         if case.native {
             state.status = crate::chrome::SystemStatus {
                 battery_percent: Some(76),
@@ -82,6 +103,16 @@ fn draw(case: &Case) -> TopBarChrome {
         &theme,
         &PresenceCtx::default(),
     );
+    // The glyphs the ask's words set, counted where the question starts: a question cut with an
+    // ellipsis sets fewer glyphs than the whole one, and no pill at all leaves none.
+    let question_glyphs = if case.ask && !bar.avatar_ask_rect().is_zero_area() {
+        let pill = bar.avatar_ask_rect();
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let caption = theme.tokens.typography.size(TextRole::Caption);
+        glyphs_from(&scene, pill, pill.x0 + pad, caption)
+    } else {
+        0
+    };
     if let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(std::path::PathBuf::from) {
         std::fs::create_dir_all(&directory).expect("the directory for shots");
         #[expect(
@@ -96,7 +127,46 @@ fn draw(case: &Case) -> TopBarChrome {
             directory.join(format!("{}.png", case.name)),
         );
     }
-    bar
+    (bar, question_glyphs)
+}
+
+/// The glyphs painted for the words that start at `x` within `pill`, in `size`: the words a person
+/// reading them there sees, whole or cut short, and none where nothing stands there.
+pub(super) fn glyphs_from(scene: &Scene, pill: Rect, x: f64, size: f32) -> usize {
+    scene
+        .encoding()
+        .resources
+        .glyph_runs
+        .iter()
+        .filter(|run| {
+            let [tx, ty] = run.transform.translation;
+            (run.font_size - size).abs() < 0.01
+                && (f64::from(tx) - x).abs() < 0.5
+                && (f64::from(ty) - pill.center().y).abs() <= pill.height() / 2.0 + 1.0
+        })
+        .map(|run| run.glyphs.len())
+        .sum()
+}
+
+/// The glyphs `question` sets when it paints whole, at any room it likes.
+pub(super) fn whole_question_glyphs(theme: &Theme, question: &str) -> usize {
+    let mut text = TextRenderer::new();
+    let mut scene = Scene::new();
+    text.draw_style(
+        &mut scene,
+        question,
+        theme.tokens.colors.text_dim,
+        Affine::IDENTITY,
+        None,
+        &theme.text(TextRole::Caption),
+    );
+    scene
+        .encoding()
+        .resources
+        .glyph_runs
+        .iter()
+        .map(|run| run.glyphs.len())
+        .sum()
 }
 
 const CASES: &[Case] = &[
@@ -106,6 +176,7 @@ const CASES: &[Case] = &[
         dark: true,
         native: false,
         others: &[],
+        ask: false,
     },
     Case {
         name: "web-alone-light",
@@ -113,6 +184,7 @@ const CASES: &[Case] = &[
         dark: false,
         native: false,
         others: &[],
+        ask: false,
     },
     Case {
         name: "web-others-agent-dark",
@@ -120,6 +192,7 @@ const CASES: &[Case] = &[
         dark: true,
         native: false,
         others: &[("ada", "Ada Lovelace", false), ("cc", "Claude Code", true)],
+        ask: false,
     },
     Case {
         name: "web-crowd-light",
@@ -133,6 +206,7 @@ const CASES: &[Case] = &[
             ("cc", "Claude Code", true),
             ("di", "Di Lane", false),
         ],
+        ask: false,
     },
     Case {
         name: "web-phone-alone-dark",
@@ -140,6 +214,7 @@ const CASES: &[Case] = &[
         dark: true,
         native: false,
         others: &[],
+        ask: false,
     },
     Case {
         name: "web-phone-others-dark",
@@ -147,6 +222,7 @@ const CASES: &[Case] = &[
         dark: true,
         native: false,
         others: &[("ada", "Ada Lovelace", false), ("cc", "Claude Code", true)],
+        ask: false,
     },
     Case {
         name: "native-alone-dark",
@@ -154,6 +230,7 @@ const CASES: &[Case] = &[
         dark: true,
         native: true,
         others: &[],
+        ask: false,
     },
     Case {
         name: "native-others-light",
@@ -161,6 +238,47 @@ const CASES: &[Case] = &[
         dark: false,
         native: true,
         others: &[("ada", "Ada Lovelace", false), ("cc", "Claude Code", true)],
+        ask: false,
+    },
+    Case {
+        name: "web-ask-dark",
+        width: 1280.0,
+        dark: true,
+        native: false,
+        others: &[],
+        ask: true,
+    },
+    Case {
+        name: "web-ask-light",
+        width: 1280.0,
+        dark: false,
+        native: false,
+        others: &[],
+        ask: true,
+    },
+    Case {
+        name: "web-others-ask-light",
+        width: 1280.0,
+        dark: false,
+        native: false,
+        others: &[("ada", "Ada Lovelace", false), ("cc", "Claude Code", true)],
+        ask: true,
+    },
+    Case {
+        name: "web-phone-ask-dark",
+        width: 390.0,
+        dark: true,
+        native: false,
+        others: &[],
+        ask: true,
+    },
+    Case {
+        name: "web-phone-ask-light",
+        width: 390.0,
+        dark: false,
+        native: false,
+        others: &[],
+        ask: true,
     },
 ];
 
@@ -169,9 +287,25 @@ fn the_right_end_shows_each_person_once_flush_and_in_one_icon_size() {
     let theme = Theme::dark();
     // Every case is drawn (and written) before any is judged, so a run that fails still leaves
     // every shot to look at.
-    let bars: Vec<TopBarChrome> = CASES.iter().map(draw).collect();
-    for (case, bar) in CASES.iter().zip(bars) {
+    let whole = whole_question_glyphs(&theme, ASK_QUESTION);
+    let bars: Vec<(TopBarChrome, usize)> = CASES.iter().map(draw).collect();
+    for (case, (bar, question_glyphs)) in CASES.iter().zip(bars) {
         let name = case.name;
+        // The ask's question reads whole wherever the ask stands on the bar, never as an elided
+        // "Keep your name an…": a bar too narrow for it leaves the ask as the face's dot.
+        if case.ask {
+            if bar.avatar_ask_rect().is_zero_area() {
+                assert!(
+                    !bar.own_avatar_rect().is_zero_area(),
+                    "{name}: with no room for the question, the ask waits on the face"
+                );
+            } else {
+                assert_eq!(
+                    question_glyphs, whole,
+                    "{name}: the question stands whole in its pill, not cut short"
+                );
+            }
+        }
         // This person appears once: their own avatar, never also among the faces.
         assert!(bar.face_rect(OWN).is_none(), "{name}: not among the others");
         assert!(

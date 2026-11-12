@@ -343,7 +343,12 @@ impl DisplayModel {
             })
             .map_or_else(
                 || "Extend workspace".into(),
-                |target| format!("Mirror {}", target.label),
+                |target| {
+                    crate::i18n::t_args(
+                        "display-mirror",
+                        &[("display", ui::i18n::ArgValue::Text(target.label.clone()))],
+                    )
+                },
             );
         vec![
             setting_row(

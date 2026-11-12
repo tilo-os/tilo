@@ -448,7 +448,7 @@ fn zone_status(model: &PageModel<'_>, intents: &Intents) -> Column {
         let intents = intents.clone();
         column = column.push(Box::new(
             Row::new().push(Box::new(
-                Button::new("firewall-make-active", "Make active zone")
+                Button::new("firewall-make-active", &CATALOG.t("firewall-make-active"))
                     .on_effect(move || intents.push(Intent::MakeActive)),
             )),
         ));
@@ -501,7 +501,11 @@ fn details(zone: &Zone) -> Section {
         Property::new(CATALOG.t("firewall-interfaces"), zone.interfaces.join(", "))
             .with_kind(TextKind::Identifier)
     };
-    let masquerading = if zone.masquerade { "On" } else { "Off" };
+    let masquerading = CATALOG.t(if zone.masquerade {
+        "firewall-masquerade-on"
+    } else {
+        "firewall-masquerade-off"
+    });
     Section::titled(
         CATALOG.t("firewall-section-details"),
         vec![Box::new(PropertyList::new(vec![
@@ -618,7 +622,10 @@ fn rule_table(
                 Button::icon_only(
                     &format!("firewall-rule-edit-{id}"),
                     Icon::Pencil,
-                    &format!("Edit the {} rule", row.title),
+                    &CATALOG.t_args(
+                        "firewall-edit-rule",
+                        &[("rule", ui::i18n::ArgValue::Text(row.title.clone()))],
+                    ),
                 )
                 .on_view(move || intents.push(Intent::EditRule(id))),
             )
@@ -630,7 +637,10 @@ fn rule_table(
                 Button::icon_only(
                     &format!("firewall-rule-delete-{id}"),
                     Icon::Trash2,
-                    &format!("Delete the {} rule", row.title),
+                    &CATALOG.t_args(
+                        "firewall-delete-rule-action",
+                        &[("rule", ui::i18n::ArgValue::Text(row.title.clone()))],
+                    ),
                 )
                 .on_view(move || intents.push(Intent::AskDelete(id))),
             )
@@ -809,9 +819,15 @@ fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDia
     let cancel = intents.clone();
     let dismiss = intents.clone();
     let title = if editing {
-        format!("Edit the rule in {}", zone.title())
+        CATALOG.t_args(
+            "firewall-edit-rule-in-zone",
+            &[("zone", ui::i18n::ArgValue::Text(zone.title().to_owned()))],
+        )
     } else {
-        format!("Add a rule to {}", zone.title())
+        CATALOG.t_args(
+            "firewall-add-rule-to-zone",
+            &[("zone", ui::i18n::ArgValue::Text(zone.title().to_owned()))],
+        )
     };
     let primary = if editing { "Save rule" } else { "Add rule" };
     ModalDialog::new(title, body)
@@ -904,7 +920,7 @@ fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
     }
     let retry = intents.clone();
     page = page.push(Box::new(blocked_table(report))).push(Box::new(
-        Button::new("firewall-blocked-refresh", "Refresh")
+        Button::new("firewall-blocked-refresh", &CATALOG.t("firewall-refresh"))
             .with_icon(Icon::Refresh)
             .on_view(move || retry.push(Intent::RefreshBlocked)),
     ));
@@ -956,23 +972,20 @@ struct BlockedRow {
 fn switch_dialog(which: PendingSwitch, intents: &Intents) -> ModalDialog<Text> {
     let (title, body, confirm) = match which {
         PendingSwitch::Stop => (
-            "Turn off the firewall?",
-            "No rules will be enforced until you turn it on again. If this machine is \
-             reachable from a network you do not control, that connection can reach it \
-             without the rules you set.",
-            "Turn off the firewall",
+            CATALOG.t("firewall-stop-title"),
+            CATALOG.t("firewall-stop-body"),
+            CATALOG.t("firewall-stop-confirm"),
         ),
         PendingSwitch::PanicOn => (
-            "Enter panic mode?",
-            "All incoming and outgoing traffic is dropped, including the remote session \
-             you may be using to fix this machine. Anything already connected is cut.",
-            "Drop all traffic",
+            CATALOG.t("firewall-panic-title"),
+            CATALOG.t("firewall-panic-body"),
+            CATALOG.t("firewall-panic-confirm"),
         ),
     };
     let ask = intents.clone();
     let cancel = intents.clone();
     let dismiss = intents.clone();
-    ModalDialog::new(title, Text::new(body).with_role(TextRole::Body))
+    ModalDialog::new(&title, Text::new(&body).with_role(TextRole::Body))
         .with_test_id("firewall-switch-dialog")
         .with_destructive(true)
         .primary_action(confirm, move || ask.push(Intent::ConfirmSwitch))

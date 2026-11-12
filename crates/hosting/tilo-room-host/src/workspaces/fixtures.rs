@@ -10,7 +10,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::ChannelRoute;
@@ -264,7 +263,7 @@ pub async fn admit_view_reader(
         .await
         .expect("a governed room");
     let mut workspace = state.lock().await;
-    let now = SystemTime::now();
+    let now = tilo_clock::wall();
     let mut candidate = workspace.peer().clone();
     candidate
         .admit_certificate(member.clone(), key, now)
@@ -292,7 +291,7 @@ pub async fn project_standings(workspaces: &Workspaces, workspace: &str) {
         let standings = governed
             .peer()
             .governance()
-            .governed_standings(SystemTime::now())
+            .governed_standings(tilo_clock::wall())
             .expect("the workspace's standings");
         (standings, governed.workspace_id())
     };
@@ -320,7 +319,7 @@ pub async fn restricted_until(
         .workspace(workspace)
         .await
         .expect("a governed room");
-    let now = SystemTime::now();
+    let now = tilo_clock::wall();
     let permissions = state
         .lock()
         .await

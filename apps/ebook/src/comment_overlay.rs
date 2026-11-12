@@ -179,7 +179,7 @@ fn gather_content(
         (color, excerpt)
     };
     let excerpt = if excerpt.is_empty() {
-        "Highlighted passage".to_string()
+        crate::resource::CATALOG.t("ebook-highlighted-passage")
     } else {
         format!("\u{201C}{excerpt}\u{201D}")
     };

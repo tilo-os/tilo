@@ -495,9 +495,7 @@ pub(crate) mod signed_test_support {
             request: tilo_peer_state::owner_commit::OwnerCommitRequest,
         ) -> tilo_peer_state::owner_commit::CommitFuture {
             let owner = self.owner.clone();
-            Box::pin(
-                async move { owner.commit_effect_receipt(&request, std::time::SystemTime::now()) },
-            )
+            Box::pin(async move { owner.commit_effect_receipt(&request, tilo_clock::wall()) })
         }
     }
 

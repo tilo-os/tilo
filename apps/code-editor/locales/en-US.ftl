@@ -37,3 +37,7 @@ code-editor-a11y-document-description = Code editor. Use the file tree, file hea
 
 ## Facts, property labels and section titles
 code-editor-a11y-code = Code: { $project }
+
+## What the window shows
+code-editor-open-failed = Could not open { $path }: { $detail }
+code-editor-cursor = Ln { $line }, Col { $column }

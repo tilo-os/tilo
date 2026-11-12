@@ -1229,8 +1229,8 @@ impl SignInFlow {
         let mut buttons = Row::new();
         if unavailable.is_none() && !waiting {
             let label = match (&self.stage, self.kind) {
-                (Stage::Code { .. } | Stage::PastedCode { .. }, _) => "Verify",
-                (_, AccountKind::ICloudDrive) => "Sign in",
+                (Stage::Code { .. } | Stage::PastedCode { .. }, _) => "settings-accounts-verify",
+                (_, AccountKind::ICloudDrive) => "settings-accounts-sign-in",
                 _ => &t("accounts-services-continue"),
             };
             buttons = buttons.push(Box::new(bind(

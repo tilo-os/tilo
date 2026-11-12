@@ -441,7 +441,7 @@ impl ActionPlane {
         let device = self.device();
         let mut participants = self
             .read_workspace(workspace, |peer| {
-                let now = SystemTime::now();
+                let now = tilo_clock::wall();
                 peer.certificates()
                     .into_iter()
                     .map(|certificate| certificate.device_public_key)
@@ -499,12 +499,12 @@ impl ActionPlane {
                 )
             })
             .collect::<Vec<_>>();
-        let started = Instant::now();
+        let started = tilo_clock::now();
         let until = started.checked_add(within).unwrap_or(started);
         self.0.runtime.spawn(async move {
             let mut answers = Vec::with_capacity(asks.len());
             for (target, mut ask) in asks {
-                let remaining = until.saturating_duration_since(Instant::now());
+                let remaining = until.saturating_duration_since(tilo_clock::now());
                 let answer = tokio::time::timeout(remaining, &mut ask).await;
                 let heard = if let Ok(Ok(heard)) = answer {
                     (target, heard)
@@ -525,7 +525,7 @@ impl ActionPlane {
     /// nothing is to be said — this device does not hold the workspace, it is
     /// not a member of it, or the device that asked is not.
     async fn answer_offer(&self, remote: [u8; 32], query: &Query) -> Option<Answer> {
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let device = self.device();
         let (admits_asker, is_member) = self
             .read_workspace(&query.workspace, |peer| {
@@ -607,7 +607,7 @@ impl ActionPlane {
             .map_err(|error| ActionHostError::Refused {
                 reason: error.to_string(),
             })?;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let (authority, certificate) = self
             .read_workspace_for(Some(source), &action.workspace, |peer| {
                 let authority = peer.permissions(source, now);
@@ -719,7 +719,7 @@ impl ActionPlane {
         };
         let wait =
             Duration::from_millis(u64::from(wait_ms)).min(tilo_actions::remote::MAX_REMOTE_WAIT);
-        let deadline = Instant::now()
+        let deadline = tilo_clock::now()
             .checked_add(wait)
             .unwrap_or_else(Instant::now);
         loop {
@@ -729,7 +729,7 @@ impl ActionPlane {
             {
                 return state;
             }
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            let Some(remaining) = deadline.checked_duration_since(tilo_clock::now()) else {
                 return dispatcher.observe(caller, invocation);
             };
             match dispatcher.next_change(caller, invocation) {
@@ -754,7 +754,7 @@ impl ActionPlane {
         let CallerPrincipalKey::Person(person) = CallerPrincipalKey::of(caller) else {
             return Ok(());
         };
-        let now = Instant::now();
+        let now = tilo_clock::now();
         let rate = self.rate();
         let mut callers = self.0.callers.lock_recover();
         if callers.len() >= KEPT_CALLERS && !callers.contains_key(&person) {
@@ -1008,7 +1008,7 @@ impl RemoteDevice {
     ) -> tilo_actions::remote::Pending<
         Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionHostError>,
     > {
-        let now = Instant::now();
+        let now = tilo_clock::now();
         let budget = FollowBudget {
             until: now.checked_add(follow_for).unwrap_or(now),
             rounds: MAX_FOLLOW_ROUNDS,
@@ -1099,7 +1099,7 @@ impl Device {
             route: route.clone(),
             work: work.clone(),
         };
-        let started = Instant::now();
+        let started = tilo_clock::now();
         let heard = async {
             let bytes = postcard::to_allocvec(&PlaneFrame::Offer(Box::new(query))).ok()?;
             let answer = self.exchange(&bytes).await.ok()?;
@@ -1194,7 +1194,7 @@ fn follow(
         Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionHostError>,
     >,
 ) {
-    if budget.rounds == 0 || Instant::now() >= budget.until {
+    if budget.rounds == 0 || tilo_clock::now() >= budget.until {
         done.complete(Err(unavailable(
             "the device did not finish the action in time",
         )));
@@ -1364,7 +1364,7 @@ impl ActionHost for RemoteDevice {
             return None;
         }
         let seen = self.0.follow.mark(id);
-        let sent = Instant::now();
+        let sent = tilo_clock::now();
         let device = Arc::clone(&self.0);
         let invocation = *id;
         let (changed, change) = tilo_actions::remote::pending();
@@ -1409,7 +1409,7 @@ impl ActionHost for RemoteDevice {
 }
 
 pub(crate) fn now_ns() -> u64 {
-    SystemTime::now()
+    tilo_clock::wall()
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()
         .and_then(|since| u64::try_from(since.as_nanos()).ok())

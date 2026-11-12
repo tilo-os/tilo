@@ -45,7 +45,7 @@ impl VideoEditorApp {
                 scene,
                 tr,
                 tf,
-                "No audio",
+                &crate::resource::CATALOG.t("video-editor-no-audio"),
                 &label,
                 c.text_dim,
                 m.readout.x0,
@@ -58,7 +58,7 @@ impl VideoEditorApp {
             scene,
             tr,
             tf,
-            "Mix",
+            &crate::resource::CATALOG.t("video-editor-mix"),
             &label,
             c.text_dim,
             m.readout.x0,
@@ -797,7 +797,7 @@ impl VideoEditorApp {
                 // strip, rather than leaving a row of blanks to be read as
                 // "this clip has no picture".
                 if self.thumbnails.is_undecodable(clip.media) && cr.width() > 90.0 {
-                    let msg = "No preview";
+                    let msg = &crate::resource::CATALOG.t("video-editor-no-preview");
                     let style = caption(theme);
                     let at = text_centre(inner, msg, &style, ctx.text);
                     text(

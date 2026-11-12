@@ -93,7 +93,7 @@ impl Replicas {
     /// longer restores is let go: the host's bootstraps and replays bring
     /// its workspaces back.
     pub(crate) fn new(device: DeviceCert, store: Arc<dyn PeerStore>) -> Self {
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let kept = store
             .load_rooms()
             .and_then(|bytes| serde_json::from_slice::<NativeAuthorityStorage>(&bytes).ok());
@@ -204,6 +204,22 @@ impl Replicas {
         self.owner.receive_batch(workspace, inputs, now)
     }
 
+    /// Whether `workspace_id`'s governance, as this replica holds it, admits
+    /// this device now: what it reads the workspace's records as. A host
+    /// replays a workspace's governance in parts, and its newest part — the
+    /// change that admitted a device that just entered — can follow what the
+    /// device was already sent.
+    pub(crate) fn admits_this_device(&self, workspace_id: u64) -> bool {
+        let device = self.device.device_public_key;
+        self.with_workspace(workspace_id, |view| {
+            view.peer()
+                .permissions(device, tilo_clock::wall())
+                .map(drop)
+                .map_err(|error| error.to_string())
+        })
+        .is_some_and(|admitted| admitted.is_ok())
+    }
+
     /// The workspace held as `workspace_id`, once its governance is.
     pub(crate) fn workspace(&self, workspace_id: u64) -> Option<WorkspaceId> {
         self.workspaces.get(&workspace_id).copied()
@@ -230,7 +246,7 @@ impl Replicas {
             let members = view
                 .peer()
                 .governance()
-                .governed_members(SystemTime::now())?;
+                .governed_members(tilo_clock::wall())?;
             Ok(members
                 .into_iter()
                 .filter(|member| !member.removed)

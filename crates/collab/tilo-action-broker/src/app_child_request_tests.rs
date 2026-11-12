@@ -430,6 +430,70 @@ async fn native_person_rig(env: &Environment) -> Rig {
     .await
 }
 
+/// The seat of a host whose identity a login is still writing: reading it
+/// answers that the registry has not named the person yet, and the ask the
+/// seat's first action makes waits for it, after which the identity is there.
+struct Arriving {
+    host: Arc<CurrentHost>,
+    named: std::sync::atomic::AtomicBool,
+}
+
+impl crate::services::LocalPersonServices for Arriving {
+    fn certificate(
+        &self,
+        workspace: &str,
+        person: &str,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        if !self.named.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("this device's identity is not ready yet".into());
+        }
+        crate::services::LocalPersonServices::certificate(
+            &super::signed_worker::NativePerson(Arc::clone(&self.host)),
+            workspace,
+            person,
+        )
+    }
+
+    fn certificate_when_named(
+        &self,
+        workspace: &str,
+        person: &str,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        // What the wait ends on: the registry names the person, and the identity is there from
+        // then on — the effect's own re-check asks again.
+        self.named.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.certificate(workspace, person)
+    }
+}
+
+/// A person's first action of a login is answered by the identity, not
+/// refused before the registry names them.
+#[tokio::test(flavor = "current_thread")]
+async fn a_persons_first_action_is_answered_once_the_identity_names_them() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::with_services(
+                &env,
+                HostServices {
+                    local_person: Some(Arc::new(Arriving {
+                        host: env.authority.clone(),
+                        named: std::sync::atomic::AtomicBool::new(false),
+                    })),
+                    ..env.membership.services()
+                },
+            )
+            .await;
+            let _notes = publish_notes(&rig, &env);
+            let asked = id(0xc4c1);
+            // The receipt is accepted, as `person_asks` holds: an identity that is being written
+            // is waited for, never refused.
+            person_asks(&rig, &env, asked).await;
+            rig.stop().await;
+        })
+        .await;
+}
+
 /// The person asks the rig's application for its action as `asked`; the
 /// invocation it is handed.
 async fn person_asks(

@@ -11,7 +11,6 @@
 //! governance tells every member it may hold the workspace.
 
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use iroh_base::EndpointAddr;
 use serde_json::{Map, Value, json};
@@ -87,7 +86,7 @@ impl Workspaces {
         let hint = self
             .transport_hint(governed)
             .map_err(|error| error.to_string())?;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = governed.peer().clone();
         if candidate
             .governance_mut()
@@ -169,7 +168,7 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
-        let now = std::time::SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = governed.peer().clone();
         if change(candidate.governance_mut(), &host.key, now)? {
             governed.commit(candidate, &host.key, now, |record, _| {

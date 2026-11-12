@@ -178,6 +178,10 @@ pub struct Member {
     /// Their own view of their desktop, as a shell — or an agent, which says
     /// its face, where it works and what it is doing the same way — said it.
     pub shell: Option<Box<ShellPresence>>,
+    /// The sequence of the view in `shell` for a run the host speaks for: a
+    /// view at or below it is one already taken, or one that came late, and
+    /// taking it would say what the run was doing before.
+    shell_seq: u32,
     /// Every other app's last word under its own key.
     pub apps: Vec<(PresenceKey, Payload)>,
     /// They said they are here and have not left: what makes them a member.
@@ -209,6 +213,7 @@ impl Member {
             wave: None,
             call: None,
             shell: None,
+            shell_seq: 0,
             apps: Vec::new(),
             here: false,
             epoch: 0,
@@ -724,7 +729,17 @@ impl Board {
                 }),
                 // A shell — a page's desktop, or an agent's face — says where
                 // its person is and, for an agent, that it works here at all.
+                // A run says each step it takes with a higher sequence: a view
+                // at or below the one already taken is a repeat of it, sent
+                // again or arrived late, and taking it would say what the run
+                // was doing before the step it is on now.
                 Payload::Shell(shell) => self.touch(from, |member| {
+                    if member.spoken_by.is_some()
+                        && shell.seq.wrapping_sub(member.shell_seq) >= u32::MAX / 2
+                    {
+                        return false;
+                    }
+                    member.shell_seq = shell.seq;
                     let changed = member.arrive() || member.shell.as_deref() != Some(&**shell);
                     member.shell = Some(shell.clone());
                     changed

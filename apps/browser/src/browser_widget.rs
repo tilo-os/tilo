@@ -2665,7 +2665,7 @@ impl BrowserWidget {
         }
         let aspect = (region.width() / region.height()).clamp(0.4, 2.8);
         let title = if self.title.trim().is_empty() {
-            "Browser page".to_string()
+            CATALOG.t("browser-page-untitled")
         } else {
             self.title.clone()
         };
@@ -2893,7 +2893,7 @@ impl BrowserWidget {
             // Assistive technology reads the document by its title, as in
             // any browser; an untitled page keeps the generic name.
             let page_name = if self.title.trim().is_empty() {
-                "Web content".to_owned()
+                CATALOG.t("browser-page-content-name")
             } else {
                 self.title.clone()
             };
@@ -5036,8 +5036,8 @@ impl Widget for BrowserWidget {
             })
             .collect();
         let name = match direction {
-            NavigationDirection::Back => "Back history",
-            NavigationDirection::Forward => "Forward history",
+            NavigationDirection::Back => CATALOG.t("browser-history-back"),
+            NavigationDirection::Forward => CATALOG.t("browser-history-forward"),
         };
         Some(AccessNode::new(Role::Group).with_children(vec![
                 AccessNode::new(Role::Menu)
@@ -5324,7 +5324,11 @@ impl BrowserWidget {
         let mut page = ResourceSpec::new(
             "browser.page",
             "browser.page",
-            if site.is_empty() { "Web page" } else { &site },
+            if site.is_empty() {
+                CATALOG.t("browser-page-untitled")
+            } else {
+                site
+            },
         );
         if self.person_bookmarks.is_some()
             && !self.current_uri.trim().is_empty()
@@ -5345,20 +5349,23 @@ impl BrowserWidget {
         page.actions.push(if self.can_go_back {
             back
         } else {
-            back.unavailable("history_boundary", "No previous page")
+            back.unavailable(
+                "history_boundary",
+                CATALOG.t("browser-action-no-previous-page"),
+            )
         });
         let forward = E::Forward.bound();
         page.actions.push(if self.can_go_forward {
             forward
         } else {
-            forward.unavailable("history_boundary", "No next page")
+            forward.unavailable("history_boundary", CATALOG.t("browser-action-no-next-page"))
         });
         page.actions.push(E::Reload.bound());
         let stop = E::Stop.bound();
         page.actions.push(if self.progress < 1.0 {
             stop
         } else {
-            stop.unavailable("history_boundary", "Page is idle")
+            stop.unavailable("history_boundary", CATALOG.t("browser-action-page-idle"))
         });
         page.actions
             .push(E::Navigate { url: String::new() }.bound_asking(&["url"]));
@@ -5382,7 +5389,7 @@ impl BrowserWidget {
         page.actions.push(if web_page {
             reader
         } else {
-            reader.unavailable("no_web_page", "Open a web page first")
+            reader.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
         });
         let review = E::ReviewPage.bound();
         page.actions.push(if web_page {
@@ -5632,7 +5639,7 @@ impl BrowserWidget {
             page.actions.push(if web_page {
                 spec
             } else {
-                spec.unavailable("no_web_page", "Open a web page first")
+                spec.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
             });
         }
         // Each form the page is known to ask is an action of its own.
@@ -5642,9 +5649,9 @@ impl BrowserWidget {
             "browser.session",
             "browser.history-pause",
             if self.history_paused() {
-                "History paused"
+                CATALOG.t("browser-history-paused")
             } else {
-                "History recording"
+                CATALOG.t("browser-history-recording")
             },
         );
         let mut pause = E::TogglePause.bound();
@@ -5657,10 +5664,14 @@ impl BrowserWidget {
         // row's: a view on these rows would be their disclosure in the
         // action directory, a private one an agent is never shown, and with
         // it every action here (clear history, start a download).
-        let mut history = ResourceSpec::new("browser.history", "browser.history", "History");
+        let mut history = ResourceSpec::new(
+            "browser.history",
+            "browser.history",
+            CATALOG.t("browser-resource-history"),
+        );
         let clear = E::ClearHistory.bound();
         history.actions.push(if self.history.is_empty() {
-            clear.unavailable("already_empty", "Browsing history is already empty")
+            clear.unavailable("already_empty", CATALOG.t("browser-history-already-empty"))
         } else {
             clear
         });
@@ -5700,8 +5711,11 @@ impl BrowserWidget {
             history.children.push(row);
         }
 
-        let mut bookmarks =
-            ResourceSpec::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
+        let mut bookmarks = ResourceSpec::new(
+            "browser.bookmarks",
+            "browser.bookmarks",
+            CATALOG.t("browser-resource-bookmarks"),
+        );
         bookmarks.actions.push(E::ShowBookmarks.bound());
         // Each bookmark is an item of the document; this window adds opening
         // its page to it.
@@ -5725,8 +5739,11 @@ impl BrowserWidget {
             })
             .collect();
 
-        let mut downloads =
-            ResourceSpec::new("browser.downloads", "browser.downloads", "Downloads");
+        let mut downloads = ResourceSpec::new(
+            "browser.downloads",
+            "browser.downloads",
+            CATALOG.t("browser-resource-downloads"),
+        );
         downloads
             .actions
             .push(E::StartDownload { url: String::new() }.bound_asking(&["url"]));
@@ -5772,8 +5789,11 @@ impl BrowserWidget {
             downloads.children.push(child);
         }
 
-        let mut extensions =
-            ResourceSpec::new("browser.extensions", "browser.extensions", "Extensions");
+        let mut extensions = ResourceSpec::new(
+            "browser.extensions",
+            "browser.extensions",
+            CATALOG.t("browser-resource-extensions"),
+        );
         extensions.actions.push(E::ShowExtensions.bound());
         extensions.actions.extend(self.extensions.add_action());
         // Each installed extension, as the window last read the profile,
@@ -5784,7 +5804,11 @@ impl BrowserWidget {
         // unaddressable collection of tabs.  This lets keyboard users,
         // assistive technology, global action search, and agents all use the
         // same section operations as the visible surface.
-        let mut library = ResourceSpec::new("browser.library", "browser.library", "Library");
+        let mut library = ResourceSpec::new(
+            "browser.library",
+            "browser.library",
+            CATALOG.t("browser-resource-library"),
+        );
         for effect in [
             E::ShowHistory,
             E::ShowBookmarks,
@@ -5803,12 +5827,17 @@ impl BrowserWidget {
         library
             .actions
             .push(if self.library_filter.get().trim().is_empty() {
-                clear_filter.unavailable("already_clear", "Library filter is already clear")
+                clear_filter
+                    .unavailable("already_clear", CATALOG.t("browser-library-already-clear"))
             } else {
                 clear_filter
             });
 
-        let mut settings = ResourceSpec::new("browser.settings", "browser.settings", "Settings");
+        let mut settings = ResourceSpec::new(
+            "browser.settings",
+            "browser.settings",
+            CATALOG.t("browser-resource-settings"),
+        );
         settings.actions.push(E::RequestSiteDataClear.bound());
         settings.actions.push(E::ReadAllRememberedForms.bound());
 
@@ -5832,7 +5861,7 @@ impl BrowserWidget {
             ResourceSpec::new(
                 "browser.service-sessions",
                 "browser.service-sessions",
-                "Accounts",
+                CATALOG.t("browser-resource-accounts"),
             )
             .with_action({
                 let list = E::ListServiceSessions.bound();
@@ -5855,7 +5884,7 @@ impl BrowserWidget {
                 ResourceSpec::new(
                     "browser.service-status",
                     "browser.service-status",
-                    "Account",
+                    CATALOG.t("browser-resource-account"),
                 )
                 .with_action(E::ReadServiceSession.bound()),
             );

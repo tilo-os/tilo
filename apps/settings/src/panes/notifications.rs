@@ -169,16 +169,17 @@ impl AppChoice {
         }
     }
 
-    /// What it is called where an agent turns it on or off.
-    const fn noun(self) -> &'static str {
-        match self {
-            Self::Banners => "notification banners",
-            Self::Previews => "message previews",
-            Self::Sounds => "notification sounds",
-            Self::Badges => "notification badges",
-            Self::Priority => "priority during focus",
-            Self::PriorityContacts => "priority contacts during focus",
-        }
+    /// What it is called where an agent turns it on or off, and in the flip
+    /// a person presses.
+    fn noun(self) -> String {
+        t(match self {
+            Self::Banners => "notif-choice-banners",
+            Self::Previews => "notif-choice-previews",
+            Self::Sounds => "notif-choice-sounds",
+            Self::Badges => "notif-choice-badges",
+            Self::Priority => "notif-choice-priority",
+            Self::PriorityContacts => "notif-choice-priority-contacts",
+        })
     }
 
     /// The field of an app's rule it is, as its control's id ends.
@@ -396,25 +397,32 @@ fn app_row(
     )
 }
 
-fn flip(on: bool, noun: &str) -> String {
-    format!("Turn {} {noun}", if on { "on" } else { "off" })
+fn flip(on: bool, noun: impl AsRef<str>) -> String {
+    t_args(
+        if on {
+            "notif-turn-on"
+        } else {
+            "notif-turn-off"
+        },
+        &[("what", ui::i18n::ArgValue::Text(noun.as_ref().to_owned()))],
+    )
 }
 
 fn mute_label(deadline: Option<i64>, now: i64) -> String {
-    let english = match deadline.filter(|deadline| *deadline > now) {
-        None => "Not muted",
+    let key = match deadline.filter(|deadline| *deadline > now) {
+        None => "notif-mute-off",
         Some(deadline) => {
             let remaining = deadline - now;
             if remaining <= 60 * 60 {
-                "For 1 hour"
+                "notif-mute-1h"
             } else if remaining <= 8 * 60 * 60 {
-                "For 8 hours"
+                "notif-mute-8h"
             } else {
-                "For 24 hours"
+                "notif-mute-24h"
             }
         }
     };
-    mute_shown(english)
+    t(key)
 }
 
 /// The English name of a mute duration shown in either language.

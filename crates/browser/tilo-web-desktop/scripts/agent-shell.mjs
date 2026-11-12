@@ -103,8 +103,9 @@ const themes = option('--themes', 'light,dark').split(',').filter(Boolean);
 const withVideo = !flag('--no-video');
 // The scale the follow is recorded at: 1 by default, for a machine that draws in software; a
 // machine with a GPU records at the shots' own 2 (`--record-scale 2`), with no change of scale.
-// A change of the emulated scale alone (2 to 1, the CSS size kept) left the page laid out at its
-// old pixel width read as CSS pixels: a phone's recording came out in a laptop's layout.
+// A switch of the emulated scale alone (2 to 1, the CSS box kept) is a change of density, which
+// the page lays out at on its own frame: the run waits for that frame, whichever scale it
+// records at.
 const recordScale = Number(option('--record-scale', '1'));
 
 const t0 = Date.now();
@@ -1854,15 +1855,37 @@ try {
         await pacing(0, recordFrom);
         const scaled = scale => tab.send('Emulation.setDeviceMetricsOverride',
           {width, height, deviceScaleFactor: scale, mobile});
-        if (recordScale !== 2) {
-          await scaled(recordScale);
-          await sleep(1500);
-        }
+        // The scale the follow is recorded at, and the shots' 2 again after it. A change of the
+        // device scale alone leaves the page's CSS box as it was, and the desk lays out in CSS
+        // pixels: the first frame drawn at the new scale lays out at that same box, drawn at the
+        // other density. Wait for that frame, and say the box held: a page that read the extent
+        // of the old density as the new one laid a phone's desk out at a laptop's width.
+        const box = await tab.evaluate('[tiloMount.canvas.clientWidth, tiloMount.canvas.clientHeight]');
+        const scaleTo = async scale => {
+          const before = await presentedFrames(tab);
+          await scaled(scale);
+          // An emulated scale change tells the page nothing — the media query a real one changes does
+          // not change under it — so the page draws when something asks it to, and a key does. Shift
+          // alone changes nothing the desk shows.
+          const shift = {key: 'Shift', code: 'ShiftLeft', windowsVirtualKeyCode: 16};
+          await tab.send('Input.dispatchKeyEvent', {type: 'rawKeyDown', ...shift, modifiers: 8});
+          await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', ...shift, modifiers: 0});
+          const drawn = await until(async () => {
+            const now = await tab.evaluate(`(() => { const state = tiloMount.state(); return {dpr: state.dpr, logical: state.logicalSize, frames: state.frames}; })()`).catch(() => null);
+            return now?.dpr === scale && (before === null || now.frames > before) ? now : undefined;
+          }, 30000, 150);
+          check(`${combo}: the desk lays out at its own box at device scale ${scale}`,
+            Boolean(drawn) && drawn.logical.every((side, axis) => Math.abs(side - box[axis]) <= 1),
+            drawn ? `laid out ${drawn.logical} at device scale ${scale}, in a box of ${box}`
+              : `no frame drawn at device scale ${scale}`);
+          return Boolean(drawn);
+        };
+        if (recordScale !== 2) await scaleTo(recordScale);
         const video = await record(browser, tab, combo, {width, height}, () => pacing(recordFrom, steps.length));
-        if (recordScale !== 2) {
-          await scaled(2);
-          await sleep(1500);
-        }
+        // Back at the shots' own scale, and the change itself proved there: a page records at 2
+        // without ever changing the scale, and the change is what these shots follow.
+        if (recordScale !== 2) await scaleTo(2);
+        else { await scaleTo(1); await scaleTo(2); }
         // The shots are of the agent working: an action it could not do is
         // the run's failure, not a note about the product.
         for (const step of steps) {
@@ -2050,6 +2073,14 @@ try {
           for (const dx of [0, 1, 0]) await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: x + dx, y});
         }
         await restingShot(tab, combo, 'agent-finished', async () => (await semantics(tab)).some(finishedNotice));
+        // The agent's sessions (one per tilo mcp above) worked one run: it is told once, and a
+        // session that changed nothing tells nothing. Told once it is done, the notice names what
+        // the run changed, never a live status ("Working in Notes") it no longer has.
+        const told = (await semantics(tab)).filter(node => /^claude code finished/i.test(node.name));
+        check(`${combo}: one run is one finished notice`, told.length === 1,
+          told.map(node => `"${node.name}"`).join(', ') || 'none');
+        const statusLine = told.map(node => node.description ?? '').find(text => /\b(looking at|working in|reading|writing)\b/i.test(text));
+        check(`${combo}: the finished notice says no live status`, !statusLine, statusLine ?? '');
 
         const exceptions = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
         check(`${combo}: no exceptions in the page`, exceptions.length === 0, exceptions.join(' | '));

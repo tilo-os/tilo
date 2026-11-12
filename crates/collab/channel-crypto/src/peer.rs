@@ -71,7 +71,10 @@
 //! State is written before anything it produced leaves the device: a frame
 //! reaches [`ChannelPeer::outbox`] only once the state holding it is
 //! durable (in the host's store for a peer opened from one, or in the export a
-//! browser writes before it sends).
+//! browser writes before it sends). A Welcome or another member's commit
+//! taken in produces nothing that leaves the device, so its state is written
+//! later ([`ChannelPeer::save_deferred`]), off the path to the page's first
+//! frame: losing it only makes the device ask again.
 
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
@@ -170,6 +173,13 @@ pub enum PeerEvent {
     /// A commit admitted this waiting device with a member key it no longer
     /// holds. It still waits, and asks again with the key it holds now.
     AdmittedWithAnotherKey,
+    /// A Welcome for this waiting device was refused for the reason named:
+    /// a member of the channel sent it into a group that is not the one the
+    /// frame commits. Like [`Self::Desynchronised`], the device waits with a
+    /// fresh member key and must send a new access request: the members that
+    /// took the frame's commit hold this device admitted with the key it
+    /// asked with, and admit it again only when it asks with another.
+    WelcomeRefused(crate::WelcomeRefusal),
 }
 
 /// What [`ChannelPeer::reconcile`] changed.
@@ -238,6 +248,9 @@ pub struct ChannelPeer {
     /// The format the state this peer was loaded from was written in, when
     /// an earlier build wrote it ([`crate::formats`]).
     upgraded_from: Option<u8>,
+    /// A change not yet written to `states`: one whose loss only makes this
+    /// device ask for the channel again ([`Self::save_deferred`]).
+    unsaved: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -423,7 +436,7 @@ impl ChannelPeer {
         vault: &VaultKey,
     ) -> Result<Self> {
         let device = Ed25519PublicKey::from_bytes(signer.device_public_key());
-        let peer = Self {
+        let mut peer = Self {
             channel,
             device,
             signer,
@@ -441,6 +454,7 @@ impl ChannelPeer {
             states,
             issued: 0,
             upgraded_from: None,
+            unsaved: false,
         };
         peer.save(vault)?;
         Ok(peer)
@@ -654,6 +668,7 @@ impl ChannelPeer {
             states: None,
             issued: file.issued,
             upgraded_from,
+            unsaved: false,
         })
     }
 
@@ -1364,7 +1379,9 @@ impl ChannelPeer {
                 }
                 match &self.record {
                     MemberRecord::Joined(_) => self.receive_commit(frame, incoming, allowed, vault),
-                    MemberRecord::Waiting(_) => self.receive_welcome(frame, incoming, vault),
+                    MemberRecord::Waiting(_) => {
+                        self.receive_welcome(frame, incoming, allowed, vault)
+                    }
                     MemberRecord::Removed => Ok(PeerEvent::Ignored),
                 }
             }
@@ -1514,13 +1531,16 @@ impl ChannelPeer {
         let replaced = std::mem::replace(&mut self.record, parent);
         let lost = self.head.take();
         let applied = if joins_from_welcome {
-            self.receive_welcome(frame, incoming, vault)
+            self.receive_welcome(frame, incoming, allowed, vault)
         } else {
             self.apply_commit(frame, allowed, vault)
         };
         match applied {
             Ok(
-                PeerEvent::Ignored | PeerEvent::Desynchronised | PeerEvent::AdmittedWithAnotherKey,
+                PeerEvent::Ignored
+                | PeerEvent::Desynchronised
+                | PeerEvent::AdmittedWithAnotherKey
+                | PeerEvent::WelcomeRefused(_),
             )
             | Err(_) => {
                 self.record = replaced;
@@ -1626,16 +1646,27 @@ impl ChannelPeer {
         self.parent = Some(parent);
         self.advance(frame);
         self.settle_orphaned();
-        self.save(vault)?;
+        // Kept after the page shows ([`Self::save_deferred`]): a commit lost
+        // with it is found again, or the device asks again.
+        self.unsaved = true;
         Ok(PeerEvent::Advanced { epoch })
     }
 
     /// A commit for a waiting device: its admission when the frame carries
     /// a Welcome for this device's member key.
+    ///
+    /// The Welcome is refused unless the device that signed its `GroupInfo`
+    /// is the one that signed the frame, and (when this device can tell who
+    /// may read the channel) every leaf of its tree names a device `allowed`
+    /// lets read it. Without that any member could send this device into a
+    /// group of its own making, which would show only later, as a channel
+    /// whose commits never apply. Both are a look at each leaf's credential,
+    /// no signature work.
     fn receive_welcome(
         &mut self,
         frame: MlsGovernanceFrame,
         incoming: [u8; 32],
+        allowed: Option<&BTreeSet<Ed25519PublicKey>>,
         vault: &VaultKey,
     ) -> Result<PeerEvent> {
         let MemberRecord::Waiting(pending) = &self.record else {
@@ -1653,11 +1684,31 @@ impl ChannelPeer {
         }
         let attempt = pending.duplicate()?;
         let parent = MemberRecord::seal_waiting(pending, vault)?;
-        match ChannelGroup::process_welcome_with_history(
+        let signer = frame.signed_by;
+        let judge = |parties: &crate::group::WelcomeParties| {
+            if parties.sender != signer.as_bytes() {
+                return Err(Error::WelcomeRefused(
+                    crate::WelcomeRefusal::SignedByAnotherDevice,
+                ));
+            }
+            if let Some(allowed) = allowed
+                && !parties.members.iter().all(|member| {
+                    <[u8; 32]>::try_from(member.as_slice())
+                        .is_ok_and(|device| allowed.contains(&Ed25519PublicKey::from_bytes(device)))
+                })
+            {
+                return Err(Error::WelcomeRefused(
+                    crate::WelcomeRefusal::DeviceNotAllowed,
+                ));
+            }
+            Ok(())
+        };
+        match ChannelGroup::join_with_history_checked(
             self.channel,
             &material.welcome,
             &material.key_history,
             attempt,
+            judge,
         ) {
             Ok(group) => {
                 let epoch = group.epoch();
@@ -1690,8 +1741,14 @@ impl ChannelPeer {
                         }
                     }
                 }
-                self.save(vault)?;
+                // Kept after the page shows ([`Self::save_deferred`]): a
+                // join lost with it is asked for again.
+                self.unsaved = true;
                 Ok(PeerEvent::Joined { epoch })
+            }
+            Err(Error::WelcomeRefused(refusal)) => {
+                self.desynchronise(vault)?;
+                Ok(PeerEvent::WelcomeRefused(refusal))
             }
             // A Welcome for a key package this device no longer holds: stay
             // waiting; the next request is admitted anew.
@@ -1731,12 +1788,43 @@ impl ChannelPeer {
         Ok(frame)
     }
 
-    fn save(&self, vault: &VaultKey) -> Result<()> {
+    fn save(&mut self, vault: &VaultKey) -> Result<()> {
         let Some(states) = &self.states else {
             return Ok(());
         };
         let sealed = self.export_sealed(vault)?;
-        states.write(self.channel, &sealed)
+        states.write(self.channel, &sealed)?;
+        self.unsaved = false;
+        Ok(())
+    }
+
+    /// Whether this peer holds a change [`Self::save_deferred`] has yet to
+    /// write.
+    #[must_use]
+    pub const fn has_unsaved(&self) -> bool {
+        self.unsaved && self.states.is_some()
+    }
+
+    /// Write the change taking in a Welcome or a commit left unwritten.
+    ///
+    /// Sealing a large group's state takes as long as joining it, and nothing
+    /// waits on it: the frame taken in produced nothing that leaves this
+    /// device, and every change that does is written before it leaves (the
+    /// module docs), this one with it. So the caller writes it once the
+    /// person sees the channel's content, not before. A device that stops
+    /// first keeps the state it had before the frame: a waiting device waits
+    /// again and asks anew, and a member finds the frame it missed, or starts
+    /// over and asks again. Either way it is admitted with the channel's
+    /// history.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state cannot be sealed or written.
+    pub fn save_deferred(&mut self, vault: &VaultKey) -> Result<()> {
+        if self.has_unsaved() {
+            self.save(vault)?;
+        }
+        Ok(())
     }
 }
 
@@ -1777,6 +1865,10 @@ impl std::fmt::Debug for ChannelPeer {
             .finish_non_exhaustive()
     }
 }
+
+#[cfg(test)]
+#[path = "peer_welcome_tests.rs"]
+mod welcome_tests;
 
 #[cfg(test)]
 mod format_tests {

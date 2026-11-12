@@ -1161,7 +1161,8 @@ impl WebSearch {
     fn web_search_row(&self, query: &str) -> Hit {
         use crate::answers::web::{fallback_search_url, web_search_uri};
         Hit {
-            row: None,
+            // The row says the query back: nothing in it is a match.
+            row: Some(ui::search::SearchRow::echoing_query()),
             preview: None,
             faces: Vec::new(),
             outcome: None,
@@ -1232,7 +1233,8 @@ impl WebSearch {
             ),
         };
         Hit {
-            row: None,
+            // The row says `query` back: nothing in it is a match.
+            row: Some(ui::search::SearchRow::echoing_query()),
             preview: None,
             faces: Vec::new(),
             outcome: None,
@@ -1267,12 +1269,6 @@ impl WebSearch {
             _ => return None,
         };
         (found.id == id).then_some(found)
-    }
-
-    /// Whether `hit` is the row every query gets.
-    #[must_use]
-    pub fn is_fallback(hit: &Hit) -> bool {
-        hit.id.starts_with("search:")
     }
 }
 
@@ -2327,6 +2323,25 @@ mod tests {
         assert!(Answers::default().query("   ").is_empty());
     }
 
+    /// The rows that say the query back — to the web, to a service — are found by nothing, and
+    /// say so, so the palette sets off no span of the person's own words in them. A service
+    /// named alone is a result and keeps its match.
+    #[test]
+    fn a_row_that_says_the_query_back_declares_it() {
+        let echoes = |hit: &Hit| matches!(&hit.row, Some(ui::search::SearchRow::Command(row)) if row.echoes_query);
+        let rows = WebSearch::default().query("youtube cats");
+        assert_eq!(rows.len(), 2, "the service search, then the web: {rows:?}");
+        for hit in &rows {
+            assert!(echoes(hit), "{} restates the query", hit.title);
+        }
+        let service = WebSearch::default().query("youtube");
+        let named = service
+            .iter()
+            .find(|hit| hit.title == "YouTube")
+            .expect("the service named alone");
+        assert!(!echoes(named), "a service found by name is a result");
+    }
+
     #[test]
     fn an_address_opens_and_answers_are_not_remembered() {
         let hits = Answers::default().query("example.com");
@@ -2419,7 +2434,9 @@ mod tests {
         );
         let search = web.query("youtube cats").remove(0);
         assert!(web.intent(&search) > 0.0);
-        assert!(WebSearch::is_fallback(&web.query("weather").remove(0)));
+        assert!(WebSearch::is_every_query_row(
+            &web.query("weather").remove(0)
+        ));
     }
 
     #[test]

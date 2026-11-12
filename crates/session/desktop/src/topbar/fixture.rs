@@ -35,6 +35,8 @@ pub struct State {
     pub app_badges: HashMap<String, u32>,
     /// The machine's readings the status cluster shows: none, as a page's bar has.
     pub status: SystemStatus,
+    /// An ask waiting on the person's own avatar, open or as its dot.
+    pub ask: Option<AvatarAsk>,
 }
 impl State {
     pub fn publish_activity_glance(
@@ -76,6 +78,7 @@ impl FixtureChrome {
             arrived: None,
             app_badges: HashMap::default(),
             status: SystemStatus::default(),
+            ask: None,
         })))
     }
     pub fn borrow(&self) -> Ref<'_, State> {
@@ -112,6 +115,9 @@ impl DesktopChromeSource for FixtureChrome {
     }
     fn app_notification_badge(&self, app_id: &str) -> u32 {
         self.0.borrow().app_badges.get(app_id).copied().unwrap_or(0)
+    }
+    fn avatar_ask(&self) -> Option<AvatarAsk> {
+        self.0.borrow().ask.clone()
     }
     fn intent(&self, intent: ChromeIntent) -> bool {
         let mut state = self.0.borrow_mut();

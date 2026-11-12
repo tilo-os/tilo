@@ -12,14 +12,18 @@ What it drives, as a person does:
 
   style    the desk shows the canvas: the bar's style menu, then Frames, pressed where they are
            drawn
-  windows  Board and Chat open onto the canvas and take free space on it
+  windows  Board and Chat open onto the canvas and take free space on it, and the canvas pans
+           to the one that arrives past its edge: a window a person just opened stands whole on
+           screen
   ask      a sentence typed at the canvas entry is the person's send to the workspace's agent:
-           Chat opens their conversation with it as a place on the canvas, and no Tasks window
-           opens
+           Chat opens their conversation with it as a place on the canvas, in view, and no Tasks
+           window opens
   again    a second ask lands in the conversation the first opened: that window is raised and
            no second window of the same conversation stands
   placed   every window stands at its own place on the workspace's canvas, none over another,
            and each presents a frame
+  pan      a middle drag pans the canvas, and every window goes with its frame: each window's
+           rectangle on screen moves by the drag, on the frames the drag is drawn in
   frames   panning, zooming and typing keep the loop inside a frame's budget, read from the
            frame trace of the start (`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`)
   restart  on the same state again, without --fresh-desktop: every place is where it was
@@ -355,16 +359,93 @@ ASK_AGAIN = "and what is due today?"
 SECOND_ASK_SETTLES = 10.0
 
 
+def screen() -> tuple[float, float]:
+    """The output the session renders, in physical pixels: headless 1280x800, or what
+    `TILO_HEADLESS_SIZE` names (`dist/dev/nested-session.sh`)."""
+    width, height = os.environ.get("TILO_HEADLESS_SIZE", "1280x800").lower().split("x")
+    return float(width), float(height)
+
+
+def on_screen(rect: list[float], view: tuple[float, float]) -> bool:
+    """Whether `rect` (`x`, `y`, `width`, `height`) stands whole inside the screen `view`: a
+    window a person just opened is where they can see it, not past the output's edge."""
+    x, y, width, height = rect
+    return x >= 0 and y >= 0 and x + width <= view[0] and y + height <= view[1]
+
+
+def standing_on_screen(rows: list[dict], apps: list[str] | None = None) -> list[dict] | None:
+    """`rows` (the windows of `apps`, or of every app) once each stands whole on the screen,
+    else `None`: a window a person just opened is where they can see it, not past the edge."""
+    view = screen()
+    windows = [row for row in rows if apps is None or row.get("app_id") in apps]
+    whole = bool(windows) and all(
+        row.get("rect") and on_screen(row["rect"], view) for row in windows)
+    return rows if whole else None
+
+
+# How far the pan check drags the canvas, in logical pixels, and in how many steps.
+PAN_BY = (-160.0, -80.0)
+PAN_STEPS = 16
+
+
+def pan_carries_windows(session: CanvasSession) -> dict:
+    """A middle drag on the canvas' ground pans it, and every window goes with its frame: each
+    window's rectangle moves by the drag, and while the drag runs no window stands where it
+    stood before nor anywhere but where the drag has carried the canvas to."""
+    before = {row["group"]: row["rect"] for row in placed_rows(session) if row.get("rect")}
+    if not before:
+        raise Failed("no window stands on the canvas to pan")
+    # The canvas' ground below the windows, clear of every window, with room on the screen for
+    # the whole drag.
+    lowest = max(rect[1] + rect[3] for rect in before.values())
+    start = (screen()[0] / 2, min(lowest + 40.0, screen()[1] - 60.0))
+    session.control({"op": "pointer_move", "x": start[0], "y": start[1]})
+    session.control({"op": "pointer_button", "pressed": True, "button": "middle"})
+    seen = []
+    for step in range(1, PAN_STEPS + 1):
+        dx, dy = PAN_BY[0] * step / PAN_STEPS, PAN_BY[1] * step / PAN_STEPS
+        session.control({"op": "pointer_move", "x": start[0] + dx, "y": start[1] + dy})
+        time.sleep(1 / 60)
+        seen.append(((dx, dy), {row["group"]: row["rect"] for row in session.windows()
+                                if row.get("group") in before and row.get("rect")}))
+    session.control({"op": "pointer_button", "pressed": False, "button": "middle"})
+
+    def carried():
+        rows = {row["group"]: row["rect"] for row in session.windows()
+                if row.get("group") in before and row.get("rect")}
+        moved = all(abs(rows[g][0] - (r[0] + PAN_BY[0])) <= 1.0
+                    and abs(rows[g][1] - (r[1] + PAN_BY[1])) <= 1.0
+                    for g, r in before.items() if g in rows)
+        return rows if moved and len(rows) == len(before) else None
+
+    after = until("every window to stand where the pan carried its frame", carried, 10)
+    # On the way, each window was where the canvas had been dragged to by then, give or take the
+    # one frame between the drag's step and the reading.
+    lagging = []
+    for (dx, dy), rows in seen:
+        for group, rect in rows.items():
+            was = before[group]
+            gone = (rect[0] - was[0], rect[1] - was[1])
+            step = (abs(PAN_BY[0]) / PAN_STEPS + 1.0, abs(PAN_BY[1]) / PAN_STEPS + 1.0)
+            if abs(gone[0] - dx) > step[0] or abs(gone[1] - dy) > step[1]:
+                lagging.append({"drag": (dx, dy), "moved": gone, "group": group})
+    if lagging:
+        raise Failed(f"windows trailed the canvas while it panned: {lagging[:5]}")
+    return {"by": PAN_BY, "windows": len(after)}
+
+
 def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
     """The canvas end to end, in a fresh session:
 
     1. the desk shows the canvas: the person switches the bar's style to Frames, and the
        canvas' entry stands on it;
     2. Board and Chat open onto it, each stands at its own place on the canvas, none over
-       another, and each presents a frame (shot 1);
+       another, and each presents a frame; Chat lands past the output's edge and stands whole on
+       the screen, the canvas having panned to it (shot 1);
     3. a sentence typed at the entry asks the workspace's agent: Chat opens their conversation
-       with it as a place on the canvas, and no Tasks window opens (shot 2); a second ask lands
-       in that same window, raised, and opens no second window of the conversation;
+       with it as a place on the canvas, in view, and no Tasks window opens (shot 2); a second
+       ask lands in that same window, raised, and opens no second window of the conversation;
+       a middle drag pans the canvas and every window goes with its frame;
     4. panning, zooming and typing at the entry are measured from the frame trace;
     5. a restart keeps every place (shot 3).
 
@@ -383,6 +464,11 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
                    and no_overlaps(rows) else None)(placed_rows(session)), 30)
     until("every window to present its own frame",
           lambda: all(row.get("frames") for row in placed(session).values()), 30)
+    # A window a person opens stands where they can see it: Chat lands beside Board, past the
+    # output's edge, and the canvas pans to it. Board keeps the place it stands at and slides
+    # with the canvas, as every place does.
+    until("the window just opened to stand whole on the screen",
+          lambda: standing_on_screen(placed_rows(session), ["so.tilo.chat"]), 30)
     time.sleep(1.5)
     session.snapshot(shots / "01-populated-canvas.png")
     before = placed(session)
@@ -400,9 +486,20 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
     stood = until("the conversation to stand on the canvas", lambda: next(
         (row for row in placed_rows(session)
          if row.get("group") == conversation.get("group")), {}).get("place"), 30)
+    def the_conversation_shown() -> dict | None:
+        """The window the ask landed in, once it stands whole on the screen: the canvas pans to
+        it wherever Chat opened it."""
+        row = next((row for row in placed_rows(session)
+                    if row.get("group") == conversation.get("group")), None)
+        if row is None or not row.get("rect") or not on_screen(row["rect"], screen()):
+            return None
+        return row
+
+    shown = until("the conversation to stand whole on the screen", the_conversation_shown, 30)
     if any(row.get("app_id") == "so.tilo.tasks" for row in session.windows()):
         raise Failed("asking on the canvas opened a Tasks window")
-    steps["ask"] = {"asked": ASK, "conversation": conversation.get("title"), "place": stood}
+    steps["ask"] = {"asked": ASK, "conversation": conversation.get("title"), "place": stood,
+                    "rect": shown.get("rect")}
     time.sleep(1.5)
     session.snapshot(shots / "02-asked.png")
 
@@ -422,20 +519,17 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
         return now
 
     after_ask = until("the second ask to land in the standing conversation", the_same_windows, 60)
+    until("the conversation to stand whole on the screen again", the_conversation_shown, 30)
     raised = [row for row in after_ask.values() if row.get("active")]
     if not raised:
         raise Failed(f"the second ask left the conversation's window behind: {after_ask}")
     steps["ask-again"] = {"asked": ASK_AGAIN, "windows": len(after_ask),
                           "conversation": raised[0].get("title")}
 
-    # Frames: panning (wheel), zooming (Ctrl+wheel) and typing at the entry, on the canvas.
+    # Frames: panning (a middle drag, every window carried with it), zooming (Ctrl+wheel) and
+    # typing at the entry, on the canvas.
     empty = (40.0, 700.0)
-
-    def pan():
-        session.control({"op": "pointer_move", "x": empty[0], "y": empty[1]})
-        for i in range(60):
-            session.control({"op": "scroll", "dx": 0.0 if i % 2 else 1.0, "dy": -1.0 if i < 30 else 1.0})
-            time.sleep(1 / 60)
+    pans = []
 
     def zoom():
         session.control({"op": "pointer_move", "x": empty[0], "y": empty[1]})
@@ -452,8 +546,9 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
             time.sleep(1 / 30)
         session.key("Escape")
 
-    steps["frames"] = [measure(session, "pan", pan), measure(session, "zoom", zoom),
-                       measure(session, "type", typing)]
+    steps["frames"] = [measure(session, "pan", lambda: pans.append(pan_carries_windows(session))),
+                       measure(session, "zoom", zoom), measure(session, "type", typing)]
+    steps["pan"] = pans[0]
 
     before_restart = {group: place for group, place in canvas_places(session).items()}
     session.restart()

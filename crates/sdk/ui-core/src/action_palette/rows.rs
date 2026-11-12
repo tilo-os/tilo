@@ -514,6 +514,7 @@ impl CommandEntry {
             faces: self.faces.clone(),
             outcome: self.outcome.clone(),
             alternates: self.alternates.clone(),
+            echoes_query: false,
         }))
     }
 }

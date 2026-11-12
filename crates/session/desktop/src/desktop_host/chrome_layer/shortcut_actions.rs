@@ -54,7 +54,7 @@ impl DesktopChrome {
             ShortcutAction::ResizeWider => self.resize_focused_group(50),
             ShortcutAction::OpenFiles => self.open_app("so.tilo.file-explorer"),
             ShortcutAction::OpenTerminal => self.open_app("so.tilo.terminal"),
-            ShortcutAction::ReportProblem => self.asks.borrow_mut().push(DesktopAsk::ReportProblem),
+            ShortcutAction::ReportProblem => self.ask(DesktopAsk::ReportProblem),
             ShortcutAction::FocusGroup1 => self.focus_group(0),
             ShortcutAction::FocusGroup2 => self.focus_group(1),
             ShortcutAction::FocusGroup3 => self.focus_group(2),
@@ -92,7 +92,7 @@ impl DesktopChrome {
             | ShortcutAction::DictationToggle
             | ShortcutAction::DictationFinish
             | ShortcutAction::DictationCancel => {
-                self.asks.borrow_mut().push(DesktopAsk::Shortcut(action));
+                self.ask(DesktopAsk::Shortcut(action));
                 return false;
             }
         }
@@ -156,9 +156,7 @@ impl DesktopChrome {
             | FixedAction::SaveRecentReplay
             | FixedAction::ShortcutGuide
             | FixedAction::StopRemoteInput => {
-                self.asks
-                    .borrow_mut()
-                    .push(DesktopAsk::FixedShortcut(action));
+                self.ask(DesktopAsk::FixedShortcut(action));
                 return false;
             }
         }
