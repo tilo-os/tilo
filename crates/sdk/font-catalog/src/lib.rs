@@ -4,7 +4,7 @@
 //! `manifest.toml` that pins every file by size and SHA-256. Source metadata lives in
 //! `crates/sdk/ui-core/assets/fonts`; a build fetches the pinned font bytes into
 //! a verified artifact cache and prepares this crate's catalog from it in its
-//! own `OUT_DIR`. The OS image installs its catalog once,
+//! profile directory's `font-catalogs`. The OS image installs its catalog once,
 //! at [`INSTALLED_ROOT`], where fontconfig and every Tilo process that sets
 //! text find the same bytes. This crate owns the manifest's schema and the
 //! checks that tie an installed directory to the build that reads it: the
@@ -34,11 +34,15 @@ pub const MANIFEST: &str = include_str!("../manifest.toml");
 /// extra configuration.
 pub const INSTALLED_ROOT: &str = "/usr/share/fonts/tilo";
 
-/// The catalog this build prepared from the source checkout, in this crate's
-/// `OUT_DIR`: it is part of the build's output, so wherever the build is
-/// reused the catalog is too. The build names it from its profile directory,
-/// which holds the running program (or its `deps`/`examples`), so it is found
-/// above the program; the build directory's path is not compiled in.
+/// The catalog this build prepared from the source checkout, in the profile
+/// directory's `font-catalogs`: it is part of the build's output, so wherever
+/// the build is reused the catalog is too. A catalog is published there once,
+/// under the name of the manifest it was prepared from, and never rewritten,
+/// so a build — or another job sharing the build directory — that prepares it
+/// again cannot take away the tree a running test or program is reading. The
+/// build names it from its profile directory, which holds the running program
+/// (or its `deps`/`examples`), so it is found above the program; the build
+/// directory's path is not compiled in.
 #[must_use]
 pub fn checkout_root() -> PathBuf {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();

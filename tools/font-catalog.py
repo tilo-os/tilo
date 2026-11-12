@@ -414,8 +414,13 @@ def default_cache():
     target = os.environ.get("CARGO_TARGET_DIR")
     return Path(target) / "font-artifacts" if target else AUTHORITATIVE.parents[5] / "target/font-artifacts"
 
-def prepared_root(source, scope, cache=None, offline=None):
-    """Return a verified materialized catalog, without changing the source."""
+def prepared_root(source, scope, cache=None, offline=None, catalogs=None):
+    """Return a verified materialized catalog, without changing the source.
+
+    `catalogs` is where prepared catalogs are published, one directory per `<digest>-<scope>`:
+    the caller that compiles the path in names a directory that never changes, so a build that
+    runs this again while another reads the catalog cannot take it away. It defaults to the
+    artifact cache's, which outlives build directories."""
     source = Path(source)
     supplied = os.environ.get("TILO_FONT_CATALOG_ROOT")
     if supplied:
@@ -427,6 +432,7 @@ def prepared_root(source, scope, cache=None, offline=None):
         return source
     artifact_entries(source)
     cache = Path(cache or default_cache())
+    catalogs = Path(catalogs) if catalogs else cache / "catalogs"
     if offline is None:
         offline = os.environ.get("TILO_FONT_ASSETS_OFFLINE") == "1"
     identity = hashlib.sha256()
@@ -435,7 +441,7 @@ def prepared_root(source, scope, cache=None, offline=None):
         if path.is_file():
             identity.update(name.encode())
             identity.update(path.read_bytes())
-    dest = cache / "catalogs" / (identity.hexdigest() + "-" + scope)
+    dest = catalogs / (identity.hexdigest() + "-" + scope)
     if dest.exists() or dest.is_symlink():
         if dest.is_symlink():
             raise ValueError("prepared font catalog symlink is forbidden")
@@ -488,7 +494,10 @@ def main():
     locate = commands.add_parser("root", help="print a verified catalog root for build consumers")
     locate.add_argument("source", type=Path)
     locate.add_argument("--scope", choices=list(SCOPES), required=True)
-    locate.add_argument("--cache", type=Path)
+    locate.add_argument("--cache", type=Path, help="the verified font bytes' artifact cache")
+    locate.add_argument("--catalogs", type=Path,
+                        help="where to publish the prepared catalog, one directory per digest "
+                             "and scope (default: the artifact cache's `catalogs`)")
     locate.add_argument("--offline", action="store_true", default=os.environ.get("TILO_FONT_ASSETS_OFFLINE") == "1")
     args = parser.parse_args()
     try:
@@ -503,7 +512,7 @@ def main():
         elif args.command == "seed":
             print(seed(args.source, args.dest, args.offline))
         else:
-            print(prepared_root(args.source, args.scope, args.cache, args.offline))
+            print(prepared_root(args.source, args.scope, args.cache, args.offline, args.catalogs))
     except (ValueError, OSError) as error:
         parser.exit(1, f"Tilo font catalog: {error}\n")
 
