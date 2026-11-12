@@ -419,29 +419,6 @@ impl OwnerDocumentRoutes {
         self.witness.is_some()
     }
 
-    /// [`Self::reconcile`] for a holder without a widget tree, whose
-    /// records are `owners`: every one answers snapshot requests, as no host
-    /// replays its route.
-    #[cfg(feature = "broker-transport")]
-    pub(crate) fn reconcile_owners(
-        &mut self,
-        owners: &[HistoryOwner],
-        witness: Option<PrimaryRouteWitness>,
-        outer: &AutoCommit,
-    ) -> Vec<RouteJoin> {
-        let generation = self.primary_generation;
-        if !self.observe_witness(witness, generation) {
-            return vec![];
-        }
-        let mut current: Vec<(HistoryOwner, bool)> = Vec::new();
-        for owner in owners {
-            if !current.iter().any(|(known, _)| known.same_owner(owner)) {
-                current.push((owner.clone(), true));
-            }
-        }
-        self.install(current, outer)
-    }
-
     /// Hold the routes of the `current` owners (each with whether it
     /// answers snapshot requests), giving up those no owner holds any more.
     /// The routes newly joined.

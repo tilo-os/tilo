@@ -893,6 +893,9 @@ pub struct CollaborationManager {
     /// background. The app it serves keeps working on its local replica and
     /// says so ([`Self::join_refusal`]).
     join_refusal: Option<String>,
+    /// Whether document publication had failed at the last
+    /// [`Self::take_document_publication_change`].
+    publication_failed: bool,
 }
 
 impl CollaborationManager {
@@ -929,6 +932,7 @@ impl CollaborationManager {
             action_directory: DirectoryOffer::Unoffered,
             sync_expected: true,
             join_refusal: None,
+            publication_failed: false,
         };
         manager.reported_state = Some(manager.state());
         manager
@@ -1062,6 +1066,7 @@ impl CollaborationManager {
             action_directory: DirectoryOffer::Unoffered,
             sync_expected: false,
             join_refusal: None,
+            publication_failed: false,
         }
     }
 
@@ -1689,6 +1694,16 @@ impl CollaborationManager {
         matches!(&self.backend, Backend::Transport(transport) if transport.document_publication_failed())
     }
 
+    /// Whether document publication failed, or recovered, since the last
+    /// ask: an owner sends its records whole again once on each change. A
+    /// refusal stands until a later change goes through, and the same
+    /// changes sent again are refused again, so sending them again on every
+    /// pass while it stands would only loop.
+    pub fn take_document_publication_change(&mut self) -> bool {
+        let failed = self.document_publication_failed();
+        std::mem::replace(&mut self.publication_failed, failed) != failed
+    }
+
     /// The kind of record `route` was joined with, as the transport holds it.
     #[cfg(any(test, feature = "test-support"))]
     pub fn joined_record_kind(&self, route: &RouteSpec) -> Option<crate::record::RecordKind> {
@@ -2192,6 +2207,53 @@ mod portable_transport_tests {
 
 /// Original authority retained across display background work.
 pub use runtime_collab::DisplayOrigin;
+
+/// A refusal stands until a later change goes through: the owner sends its
+/// records whole again once when publication fails and once when it
+/// recovers, never on every pass in between.
+#[cfg(test)]
+mod publication_change_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Refusing(Arc<AtomicBool>);
+    impl CollabTransport for Refusing {
+        fn status(&self) -> TransportStatus {
+            TransportStatus::Ready
+        }
+        fn submit(&mut self, _: TransportCommand) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn drain(&mut self, _: &mut Vec<CollabEvent>) {}
+        fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+            None
+        }
+        fn take_action_directory_requests(&mut self, _: &mut Vec<ActionDirectoryRequest>) {}
+        fn document_publication_failed(&self) -> bool {
+            self.0.load(Ordering::Acquire)
+        }
+    }
+
+    #[test]
+    fn a_standing_refusal_is_one_change_and_its_end_another() {
+        let failed = Arc::new(AtomicBool::new(false));
+        let mut manager =
+            CollaborationManager::with_transport(Box::new(Refusing(Arc::clone(&failed))));
+        assert!(!manager.take_document_publication_change());
+        failed.store(true, Ordering::Release);
+        assert!(manager.take_document_publication_change(), "it failed");
+        for _ in 0..3 {
+            assert!(
+                !manager.take_document_publication_change(),
+                "the same refusal is no new change"
+            );
+        }
+        failed.store(false, Ordering::Release);
+        assert!(manager.take_document_publication_change(), "it recovered");
+        assert!(!manager.take_document_publication_change());
+    }
+}
 
 /// A primary route whose broker answers late leaves the app up: the manager
 /// joins in the background and takes the answer, the broker's hold-ups and

@@ -1094,12 +1094,14 @@ pub(crate) struct BridgeState {
     route_record_kinds: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     healthy: Arc<AtomicBool>,
     publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
-    /// The last change the peer answered but would not accept, when nothing
-    /// later has gone through. It is not a publication failure: the bridge
-    /// stays up and later changes and publications go on, so the owner is
-    /// told which change to reconcile and never mistakes it for a lost
-    /// connection (see [`Self::note_refused_change`]).
-    last_refused_change: Arc<std::sync::Mutex<Option<String>>>,
+    /// Per record route, the last change the peer answered but would not
+    /// accept, when nothing later has gone through on that route. It is not
+    /// a publication failure: the bridge stays up and later changes and
+    /// publications go on, so the owner is told which change to reconcile
+    /// and never mistakes it for a lost connection (see
+    /// [`Self::note_refused_change`]). Another record's change going through
+    /// says nothing about this one.
+    last_refused_change: Arc<std::sync::Mutex<std::collections::BTreeMap<String, String>>>,
     /// The broker refused or failed an action-surface publication; the owner
     /// takes this and republishes.
     action_surface_failed: Arc<AtomicBool>,
@@ -1304,7 +1306,7 @@ impl BridgeState {
             route_record_kinds: Arc::default(),
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
-            last_refused_change: Arc::new(std::sync::Mutex::new(None)),
+            last_refused_change: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
             action_surface_failed: Arc::new(AtomicBool::new(false)),
             directory_rpc_successes: Arc::new(AtomicU64::new(0)),
             directory_rpc_failures: Arc::new(AtomicU64::new(0)),
@@ -1441,7 +1443,12 @@ impl BridgeState {
     /// open and later changes and publications go through. Only that change
     /// is not accepted, and the owner is told so it can reconcile its local
     /// copy instead of waiting for a reconnect that would change nothing.
-    fn note_refused_change(&self, context: &'static str, error: impl std::fmt::Display) {
+    fn note_refused_change(
+        &self,
+        route: &RouteSpec,
+        context: &'static str,
+        error: impl std::fmt::Display,
+    ) {
         let refusal = DocumentPublicationError::Refused(format!("{context}: {error}"));
         let said = refusal.to_string();
         tracing::warn!(
@@ -1449,18 +1456,30 @@ impl BridgeState {
             %error,
             "collab: the broker refused one document change; this bridge stays open"
         );
-        *self.last_refused_change.lock_recover() = Some(said);
+        self.last_refused_change
+            .lock_recover()
+            .insert(route.channel_id(), said);
         self.notify_events();
     }
 
-    /// A change the peer refused while nothing later has been sent, if any.
+    /// A change the peer refused while nothing later has been sent on its
+    /// route, if any.
     fn refused_change(&self) -> Option<String> {
-        self.last_refused_change.lock_recover().clone()
+        self.last_refused_change
+            .lock_recover()
+            .values()
+            .next()
+            .cloned()
     }
 
-    /// A change went through: nothing is waiting to be reconciled any more.
-    fn change_sent(&self) {
-        let cleared = self.last_refused_change.lock_recover().take().is_some();
+    /// A change of `route` went through: nothing of it is waiting to be
+    /// reconciled any more.
+    fn change_sent(&self, route: &RouteSpec) {
+        let cleared = self
+            .last_refused_change
+            .lock_recover()
+            .remove(&route.channel_id())
+            .is_some();
         if cleared {
             self.notify_events();
         }
@@ -5677,21 +5696,21 @@ async fn send_document_frame(
 ) -> Result<(), DocumentPublicationError> {
     match try_send_frame(route, signer, cleartext.clone(), claims, state).await {
         FrameSend::Sent | FrameSend::Held => {
-            state.change_sent();
+            state.change_sent(&route.spec);
             Ok(())
         }
         FrameSend::Failed(error) => Err(error),
         FrameSend::Refused(refusal) => {
             if !refresh_route_keys(route, signer).await || !refusal.is_definite() {
-                return Err(frame_refused(state, &refusal));
+                return Err(frame_refused(state, &route.spec, &refusal));
             }
             match try_send_frame(route, signer, cleartext, claims, state).await {
                 FrameSend::Sent | FrameSend::Held => {
-                    state.change_sent();
+                    state.change_sent(&route.spec);
                     Ok(())
                 }
                 FrameSend::Failed(error) => Err(error),
-                FrameSend::Refused(refusal) => Err(frame_refused(state, &refusal)),
+                FrameSend::Refused(refusal) => Err(frame_refused(state, &route.spec, &refusal)),
             }
         }
     }
@@ -5701,10 +5720,14 @@ async fn send_document_frame(
 /// peer answered about this very change — fails that change alone; anything
 /// else (a lost call, an overload) leaves the outcome unknown and ends the
 /// bridge as it always has.
-fn frame_refused(state: &BridgeState, refusal: &FrameRefusal) -> DocumentPublicationError {
+fn frame_refused(
+    state: &BridgeState,
+    route: &RouteSpec,
+    refusal: &FrameRefusal,
+) -> DocumentPublicationError {
     match refusal {
         FrameRefusal::Definite(reason) => {
-            state.note_refused_change("document commit RPC", reason);
+            state.note_refused_change(route, "document commit RPC", reason);
             DocumentPublicationError::Refused(format!("document commit RPC: {reason}"))
         }
         FrameRefusal::Unknown(reason) => {
@@ -6260,12 +6283,14 @@ async fn dispatch_sdk_request(
         CollabRequest::Hello { .. } => {}
         CollabRequest::SignedOperation { envelope } => match postcard::to_stdvec(&*envelope) {
             Ok(bytes) => match route.channel.send(&bytes).await {
-                Ok(()) => inbound_tx.state.change_sent(),
+                Ok(()) => inbound_tx.state.change_sent(&route.spec),
                 // A definite refusal is the peer's answer about this signed
                 // change: it alone is not accepted and the bridge stays open.
-                Err(error) if refused_by_peer(&error) => inbound_tx
-                    .state
-                    .note_refused_change("signed document commit RPC", &error),
+                Err(error) if refused_by_peer(&error) => inbound_tx.state.note_refused_change(
+                    &route.spec,
+                    "signed document commit RPC",
+                    &error,
+                ),
                 Err(error) => {
                     inbound_tx
                         .state
@@ -10485,6 +10510,25 @@ mod tests {
         );
         drop(manager);
         thread.join().unwrap();
+    }
+
+    /// A refusal belongs to the record it was about: another record's change
+    /// going through leaves it standing, its own record's next change ends it.
+    #[test]
+    fn a_refused_change_stands_until_its_own_record_takes_a_change() {
+        let route = |record: &str| RouteSpec {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: uuid::Uuid::from_bytes([7; 16]),
+            record: Some(record.into()),
+        };
+        let state = BridgeState::new();
+        state.note_refused_change(&route("full"), "document commit RPC", "history is full");
+        state.change_sent(&route("other"));
+        assert!(state.refused_change().is_some());
+        assert!(state.publication_result().is_err());
+        state.change_sent(&route("full"));
+        assert_eq!(state.refused_change(), None);
+        assert!(state.publication_result().is_ok());
     }
 
     #[test]

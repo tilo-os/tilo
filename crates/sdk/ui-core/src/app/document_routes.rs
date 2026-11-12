@@ -224,18 +224,23 @@ impl App {
     }
     /// Queue acceptance may have advanced producer heads before a later
     /// worker failure. Restore history obligations before observing another
-    /// route or attempting publication; the real broker still authorizes retry.
+    /// route or attempting publication, once when publication fails and once
+    /// when it recovers (what was refused meanwhile goes out then); the real
+    /// broker still authorizes retry.
     pub(super) fn restore_failed_document_publications(&mut self) {
-        let primary_failed = self.collaboration.manager.document_publication_failed();
-        let workspace_failed = self
+        let primary_changed = self
+            .collaboration
+            .manager
+            .take_document_publication_change();
+        let workspace_changed = self
             .collaboration
             .workspace_manager
-            .as_ref()
-            .is_some_and(CollaborationManager::document_publication_failed);
-        if primary_failed {
+            .as_mut()
+            .is_some_and(CollaborationManager::take_document_publication_change);
+        if primary_changed {
             self.restore_primary_publication_obligations();
         }
-        if (primary_failed || workspace_failed)
+        if (primary_changed || workspace_changed)
             && let Some(workspace) = self.persistence.room_index.as_mut()
         {
             workspace.advance_outbound(Vec::new());
