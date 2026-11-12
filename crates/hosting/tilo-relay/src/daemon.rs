@@ -1831,6 +1831,9 @@ mod tests {
                     home_peer_bundle: bundle_path,
                     device_role: crate::mesh::DeviceRole::AlwaysOnServer,
                     services: crate::mesh::ServiceCapabilities::home_peer(),
+                    // The relay runs its own packet relay on this machine's loopback, as the
+                    // tests' hosts do: nothing here reaches number 0.
+                    packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
                     ..RelayConfig::default()
                 },
                 RelayIdentity {
@@ -1848,7 +1851,7 @@ mod tests {
                 host.public_key.as_slice(),
                 "relay transport discovery must not collide with the filesystem node"
             );
-            let client_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let client_endpoint = test_relay::direct_endpoint().await;
             let discovered = crate::client::RelayClient::discover_content_endpoint(
                 &client_endpoint,
                 relay.node_addr(),

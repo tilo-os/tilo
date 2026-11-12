@@ -57,7 +57,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
     let host = alice.enrol("alice-home", DeviceCapabilities::host());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start(
+    let relay = crate::common::start_relay(
         RelayConfig {
             state_root: state.path().to_path_buf(),
             ..RelayConfig::default()

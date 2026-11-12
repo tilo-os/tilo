@@ -19,7 +19,7 @@
 
 use std::time::Duration;
 
-use tilo_relay::{CoeditPayload, Envelope, Relay, RelayClient, RelayCoeditSession, RelayConfig};
+use tilo_relay::{CoeditPayload, Envelope, RelayClient, RelayCoeditSession, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
@@ -43,7 +43,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("new-phone", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
-        let relay = Relay::start(
+        let relay = crate::common::start_relay(
             RelayConfig {
                 state_root: state.path().to_path_buf(),
                 ..RelayConfig::default()
@@ -131,7 +131,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         let b = user.enrol("phone", DeviceCapabilities::member());
         let a_key = a.device_pubkey();
         let state = tempfile::tempdir().unwrap();
-        let relay = Relay::start(
+        let relay = crate::common::start_relay(
             RelayConfig {
                 state_root: state.path().to_path_buf(),
                 ..RelayConfig::default()

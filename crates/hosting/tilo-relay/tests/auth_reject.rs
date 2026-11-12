@@ -90,9 +90,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
             device_cert: relay_dev.cert.clone(),
             revocations: revs,
         };
-        let relay = tilo_relay::daemon::Relay::start(cfg, identity)
-            .await
-            .unwrap();
+        let relay = crate::common::start_relay(cfg, identity).await.unwrap();
         crate::common::admit_members(&relay, 9, &[good_dev.device_pubkey()], &state_root).await;
         let addr = relay.node_addr();
 
@@ -128,7 +126,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         let device = user.enrol("lost-phone", DeviceCapabilities::member());
         let device_key = device.device_pubkey();
         let state = tempfile::tempdir().unwrap();
-        let relay = tilo_relay::daemon::Relay::start(
+        let relay = crate::common::start_relay(
             tilo_relay::RelayConfig {
                 state_root: state.path().to_path_buf(),
                 ..Default::default()
@@ -187,7 +185,7 @@ async fn persisted_revocation_closes_a_member_session_within_a_second() {
     let device = user.enrol("lost-phone", DeviceCapabilities::member());
     let device_key = device.device_pubkey();
     let state = tempfile::tempdir().unwrap();
-    let relay = tilo_relay::daemon::Relay::start(
+    let relay = crate::common::start_relay(
         tilo_relay::RelayConfig {
             state_root: state.path().to_path_buf(),
             ..Default::default()
@@ -251,7 +249,7 @@ async fn management_alpn_rejects_collaborator_admitted_by_live_policy() {
     let alice_laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let bob_laptop = bob.enrol("collaborator-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let relay = tilo_relay::daemon::Relay::start(
+    let relay = crate::common::start_relay(
         tilo_relay::RelayConfig {
             state_root: state.path().to_path_buf(),
             trust_policy: tilo_relay::TrustPolicy::AllowList {

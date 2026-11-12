@@ -147,9 +147,7 @@ fn confirm(driver: &mut ui::headless::FrameHarness, phase: &str) {
 )]
 async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_reopen() {
     let directory = tempfile::tempdir().unwrap();
-    let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0)
-        .await
-        .unwrap();
+    let endpoint = test_relay::direct_endpoint().await;
     let content = Arc::new(fs::ContentStore::memory());
     let old_hash = content
         .write_content(b"old exact file content")

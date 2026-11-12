@@ -5,7 +5,6 @@ use super::*;
 use collab_types::Ed25519PublicKey;
 use ed25519_dalek::SigningKey;
 use fs_protocol::FileActor;
-use iroh::endpoint::{Endpoint, presets};
 
 struct Fixture {
     namespace: Arc<Mutex<Namespace>>,
@@ -19,7 +18,7 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let dir = tilo_test_env::memory_tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = test_relay::direct_endpoint().await;
         let store = Arc::new(crate::store::ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));

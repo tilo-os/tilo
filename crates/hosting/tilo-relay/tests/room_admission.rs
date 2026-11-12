@@ -42,7 +42,7 @@ async fn home_host() -> HomeHost {
     let bob = TestUser::fresh("Bob");
     let host = owner.enrol("home", DeviceCapabilities::host());
     let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start(
+    let relay = crate::common::start_relay(
         RelayConfig {
             state_root: state.path().to_path_buf(),
             trust_policy: TrustPolicy::AllowMatchingUser,

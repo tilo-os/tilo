@@ -794,14 +794,13 @@ mod tests {
         Arc<crate::store::ContentStore>,
         iroh::protocol::Router,
     ) {
-        use iroh::endpoint::{Endpoint, presets};
         let server_store = Arc::new(crate::store::ContentStore::memory());
         let id = server_store.write_content(data).await.unwrap().unwrap();
-        let server = Endpoint::bind(presets::N0).await.unwrap();
+        let server = test_relay::direct_endpoint().await;
         let router = iroh::protocol::Router::builder(server.clone())
             .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
             .spawn();
-        let client = Endpoint::bind(presets::N0).await.unwrap();
+        let client = test_relay::direct_endpoint().await;
         let hydrator = Hydrator::new(client, Arc::new(crate::store::ContentStore::memory()));
         hydrator.add_peer(server.addr());
         (hydrator, id, server_store, router)
@@ -933,13 +932,12 @@ mod tests {
     /// no longer exists.
     #[tokio::test]
     async fn an_abandoned_fetch_gives_its_ranges_back() {
-        use iroh::endpoint::{Endpoint, presets};
         let data = pseudo(3 * 1024 * 1024, 17);
         let source = crate::store::ContentStore::memory();
         let id = source.write_content(&data).await.unwrap().unwrap();
         let quiet = crate::hydration::test_peers::silent().await;
         let hydrator = Hydrator::new(
-            Endpoint::bind(presets::N0).await.unwrap(),
+            test_relay::direct_endpoint().await,
             Arc::new(crate::store::ContentStore::memory()),
         );
         // The manifest is here; the bytes only the quiet peer holds.

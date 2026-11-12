@@ -137,7 +137,6 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use fs_native::hydrate::{Cancel, Fetcher as _};
-    use iroh::endpoint::{Endpoint, presets};
 
     use super::*;
     use crate::store::ContentStore;
@@ -165,10 +164,7 @@ mod tests {
         let manifest = elsewhere.local(quiet_id).await.unwrap();
         assert_eq!(store.ingest(manifest).await.unwrap(), quiet_id);
         let quiet = crate::hydration::test_peers::silent().await;
-        let hydrator = Arc::new(Hydrator::new(
-            Endpoint::bind(presets::N0).await.unwrap(),
-            store,
-        ));
+        let hydrator = Arc::new(Hydrator::new(test_relay::direct_endpoint().await, store));
         hydrator.add_peer(quiet.endpoint().addr());
         let fetcher = ContentFetcher::new(
             Arc::clone(&hydrator),

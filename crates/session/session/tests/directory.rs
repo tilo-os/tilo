@@ -888,6 +888,9 @@ fn expired_throwaway_identity(
 fn collaborative_session(state: &std::path::Path) -> Session {
     crate::common::headless(Options {
         collab: true,
+        // This machine's loopback relay, as the lounge's host is: nothing here reaches the
+        // person's relays out on the internet.
+        relays: Some(test_relay::loopback()),
         state: Some(state.to_path_buf()),
         ..Options::default()
     })
@@ -1137,7 +1140,7 @@ impl LoungeHost {
         );
         let (relay, workspaces, workspace) =
             block_on_within(runtime, "the lounge's host to start", async {
-                let relay = tilo_relay::daemon::Relay::start(
+                let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
                     tilo_relay::RelayConfig {
                         state_root: state.join("host"),
                         ..tilo_relay::RelayConfig::default()
@@ -1148,6 +1151,7 @@ impl LoungeHost {
                         device_cert: host_cert.clone(),
                         revocations: tilo_user_identity::RevocationList::new(),
                     },
+                    test_relay::relay_mode(),
                 )
                 .await
                 .expect("the lounge's host");

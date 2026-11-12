@@ -55,7 +55,7 @@ async fn start_at(
             std::net::UdpSocket::bind(iroh_listen).ok().map(drop)
         });
     }
-    Relay::start(
+    crate::common::start_relay(
         RelayConfig {
             state_root: state.to_path_buf(),
             iroh_listen,
@@ -500,8 +500,8 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
         "a removed member is not admitted: {refused:?}"
     );
 
-    // The room survives a restart of its relay, governance and all: a relay
-    // that comes back where it was changes nothing of it.
+    // The room survives a restart of its relay, governance and all: every change its people
+    // made is still there.
     let iroh_listen = *relay.node_addr().ip_addrs().next().unwrap();
     alice_session.close().await;
     bob_session.close().await;
@@ -512,7 +512,17 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
         panic!("one governed workspace: {workspaces:?}")
     };
     assert_eq!(restored.workspace, room.workspace);
-    assert_eq!(restored.generation, generation);
+    // A host names its own address in a workspace's governance each time it opens it
+    // (`Workspaces::hosts`), out of the address its endpoint reports — which holds the
+    // relay it reached only once it has reached it ([`iroh::Endpoint::addr`]); whether that
+    // was already true when this workspace opened is a property of the endpoint's
+    // connection, not of the workspace. The restart may name its address once more; no
+    // change its people made may go.
+    assert!(
+        restored.generation >= generation,
+        "a restart lost governance: {} is below {generation}",
+        restored.generation
+    );
     assert!(
         restored
             .members

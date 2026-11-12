@@ -294,6 +294,9 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 hyper = { version = "1", features = ["client", "http1"] }
 # The fetch proxy test's target.
 test-http = { path = "../../dev/test-http" }
+# The packet relay on this machine's loopback these tests run their hosts and devices on, and
+# the keys no two runs share: no test reaches a relay or directory out on the internet.
+test-relay = { path = "../../dev/test-relay" }
 
 [[test]]
 name = "it"

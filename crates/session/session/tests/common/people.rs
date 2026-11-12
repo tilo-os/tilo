@@ -116,7 +116,7 @@ impl Site {
         let host_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
             .expect("the site's device key");
         let (relay, workspaces, workspace) = runtime.block_on(async {
-            let relay = tilo_relay::daemon::Relay::start(
+            let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
                 tilo_relay::RelayConfig {
                     state_root: state.path().join("host"),
                     // Devices of this machine find the site on loopback, as they do on a person's
@@ -130,6 +130,9 @@ impl Site {
                     device_cert: host.clone(),
                     revocations: tilo_user_identity::RevocationList::new(),
                 },
+                // The site relays through this machine's loopback relay, as its people's devices
+                // do: neither side reaches number 0.
+                test_relay::relay_mode(),
             )
             .await
             .expect("the site's host");
@@ -934,6 +937,9 @@ impl Person {
             &self.identity.path().join("config/tilo/identity"),
             &root.join("config/tilo/identity"),
         );
+        // This device relays through this machine's loopback relay, as the site does: no session
+        // of a test reaches the person's relays or their directory out on the internet.
+        test_relay::relay_through_loopback_in(&root.join("config"));
         let paths = IdentityPaths::under(root.join("identity"));
         let cert = self.certify(&paths, label);
         Device {

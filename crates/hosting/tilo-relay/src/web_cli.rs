@@ -1415,7 +1415,7 @@ mod tests {
             DeviceCapabilities::primary(),
         )
         .unwrap();
-        let relay = Relay::start(
+        let relay = Relay::start_with_relay_mode(
             tilo_relay::RelayConfig {
                 state_root: tmp.path().join("relay"),
                 identity_root: tmp.path().join("identity"),
@@ -1427,6 +1427,7 @@ mod tests {
                 device_cert: host_cert,
                 revocations: RevocationList::new(),
             },
+            test_relay::relay_mode(),
         )
         .await
         .unwrap();
@@ -1587,7 +1588,7 @@ mod tests {
             DeviceCapabilities::primary(),
         )
         .unwrap();
-        let relay = Relay::start(
+        let relay = Relay::start_with_relay_mode(
             tilo_relay::RelayConfig {
                 state_root: tilo_relay_protocol::metrics::room_relay_root(state),
                 identity_root: state.join("identity"),
@@ -1599,6 +1600,7 @@ mod tests {
                 device_cert: host_cert,
                 revocations: RevocationList::new(),
             },
+            test_relay::relay_mode(),
         )
         .await
         .unwrap();
