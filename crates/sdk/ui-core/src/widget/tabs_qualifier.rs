@@ -9,10 +9,11 @@ use super::{TabBar, compose, tab_title_style};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
-/// The space between a tab's title and the app's name after it ([`TabBar::qualifier`]).
-pub(super) const QUALIFIER_GAP: f64 = 6.0;
-/// The least a title keeps, in px, before the app's name after it gives way.
-pub(super) const QUALIFIER_KEEP: f32 = 40.0;
+/// The space between a tab's title and the app's name after it ([`TabBar::qualifier`]): the gap
+/// the theme keeps between a label and the thing that qualifies it.
+pub(super) fn qualifier_gap(theme: &Theme) -> f32 {
+    theme.tokens.metrics.icon_label_gap
+}
 
 impl TabBar {
     /// The app tab `i` is a window of, where its title alone would not tell it from another tab
@@ -57,7 +58,7 @@ impl TabBar {
         };
         let style = tab_title_style(theme);
         let (app_w, _) = tr.measure_style(app, None, &style);
-        let x = label.x1 + QUALIFIER_GAP;
+        let x = label.x1 + f64::from(qualifier_gap(theme));
         if x + f64::from(app_w) > clip.x1 + 0.5 {
             return;
         }
@@ -129,7 +130,7 @@ mod tests {
             &tab_title_style(&theme).with_weight(TextWeight::Semibold),
         );
         assert!(
-            advance > f64::from(today) + QUALIFIER_GAP,
+            advance > f64::from(today) + f64::from(qualifier_gap(&theme)),
             "{advance} holds the app's name"
         );
     }

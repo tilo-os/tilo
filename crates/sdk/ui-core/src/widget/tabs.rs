@@ -2589,12 +2589,8 @@ impl TabBar {
             &style.clone().with_weight(TextWeight::Semibold),
         );
         // The app's name after a title another tab reads too asks for its own room.
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a gap and an app's name are a small on-screen pixel span"
-        )]
         let qualifier_w = self.qualifier(i).map_or(0.0, |app| {
-            tr.measure_style(app, None, &style).0 + QUALIFIER_GAP as f32
+            tr.measure_style(app, None, &style).0 + qualifier_gap(theme)
         });
         let measured = f64::from(full_w + qualifier_w);
         let previous = self
@@ -2612,9 +2608,10 @@ impl TabBar {
             reason = "title zone width is a small on-screen pixel span"
         )]
         let budget = (zx1 - zx0) as f32;
-        // The title gives up room to the app's name while it keeps a few letters; narrower, the
-        // name goes and the title has the pill.
-        let budget = if qualifier_w > 0.0 && budget - qualifier_w >= QUALIFIER_KEEP {
+        // The title gives up room to the app's name while it keeps a word of its own; narrower,
+        // the name goes and the title has the pill.
+        let keep = theme.tokens.spacing.s8 + theme.tokens.spacing.s2;
+        let budget = if qualifier_w > 0.0 && budget - qualifier_w >= keep {
             budget - qualifier_w
         } else {
             budget
@@ -3848,7 +3845,7 @@ const APPROX_CHAR_W: f64 = 9.5;
 
 /// The style of a tab's title and of a window's title: Body, so a window's
 /// name reads at the size of the text in it rather than a size smaller.
-use qualifier::{QUALIFIER_GAP, QUALIFIER_KEEP};
+use qualifier::qualifier_gap;
 
 fn tab_title_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Body)
