@@ -728,10 +728,9 @@ fn the_sessions_own_actions_are_found_and_run_on_its_published_surface() {
         "search",
         serde_json::json!({"query": "overview"}),
     );
-    until(&mut session, |session| {
-        row(session, "Open or close the overview").is_some()
-    });
-    let toggle = row(&session, "Open or close the overview").unwrap();
+    // The chrome names the action "Overview"; what it does is the row's line under that name.
+    until(&mut session, |session| row(session, "Overview").is_some());
+    let toggle = row(&session, "Overview").unwrap();
     invoke(
         &mut session,
         toggle.id.as_str(),

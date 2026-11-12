@@ -92,11 +92,15 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         &json!({"path": "session/desktop:chrome"}),
     );
     assert!(!failed, "{chrome}");
-    assert!(
-        chrome
-            .lines()
-            .any(|line| line.starts_with("session.overview(open: Option<Bool> = .none)  ")),
-        "the overview's action, as it is typed: {chrome}"
+    // The overview's name is the action's own, so the listing does not say it twice: the line is
+    // the call, with the parameter it may go without, and no label after it.
+    let overview = chrome
+        .lines()
+        .find(|line| line.starts_with("session.overview("))
+        .unwrap_or_else(|| panic!("the overview's action, as it is typed: {chrome}"));
+    assert_eq!(
+        overview, "session.overview(open: Option<Bool> = .none)",
+        "as it is typed: {chrome}"
     );
     let (arranging, failed) =
         repl.call(session, "tilo_ls", &json!({"path": "session/arrangement"}));

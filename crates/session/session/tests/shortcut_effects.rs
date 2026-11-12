@@ -663,7 +663,7 @@ fn the_search_shows_the_chord_beside_the_action() {
     press(&mut session, ShortcutAction::Search);
     until(&mut session, "the search", |session| searching(session));
     type_at_the_seat(&mut session, "reopen");
-    until_a_row(&mut session, "Reopen what was closed");
+    until_a_row(&mut session, "Reopen the closed window");
     capture(&mut session, "search");
 }
 
