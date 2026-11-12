@@ -524,6 +524,7 @@ browser-resource-bookmark-navigation = Bookmark navigation
 browser-library-already-clear = The library filter is already clear
 browser-action-needs-page = Open a web page first
 browser-action-private-no-forms = A private window remembers no forms
+browser-action-form-changed = This form asks something else since its action was made; the page reads its forms again by itself and publishes the action of the form as it is now. If none appears, read them (read-page-forms)
 browser-action-no-previous-page = No previous page
 browser-action-no-next-page = No next page
 browser-action-page-idle = Page is idle

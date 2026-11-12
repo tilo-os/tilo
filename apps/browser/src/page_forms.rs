@@ -27,11 +27,11 @@ use crate::site_memory::{self, Place, RememberedForm, RememberedQuestion};
 /// longer on the page as the action was made for it.
 pub const FORM_CHANGED: &str = "form_changed";
 
-/// What a withdrawn form action says while it stays listed: until the
-/// window's own read of the page replaces it.
-const WITHDRAWN: &str = "This form asks something else since its action was made; the page \
-                         reads its forms again by itself and publishes the action of the form \
-                         as it is now. If none appears, read them (read-page-forms)";
+/// What a withdrawn form action says while it stays listed, in the window's
+/// language: until the window's own read of the page replaces it.
+fn withdrawn() -> String {
+    crate::resource::CATALOG.t("browser-action-form-changed")
+}
 
 /// How many form actions in flight a window keeps track of.
 const MAX_RUNS: usize = 32;
@@ -448,7 +448,7 @@ fn finished(
     ty.label = label;
     let spec = spec.with_description(description);
     match standing {
-        Standing::Changed => spec.unavailable(FORM_CHANGED, WITHDRAWN),
+        Standing::Changed => spec.unavailable(FORM_CHANGED, withdrawn()),
         Standing::Read | Standing::Remembered => spec,
     }
 }
