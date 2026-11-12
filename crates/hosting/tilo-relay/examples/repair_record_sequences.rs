@@ -437,7 +437,7 @@ fn repair_workspace<'a>(
     app: Option<&'a str>,
     dry_run: bool,
     archive: &'a Path,
-) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RecordReport>>> + 'a>> {
+) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RecordReport>>> + Send + 'a>> {
     Box::pin(async move {
         let mut reports = Vec::new();
         let routes = workspaces
