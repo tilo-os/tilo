@@ -373,7 +373,7 @@ fn shipped_manifests_declare_consistent_sandbox_policy() {
 }
 
 /// An app's actions reach the person's desk only over the collaboration service: its running
-/// window publishes them to the workspace's broker (`CollabRequest::PublishActions`), which lists
+/// window publishes them to the workspace's broker (`CollabRequest::PublishActionSurface`), which lists
 /// them in the desktop's catalogue and routes their invocations back. An app whose surface
 /// declares verbs but whose sandbox has no `collab` service joins nothing
 /// (`CollaborationManager::join_native` disables itself), so none of its actions is ever listed

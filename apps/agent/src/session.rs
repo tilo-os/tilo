@@ -201,7 +201,7 @@ pub struct Session {
     native_task: Option<native_task::NativeTaskState>,
     /// The broker's pushed, permission-filtered live action directory the
     /// task loop surveys.
-    broker_surfaces: Vec<ui::collaboration::BrokerActionSurface>,
+    broker_catalogue: ui::collaboration::ActionCatalogue,
     next_broker_request: u64,
     /// The companions not yet seen in the catalogue, until the first run
     /// waited for them; empty afterwards.
@@ -299,7 +299,7 @@ impl Session {
             managed: is_managed,
             task_deadline: None,
             native_task: None,
-            broker_surfaces: Vec::new(),
+            broker_catalogue: ui::collaboration::ActionCatalogue::default(),
             next_broker_request: 1,
             awaiting_companions: cfg_companions,
             broker_revision: 0,
@@ -333,8 +333,8 @@ impl Session {
         tracing::info!(agent = %self.cfg.name, "waiting for the conversations' turns");
         loop {
             match self.link.recv(Duration::from_millis(100))? {
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces);
+                Some(CollabEvent::ActionCatalogue { change }) => {
+                    self.apply_broker_catalogue(&change);
                 }
                 Some(CollabEvent::TaskRun(run)) => {
                     if let Err(error) = self.run_task(&run) {
@@ -497,7 +497,7 @@ impl Session {
         // conversation's own action, so the actions this workspace publishes
         // are read before the first record: the person sees the reply the
         // moment the run is taken.
-        self.wait_for_task_catalogue()?;
+        self.wait_for_task_catalogue();
         self.report_task(run, runtime_collab::TaskRunUpdate::Accepted)?;
         // The cancellation poll is not waited for here: its answer, with the
         // run's messages, is read before the first turn (or the first
@@ -671,26 +671,14 @@ impl Session {
         )
     }
 
-    fn wait_for_task_catalogue(&mut self) -> Result<()> {
-        if !self.broker_surfaces.is_empty() {
-            return Ok(());
-        }
-        let deadline = self.task_wait_deadline(TASK_CATALOGUE_WAIT);
-        let mut deferred = Vec::new();
-        while ui::time::now() < deadline {
-            let remaining = deadline.saturating_duration_since(ui::time::now());
-            match self.link.recv(remaining.min(Duration::from_millis(100)))? {
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces);
-                    self.link.defer(deferred);
-                    return Ok(());
-                }
-                Some(event) => deferred.push(event),
-                None => {}
-            }
-        }
-        self.link.defer(deferred);
-        Ok(())
+    fn wait_for_task_catalogue(&mut self) {
+        let wait = self
+            .task_wait_deadline(TASK_CATALOGUE_WAIT)
+            .saturating_duration_since(ui::time::now());
+        let since = self.broker_revision;
+        self.await_catalogue(wait, |session| {
+            session.broker_revision != since || !session.broker_catalogue.surfaces().is_empty()
+        });
     }
 
     fn task_wait_deadline(&self, maximum: Duration) -> Instant {
@@ -853,8 +841,8 @@ impl Session {
                     CollabEvent::TaskActionInvocationResult { .. } | CollabEvent::Document { .. },
                 )
                 | None => {}
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces);
+                Some(CollabEvent::ActionCatalogue { change }) => {
+                    self.apply_broker_catalogue(&change);
                 }
                 Some(event) => deferred.push(event),
             }

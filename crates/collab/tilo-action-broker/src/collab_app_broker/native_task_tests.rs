@@ -1784,18 +1784,13 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
             // the session's steps, while the agent working the turn is offered them.
             let listed = |caller: &Caller| {
                 let actor = BrokerActor::for_caller(caller);
-                let catalogue: serde_json::Value = serde_json::from_str(
-                    &f.state
-                        .action_catalogue_json_for(&workspace_id().to_string(), &actor)
-                        .unwrap(),
-                )
-                .unwrap();
-                catalogue["surfaces"]
-                    .as_array()
+                f.state
+                    .action_catalogue_for(&workspace_id().to_string(), &actor)
                     .unwrap()
                     .iter()
                     .any(|surface| {
-                        surface["provider"] == tilo_actions::remote::session_actions::PROVIDER
+                        surface.provider.as_deref()
+                            == Some(tilo_actions::remote::session_actions::PROVIDER)
                     })
             };
             assert!(

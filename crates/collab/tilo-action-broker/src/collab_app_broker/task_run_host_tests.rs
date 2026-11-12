@@ -386,20 +386,15 @@ async fn a_launched_task_agent_takes_its_task_steps_in_its_run() {
             )
             .unwrap();
             let actor = admitted.broker_actor();
-            let catalogue: serde_json::Value = serde_json::from_str(
-                &f.state
-                    .action_catalogue_json_for(&workspace_id().to_string(), &actor)
-                    .unwrap(),
-            )
-            .unwrap();
+            let catalogue = f
+                .state
+                .action_catalogue_for(&workspace_id().to_string(), &actor)
+                .unwrap();
             assert!(
-                catalogue["surfaces"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|surface| surface["provider"] == DESKTOP_PROVIDER
-                        && surface["actions"][0]["action"] == "list-windows"),
-                "the task step is in the task agent's catalogue: {catalogue}"
+                catalogue.iter().any(|surface| surface.provider.as_deref()
+                    == Some(DESKTOP_PROVIDER)
+                    && surface.actions[0].action == "list-windows"),
+                "the task step is in the task agent's catalogue: {catalogue:?}"
             );
             let channel = f.channel_admitted(300, &route, admitted);
             let run = delivered(&channel).await;

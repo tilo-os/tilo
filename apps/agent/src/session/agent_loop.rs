@@ -847,12 +847,12 @@ impl Session {
         )
     }
 
-    /// Replace the broker catalogue and invalidate the cached survey.
-    pub(super) fn set_broker_surfaces(
-        &mut self,
-        surfaces: Vec<ui::collaboration::BrokerActionSurface>,
-    ) {
-        self.broker_surfaces = surfaces;
+    /// Apply a change to the broker catalogue and invalidate the cached
+    /// survey.
+    pub(super) fn apply_broker_catalogue(&mut self, change: &ui::collaboration::CatalogueChange) {
+        if let Err(error) = self.broker_catalogue.apply(change) {
+            tracing::error!(%error, "the broker's catalogue change did not apply");
+        }
         self.broker_revision = self.broker_revision.wrapping_add(1);
     }
 
@@ -867,10 +867,15 @@ impl Session {
             return;
         }
         let published = self.await_catalogue(COMPANION_WAIT, |session| {
-            missing_companions(&session.awaiting_companions, &session.broker_surfaces).is_empty()
+            missing_companions(
+                &session.awaiting_companions,
+                session.broker_catalogue.surfaces(),
+            )
+            .is_empty()
         });
         if !published {
-            let missing = missing_companions(&self.awaiting_companions, &self.broker_surfaces);
+            let missing =
+                missing_companions(&self.awaiting_companions, self.broker_catalogue.surfaces());
             tracing::warn!(
                 ?missing,
                 "companions did not publish in time; planning without them"
@@ -899,11 +904,13 @@ impl Session {
                 break false;
             }
             match self.link.recv(deadline - now) {
-                Ok(Some(CollabEvent::ActionCatalogue { surfaces })) => {
-                    self.set_broker_surfaces(surfaces);
+                Ok(Some(CollabEvent::ActionCatalogue { change })) => {
+                    self.apply_broker_catalogue(&change);
                 }
                 Ok(Some(other)) => kept.push(other),
-                Ok(None) | Err(_) => {}
+                Ok(None) => {}
+                // A closed link brings no catalogue: waiting on spins.
+                Err(_) => break false,
             }
         };
         self.link.defer(kept);
@@ -917,8 +924,8 @@ impl Session {
             .link
             .take_queued(|event| matches!(event, CollabEvent::ActionCatalogue { .. }));
         for event in queued {
-            if let CollabEvent::ActionCatalogue { surfaces } = event {
-                self.set_broker_surfaces(surfaces);
+            if let CollabEvent::ActionCatalogue { change } = event {
+                self.apply_broker_catalogue(&change);
             }
         }
     }
@@ -932,7 +939,7 @@ impl Session {
         {
             return std::sync::Arc::clone(catalogue);
         }
-        let offers = surface::broker_offers(&self.broker_surfaces)
+        let offers = surface::broker_offers(self.broker_catalogue.surfaces())
             .into_iter()
             .filter(|offer| {
                 (offer.broker_peer_id.is_some() || offer.broker_provider.is_some())
@@ -2352,8 +2359,8 @@ impl Session {
                 break;
             }
             match self.link.recv(left.min(Duration::from_millis(5)))? {
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces);
+                Some(CollabEvent::ActionCatalogue { change }) => {
+                    self.apply_broker_catalogue(&change);
                 }
                 Some(event) => deferred.push(event),
                 None => {}
@@ -2375,7 +2382,8 @@ impl Session {
             .filter(|offer| offer.app == app)
             .filter_map(|offer| offer.broker_peer_id)
             .collect();
-        self.broker_surfaces
+        self.broker_catalogue
+            .surfaces()
             .iter()
             .filter(|surface| peers.contains(&surface.peer_id))
             .map(|surface| (surface.peer_id, surface.record_id.clone()))
@@ -2412,8 +2420,8 @@ impl Session {
             self.pump_turn();
             let left = deadline.saturating_duration_since(ui::time::now());
             match self.link.recv(left.min(Duration::from_millis(20)))? {
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces);
+                Some(CollabEvent::ActionCatalogue { change }) => {
+                    self.apply_broker_catalogue(&change);
                     found = appeared(self);
                 }
                 Some(event) => deferred.push(event),

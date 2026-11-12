@@ -6,8 +6,8 @@
 use super::super::handoff::HandoffRequest;
 use super::DocumentMutation;
 use super::{
-    BrokerActionSurface, CollabEvent, CollabRequest, Collaborator, ExportedAction, ExportedInput,
-    PresencePayload, SdkCommand, SignedOp,
+    CollabEvent, CollabRequest, Collaborator, ExportedAction, ExportedInput, PresencePayload,
+    SdkCommand, SignedOp,
 };
 
 #[derive(Default)]
@@ -172,42 +172,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.bytes(bytes);
         }
         CollabRequest::WantContent { hash } => meter.string_capacity(hash),
-        CollabRequest::PublishActions { actions } => {
-            meter.add_product(actions.capacity(), std::mem::size_of::<ExportedAction>());
-            for action in actions {
-                exported_action_bytes(action, &mut meter);
-            }
-        }
-        CollabRequest::PublishActionSurface { delta } => {
-            meter.add_product(
-                delta.shapes.capacity(),
-                std::mem::size_of::<(runtime_collab::ShapeId, ExportedAction)>(),
-            );
-            for (_, shape) in &delta.shapes {
-                exported_action_bytes(shape, &mut meter);
-            }
-            meter.add_product(
-                delta.templates.capacity(),
-                std::mem::size_of::<(runtime_collab::ShapeId, Vec<runtime_collab::ShapeId>)>(),
-            );
-            for (_, members) in &delta.templates {
-                meter.add_product(members.capacity(), runtime_collab::SHAPE_ID_BYTES);
-            }
-            meter.add_product(
-                delta.resources.capacity(),
-                std::mem::size_of::<runtime_collab::SurfaceResource>(),
-            );
-            for resource in &delta.resources {
-                meter.string_capacity(&resource.resource);
-                meter.string_capacity(&resource.fields.resource_kind);
-                meter.string_capacity(&resource.fields.resource_label);
-                serialized_bytes(&resource.fields.semantic_identity, &mut meter);
-            }
-            meter.add_product(delta.removed.capacity(), std::mem::size_of::<String>());
-            for resource in &delta.removed {
-                meter.string_capacity(resource);
-            }
-        }
+        CollabRequest::PublishActionSurface { delta } => surface_delta_bytes(delta, &mut meter),
         CollabRequest::ReportContinuation { metadata, .. } => {
             meter.bytes(metadata);
         }
@@ -463,63 +428,61 @@ pub(super) async fn remote_action_round_trip(
     })
 }
 
-fn action_catalogue_bytes(
-    surfaces: &[BrokerActionSurface],
-    surface_capacity: usize,
-    meter: &mut ByteMeter,
-) {
-    meter.add_product(surface_capacity, std::mem::size_of::<BrokerActionSurface>());
-    for surface in surfaces {
-        meter.string_capacity(&surface.app_id);
-        meter.string_capacity(&surface.cluster_id);
-        meter.string_capacity(&surface.record_id);
-        meter.add_product(
-            surface.actions.capacity(),
-            std::mem::size_of::<ExportedAction>(),
-        );
-        for action in &surface.actions {
-            exported_action_bytes(action, meter);
-        }
+fn surface_delta_bytes(delta: &runtime_collab::SurfaceDelta, meter: &mut ByteMeter) {
+    meter.add_product(
+        delta.shapes.capacity(),
+        std::mem::size_of::<(runtime_collab::ShapeId, ExportedAction)>(),
+    );
+    for (_, shape) in &delta.shapes {
+        exported_action_bytes(shape, meter);
+    }
+    meter.add_product(
+        delta.templates.capacity(),
+        std::mem::size_of::<(runtime_collab::ShapeId, Vec<runtime_collab::ShapeId>)>(),
+    );
+    for (_, members) in &delta.templates {
+        meter.add_product(members.capacity(), runtime_collab::SHAPE_ID_BYTES);
+    }
+    meter.add_product(
+        delta.resources.capacity(),
+        std::mem::size_of::<runtime_collab::SurfaceResource>(),
+    );
+    for resource in &delta.resources {
+        meter.string_capacity(&resource.resource);
+        meter.string_capacity(&resource.fields.resource_kind);
+        meter.string_capacity(&resource.fields.resource_label);
+        serialized_bytes(&resource.fields.semantic_identity, meter);
+    }
+    meter.add_product(delta.removed.capacity(), std::mem::size_of::<String>());
+    for resource in &delta.removed {
+        meter.string_capacity(resource);
     }
 }
 
-/// `surfaces` trimmed until their retained size fits `limit`, and the apps of
-/// the surfaces dropped. Inert surfaces (an app only offered to open) go
-/// before live ones, the last listed first, so the operations of the open
-/// windows survive longest.
-pub(super) fn fit_catalogue(
-    mut surfaces: Vec<BrokerActionSurface>,
-    limit: usize,
-) -> (Vec<BrokerActionSurface>, Vec<String>) {
-    let size = |surfaces: &[BrokerActionSurface]| {
-        let mut meter = ByteMeter(Some(std::mem::size_of::<CollabEvent>()));
-        action_catalogue_bytes(surfaces, surfaces.len(), &mut meter);
-        meter.0.unwrap_or(usize::MAX)
+fn catalogue_change_bytes(change: &runtime_collab::CatalogueChange, meter: &mut ByteMeter) {
+    let id_bytes = |id: &runtime_collab::CatalogueSurfaceId, meter: &mut ByteMeter| {
+        if let Some(provider) = &id.provider {
+            meter.string_capacity(provider);
+        }
+        meter.string_capacity(&id.app_id);
+        meter.string_capacity(&id.cluster_id);
+        meter.string_capacity(&id.record_id);
     };
-    // Measured as kept: a decoded list may hold spare capacity.
-    for surface in &mut surfaces {
-        surface.actions.shrink_to_fit();
+    meter.add_product(
+        change.removed.capacity(),
+        std::mem::size_of::<runtime_collab::CatalogueSurfaceId>(),
+    );
+    for id in &change.removed {
+        id_bytes(id, meter);
     }
-    let empty = size(&[]);
-    let mut total = size(&surfaces);
-    if total <= limit {
-        return (surfaces, Vec::new());
+    meter.add_product(
+        change.surfaces.capacity(),
+        std::mem::size_of::<runtime_collab::CatalogueSurfaceChange>(),
+    );
+    for surface in &change.surfaces {
+        id_bytes(&surface.surface, meter);
+        surface_delta_bytes(&surface.delta, meter);
     }
-    let mut dropped = Vec::new();
-    while total > limit {
-        let Some(at) = surfaces
-            .iter()
-            .rposition(|surface| !surface.live)
-            .or_else(|| surfaces.len().checked_sub(1))
-        else {
-            break;
-        };
-        let surface = surfaces.remove(at);
-        total = total.saturating_sub(size(std::slice::from_ref(&surface)).saturating_sub(empty));
-        dropped.push(surface.app_id);
-    }
-    surfaces.shrink_to_fit();
-    (surfaces, dropped)
 }
 
 fn scrollback_batch_bytes(
@@ -689,8 +652,8 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             serialized_bytes(message, &mut meter);
             "RemoteAction"
         }
-        CollabEvent::ActionCatalogue { surfaces } => {
-            action_catalogue_bytes(surfaces, surfaces.capacity(), &mut meter);
+        CollabEvent::ActionCatalogue { change } => {
+            catalogue_change_bytes(change, &mut meter);
             "ActionCatalogue"
         }
         CollabEvent::LocalDocumentActionReported { result, .. } => {

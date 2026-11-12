@@ -250,15 +250,6 @@ impl JoinedChannel {
 /// A local effect's record on its way into workspace activity.
 pub(super) type Recording = std::pin::Pin<Box<dyn Future<Output = Result<(), BrokerError>>>>;
 
-/// A service's answer on its way.
-/// A change to an app's published action surface.
-pub(super) enum SurfaceChange {
-    /// The whole surface, replacing what was published.
-    Whole(Vec<runtime_collab::ExportedAction>),
-    /// A change to what was published.
-    Delta(runtime_collab::SurfaceDelta),
-}
-
 /// What the host answers once its work is done.
 pub(super) type Answer<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, BrokerError>>>>;
 
@@ -1478,12 +1469,12 @@ impl JoinedChannel {
         })
     }
 
-    /// Publish the app's action surface on this channel: a whole one, or a
-    /// change to the one it published, applied all or not at all.
+    /// Change the app's action surface on this channel (a reset delta
+    /// replaces it whole), applied all or not at all.
     pub(super) fn publish_surface(
         &self,
         claimed_app: &str,
-        change: SurfaceChange,
+        delta: &runtime_collab::SurfaceDelta,
     ) -> Result<(), BrokerError> {
         // No app changes another app's route: a channel held to read refuses.
         self.writable()?;
@@ -1497,31 +1488,20 @@ impl JoinedChannel {
         }
         let peer_id = self.peer_id;
         let unavailable = || BrokerError::failed("action surface registry unavailable".into());
-        let (actions, table) = match change {
-            SurfaceChange::Whole(rows) => (
-                validate_published_surface(rows).map_err(BrokerError::failed)?,
-                None,
-            ),
-            SurfaceChange::Delta(delta) => {
-                // Apply to a copy: a delta that does not apply, or whose
-                // result is not a valid surface, changes nothing.
-                let mut table = self
-                    .state
-                    .surface_tables
-                    .lock()
-                    .map_err(|_| unavailable())?
-                    .get(&peer_id)
-                    .cloned()
-                    .unwrap_or_default();
-                table.apply(&delta).map_err(|reason| {
-                    BrokerError::failed(format!("action surface delta refused: {reason}"))
-                })?;
-                (
-                    validate_published_surface(table.actions()).map_err(BrokerError::failed)?,
-                    Some(table),
-                )
-            }
-        };
+        // Apply to a copy: a delta that does not apply, or whose result is
+        // not a valid surface, changes nothing.
+        let mut table = self
+            .state
+            .surface_tables
+            .lock()
+            .map_err(|_| unavailable())?
+            .get(&peer_id)
+            .cloned()
+            .unwrap_or_default();
+        table.apply(delta).map_err(|reason| {
+            BrokerError::failed(format!("action surface delta refused: {reason}"))
+        })?;
+        let actions = validate_published_surface(table.actions()).map_err(BrokerError::failed)?;
         let surface = PublishedSurface {
             peer_id,
             app_id: route.app_id.clone(),
@@ -1529,24 +1509,11 @@ impl JoinedChannel {
             actions,
             live: true,
         };
-        {
-            let mut tables = self
-                .state
-                .surface_tables
-                .lock()
-                .map_err(|_| unavailable())?;
-            match table {
-                Some(table) => {
-                    tables.insert(peer_id, table);
-                }
-                // A whole surface supersedes any delta state: a later delta
-                // without `reset` finds no shapes and is refused, so the
-                // publisher resets.
-                None => {
-                    tables.remove(&peer_id);
-                }
-            }
-        }
+        self.state
+            .surface_tables
+            .lock()
+            .map_err(|_| unavailable())?
+            .insert(peer_id, table);
         self.state.launchable.retain(&surface);
         let previous = self
             .state
@@ -1572,21 +1539,19 @@ impl JoinedChannel {
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         let cluster = self.route().cluster_id;
         let actor = self.verified_identity.broker_actor();
-        let snapshot = self.state.action_catalogue_json_for(&cluster, &actor);
-        let initial = match snapshot {
-            Ok(snapshot) => Arc::<str>::from(snapshot),
-            Err(error) => return Err(BrokerError::failed(error)),
-        };
-        // The session's normal tracing filter passes only errors. Its flight
-        // recorder captures stderr; report numeric metadata without changing
-        // that filter or exporting any authorized catalogue contents.
-        eprintln!(
-            "collab: initial authorized action catalogue snapshot event_kind=ActionCatalogue serialized_bytes={}",
-            initial.len()
-        );
-        let (tx, rx) = watch::channel(Some(initial));
+        let rows = self
+            .state
+            .action_catalogue_for(&cluster, &actor)
+            .map_err(BrokerError::failed)?;
+        let follower = CatalogueFollower::new(&catalogue_rows(rows));
         if let Ok(mut subscribers) = self.state.action_catalogue_subscribers.lock() {
-            subscribers.insert(self.connection_id, (cluster, actor, tx));
+            // A connection follows one catalogue: a stream it held ends.
+            let held = (cluster, actor, Arc::downgrade(&follower));
+            if let Some((_, _, replaced)) = subscribers.insert(self.connection_id, held)
+                && let Some(replaced) = replaced.upgrade()
+            {
+                replaced.end();
+            }
         } else {
             return Err(BrokerError::failed(
                 "action catalogue subscriber registry unavailable".into(),
@@ -1598,7 +1563,7 @@ impl JoinedChannel {
                 self.peer_id,
                 &self.verified_identity,
             ),
-            reader: Rc::new(AsyncMutex::new(ActionCatalogueReader { rx, initial: true })),
+            follower,
         })
     }
 
@@ -2263,18 +2228,9 @@ impl WireConnection {
                 Ok(Reply::Done)
             }
             Operation::Publish {
-                channel,
-                publication: Publication::Actions(actions),
-            } => {
-                let actions = serde_json::from_str(&actions)
-                    .map_err(|error| format!("invalid published actions: {error}"))?;
-                let session = self.channel(channel)?;
-                let published =
-                    session.publish_surface(&session.route().app_id, SurfaceChange::Whole(actions));
-                drop(session);
-                published.map_err(Refusal::refusal)?;
-                Ok(Reply::Done)
-            }
+                publication: Publication::RetiredActions(_),
+                ..
+            } => Err("a whole surface is published as a reset change".into()),
             Operation::Publish {
                 channel,
                 publication: Publication::Surface(delta),
@@ -2282,8 +2238,7 @@ impl WireConnection {
                 let delta = serde_json::from_str(&delta)
                     .map_err(|error| format!("invalid surface change: {error}"))?;
                 let session = self.channel(channel)?;
-                let published =
-                    session.publish_surface(&session.route().app_id, SurfaceChange::Delta(delta));
+                let published = session.publish_surface(&session.route().app_id, &delta);
                 drop(session);
                 published.map_err(Refusal::refusal)?;
                 Ok(Reply::Done)
@@ -2364,9 +2319,7 @@ impl WireConnection {
                     }
                     Topic::Catalogue => {
                         let stream = session.catalogue_feed().map_err(failed)?;
-                        tokio::task::spawn_local(pump_pulled(stream, id, frames, |catalogue| {
-                            Event::Catalogue(catalogue.to_string())
-                        }))
+                        tokio::task::spawn_local(pump_pulled(stream, id, frames, Event::Catalogue))
                     }
                     Topic::TaskRuns => {
                         let feed = session.task_run_feed().map_err(failed)?;
@@ -2603,7 +2556,7 @@ impl Pulled for super::approved_checks::ReportedProgress {
 }
 
 impl Pulled for ActionCatalogueStreamServer {
-    type Item = Arc<str>;
+    type Item = String;
     async fn pull(&self) -> Result<Self::Item, BrokerError> {
         self.next().await
     }

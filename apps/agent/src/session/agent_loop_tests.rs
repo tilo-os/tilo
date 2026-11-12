@@ -8,7 +8,18 @@ use std::sync::{Arc, Mutex};
 use std::{cell::RefCell, rc::Rc};
 use tilo_actions::{ActionContract, ActionParam, Availability, ParamType};
 use ui::collaboration::CollabRequest;
-use ui::collaboration::{BrokerActionSurface, ExportedAction, ExportedInput};
+use ui::collaboration::{
+    ActionCatalogue, BrokerActionSurface, CatalogueChange, ExportedAction, ExportedInput,
+};
+
+/// The catalogue a follower holds once it was sent `surfaces`.
+pub(super) fn catalogue_of(surfaces: &[BrokerActionSurface]) -> ActionCatalogue {
+    let mut catalogue = ActionCatalogue::default();
+    catalogue
+        .apply(&CatalogueChange::snapshot(surfaces))
+        .expect("a snapshot applies to any catalogue");
+    catalogue
+}
 use uuid::Uuid;
 
 #[test]
@@ -1156,7 +1167,7 @@ impl ui::collaboration::PeerTransport for Broker {
                 // loop must take it up after a view step.
                 if republish {
                     let catalogue = CollabEvent::ActionCatalogue {
-                        surfaces: self.world.borrow().surfaces(),
+                        change: CatalogueChange::snapshot(&self.world.borrow().surfaces()),
                     };
                     match self.world.borrow().republish_after_polls {
                         0 => self.events.push(catalogue),
@@ -1457,8 +1468,8 @@ fn paced_fixture(
 /// The catalogue that publishes Chat's message late, when `world` publishes it so.
 fn late_chat(world: &World) -> Option<(usize, CollabEvent)> {
     let polls = world.chat_late?;
-    let surfaces = world.surfaces();
-    Some((polls, CollabEvent::ActionCatalogue { surfaces }))
+    let change = CatalogueChange::snapshot(&world.surfaces());
+    Some((polls, CollabEvent::ActionCatalogue { change }))
 }
 
 fn execution_fixture(
@@ -1550,7 +1561,7 @@ fn execution_fixture(
         managed: false,
         task_deadline: None,
         native_task: None,
-        broker_surfaces: surfaces,
+        broker_catalogue: catalogue_of(&surfaces),
         next_broker_request: 1,
         awaiting_companions: Vec::new(),
         record: None,

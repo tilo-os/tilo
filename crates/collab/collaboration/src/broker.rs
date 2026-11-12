@@ -13,11 +13,11 @@
 use super::channel_key;
 use super::route_keys::Arrived;
 use super::{
-    ActionDirectoryRequest, Backend, BrokerActionCatalogueWire, BrokerActionSurface, CollabEvent,
-    CollabRequest, CollabTransport, CollaborationManager, Collaborator, DocumentMutation,
-    DocumentPublicationError, DocumentPublicationReceipt, ExportedAction, ExportedInput,
-    PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec, SignedOp, TransportCommand,
-    TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
+    ActionDirectoryRequest, Backend, CatalogueChange, CollabEvent, CollabRequest, CollabTransport,
+    CollaborationManager, Collaborator, DocumentMutation, DocumentPublicationError,
+    DocumentPublicationReceipt, ExportedAction, ExportedInput, PresenceKey, PresencePayload,
+    PrimaryRouteState, RouteSpec, SignedOp, TransportCommand, TransportError, TransportStatus,
+    Uuid, auto_hello_env, mpsc,
 };
 use runtime_collab::OpAdmission;
 use tilo_sort::CompactSort as _;
@@ -30,7 +30,7 @@ mod bytes;
 mod refused_answer;
 #[path = "task_agent_route.rs"]
 mod task_agent_route;
-use bytes::{command_bytes, event_diagnostics, fit_catalogue, remote_action_round_trip};
+use bytes::{command_bytes, event_diagnostics, remote_action_round_trip};
 #[cfg(all(unix, any(test, feature = "test-support")))]
 #[path = "broker_fixtures.rs"]
 mod fixtures;
@@ -131,9 +131,8 @@ const SDK_EVENT_QUEUE: usize = 256;
 /// cap because one document snapshot or argument may be large.
 const SDK_COMMAND_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 const SDK_EVENT_QUEUE_BYTES: usize = 4 * 1024 * 1024;
-/// Budget of the one action catalogue in flight: a big workspace's catalogue
-/// neither starves action results nor fails the bridge, and is trimmed to fit
-/// ([`fit_catalogue`]).
+/// Budget of the action catalogue changes in flight: a big workspace's
+/// catalogue neither starves action results nor fails the bridge.
 const SDK_CATALOGUE_EVENT_BYTES: usize = 16 * 1024 * 1024;
 /// Document budgets, apart from control traffic so one large edit neither
 /// starves nor fails action results. Outbound documents report
@@ -503,21 +502,6 @@ impl BrokerTransport {
                     self.spill.push_back(SdkCommand::Primary(
                         CollabRequest::PublishActionSurface { delta },
                     ));
-                }
-            }
-            // A whole surface supersedes an older one still waiting.
-            SdkCommand::Primary(CollabRequest::PublishActions { actions }) => {
-                let waiting = self.spill.iter_mut().find(|parked| {
-                    matches!(
-                        parked,
-                        SdkCommand::Primary(CollabRequest::PublishActions { .. })
-                    )
-                });
-                let whole = SdkCommand::Primary(CollabRequest::PublishActions { actions });
-                if let Some(older) = waiting {
-                    *older = whole;
-                } else {
-                    self.spill.push_back(whole);
                 }
             }
             command => self.spill.push_back(command),
@@ -4860,7 +4844,6 @@ async fn spawn_invocation_stream(
                             turn.map(|turn| turn.permits).unwrap_or_default(),
                             owner,
                         )),
-                        None,
                     )
                     .await
                 {
@@ -5183,33 +5166,27 @@ async fn spawn_action_catalogue_stream(
     Ok(())
 }
 
-/// Decode and admit the initial snapshot through the same bounded owner queue.
+/// Decode and admit the initial catalogue through the same bounded owner queue.
 fn admit_initial_action_catalogue(
     initial: &str,
     tx: &InboundBridge,
     turn: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> Result<(), String> {
-    let catalogue = serde_json::from_str::<BrokerActionCatalogueWire>(initial)
+    let change = serde_json::from_str::<CatalogueChange>(initial)
         .map_err(|error| format!("decoding initial action catalogue failed: {error}"))?;
     if !tx.send_reply_turn(
-        CollabEvent::ActionCatalogue {
-            surfaces: catalogue.surfaces,
-        },
+        CollabEvent::ActionCatalogue { change },
         turn.map(EventTurn::Snapshot),
-        Some(initial.len()),
     ) {
         return Err("delivering initial action catalogue failed".to_string());
     }
     Ok(())
 }
 
-/// Forward catalogue snapshots from `read` until it or the bridge fails.
-/// Each read returns the broker's latest full catalogue (a watch), so at
-/// most one catalogue is queued at a time: the next read waits until the
-/// owner has dequeued the previous one, and intermediate snapshots coalesce
-/// in the broker. A busy owner (a headless worker between pumps) otherwise
-/// accumulated one large catalogue per publication until the bounded bridge
-/// failed closed.
+/// Forward catalogue changes from `read` until it or the bridge fails. At
+/// most one change is queued at a time: the next read waits until the owner
+/// has dequeued the previous one, and the broker composes what changed
+/// meanwhile into the next.
 async fn forward_action_catalogues(
     mut read: impl AsyncFnMut() -> Result<String, ()>,
     tx: &InboundBridge,
@@ -5219,27 +5196,25 @@ async fn forward_action_catalogues(
         let Ok(turn) = turns.clone().acquire_owned().await else {
             break;
         };
-        let Ok(snapshot) = read().await else {
+        let Ok(change) = read().await else {
             break;
         };
-        match serde_json::from_str::<BrokerActionCatalogueWire>(&snapshot) {
-            Ok(catalogue) => {
-                if !tx
-                    .send_durable_turn(
-                        CollabEvent::ActionCatalogue {
-                            surfaces: catalogue.surfaces,
-                        },
-                        Some(EventTurn::Snapshot(turn)),
-                        Some(snapshot.len()),
-                    )
-                    .await
-                {
-                    break;
-                }
-            }
+        // A change cannot be skipped: every later one builds on it.
+        let decoded = match serde_json::from_str::<CatalogueChange>(&change) {
+            Ok(decoded) => decoded,
             Err(error) => {
-                tracing::warn!(%error, "collab: invalid broker action catalogue");
+                tracing::error!(%error, "collab: invalid broker action catalogue change");
+                break;
             }
+        };
+        if !tx
+            .send_durable_turn(
+                CollabEvent::ActionCatalogue { change: decoded },
+                Some(EventTurn::Snapshot(turn)),
+            )
+            .await
+        {
+            break;
         }
     }
 }
@@ -6292,16 +6267,6 @@ async fn dispatch_sdk_request(
                 })
                 .await;
         }
-        CollabRequest::PublishActions { actions } => {
-            if let Err(error) = route.channel.publish_actions(&actions).await {
-                tracing::warn!(%error, "collab: publishing resource/action surface failed; republishing");
-                inbound_tx
-                    .state
-                    .action_surface_failed
-                    .store(true, Ordering::Release);
-                inbound_tx.state.notify_events();
-            }
-        }
         CollabRequest::PublishActionSurface { delta } => {
             if let Err(error) = route.channel.publish_action_surface(&delta).await {
                 tracing::warn!(%error, "collab: publishing resource/action surface failed; republishing");
@@ -6808,7 +6773,7 @@ mod tests {
         reason = "the tests and the fixtures they share with the toolkit's tests are test code"
     )]
     use super::*;
-    use runtime_collab::SurfaceDelta;
+    use runtime_collab::{ActionCatalogue, BrokerActionSurface, SurfaceDelta};
 
     /// The concrete broker transport's bridge state behind a test manager.
     pub(super) fn broker_state(manager: &CollaborationManager) -> BridgeState {
@@ -7498,7 +7463,9 @@ mod tests {
                             .action_catalogue_fixture
                             .clone()
                             .unwrap_or_else(|| {
-                                vec![serde_json::json!({"version": 1, "surfaces": []}).to_string()]
+                                vec![
+                                    serde_json::to_string(&CatalogueChange::snapshot(&[])).unwrap(),
+                                ]
                             })
                     };
                     Box::pin(async move {
@@ -7779,27 +7746,6 @@ mod tests {
                     answered(Ok(Reply::Done))
                 }
                 Publication::Document(op) => self.send_document(&op),
-                Publication::Actions(actions) => {
-                    let actions: Vec<runtime_collab::ExportedAction> =
-                        match serde_json::from_str(&actions) {
-                            Ok(actions) => actions,
-                            Err(error) => return answered(Err(error.to_string())),
-                        };
-                    let actions = actions
-                        .into_iter()
-                        .map(|action| (action.resource_label, action.action))
-                        .collect();
-                    let mut captures = self.captures();
-                    if captures.refuse_action_publications > 0 {
-                        captures.refuse_action_publications -= 1;
-                        captures.refused_action_publications += 1;
-                        return answered(Err("current host worker authority unavailable".into()));
-                    }
-                    captures
-                        .action_publications
-                        .push((channel.app_id(), actions));
-                    answered(Ok(Reply::Done))
-                }
                 Publication::Surface(delta) => {
                     let delta: runtime_collab::SurfaceDelta = match serde_json::from_str(&delta) {
                         Ok(delta) => delta,
@@ -12366,13 +12312,7 @@ mod tests {
         let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
         let state = BridgeState::new();
         let inbound = InboundBridge::new(tx, state.clone());
-        let snapshot = |bytes: usize| {
-            format!(
-                r#"{{"surfaces":[{{"peer_id":1,"app_id":"so.tilo.notes","cluster_id":"c","record_id":"{}","live":true,"actions":[]}}]}}"#,
-                "r".repeat(bytes)
-            )
-        };
-        let initial = snapshot(700 * 1024);
+        let initial = notebook_action_catalogue_fixture(Uuid::nil(), 1, 1, &"r".repeat(700 * 1024));
         admit_initial_action_catalogue(&initial, &inbound, None).unwrap();
         let queued = rx.try_recv().expect("initial catalogue reaches the owner");
         assert_eq!(event_kind(&queued.event), "ActionCatalogue");
@@ -12391,29 +12331,24 @@ mod tests {
         assert_eq!(state.catalogue_event_bytes.0.load(Ordering::Acquire), 0);
         assert!(state.is_healthy());
 
-        let oversized = snapshot(SDK_CATALOGUE_EVENT_BYTES);
-        admit_initial_action_catalogue(&oversized, &inbound, None).unwrap();
-        assert!(
-            state.is_healthy(),
-            "an oversized snapshot is trimmed to fit rather than failing the bridge"
+        let oversized = notebook_action_catalogue_fixture(
+            Uuid::nil(),
+            1,
+            1,
+            &"r".repeat(SDK_CATALOGUE_EVENT_BYTES),
         );
-        let queued = rx
-            .try_recv()
-            .expect("the trimmed catalogue reaches the owner");
-        let CollabEvent::ActionCatalogue { surfaces } = &queued.event else {
-            panic!("expected an action catalogue");
-        };
-        assert!(surfaces.is_empty(), "the one surface too large is dropped");
-        drop(queued);
-        assert_eq!(state.catalogue_event_bytes.0.load(Ordering::Acquire), 0);
-        assert_eq!(state.event_bytes.0.load(Ordering::Acquire), 0);
+        assert!(
+            admit_initial_action_catalogue(&oversized, &inbound, None).is_err(),
+            "a change cannot be dropped, so one that never fits fails the bridge"
+        );
+        assert!(!state.is_healthy());
     }
 
-    /// A headless worker is drained only between pumps. Large catalogue
-    /// snapshots (one per host publication) must not pile up in its bounded
-    /// bridge: one stays queued, the rest coalesce to the latest.
+    /// A headless worker is drained only between pumps. Catalogue changes
+    /// (one per host publication) must not pile up in its bounded bridge:
+    /// one stays queued, and the broker composes the rest into the next.
     #[test]
-    fn action_catalogue_reader_keeps_one_snapshot_queued_for_a_busy_owner() {
+    fn action_catalogue_reader_keeps_one_change_queued_for_a_busy_owner() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -12421,13 +12356,6 @@ mod tests {
         let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
         let state = BridgeState::new();
         let inbound = InboundBridge::new(tx, state.clone());
-        // ~700 KiB per snapshot, as with 34 mounted workers: six exceed the budget.
-        let snapshot = |sequence: u64| {
-            format!(
-                r#"{{"surfaces":[{{"peer_id":{sequence},"app_id":"so.tilo.notes","cluster_id":"c","record_id":"{}","live":true,"actions":[]}}]}}"#,
-                "r".repeat(700 * 1024)
-            )
-        };
         let published = std::rc::Rc::new(std::cell::Cell::new(0u64));
         let reads = published.clone();
         let local = tokio::task::LocalSet::new();
@@ -12438,7 +12366,12 @@ mod tests {
                     async || {
                         let next = reads.get() + 1;
                         reads.set(next);
-                        Ok(snapshot(next))
+                        Ok(notebook_action_catalogue_fixture(
+                            Uuid::nil(),
+                            1,
+                            next,
+                            "notebook",
+                        ))
                     },
                     &forwarder,
                     Arc::new(tokio::sync::Semaphore::new(1)),
@@ -12452,7 +12385,7 @@ mod tests {
             let first = rx.try_recv().expect("one catalogue queued");
             assert!(
                 rx.try_recv().is_err(),
-                "only one catalogue is queued at a time"
+                "only one catalogue change is queued at a time"
             );
             drop(first);
             for _ in 0..64 {
@@ -12461,33 +12394,51 @@ mod tests {
             assert!(matches!(
                 rx.try_recv(),
                 Ok(QueuedCollabEvent {
-                    event: CollabEvent::ActionCatalogue { ref surfaces },
+                    event: CollabEvent::ActionCatalogue { ref change },
                     ..
-                }) if surfaces[0].peer_id == 2
+                }) if change.surfaces[0].surface.peer_id == 2
             ));
             assert!(state.is_healthy());
         });
         assert_eq!(published.get(), 2, "no read while a catalogue is queued");
     }
-    pub fn notebook_action_catalogue_fixture(cluster: Uuid, count: usize) -> String {
-        let actions: Vec<_> = (0..count).map(|index| serde_json::json!({
+
+    fn notebook_action(index: usize) -> serde_json::Value {
+        serde_json::json!({
             "resource": format!("notes.page:{index:032x}"),
             "action": "open", "resource_kind": "note",
             "resource_label": format!("Notebook page {index}"),
             "action_label": "Open page",
-            // Keep realistic full action metadata in this transport fixture: the
-            // initial/watch and oversized tests assert the retained-byte bounds.
             "description": "Open this page in its notebook. Keep its notebook context, identify the original page, and show the existing page through the ordinary local reader. This catalogue description represents a full app-provided action explanation, including its expected navigation result.",
             "operation_kind": tilo_actions::OperationKind::View,
             "params": [tilo_actions::ActionParam::required("page", tilo_actions::ParamType::Resource, "The page to open")],
             "contract": tilo_actions::ActionContract::view(),
             "input": ExportedInput::None
-        })).collect();
-        serde_json::json!({"version": 1, "surfaces": [{
-            "peer_id": 1, "app_id": "so.tilo.notes", "cluster_id": cluster.to_string(),
-            "record_id": "notebook", "live": true, "actions": actions
-        }]})
-        .to_string()
+        })
+    }
+
+    /// The whole catalogue of one notebook window, connection `peer` on
+    /// `record`, offering `count` pages, as the broker sends it first.
+    pub fn notebook_action_catalogue_fixture(
+        cluster: Uuid,
+        count: usize,
+        peer: u64,
+        record: &str,
+    ) -> String {
+        let surface = BrokerActionSurface {
+            actions: (0..count)
+                .map(|index| serde_json::from_value(notebook_action(index)).unwrap())
+                .collect(),
+            ..BrokerActionSurface::with_id(runtime_collab::CatalogueSurfaceId {
+                peer_id: peer,
+                provider: None,
+                app_id: "so.tilo.notes".into(),
+                cluster_id: cluster.to_string(),
+                record_id: record.into(),
+                live: true,
+            })
+        };
+        serde_json::to_string(&CatalogueChange::snapshot(&[surface])).unwrap()
     }
 
     /// Production SDK socket, join and initial/watch delivery; this fixture
@@ -12496,28 +12447,11 @@ mod tests {
     #[cfg(unix)]
     fn initial_catalogue_and_watch_share_one_turn_for_a_busy_native_owner() {
         let cluster = Uuid::new_v4();
-        let snapshot = notebook_action_catalogue_fixture(cluster, 1025);
-        let decoded: BrokerActionCatalogueWire = serde_json::from_str(&snapshot).unwrap();
-        let retained = event_bytes(&CollabEvent::ActionCatalogue {
-            surfaces: decoded.surfaces,
-        })
-        .expect("the declared catalogue has a finite retained size");
-        eprintln!(
-            "catalogue fixture serialized_bytes={} retained_bytes={retained}",
-            snapshot.len()
-        );
-        assert!(
-            retained < SDK_EVENT_QUEUE_BYTES,
-            "the complete baseline fits"
-        );
-        assert!(
-            retained * 2 > SDK_EVENT_QUEUE_BYTES,
-            "initial plus watch would overflow"
-        );
-        let mut updated: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
-        updated["surfaces"][0]["peer_id"] = serde_json::json!(2);
         let captures = Captures {
-            action_catalogue_fixture: Some(vec![snapshot, updated.to_string()]),
+            action_catalogue_fixture: Some(vec![
+                notebook_action_catalogue_fixture(cluster, 1025, 1, "notebook"),
+                notebook_action_catalogue_fixture(cluster, 1025, 2, "notebook"),
+            ]),
             ..Captures::default()
         };
         let broker = FakeBroker {
@@ -12545,22 +12479,26 @@ mod tests {
         let admission = manager.await_primary_route();
         let state = broker_state(&manager);
         let healthy = state.is_healthy();
-        let initial = manager.poll().into_iter().find_map(|event| match event {
-            CollabEvent::ActionCatalogue { surfaces } => Some(surfaces),
+        let mut initial = ActionCatalogue::default();
+        let first = manager.poll().into_iter().find_map(|event| match event {
+            CollabEvent::ActionCatalogue { change } => Some(change),
             _ => None,
         });
+        if let Some(change) = &first {
+            initial.apply(change).unwrap();
+        }
         // The first normal owner poll releases the initial turn. The broker
         // watch can then deliver its complete next baseline without overflow.
-        let mut watched = None;
+        let mut watched = initial.clone();
         if healthy {
             eventually(
                 "the watched catalogue reaches the ordinary owner poll",
                 || {
-                    watched = manager.poll().into_iter().find_map(|event| match event {
-                        CollabEvent::ActionCatalogue { surfaces } => Some(surfaces),
+                    let change = manager.poll().into_iter().find_map(|event| match event {
+                        CollabEvent::ActionCatalogue { change } => Some(change),
                         _ => None,
                     });
-                    watched.is_some()
+                    change.is_some_and(|change| watched.apply(&change).is_ok())
                 },
             );
         }
@@ -12575,125 +12513,17 @@ mod tests {
             "initial and watched baselines must not disconnect the application"
         );
         assert_eq!(
-            initial.unwrap()[0].actions.len(),
+            initial.surfaces()[0].actions.len(),
             1025,
             "complete first baseline"
         );
-        let watched = watched.unwrap();
+        let watched = watched.surfaces();
         assert_eq!(watched[0].actions.len(), 1025, "complete watched baseline");
         assert_eq!(
             watched[0].peer_id, 2,
             "the watch delivered its next snapshot"
         );
         assert!(state.is_healthy());
-    }
-
-    /// An agent in a large workspace (many open windows, many apps) receives
-    /// a catalogue larger than the control events' budget whole and stays
-    /// connected: charged to that budget, it once failed the agent's whole
-    /// connection before its first task run.
-    #[test]
-    #[cfg(unix)]
-    fn an_agent_receives_a_catalogue_larger_than_the_control_budget() {
-        let cluster = Uuid::new_v4();
-        let snapshot = notebook_action_catalogue_fixture(cluster, 2049);
-        let decoded: BrokerActionCatalogueWire = serde_json::from_str(&snapshot).unwrap();
-        let retained = event_bytes(&CollabEvent::ActionCatalogue {
-            surfaces: decoded.surfaces,
-        })
-        .unwrap();
-        assert!(
-            retained > SDK_EVENT_QUEUE_BYTES,
-            "larger than the control budget"
-        );
-        assert!(
-            retained < SDK_CATALOGUE_EVENT_BYTES,
-            "within its own budget"
-        );
-        let broker = FakeBroker {
-            captures: Arc::new(std::sync::Mutex::new(Captures {
-                action_catalogue_fixture: Some(vec![snapshot]),
-                ..Captures::default()
-            })),
-            ..FakeBroker::default()
-        };
-        let (fd, _captures, worker) = stand_up_fake_broker(broker);
-        let sdk = CollaborationManager::spawn_sdk(
-            SdkConnectSource::Fd(fd),
-            Some(SdkJoinIdentity {
-                presentation: harness_presentation(),
-                participant_kind: "agent",
-                signer: harness_document_signer(),
-            }),
-        )
-        .unwrap();
-        let mut manager = CollaborationManager::with_transport(Box::new(sdk));
-        assert!(manager.send(CollabRequest::Hello {
-            app_id: "so.tilo.agent".into(),
-            cluster_id: cluster,
-            record: None,
-            record_kind: None,
-            handle: None,
-        }));
-        let admission = manager.await_primary_route();
-        let state = broker_state(&manager);
-        let catalogue = manager.poll().into_iter().find_map(|event| match event {
-            CollabEvent::ActionCatalogue { surfaces } => Some(surfaces),
-            _ => None,
-        });
-        let healthy = state.is_healthy();
-        drop(manager);
-        worker.join().unwrap();
-        assert!(admission.is_ok(), "the agent joins: {admission:?}");
-        assert!(healthy, "the catalogue must not disconnect the agent");
-        assert_eq!(catalogue.expect("the catalogue")[0].actions.len(), 2049);
-    }
-
-    /// A catalogue too large even for its own budget is trimmed rather than
-    /// failing the bridge: apps only offered to open go first, the last
-    /// listed first, and what is kept fits.
-    #[test]
-    fn an_oversized_catalogue_keeps_the_open_windows_first() {
-        let surface = |app: &str, live: bool, actions: usize| {
-            let wire: BrokerActionCatalogueWire = serde_json::from_str(
-                &notebook_action_catalogue_fixture(Uuid::from_u128(1), actions),
-            )
-            .unwrap();
-            let mut surface = wire.surfaces.into_iter().next().unwrap();
-            surface.app_id = app.into();
-            surface.live = live;
-            surface
-        };
-        let surfaces = vec![
-            surface("so.tilo.notes", true, 40),
-            surface("host:one", false, 1),
-            surface("so.tilo.settings", true, 40),
-            surface("host:two", false, 1),
-        ];
-        let size = |surfaces: &[BrokerActionSurface]| {
-            event_bytes(&CollabEvent::ActionCatalogue {
-                surfaces: surfaces.to_vec(),
-            })
-            .unwrap()
-        };
-        let whole = size(&surfaces);
-        let (kept, dropped) = fit_catalogue(surfaces.clone(), whole);
-        assert_eq!(
-            (kept.len(), dropped.len()),
-            (4, 0),
-            "a fitting catalogue is whole"
-        );
-
-        let limit = size(&surfaces[..3]) - 1;
-        let (kept, dropped) = fit_catalogue(surfaces, limit);
-        assert_eq!(dropped, ["host:two", "host:one"], "inert surfaces go first");
-        assert_eq!(
-            kept.iter()
-                .map(|surface| surface.app_id.as_str())
-                .collect::<Vec<_>>(),
-            ["so.tilo.notes", "so.tilo.settings"]
-        );
-        assert!(size(&kept) <= limit);
     }
 }
 
@@ -12755,8 +12585,8 @@ pub mod test_support {
     }
 
     /// A manager joined to the Browser's route in `cluster` while the broker
-    /// holds an action catalogue of `count` notebooks, larger than the
-    /// worker's event budget: whether the route was admitted and the worker
+    /// holds an action catalogue of `count` notebook pages: whether the
+    /// route was admitted and the worker
     /// stayed healthy, and how many catalogue subscriptions it made.
     pub fn ordinary_catalogue_manager(
         cluster: Uuid,
@@ -12768,20 +12598,7 @@ pub mod test_support {
         Result<(), runtime_portal::NotAvailable>,
         bool,
     ) {
-        let snapshot = notebook_action_catalogue_fixture(cluster, count);
-        let decoded: crate::BrokerActionCatalogueWire = serde_json::from_str(&snapshot).unwrap();
-        let retained = super::event_bytes(&crate::CollabEvent::ActionCatalogue {
-            surfaces: decoded.surfaces,
-        })
-        .unwrap();
-        eprintln!(
-            "startup fixture serialized_bytes={} retained_bytes={retained}",
-            snapshot.len()
-        );
-        assert!(
-            retained > super::SDK_EVENT_QUEUE_BYTES,
-            "prove the existing bound matters"
-        );
+        let snapshot = notebook_action_catalogue_fixture(cluster, count, 1, "notebook");
         let broker = FakeBroker {
             captures: std::sync::Arc::new(std::sync::Mutex::new(Captures {
                 action_catalogue_fixture: Some(vec![snapshot]),

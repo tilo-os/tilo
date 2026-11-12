@@ -294,43 +294,12 @@ impl Offer {
     }
 }
 
-/// Convert the broker's permission-filtered, live catalogue into the same
-/// inert offers the planner already consumes. No application registry or
-/// document reconstruction is involved: arbitrary apps appear here solely
-/// because they published a descriptor to the authenticated broker.
-///
-/// Accepts either the action host's fetched [`tilo_actions::remote::CataloguePage`]
-/// or the broker's pushed [`ui::collaboration::BrokerActionSurface`] directory.
-pub fn broker_offers<C: BrokerCatalogue + ?Sized>(catalogue: &C) -> Vec<Offer> {
-    catalogue.broker_offers()
-}
-
-/// A live, permission-filtered action directory the broker supplies.
-pub trait BrokerCatalogue {
-    /// Every live action it names, as planner offers.
-    fn broker_offers(&self) -> Vec<Offer>;
-}
-
-impl BrokerCatalogue for tilo_actions::remote::CataloguePage {
-    fn broker_offers(&self) -> Vec<Offer> {
-        catalogue_page_offers(self)
-    }
-}
-
-impl BrokerCatalogue for [ui::collaboration::BrokerActionSurface] {
-    fn broker_offers(&self) -> Vec<Offer> {
-        surface_offers(self)
-    }
-}
-
-impl BrokerCatalogue for Vec<ui::collaboration::BrokerActionSurface> {
-    fn broker_offers(&self) -> Vec<Offer> {
-        surface_offers(self)
-    }
-}
-
-/// Offers from the broker's pushed directory, including inert closed-app routes.
-fn surface_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Offer> {
+/// Convert the broker's permission-filtered catalogue into the same inert
+/// offers the planner already consumes, including closed apps' inert routes.
+/// No application registry or document reconstruction is involved:
+/// arbitrary apps appear here solely because they published a descriptor to
+/// the authenticated broker.
+pub fn broker_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Offer> {
     surfaces
         .iter()
         .filter(|surface| surface.live || surface.provider.is_some())
@@ -346,33 +315,6 @@ fn surface_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Of
                     view: None,
                     ..action.descriptor(tilo_actions::ExecutionLocus::ServerPreferred)
                 },
-            })
-        })
-        .collect()
-}
-
-fn catalogue_page_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec<Offer> {
-    catalogue
-        .rows
-        .iter()
-        .filter_map(|entry| {
-            // A live action names a connection. Closed applications and
-            // workspace actions retain their explicit stable route instead.
-            let peer = entry.provider.parse::<u64>().ok();
-            if peer.is_none()
-                && tilo_actions::remote::provider_workspace(&entry.provider).is_none()
-                && !entry.provider.starts_with("launch:")
-                && tilo_actions::remote::application_provider(&entry.provider).is_none()
-            {
-                return None;
-            }
-            let mut descriptor = entry.action.clone()?;
-            descriptor.locus = tilo_actions::ExecutionLocus::ServerPreferred;
-            Some(Offer {
-                app: entry.app_id.clone(),
-                broker_peer_id: peer,
-                broker_provider: peer.is_none().then(|| entry.provider.clone()),
-                descriptor,
             })
         })
         .collect()
@@ -920,7 +862,7 @@ mod tests {
             }))
             .unwrap()
         };
-        let offers = broker_offers(&vec![make("first"), make("second")]);
+        let offers = broker_offers([make("first"), make("second")].as_slice());
         assert_eq!(offers.len(), 2);
         assert_ne!(offers[0].id(), offers[1].id());
         for (offer, record) in offers.iter().zip(["first", "second"]) {
@@ -942,55 +884,6 @@ mod tests {
         {
             let a = ActionAddress::new("files.entry:/var/workspace/a.b/plan.md", "rename");
             assert_eq!(decode_address(&encode_address(&a)), Some(a));
-        }
-
-        {
-            let entry = |peer_id: u64| tilo_actions::remote::CatalogueRow {
-                provider: peer_id.to_string(),
-                app_id: "so.tilo.calculator".into(),
-                parent_resource: String::new(),
-                resource: tilo_actions::remote::CatalogueResource {
-                    id: "calculator.document".into(),
-                    kind: "calculator.document".into(),
-                    label: "Calculator".into(),
-                    presentation: None,
-                },
-                has_children: false,
-                visibility: None,
-                action: Some(ActionDescriptor {
-                    state: tilo_actions::ActionState::default(),
-                    semantic_identity: None,
-                    address: ActionAddress::new("calculator.document", "clear"),
-                    resource_kind: "calculator.document".into(),
-                    resource_label: "Calculator".into(),
-                    action_label: "Clear".into(),
-                    keywords: Vec::new(),
-                    icon: None,
-                    description: None,
-                    locus: tilo_actions::ExecutionLocus::ClientLocal,
-                    kind: tilo_actions::OperationKind::Effect,
-                    contract: tilo_actions::ActionContract::default(),
-                    params: Vec::new(),
-                    input: tilo_actions::InputSpec::None,
-                    view: None,
-                }),
-            };
-            let catalogue = tilo_actions::remote::CataloguePage {
-                revision: "1".into(),
-                rows: vec![entry(41), entry(42)],
-                ..tilo_actions::remote::CataloguePage::default()
-            };
-            let offers = broker_offers(&catalogue);
-            assert_eq!(offers.len(), 2);
-            assert_ne!(offers[0].id(), offers[1].id());
-            assert_eq!(
-                find(&offers, &offers[0].id()).unwrap().broker_peer_id,
-                Some(41)
-            );
-            assert_eq!(
-                find(&offers, &offers[1].id()).unwrap().broker_peer_id,
-                Some(42)
-            );
         }
 
         {

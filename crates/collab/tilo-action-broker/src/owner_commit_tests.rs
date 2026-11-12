@@ -1502,14 +1502,15 @@ mod owner_commit_tests {
             let retained_catalogue = handle.subscribe_action_catalogue().await.unwrap();
             let waiting_catalogue = handle.subscribe_action_catalogue().await.unwrap();
             assert!(waiting_catalogue.read().await.is_ok());
-            let catalogue_sender = state
+            let catalogue_follower = state
                 .action_catalogue_subscribers
                 .lock()
                 .unwrap()
                 .get(&901)
                 .unwrap()
                 .2
-                .clone();
+                .upgrade()
+                .unwrap();
             let pending_read =
                 tokio::task::spawn_local(async move { waiting_catalogue.read().await });
             for _ in 0..32 {
@@ -1598,9 +1599,12 @@ mod owner_commit_tests {
                 "full certificate must match descriptor despite same keys"
             );
             *authority.certificate.lock().unwrap() = None;
-            catalogue_sender
-                .send(Some(Arc::from("revoked private snapshot")))
-                .unwrap();
+            catalogue_follower.following.lock().unwrap().pending =
+                Some(runtime_collab::CatalogueChange {
+                    reset: true,
+                    ..runtime_collab::CatalogueChange::default()
+                });
+            catalogue_follower.changed.notify_one();
             assert!(
                 pending_read.await.unwrap().is_err(),
                 "a stream must recheck authority after its read wakes"

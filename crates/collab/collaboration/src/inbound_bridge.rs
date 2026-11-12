@@ -4,9 +4,9 @@ use tilo_lock::MutexRecover as _;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use super::{
-    BridgeState, BrokerActionSurface, CollabEvent, DocumentReassembly, EventTurn,
-    QueuedCollabEvent, SDK_CATALOGUE_EVENT_BYTES, SDK_DOCUMENT_EVENT_BYTES,
-    SDK_DOCUMENT_EVENT_RETRY, SDK_EVENT_QUEUE_BYTES, event_bytes, event_kind, fit_catalogue,
+    BridgeState, CollabEvent, DocumentReassembly, EventTurn, QueuedCollabEvent,
+    SDK_CATALOGUE_EVENT_BYTES, SDK_DOCUMENT_EVENT_BYTES, SDK_DOCUMENT_EVENT_RETRY,
+    SDK_EVENT_QUEUE_BYTES, event_bytes, event_kind,
 };
 
 /// Bounded inbound half. Durable events wait for the owner to make room
@@ -58,7 +58,7 @@ impl InboundBridge {
     }
 
     pub(super) async fn send_durable(&self, event: CollabEvent) -> bool {
-        self.send_durable_turn(event, None, None).await
+        self.send_durable_turn(event, None).await
     }
 
     /// Queue a durable event, waiting while the owner is behind on its
@@ -71,26 +71,16 @@ impl InboundBridge {
         &self,
         event: CollabEvent,
         turn: Option<EventTurn>,
-        serialized_bytes: Option<usize>,
     ) -> bool {
-        let event = match event {
-            CollabEvent::ActionCatalogue { surfaces } => {
-                let Some(queued) = self.catalogue(surfaces, turn, serialized_bytes) else {
-                    return true;
-                };
-                return self.enqueue(queued).await;
-            }
-            event => event,
-        };
-        let Some(bytes) = self.fitting_bytes(&event, serialized_bytes) else {
+        let Some(bytes) = self.fitting_bytes(&event) else {
             return false;
         };
-        let budget = &self.state.event_bytes;
+        let (budget, limit) = self.budget(&event);
         let reservation = loop {
             let freed = budget.1.notified();
             tokio::pin!(freed);
             freed.as_mut().enable();
-            if let Some(reservation) = budget.reserve(bytes, SDK_EVENT_QUEUE_BYTES) {
+            if let Some(reservation) = budget.reserve(bytes, limit) {
                 break reservation;
             }
             if self.tx.is_closed() {
@@ -114,24 +104,19 @@ impl InboundBridge {
     /// [`Self::forward_replies`]. The lane holds at most what the owner has
     /// asked and not yet been answered.
     pub(super) fn send_reply(&self, event: CollabEvent) -> bool {
-        self.send_reply_turn(event, None, None)
+        self.send_reply_turn(event, None)
     }
 
-    pub(super) fn send_reply_turn(
-        &self,
-        event: CollabEvent,
-        turn: Option<EventTurn>,
-        serialized_bytes: Option<usize>,
-    ) -> bool {
+    pub(super) fn send_reply_turn(&self, event: CollabEvent, turn: Option<EventTurn>) -> bool {
         let mut lane = self.replies.state.lock_recover();
         if lane.closed {
             return false;
         }
         if lane.forwarding || !lane.waiting.is_empty() {
-            lane.waiting.push_back((event, turn, serialized_bytes));
+            lane.waiting.push_back((event, turn));
             return true;
         }
-        match self.try_queue(event, turn, serialized_bytes) {
+        match self.try_queue(event, turn) {
             Ok(delivered) => delivered,
             Err(waiting) => {
                 lane.waiting.push_back(waiting);
@@ -155,11 +140,11 @@ impl InboundBridge {
                 lane.forwarding = next.is_some();
                 next
             };
-            let Some((event, turn, serialized_bytes)) = next else {
+            let Some((event, turn)) = next else {
                 wake.await;
                 continue;
             };
-            if !self.send_durable_turn(event, turn, serialized_bytes).await {
+            if !self.send_durable_turn(event, turn).await {
                 let mut lane = self.replies.state.lock_recover();
                 lane.waiting.clear();
                 lane.forwarding = false;
@@ -172,34 +157,18 @@ impl InboundBridge {
     /// Queue `event` at once when the owner has room for it. `Err` hands it
     /// back when the owner is behind; `Ok(false)` when it can never be
     /// delivered.
-    fn try_queue(
-        &self,
-        event: CollabEvent,
-        turn: Option<EventTurn>,
-        serialized_bytes: Option<usize>,
-    ) -> Result<bool, ReplyParts> {
-        let queued = match event {
-            CollabEvent::ActionCatalogue { surfaces } => {
-                match self.catalogue(surfaces, turn, serialized_bytes) {
-                    Some(queued) => queued,
-                    None => return Ok(true),
-                }
-            }
-            event => {
-                let Some(bytes) = self.fitting_bytes(&event, serialized_bytes) else {
-                    return Ok(false);
-                };
-                let Some(reservation) =
-                    self.state.event_bytes.reserve(bytes, SDK_EVENT_QUEUE_BYTES)
-                else {
-                    return Err((event, turn, serialized_bytes));
-                };
-                QueuedCollabEvent {
-                    event,
-                    _reservation: reservation,
-                    _turn: turn,
-                }
-            }
+    fn try_queue(&self, event: CollabEvent, turn: Option<EventTurn>) -> Result<bool, ReplyParts> {
+        let Some(bytes) = self.fitting_bytes(&event) else {
+            return Ok(false);
+        };
+        let (budget, limit) = self.budget(&event);
+        let Some(reservation) = budget.reserve(bytes, limit) else {
+            return Err((event, turn));
+        };
+        let queued = QueuedCollabEvent {
+            event,
+            _reservation: reservation,
+            _turn: turn,
         };
         match self.tx.try_send(queued) {
             Ok(()) => {
@@ -208,7 +177,7 @@ impl InboundBridge {
             }
             Err(tokio_mpsc::error::TrySendError::Full(QueuedCollabEvent {
                 event, _turn, ..
-            })) => Err((event, _turn, serialized_bytes)),
+            })) => Err((event, _turn)),
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
                 self.state.receiver_gone("inbound event queue");
                 Ok(false)
@@ -216,19 +185,30 @@ impl InboundBridge {
         }
     }
 
-    /// The bytes `event` retains, when it can fit the control budget at all.
-    /// One that never can is a protocol violation, not a burst: the bridge
-    /// fails closed rather than wait for workspace that never comes.
-    fn fitting_bytes(&self, event: &CollabEvent, serialized_bytes: Option<usize>) -> Option<usize> {
+    /// The budget `event` is charged to, and its limit: an action catalogue
+    /// change has its own, so a big workspace's catalogue neither starves
+    /// action results nor is refused for their budget.
+    fn budget(&self, event: &CollabEvent) -> (&super::ByteBudget, usize) {
+        if matches!(event, CollabEvent::ActionCatalogue { .. }) {
+            (&self.state.catalogue_event_bytes, SDK_CATALOGUE_EVENT_BYTES)
+        } else {
+            (&self.state.event_bytes, SDK_EVENT_QUEUE_BYTES)
+        }
+    }
+
+    /// The bytes `event` retains, when it can fit its budget at all. One
+    /// that never can is a protocol violation, not a burst: the bridge fails
+    /// closed rather than wait for workspace that never comes.
+    fn fitting_bytes(&self, event: &CollabEvent) -> Option<usize> {
         let required_bytes = event_bytes(event).unwrap_or(usize::MAX);
-        if required_bytes <= SDK_EVENT_QUEUE_BYTES {
+        let (_, limit) = self.budget(event);
+        if required_bytes <= limit {
             return Some(required_bytes);
         }
         tracing::error!(
             event_kind = event_kind(event),
-            ?serialized_bytes,
             required_bytes,
-            limit_bytes = SDK_EVENT_QUEUE_BYTES,
+            limit_bytes = limit,
             "collab: inbound control event exceeds its retained byte budget"
         );
         self.state.fail_closed("inbound event byte budget");
@@ -243,48 +223,6 @@ impl InboundBridge {
             self.state.receiver_gone("inbound event queue");
             false
         }
-    }
-
-    /// An action catalogue snapshot against its own budget, trimmed to fit
-    /// when it is larger. An agent then decides against most of a very
-    /// large workspace's operations rather than losing its connection.
-    /// `None` while another snapshot is still held: the next read brings the
-    /// latest again, so this one can go.
-    fn catalogue(
-        &self,
-        surfaces: Vec<BrokerActionSurface>,
-        turn: Option<EventTurn>,
-        serialized_bytes: Option<usize>,
-    ) -> Option<QueuedCollabEvent> {
-        let (surfaces, dropped) = fit_catalogue(surfaces, SDK_CATALOGUE_EVENT_BYTES);
-        if !dropped.is_empty() {
-            tracing::error!(
-                ?serialized_bytes,
-                limit_bytes = SDK_CATALOGUE_EVENT_BYTES,
-                kept_surfaces = surfaces.len(),
-                dropped_surfaces = dropped.len(),
-                dropped_apps = ?dropped,
-                "collab: action catalogue exceeds its budget; trimmed to fit"
-            );
-        }
-        let event = CollabEvent::ActionCatalogue { surfaces };
-        let bytes = event_bytes(&event).unwrap_or(usize::MAX);
-        let Some(reservation) = self
-            .state
-            .catalogue_event_bytes
-            .reserve_sole(bytes, SDK_CATALOGUE_EVENT_BYTES)
-        else {
-            tracing::warn!(
-                bytes,
-                "collab: action catalogue snapshot skipped while one is held"
-            );
-            return None;
-        };
-        Some(QueuedCollabEvent {
-            event,
-            _reservation: reservation,
-            _turn: turn,
-        })
     }
 
     /// Returns false only when the receiver has gone away. A full queue is a
@@ -314,7 +252,7 @@ impl InboundBridge {
     }
 }
 
-pub(super) type ReplyParts = (CollabEvent, Option<EventTurn>, Option<usize>);
+pub(super) type ReplyParts = (CollabEvent, Option<EventTurn>);
 
 /// Answers waiting, in order, for the owner to make room.
 #[derive(Default)]

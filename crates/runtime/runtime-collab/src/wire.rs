@@ -389,9 +389,8 @@ pub enum Publication {
     /// The app answers for its own action directory from now on: the host
     /// asks it with [`HostFrame::Ask`] for as long as the channel is held.
     Directory,
-    /// The app's whole action surface, as JSON `Vec<ExportedAction>`,
-    /// replacing what it published.
-    Actions(String),
+    /// Retired: a whole surface is a [`Self::Surface`] change that resets.
+    RetiredActions(String),
     /// A change to the app's action surface, as `SurfaceDelta` JSON.
     Surface(String),
 }
@@ -451,8 +450,8 @@ pub enum Topic {
     /// The invocations of the app's published actions, replacing any
     /// stream it held; `stable_ids` asks for stable invocation ids.
     Invocations { stable_ids: bool },
-    /// The action catalogue this endpoint may see, as it stands and then
-    /// each time it changes.
+    /// The action catalogue this endpoint may see: all of it, then each
+    /// change to it.
     Catalogue,
     /// The realtime continuity events this app sees.
     Realtime,
@@ -560,7 +559,7 @@ pub enum Event {
     Context(ContextUpdate),
     /// An invocation handed to this app.
     Invocation(Invocation),
-    /// The action catalogue as JSON.
+    /// The next change to the action catalogue, as `CatalogueChange` JSON.
     Catalogue(String),
     /// A task run handed to this agent, as `TaskRunEnvelope` JSON (its
     /// action context is free-form JSON, which postcard cannot carry).

@@ -74,7 +74,7 @@ fn looking_at_a_site_reads_and_captures_it_in_the_browser_not_by_fetch() {
     );
     let capture = format!("tilo.content:{}", f.session.cfg.content.put(&png).unwrap());
     f.world.borrow_mut().browser = Some(capture.clone());
-    f.session.broker_surfaces = f.world.borrow().surfaces();
+    f.session.broker_catalogue = super::catalogue_of(&f.world.borrow().surfaces());
     let model = Arc::new(LooksAtSites {
         bodies: Mutex::new(Vec::new()),
     });
