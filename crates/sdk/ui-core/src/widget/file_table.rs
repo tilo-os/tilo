@@ -650,7 +650,9 @@ impl<R: FileRow> FileTable<R> {
             .cloned()
             .unwrap_or_else(|_| Style::default());
         style.size.height = Dimension::percent(1.0);
-        style.flex_grow = 1.0;
+        // The table takes the room its parent leaves and no more, its rows
+        // scrolling inside it (`layout::filling`).
+        let style = crate::widget::layout::filling(style, 1.0);
         let _ = taffy.set_style(node, style);
         Some(node)
     }

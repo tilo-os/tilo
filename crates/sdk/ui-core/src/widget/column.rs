@@ -286,14 +286,14 @@ impl Widget for Column {
                     percent(1.0_f32)
                 },
             },
-            flex_basis: if self.fill_remaining_height {
-                taffy::Dimension::length(0.0)
-            } else {
-                taffy::Dimension::auto()
-            },
-            flex_grow: if self.fill_remaining_height { 1.0 } else { 0.0 },
             ..Default::default()
         };
+        // A column that fills what its parent's column leaves takes that room and no more: its
+        // content scrolls or clips inside it rather than growing it past the parent.
+        let style = crate::widget::layout::filling(
+            style,
+            if self.fill_remaining_height { 1.0 } else { 0.0 },
+        );
         let node = taffy.parent_node(style, &self.flow.child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node

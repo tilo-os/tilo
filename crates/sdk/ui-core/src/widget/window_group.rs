@@ -1492,8 +1492,9 @@ impl WindowGroup {
         };
         if self.maximized {
             style.size.width = Dimension::auto();
-            style.flex_grow = 1.0e6;
-            style.flex_basis = Dimension::length(0.0);
+            // A maximized window takes the strip's room and no more: it is not
+            // measured at its content's least width (`filling`).
+            style = crate::widget::layout::filling(style, 1.0e6);
         }
         // Moved down, not shrunk, while the desktop's bar shows over the
         // windows' top edge (a maximized window, or a bar hidden by choice):

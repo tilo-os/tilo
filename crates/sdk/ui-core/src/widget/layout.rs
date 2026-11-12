@@ -142,6 +142,37 @@ pub fn insets(top: f32, right: f32, bottom: f32, left: f32) -> taffy::Rect<Lengt
     }
 }
 
+/// `style` as a flex item that fills its share of the room its parent's main axis leaves:
+/// grown by `weight` from a zero basis, and measured at that share rather than at its content's
+/// min-content size.
+///
+/// In a flex container an `auto` minimum is the content's min-content size, so an item that only
+/// grows never shrinks below its content: a scrolling page under a fixed strip grows to its whole
+/// content instead of taking the room left and scrolling inside it. A filling item takes exactly
+/// its share; what it holds scrolls or clips inside it, and never pushes the parent past the room
+/// the parent was given. An item that genuinely may not shrink below its content says so with an
+/// explicit `min_size` on that axis, before or after this call.
+///
+/// The parent's main axis is not known where a widget builds its own style, so a filling item
+/// keeps a zero minimum on both axes: growing is the main axis of whichever parent it fills,
+/// and on the cross axis the rule is the same — it takes the room it is stretched to.
+#[must_use]
+pub fn filling(mut style: taffy::Style, weight: f32) -> taffy::Style {
+    style.flex_grow = weight;
+    // A weight of zero takes no share: the item is sized as it asks (its
+    // `size`, its content), and its minimum stays its own.
+    if weight > 0.0 {
+        style.flex_basis = taffy::Dimension::length(0.0);
+        if style.min_size.width == taffy::Dimension::auto() {
+            style.min_size.width = taffy::Dimension::length(0.0);
+        }
+        if style.min_size.height == taffy::Dimension::auto() {
+            style.min_size.height = taffy::Dimension::length(0.0);
+        }
+    }
+    style
+}
+
 thread_local! {
     static LAYOUT_CLIP: std::cell::Cell<Option<vello::kurbo::Rect>> =
         const { std::cell::Cell::new(None) };

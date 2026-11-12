@@ -4191,8 +4191,7 @@ impl GroupRow {
                 // `WindowGroup::own_style`; a fullscreen-promoted group
                 // doesn't, so set it here too.
                 style.size.width = Dimension::auto();
-                style.flex_grow = 1.0e6;
-                style.flex_basis = Dimension::length(0.0);
+                style = crate::widget::layout::filling(style, 1.0e6);
                 if self.promotion_keeps_gutter
                     && self.fullscreen_group.is_some()
                     && self.fullscreen_idx() == Some(i)

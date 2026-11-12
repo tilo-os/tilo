@@ -4152,9 +4152,7 @@ impl Widget for DataTableCore {
                     width: Dimension::auto(),
                     height: Dimension::length(f32_of_f64(self.header_h + self.default_row_h)),
                 },
-                flex_grow: 1.0,
                 flex_shrink: 1.0,
-                flex_basis: Dimension::length(0.0),
                 overflow: taffy::Point {
                     x: taffy::Overflow::Clip,
                     y: taffy::Overflow::Clip,
@@ -4174,6 +4172,10 @@ impl Widget for DataTableCore {
                 ..Default::default()
             }
         };
+        // A table that fills its parent's height takes that height, the rows
+        // scrolling inside it. Its header and one row remain the least it
+        // shows, which `filling` leaves as written.
+        let style = crate::widget::layout::filling(style, if self.fill_height { 1.0 } else { 0.0 });
         let node = taffy.parent_node(style, &child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.structure_dirty = false;
