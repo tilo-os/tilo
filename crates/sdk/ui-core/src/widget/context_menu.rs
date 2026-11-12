@@ -550,6 +550,9 @@ pub struct ContextMenu {
     /// sits; its owner's rows end there, and choosing it is never reported
     /// through [`ContextMenu::take_selection`].
     own_rows: Option<usize>,
+    /// The owner runs the rows' commands itself, hearing the choice through
+    /// [`ContextMenu::take_selection`] ([`ContextMenu::rows_are_the_owners`]).
+    rows_are_the_owners: bool,
     /// The query field, on a menu that takes typing.
     query: Option<Box<MenuQuery>>,
     /// The rows shown, in the order shown: every row with no query, else
@@ -624,6 +627,7 @@ impl ContextMenu {
             drawn: crate::motion::Pose::REST,
             about: None,
             own_rows: None,
+            rows_are_the_owners: false,
             query: None,
             shown: Vec::new(),
             owner_asks: false,
@@ -642,6 +646,15 @@ impl ContextMenu {
         menu.items = MenuItem::fold_groups(items);
         menu.refilter();
         menu
+    }
+
+    /// Say that the rows stand for commands the widget that opened this menu runs: a menu an
+    /// area opens over its content does, keeping them beside the menu so the choice survives it
+    /// closing. Choosing a row here reports it ([`Self::take_selection`]) and runs nothing, so a
+    /// row a person presses, a key takes and a tool or a screen reader activates all end in the
+    /// one place the owner runs the command.
+    pub fn rows_are_the_owners(&mut self) {
+        self.rows_are_the_owners = true;
     }
 
     /// Replace every row (closes an open nested menu).
@@ -2117,6 +2130,12 @@ impl Widget for ContextMenu {
             return false;
         };
         if !self.items.get(index).is_some_and(MenuItem::is_enabled) {
+            return false;
+        }
+        // A row of the owner's is the owner's command: the menu reports the choice
+        // ([`Self::take_selection`]) and the owner runs it, so a row asked for by its name is
+        // pressed where it stands, instead of a command run here that the owner never hears.
+        if self.rows_are_the_owners && index < self.own_rows.unwrap_or(self.items.len()) {
             return false;
         }
         self.click_item(index);

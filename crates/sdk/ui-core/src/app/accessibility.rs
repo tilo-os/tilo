@@ -1373,36 +1373,53 @@ impl App {
                 None
             }
             Action::Activate | Action::ToggleCheck => {
-                // A widget reached through its painting ancestor is pressed
-                // where it stands.
-                let c =
-                    self.exported_press_point(taffy_id, semantic_target.as_deref(), &ordinal_path);
+                // What the widget left to the pointer is pressed where its node is drawn: a
+                // control of its own, a row of a menu it opens, a child its painting ancestor
+                // routes to.
+                let c = self.drawn_press_point(
+                    drawn,
+                    taffy_id,
+                    semantic_target.as_deref(),
+                    &ordinal_path,
+                );
                 Some((c.x, c.y))
             }
             // A menu the node offers but no widget opens itself (one a menu
             // area around a list opens) opens on a secondary click where the
             // node stands, as a person's opens it.
             Action::ShowContextMenu => {
-                let c = drawn.map_or_else(
-                    || {
-                        self.exported_press_point(
-                            taffy_id,
-                            semantic_target.as_deref(),
-                            &ordinal_path,
-                        )
-                    },
-                    |drawn| {
-                        vello::kurbo::Point::new(
-                            f64::midpoint(drawn.x0, drawn.x1),
-                            f64::midpoint(drawn.y0, drawn.y1),
-                        )
-                    },
+                let c = self.drawn_press_point(
+                    drawn,
+                    taffy_id,
+                    semantic_target.as_deref(),
+                    &ordinal_path,
                 );
                 self.dispatch_semantic_press(c.x, c.y, winit::event::MouseButton::Right);
                 None
             }
             _ => None,
         }
+    }
+
+    /// Where the node `drawn` was last described is on screen, when the presentation gave it a
+    /// box; else where the widget `taffy_id` stands it (a routed child, a synthetic element,
+    /// the widget itself).
+    fn drawn_press_point(
+        &self,
+        drawn: Option<accesskit::Rect>,
+        taffy_id: taffy::NodeId,
+        semantic_target: Option<&str>,
+        ordinal_path: &[usize],
+    ) -> vello::kurbo::Point {
+        drawn.map_or_else(
+            || self.exported_press_point(taffy_id, semantic_target, ordinal_path),
+            |drawn| {
+                vello::kurbo::Point::new(
+                    f64::midpoint(drawn.x0, drawn.x1),
+                    f64::midpoint(drawn.y0, drawn.y1),
+                )
+            },
+        )
     }
 
     /// Activate the control whose test id is `test_id`, as an assistive

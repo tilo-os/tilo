@@ -48,6 +48,9 @@ mod chunks;
 #[path = "hosted/cost.rs"]
 mod cost;
 
+#[path = "hosted/menus.rs"]
+mod menus;
+
 #[path = "hosted/offers.rs"]
 mod offers;
 

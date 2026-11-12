@@ -66,10 +66,13 @@ Today. The session installs them (`--install-tapp`) beside native Notes
 - **today**: Today's card lists the tasks typed into Tasks' own window, which it
   reads from Tasks' record. One of them is marked done by its box, a checkbox of
   Tasks' window named "Mark <task> done" and pressed by name, and the change stands
-  in Tasks' history (the workspace took it). Its "Morning cleanup" is a control the desk names for
-  the window — a tool or a screen reader presses it by name — and pressed with one
-  task done in Tasks it runs: either it files "Morning: 1 done" in Notes and clears
-  the done task from Tasks, or it asks the person's leave first, which a headless
+  in Tasks' history (the workspace took it). Another is finished from its row's
+  menu, opened where the row stands and run by the command a tool presses by name:
+  "Complete" closes the menu and the change stands in Tasks' history too. Its
+  "Morning cleanup" is a control the desk names for
+  the window — a tool or a screen reader presses it by name — and pressed with two
+  tasks done in Tasks it runs: either it files "Morning: 2 done" in Notes and clears
+  the done tasks from Tasks, or it asks the person's leave first, which a headless
   session has nobody to give (the request is refused unasked, as every app's change
   of another app is).
 - **routes**: a second start of the same session installs the collaboration

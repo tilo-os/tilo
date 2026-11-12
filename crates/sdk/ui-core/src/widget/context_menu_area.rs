@@ -448,6 +448,9 @@ impl ContextMenuArea {
                 self.presses.push(entry.press);
                 self.more.extend(entry.more);
             }
+            // The entries' commands are the area's: it keeps them beside the menu so a choice
+            // runs whether the menu still stands, and a row a tool names is reported to it.
+            menu.rows_are_the_owners();
         }
         // A right-click inside what is selected in the content is about the
         // selection, so a question typed into the menu is; elsewhere the app
@@ -904,6 +907,13 @@ impl super::Decorator for ContextMenuArea {
         true
     }
 
+    /// The open menu is placed by the area itself, over the content, where the window's layout
+    /// gives it no node: an assistive technology and an agent reach its rows through the
+    /// content's node, as a person reaches them by pointer.
+    fn lays_out_child(&self, child_index: usize) -> bool {
+        self.menu.is_open() && child_index == self.content.children().len()
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let open = self.menu.is_open();
         let mut children = self.content.children_mut();
@@ -1069,6 +1079,38 @@ mod tests {
         area.choose(0);
         assert_eq!(chosen.get(), 7);
         assert!(!area.is_open());
+    }
+
+    /// A row an assistive technology or an agent names is the entry the area runs, not a command
+    /// the menu runs and nobody hears: the menu declines it, the press the caller makes where the
+    /// row is drawn takes it, and the entry runs once.
+    #[test]
+    fn a_row_a_tool_names_is_the_entry_the_area_runs() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
+        let (mut area, chosen, _) = opening_menu();
+        let mut doc = automerge::AutoCommit::new();
+        let target = crate::a11y_child_route::encode(&[0], Some("context-menu:item:1"));
+        assert!(
+            !crate::a11y_child_route::perform(
+                &mut area,
+                &target,
+                &crate::a11y::Action::Activate,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ),
+            "the menu runs none of the owner's rows"
+        );
+        assert_eq!(chosen.get(), 0, "nothing ran while the menu stood");
+        assert!(area.is_open(), "the row waits for the press it asks for");
+        let Some(row) = area.menu().item_rect(1) else {
+            panic!("the second action must have a hit target");
+        };
+        crate::testing::dispatch(&mut area, &moved(row.center()));
+        crate::testing::dispatch(&mut area, &crate::synthetic_input::mouse_press());
+        crate::testing::dispatch(&mut area, &crate::synthetic_input::mouse_release());
+        assert_eq!(chosen.get(), 2, "the press runs the entry it stands on");
+        assert!(!area.is_open(), "the menu closed on it");
     }
 
     type Chosen = Rc<std::cell::RefCell<Vec<&'static str>>>;
