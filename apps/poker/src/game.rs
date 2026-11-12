@@ -597,7 +597,26 @@ impl Table {
     }
 }
 
-#[resource(kind = "so.tilo.poker.table", label = "Poker table")]
+impl Table {
+    /// What the record holds: who sits where, with what, and the hand being played.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<tilo_resource::__private::serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "so.tilo.poker.table",
+    label = "Poker table",
+    read_content = Table::read_document
+)]
 impl Table {
     /// Take a seat at the table, with a buy-in of chips.
     #[action]

@@ -171,7 +171,26 @@ pub struct RecentEnvironments {
     pub devices: std::collections::BTreeMap<String, String>,
 }
 
-#[resource(kind = "terminal.recent-environments", label = "Recent environments")]
+impl RecentEnvironments {
+    /// What the record holds: the environment each device opened last.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "terminal.recent-environments",
+    label = "Recent environments",
+    read_content = RecentEnvironments::read_document
+)]
 impl RecentEnvironments {
     /// `device` opened the environment `target` (encoded as a request
     /// carries it): a new tab there opens on it.

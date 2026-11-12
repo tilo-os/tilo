@@ -533,7 +533,26 @@ impl Studio {
     }
 }
 
-#[resource(kind = "themes.studio", label = "Themes")]
+impl Studio {
+    /// What the record holds: the themes the person is writing, role by role.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "themes.studio",
+    label = "Themes",
+    read_content = Studio::read_document
+)]
 impl Studio {
     /// Start a theme from a preset or from one of your themes.
     #[action]

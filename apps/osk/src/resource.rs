@@ -122,7 +122,27 @@ impl ui::storage::SettingsSchema for OskPreferences {
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Osk {}
 
-#[resource(kind = "osk.keyboard", label = "On-screen keyboard")]
+impl Osk {
+    /// What the record holds: nothing — the keyboard's preferences are settings and what it
+    /// learned is a record of its own.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "osk.keyboard",
+    label = "On-screen keyboard",
+    read_content = Osk::read_document
+)]
 impl Osk {}
 
 /// The value of `--purpose`: the field kind the keyboard starts for.

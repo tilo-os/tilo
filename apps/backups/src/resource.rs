@@ -21,7 +21,26 @@ pub struct Backups {
     pub policy: RetentionPolicy,
 }
 
-#[resource(kind = "backups.workspace", label = "Backups")]
+impl Backups {
+    /// What the record holds: the retention policy every device follows.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "backups.workspace",
+    label = "Backups",
+    read_content = Backups::read_document
+)]
 impl Backups {}
 
 /// The folder this device protects and the location its backups go to.

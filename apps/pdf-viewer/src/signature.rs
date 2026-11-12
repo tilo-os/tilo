@@ -79,12 +79,28 @@ pub fn point_lists(profile: &SignatureProfile) -> Vec<Vec<(f64, f64)>> {
 /// The most points one drawn signature keeps.
 const MAX_POINTS: usize = 20_000;
 
+impl SignatureProfile {
+    /// What the record holds: the name the person signs as and the strokes they drew.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "pdf.signature-profile",
     label = "Signature",
     params = signature,
     version = 2,
-    migrate = upgrade
+    migrate = upgrade,
+    read_content = SignatureProfile::read_document
 )]
 impl SignatureProfile {
     /// Sign as

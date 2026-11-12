@@ -658,6 +658,22 @@ mod prepare {
     }
 }
 
+impl Artwork {
+    /// What the record holds: the artwork's size and ground, its layers, and the marks and text
+    /// each holds.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 /// The artwork's verbs: everything that changes it beyond one field.
 ///
 /// Each takes its documented argument struct flat, applies to the artwork
@@ -673,7 +689,8 @@ mod prepare {
     answer = crate::answer::answer,
     effects = ViewOp,
     version = 2,
-    migrate = crate::model::upgrade
+    migrate = crate::model::upgrade,
+    read_content = Artwork::read_document
 )]
 impl Artwork {
     /// Paint strokes.

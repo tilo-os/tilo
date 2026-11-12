@@ -423,7 +423,26 @@ pub struct ArtworkRecents {
     pub devices: BTreeMap<String, RecentArtworks>,
 }
 
-#[resource(kind = "canvas.recent-artworks", label = "Recent artworks")]
+impl ArtworkRecents {
+    /// What the record holds: the artworks opened or saved lately, by device.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "canvas.recent-artworks",
+    label = "Recent artworks",
+    read_content = ArtworkRecents::read_document
+)]
 impl ArtworkRecents {
     /// `recent` was opened or saved on `device`: it moves to the front.
     #[action(housekeeping)]

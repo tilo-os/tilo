@@ -46,7 +46,27 @@ pub struct Library {
     pub replies: Collection<Reply>,
 }
 
-#[resource(kind = "tube.library", label = "Tube")]
+impl Library {
+    /// What the record holds: the likes, the shared watch queue, the subscriptions, and the
+    /// comment likes and replies.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<tilo_resource::__private::serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "tube.library",
+    label = "Tube",
+    read_content = Library::read_document
+)]
 impl Library {
     /// Reply to a comment.
     ///

@@ -82,7 +82,27 @@ pub fn period(key: &str) -> wire::Period {
     }
 }
 
-#[resource(kind = "activity.filter", label = "Workspace activity")]
+impl Filter {
+    /// What the record holds: which changes History shows — the agent, the workspace and the
+    /// span of time, each picked whole from a list.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "activity.filter",
+    label = "Workspace activity",
+    read_content = Filter::read_document
+)]
 impl Filter {
     /// Show every change again.
     #[action]

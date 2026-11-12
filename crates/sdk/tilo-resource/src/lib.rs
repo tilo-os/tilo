@@ -67,6 +67,11 @@
 //!   ([`history::read_at`]) and restored, field by field and item by item,
 //!   from the record's stored [`Shape`];
 //! * **search** — text fields are indexed by default ([`Resource::search`]);
+//! * **reading** — a record whose declaration names a document read answers
+//!   the framework's `read` with what it holds, as typed data
+//!   ([`read::fields`] for a record whose fields are all it holds), so an
+//!   agent, a script or the SDK with no window open reads any record through
+//!   the same action, permissions and audit as everything else;
 //! * **lookup by kind** — a host that works with whatever a workspace holds
 //!   reads, publishes and replays any registered type from the kind its
 //!   record names ([`Kinds`], [`ResourceKind`]);

@@ -23,7 +23,26 @@ pub struct RecentFolders {
     pub devices: BTreeMap<String, Folders>,
 }
 
-#[resource(kind = "disk-usage.recent-folders", label = "Recent folders")]
+impl RecentFolders {
+    /// What the record holds: the folders analyzed lately, by device.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "disk-usage.recent-folders",
+    label = "Recent folders",
+    read_content = RecentFolders::read_document
+)]
 impl RecentFolders {
     /// `folder` on `device` was analyzed: it moves to the front.
     #[action(housekeeping)]
@@ -89,7 +108,27 @@ pub(crate) const DISKS_LINK: &str = "tilo://open#/me/so.tilo.disks";
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct DiskUsage {}
 
-#[resource(kind = "disk-usage", label = "Disk Usage Analyzer")]
+impl DiskUsage {
+    /// What the record holds: nothing — what it scans is this device's disk, and the folders it
+    /// remembers are kept in the record beside it.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "disk-usage",
+    label = "Disk Usage Analyzer",
+    read_content = DiskUsage::read_document
+)]
 impl DiskUsage {}
 
 /// One remembered folder, offered to analyze again.

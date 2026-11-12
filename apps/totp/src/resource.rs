@@ -17,7 +17,29 @@ use crate::app::{AuthenticatorApp, Notice, Store};
 pub use crate::model::Totp;
 use crate::model::{Account, StoredAccount, demo_accounts};
 
-#[resource(kind = "totp.vault", label = "Authenticator", search = Totp::search)]
+impl Totp {
+    /// What the record holds: the accounts' metadata — issuer, account name, algorithm, digits,
+    /// period and colour, in list order. Their seeds are this device's secret store and never
+    /// reach the record.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "totp.vault",
+    label = "Authenticator",
+    search = Totp::search,
+    read_content = Totp::read_document
+)]
 impl Totp {
     /// Move an account one place up.
     #[action]

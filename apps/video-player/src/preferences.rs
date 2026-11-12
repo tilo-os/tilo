@@ -81,7 +81,27 @@ pub struct RecentVideos {
     pub devices: BTreeMap<String, DeviceVideos>,
 }
 
-#[resource(kind = "video-player.recent", label = "Recent videos")]
+impl RecentVideos {
+    /// What the record holds: the videos played on this device, newest first, and where each
+    /// was left off.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "video-player.recent",
+    label = "Recent videos",
+    read_content = RecentVideos::read_document
+)]
 impl RecentVideos {
     /// `device`'s recent videos are now `rows`, newest first.
     #[action(housekeeping)]

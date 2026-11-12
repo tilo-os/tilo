@@ -97,7 +97,26 @@ pub struct RecentRecord {
     pub devices: BTreeMap<String, RecentFiles>,
 }
 
-#[resource(kind = "files.recent", label = "Recent files")]
+impl RecentRecord {
+    /// What the record holds: every device's Recent list, newest first.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "files.recent",
+    label = "Recent files",
+    read_content = RecentRecord::read_document
+)]
 impl RecentRecord {
     /// `path` on `device` was opened or changed at `at_ms`: it moves to the
     /// front.

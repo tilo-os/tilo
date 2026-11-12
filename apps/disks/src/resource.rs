@@ -55,7 +55,26 @@ impl Disks {
     }
 }
 
-#[resource(kind = "disks.system", label = "Storage devices")]
+impl Disks {
+    /// What the record holds: the names the person gives their drives.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "disks.system",
+    label = "Storage devices",
+    read_content = Disks::read_document
+)]
 impl Disks {
     /// Name a drive, or forget its name.
     ///

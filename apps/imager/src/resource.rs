@@ -40,10 +40,27 @@ pub struct Imager {
     pub profile: InstallProfile,
 }
 
+impl Imager {
+    /// What the record holds: the image to write, the images reviewed before it and the install
+    /// profile.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "imager.sources",
     initialize = Imager::default,
-    available = Imager::available
+    available = Imager::available,
+    read_content = Imager::read_document
 )]
 impl Imager {
     /// Review an image to write.

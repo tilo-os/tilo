@@ -25,6 +25,22 @@ pub use crate::model::Firewall;
 use crate::model::{FirewallConfig, ZoneKind};
 use ui::capability_door::Door;
 
+impl Firewall {
+    /// What the record holds: the stored configuration — each zone's policy, members and rules,
+    /// and the active zone.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "firewall.config",
     label = "Firewall",
@@ -33,6 +49,7 @@ use ui::capability_door::Door;
     search = Firewall::search,
     version = 3,
     migrate = crate::model::upgrade,
+    read_content = Firewall::read_document
 )]
 impl Firewall {
     /// Start firewall.
@@ -189,7 +206,26 @@ pub struct AppliedConfig {
     pub devices: BTreeMap<String, String>,
 }
 
-#[resource(kind = "firewall.applied", label = "Applied configuration")]
+impl AppliedConfig {
+    /// What the record holds: what each device last pushed to, or read from, its firewalld.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "firewall.applied",
+    label = "Applied configuration",
+    read_content = AppliedConfig::read_document
+)]
 impl AppliedConfig {
     /// `device`'s firewalld holds `config`, in canonical JSON.
     #[action(housekeeping)]

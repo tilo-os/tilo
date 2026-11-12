@@ -95,11 +95,28 @@ fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
     Ok(())
 }
 
+impl ContactDirectory {
+    /// What the record holds: the identities Contacts keeps for the workspace: each person's
+    /// label, contacts and whether it was removed.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<tilo_resource::__private::serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "tilo.contacts.identities",
     label = "Contact identities",
     version = 2,
-    migrate = upgrade
+    migrate = upgrade,
+    read_content = ContactDirectory::read_document
 )]
 impl ContactDirectory {
     /// Update the label of a Contacts identity, without merging similar names

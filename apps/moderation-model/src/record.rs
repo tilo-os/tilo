@@ -206,12 +206,28 @@ pub fn upgrade_decisions(
     Ok(())
 }
 
+impl Moderation {
+    /// What the record holds: the reports made and the decisions taken on them.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<tilo_resource::__private::serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "tilo.moderation",
     label = "Moderation",
     params = moderation,
     version = 2,
-    migrate = Moderation::upgrade
+    migrate = Moderation::upgrade,
+    read_content = Moderation::read_document
 )]
 impl Moderation {
     /// Bring a moderation record of version 1 up to this one: its decisions'

@@ -20,7 +20,27 @@ mod credential_owner_tests;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Passwords {}
 
-#[resource(kind = "passwords.vault", label = "Password vault")]
+impl Passwords {
+    /// What the record holds: nothing — the vault is this device's encrypted store, and no
+    /// secret syncs.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "passwords.vault",
+    label = "Password vault",
+    read_content = Passwords::read_document
+)]
 impl Passwords {}
 
 /// A capture shows the fixture vault in place of the person's.

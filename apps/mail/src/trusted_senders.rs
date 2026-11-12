@@ -18,7 +18,26 @@ pub struct TrustedSenders {
     pub senders: Set<String>,
 }
 
-#[resource(kind = "mail.trusted-senders", label = "Trusted senders")]
+impl TrustedSenders {
+    /// What the record holds: the senders whose remote images load without asking.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "mail.trusted-senders",
+    label = "Trusted senders",
+    read_content = TrustedSenders::read_document
+)]
 impl TrustedSenders {
     /// Load remote images from `sender` without asking.
     #[action]

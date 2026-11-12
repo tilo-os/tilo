@@ -298,11 +298,28 @@ impl Terminal {
     }
 }
 
+impl Terminal {
+    /// What the record holds: where the session runs, the relay session it re-attaches to, and
+    /// the pane the collaborators' presence is scoped to.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "terminal.session",
     label = "Terminal",
     params = session,
-    effects = TerminalEffect
+    effects = TerminalEffect,
+    read_content = Terminal::read_document
 )]
 impl Terminal {
     /// Run a command line in the session.

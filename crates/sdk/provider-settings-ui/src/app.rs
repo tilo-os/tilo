@@ -12,7 +12,28 @@ use ui::widget::{AppModel, Composed, Element, ModelPath, TaffyTreeExt, Widget};
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Providers {}
-#[resource(kind = "model-providers.root", label = "Model providers")]
+
+impl Providers {
+    /// What the record holds: nothing — the providers and keys it shows are the session's
+    /// settings, records of their own.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "model-providers.root",
+    label = "Model providers",
+    read_content = Providers::read_document
+)]
 impl Providers {}
 
 thread_local! {
