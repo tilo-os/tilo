@@ -160,6 +160,7 @@ d-dzzuovny = Unread
 d-5rkfnkg4 = Sidebar
     .w-channels = Channels
     .w-no-channels-yet = No channels yet
+    .w-channels-are-where-your-workspace-talks = Channels are where your workspace talks, each one a topic.
     .w-direct-messages = Direct messages
     .w-no-channel-open = No channel open
 

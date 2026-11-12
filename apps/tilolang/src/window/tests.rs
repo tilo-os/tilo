@@ -865,14 +865,20 @@ fn empty_states(node: &UiNode, out: &mut Vec<UiNode>) {
 fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_the_door() {
     let mut workspace = Workspace::new("notes");
     assert_eq!(workspace.items_of("so.tilo.lang.notes", "notes"), 0);
-    // An empty notebook says one sentence in its sidebar, and its primary action stands once,
-    // in that sidebar's header: the empty state has no button of its own.
+    // An empty notebook says one sentence once, in place of both columns, and its primary action
+    // stands once, in the bar: the state has no button of its own.
+    let composed = workspace.composed();
     let mut empty = Vec::new();
-    for node in slot_of(&workspace.composed(), "sidebar") {
-        empty_states(node, &mut empty);
-    }
-    let empty = empty.first().expect("the empty notebook says so");
-    assert_eq!(empty.props.get("title"), Some(&Value::text("No notes yet")));
+    empty_states(&composed, &mut empty);
+    assert_eq!(empty.len(), 1, "one state, once: {empty:?}");
+    assert_eq!(
+        empty[0].props.get("title"),
+        Some(&Value::text("No notes yet"))
+    );
+    assert!(
+        slot_of(&composed, "sidebar").is_empty(),
+        "the places draw no second state"
+    );
     assert!(
         workspace.header_buttons("sidebar_actions").is_empty(),
         "the sidebar's header offers no second button"
@@ -1046,30 +1052,31 @@ fn one_offering(shell: &UiNode, states: &[UiNode], label: &str) {
 #[test]
 fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_its_category() {
     let mut workspace = Workspace::new("chat");
-    assert!(
-        node_with(
-            &workspace.composed(),
-            "ui.EmptyState",
-            "title",
-            "No channels yet"
-        )
-        .is_some(),
-        "an empty workspace says so"
-    );
-    // It says so in the sidebar, where its channels would be: the screen a narrow window shows
-    // its places on lists nothing, but never shows nothing.
-    let mut empty = Vec::new();
-    for node in slot_of(&workspace.composed(), "sidebar") {
-        empty_states(node, &mut empty);
-    }
+    // A workspace with nothing at all to list says so once, where both columns stood: the places
+    // draw no second state beside it, and a narrow window opens on that one state.
+    let composed = workspace.composed();
     assert_eq!(
-        empty.first().and_then(|state| state.props.get("title")),
-        Some(&Value::text("No channels yet"))
+        composed.props.get("nothing_listed"),
+        Some(&Value::Bool(true)),
+        "the window says it lists nothing"
     );
-    // While there is no channel the window's bar carries the only New channel button, the way
-    // to make the first at every width; the places draw none beside it, which a wide window,
-    // where both stand side by side, does not show twice.
-    one_offering(&workspace.composed(), &empty, "New channel");
+    assert!(
+        slot_of(&composed, "sidebar").is_empty(),
+        "the places draw no second state"
+    );
+    let mut empty = Vec::new();
+    empty_states(&composed, &mut empty);
+    assert_eq!(empty.len(), 1, "one state, once: {empty:?}");
+    assert_eq!(
+        empty[0].props.get("title"),
+        Some(&Value::text("No channels yet")),
+        "the words the app declares for what it has none of"
+    );
+    assert!(
+        empty[0].props.contains_key("message"),
+        "with the line that says what a channel is for"
+    );
+    one_offering(&composed, &empty, "New channel");
     let button = workspace.key_of("ui.Button", "label", "New channel");
     workspace.fire(&button, "press", None);
     assert_eq!(workspace.items_of("so.tilo.lang.chat", "channels"), 1);

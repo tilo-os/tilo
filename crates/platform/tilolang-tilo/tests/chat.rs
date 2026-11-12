@@ -1250,8 +1250,9 @@ fn a_conversation_says_who_is_typing_from_presence() {
 /// places say the workspace has no channels where its channels would stand, and draw no call
 /// to action of their own: a second one would stand beside the bar's on a wide window, and at
 /// a narrow width the two screens of the stack would offer one each, so no width is left with
-/// none or with two. Once a channel exists the places' state is gone and the bar keeps its
-/// primary.
+/// none or with two. The window shows that one state alone while the places hold nothing and
+/// nothing is open, with the line the app says a channel is for; once a channel exists the
+/// state is gone and the bar keeps its primary.
 #[test]
 fn an_empty_workspace_offers_one_new_channel_button() {
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
@@ -1293,6 +1294,12 @@ fn an_empty_workspace_offers_one_new_channel_button() {
         states.first().and_then(|state| state.props.get("title")),
         Some(&Value::text("No channels yet")),
         "the places say the workspace has no channels where they would stand"
+    );
+    assert!(
+        states
+            .first()
+            .is_some_and(|state| state.props.contains_key("message")),
+        "with the line that says what a channel is for"
     );
     assert!(
         states

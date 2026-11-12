@@ -265,12 +265,16 @@ view sidebar(all: Conversations) {
     ui.NavShell(content_kind: .page, sidebar_title: "Channels") {
         sidebar: {
             // A workspace with no channel and no one else to talk to says so where its places
-            // would be: the screen a narrow window shows its places on never shows nothing. The
-            // way to make the first is the window bar's own, which every width shows, so the
-            // places add no second one.
+            // would be: the screen a narrow window shows its places on never shows nothing. With
+            // no places and nothing open the window says it once, in place of both columns, and
+            // the way to make the first is the window bar's own, which every width shows.
             if all.channels.is_empty()
                 and workspace.members.filter(m -> m != workspace.me).is_empty() {
-                ui.EmptyState("No channels yet", icon: .hash)
+                ui.EmptyState(
+                    "No channels yet",
+                    icon: .hash,
+                    message: "Channels are where your workspace talks, each one a topic.",
+                )
             } else {
                 ui.NavList(selected: shown) {
                     for item in all.channels {
@@ -358,6 +362,8 @@ view sidebar(all: Conversations) {
             }
         }
         content: {
+            // What stands where a conversation would, while the places have one to choose. With
+            // no places at all the window says what is missing once, in place of both columns.
             ui.EmptyState("No channel open", icon: .hash)
         }
     }

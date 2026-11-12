@@ -38,6 +38,9 @@ pub struct NavShellProps {
     /// What the window is for.
     #[component(slot(default))]
     pub content: Option<Element>,
+    /// The window has nothing at all to list: what stands in `content` is the window's one empty
+    /// state, in place of the overview, the content and the inspector ([`NavShell::nothing_listed`]).
+    pub nothing_listed: bool,
     /// Details of what the content shows, beside it.
     #[component(slot)]
     pub inspector: Option<Element>,
@@ -130,6 +133,7 @@ impl Described for NavShell {
             sidebar,
             overview,
             content,
+            nothing_listed,
             inspector,
             actions,
             overview_actions,
@@ -148,7 +152,13 @@ impl Described for NavShell {
             shell = shell.overview(overview);
         }
         if let Some(content) = content {
-            shell = shell.content(content);
+            if nothing_listed {
+                // Nothing at all to list: the window shows the state alone, with its own bar, and
+                // the columns come back when the view lists something again.
+                shell = shell.nothing_listed(content);
+            } else {
+                shell = shell.content(content);
+            }
         } else {
             // Nothing stands beside the overview: it lists for the whole window until the window
             // after the root's brings something to show.
@@ -185,9 +195,13 @@ impl Described for NavShell {
     }
 
     /// Titles, counts and whether Back goes back change in place; the columns and header
-    /// actions change through their slots. Another kind of content builds the shell again.
+    /// actions change through their slots. Another kind of content builds the shell again, and so
+    /// does the window coming to hold nothing at all to list or something again.
     fn set_props(&mut self, props: NavShellProps) -> bool {
         if self.inputs.borrow().kind != props.content_kind {
+            return false;
+        }
+        if self.nothing_listed_shown() != props.nothing_listed {
             return false;
         }
         let back_given = !props.back.is_none();
