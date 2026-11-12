@@ -1986,7 +1986,7 @@ impl InstallerApp {
             &[
                 ("disk", ArgValue::Text(disk.clone())),
                 ("user", ArgValue::Text(user.clone())),
-                ("filesystem", ArgValue::Text(opts.filesystem.to_string())),
+                ("filesystem", ArgValue::Text(opts.filesystem.clone())),
             ],
         )];
         self.recovery_key = None;

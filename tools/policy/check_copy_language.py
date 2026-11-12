@@ -1336,18 +1336,39 @@ def return_ranges(code: str, brace: int, end: int) -> list[tuple[int, int]]:
     return ranges
 
 
+# A call that reports a refusal to the code that asked: the sentence in it is
+# that caller's outcome, not a value the function hands back.
+REFUSAL_CALL = re.compile(r"(?:ok_or_else|ok_or|map_err|unwrap_or_else|Err)\s*\(")
+
+
+def inside_refusal(code: str, begin: int, start: int) -> bool:
+    """Whether the literal at `start` is built inside a refusal in `[begin,
+    start)`: `ok_or_else(|| "…".to_string())`, `Err("…".into())`."""
+    for found in REFUSAL_CALL.finditer(code, begin, start):
+        if rust_source.matching(code, found.end() - 1) > start:
+            return True
+    return False
+
+
 def returned_words(code: str, starts: list[int],
                    by_start: dict[int, rust_source.Literal], kept: str,
                    brace: int, end: int) -> list[rust_source.Literal]:
     """The English words the function opening at `brace` hands back: its tail
-    value and each `return`, with the branches, arms and sentences in them."""
+    value and each `return`, with the branches, arms and sentences in them. A
+    sentence built inside a refusal (`ok_or_else(|| "…")`) is the caller's
+    outcome, which that caller shows in its own words."""
     found = []
     for begin, close in return_ranges(code, brace, end):
+        if code[:begin].rstrip().endswith("return") and code[begin:close].lstrip().startswith(
+                "Err("):
+            continue
         for literal in painted_literals(code, starts, by_start, begin, close):
-            if kept[literal.start] == "x" and prose_words(literal.value):
+            if (kept[literal.start] == "x" and prose_words(literal.value)
+                    and not inside_refusal(code, begin, literal.start)):
                 found.append(literal)
         for literal in format_template(code, starts, by_start, begin, close):
-            if kept[literal.start] == "x" and prose_words(literal.value):
+            if (kept[literal.start] == "x" and prose_words(literal.value)
+                    and not inside_refusal(code, begin, literal.start)):
                 found.append(literal)
     return found
 
@@ -1591,6 +1612,39 @@ def word_constant_table(root: Path,
     return {name: sorted(set(words)) for name, words in table.items()}
 
 
+# A helper of the crate that maps a word to the catalogue key for it
+# (`fn text_size_ftl(english: &str) -> &'static str { match english { "Small" =>
+# "settings-appearance-text-small", … } }`). What it is handed is a key.
+def key_mappers(paths: list[Path], keys: set[str]) -> set[str]:
+    """Per crate, the functions that turn a word into the catalogue key for it."""
+    found: set[str] = set()
+    for path in paths:
+        text = path.read_text(errors="replace")
+        if "fn " not in text or "match " not in text:
+            continue
+        code, literals = rust_source.lex(text)
+        held = [literal for literal in literals if not literal.byte
+                and literal.value in keys]
+        if not held:
+            continue
+        for function in FUNCTION.finditer(code):
+            brace = code.find("{", function.end())
+            if brace < 0:
+                continue
+            close = rust_source.matching(code, brace)
+            if any(brace < literal.start < close for literal in held):
+                found.add(function.group(1))
+    return found
+
+
+def catalogue_keys(root: Path, crate: str) -> set[str]:
+    """The message ids of one crate's source catalogue."""
+    path = root / crate / f"locales/{SOURCE_LOCALE}.ftl"
+    if not path.is_file():
+        return set()
+    return {message.key for message in messages(path.read_text(errors="replace"))}
+
+
 def words_returned_in(code: str, begin: int, end: int,
                       returning: dict[str, list[tuple[str, int, str]]]
                       ) -> list[tuple[str, int, str]]:
@@ -1763,6 +1817,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
     naming: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
     fields: dict[str, set[tuple[str, str]]] = {}
     constants: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
+    mappers: dict[str, re.Pattern[str] | None] = {}
     found = []
     for path in sources:
         unit = path.relative_to(root).as_posix()
@@ -1808,6 +1863,8 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 for (body, end_of_body), literal in stored:
                     if body <= at < end_of_body and kept[literal.start] == "x":
                         hits.append(literal)
+            if (pattern := mappers.get(crate)) and pattern.search(code, begin, close):
+                return
             # Words a constant reaches this painted place with: the constant's
             # own definition is where the source language is written.
             for name, words in (constants.get(crate) or {}).items():
@@ -1845,6 +1902,13 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 returning[crate] = returning_words(root, by_crate[crate])
                 naming[crate] = named_tuple_words(root, by_crate[crate])
                 constants[crate] = word_constant_table(root, by_crate[crate])
+                named = key_mappers(by_crate[crate], catalogue_keys(root, crate))
+                mappers[crate] = (
+                    re.compile(r"(?<![\w$])(?:{})\s*\(".format(
+                        "|".join(re.escape(name) for name in sorted(named))))
+                    if named
+                    else None
+                )
             ranges = []
             for call, index in TEXT_CONSTRUCTORS:
                 start = code.find(call)

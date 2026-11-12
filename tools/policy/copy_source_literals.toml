@@ -256,11 +256,6 @@ text = "Discord"
 reason = "A service's name, spelled the same in every language."
 
 [[allow]]
-file = "apps/chat/src/transcript.rs"
-text = "`{other}` is not a format: md or json"
-reason = "What the transcript command answers an agent that named a format it does not have."
-
-[[allow]]
 file = "apps/file-explorer/src/files_app.rs"
 text = "Personal cloud"
 reason = "A label a capture scenario paints, which no one reads."
@@ -279,3 +274,296 @@ reason = "A store app's own name, the same in every language; the sentence aroun
 file = "apps/settings/src/panes/agent_models/hub.rs"
 text = "Hugging Face"
 reason = "A service's name, spelled the same in every language; the sentence around it is the catalogue's."
+
+# Words the gate now finds painted from a table instead of a catalogue.
+# Each entry names where they are written; fix one and delete its entry.
+
+[[allow]]
+file = "apps/browser/src/browsing_mode.rs"
+text = "This window browses without your sign-ins. Open \\\n     the page in a Browser window of your own to use your accounts there"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/calendar/src/app.rs"
+text = "New event"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/calendar/src/app.rs"
+text = "Add notes"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/containers/src/app.rs"
+text = "Container engine actions are unavailable in demo mode"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/disks/src/resource.rs"
+text = "Disks"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/view.rs"
+text = "Panic mode is on"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/view.rs"
+text = "The firewall is stopped"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/hex-editor/src/view/layout.rs"
+text = "Big endian"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/hex-editor/src/view/layout.rs"
+text = "Little endian"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/music/src/app.rs"
+text = "Add music"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/music/src/app.rs"
+text = "Choose Open audio file to play a file from this device, or connect Spotify or YouTube Music."
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/music/src/app.rs"
+text = "Connect a source"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/passwords/src/pages.rs"
+text = "Only the passwords in this vault"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/pdf-viewer/src/scenarios.rs"
+text = "Should we name the harrier's species here, as the later sections do?"
+reason = "Sample content a scenario or preview poses, not copy a window says."
+
+[[allow]]
+file = "apps/print-centre/src/surface/views.rs"
+text = "Cancel this document?"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/remote/src/model.rs"
+text = "Tilo device"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/remote/src/model.rs"
+text = "Password"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/remote/src/model.rs"
+text = "Public key"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/remote/src/model.rs"
+text = "Device identity"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/remote/src/model.rs"
+text = "SSH profiles support password or public-key authentication."
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/remote/src/model.rs"
+text = "VNC profiles support password authentication only."
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/remote/src/model.rs"
+text = "RDP profiles support password authentication only."
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/remote/src/model.rs"
+text = "Tilo device profiles must use Tilo device identity."
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/remote/src/model.rs"
+text = "Tilo device node must be an exact certified endpoint id."
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/remote/src/session.rs"
+text = "Ready"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/remote/src/session.rs"
+text = "Not available here"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/remote/src/session.rs"
+text = "RDP isn't supported"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/remote/src/session.rs"
+text = "Needs editing"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/remote/src/view.rs"
+text = "Remote can't open RDP connections"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/shortcuts/src/view.rs"
+text = "Deleted \u201c{name}\u201d"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/shortcuts/src/view.rs"
+text = "Could not finish"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/speed-test/src/view.rs"
+text = "Test interrupted"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/speed-test/src/view.rs"
+text = "Test interrupted"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/themes/src/lib.rs"
+text = "Theme Studio"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/video-editor/src/app.rs"
+text = "Add marker at playhead"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/video-editor/src/app/go_to_clip.rs"
+text = "Go to clip"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/video-editor/src/app/timeline_empty.rs"
+text = "Nothing on the timeline"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/video-editor/src/resource.rs"
+text = "Video Editor"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/weather/src/core/detail.rs"
+text = "Retry"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "crates/session/onboarding/src/app.rs"
+text = "abandon ability able about above absent absorb abstract absurd abuse access \\\n                     accident account accuse achieve acid acoustic acquire across act action actor \\\n                     actress actual"
+reason = "Sample content a scenario or preview poses, not copy a window says."
+
+[[allow]]
+file = "apps/ebook/src/store.rs"
+text = "Project Gutenberg"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/blocked.rs"
+text = "Reject"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/blocked.rs"
+text = "Drop"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/model.rs"
+text = "Drop"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/model.rs"
+text = "Block"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/model.rs"
+text = "Public"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/model.rs"
+text = "External"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/model.rs"
+text = "Work"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/model.rs"
+text = "Home"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/model.rs"
+text = "Internal"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/model.rs"
+text = "Trusted"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/model.rs"
+text = "Allow"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/model.rs"
+text = "Deny"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/firewall/src/model.rs"
+text = "Port {port}"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/contacts/src/app.rs"
+text = "You can view this address book, but not add to it."
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/shortcuts/src/editor.rs"
+text = "Shortcut"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/shortcuts/src/editor.rs"
+text = "Result"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."
+
+[[allow]]
+file = "apps/shortcuts/src/editor.rs"
+text = "Step {number}"
+reason = "A label this window paints from the crate's own table instead of its catalogue; cataloguing it is the next step the gate reports."

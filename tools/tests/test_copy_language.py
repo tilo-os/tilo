@@ -1108,6 +1108,62 @@ class CopyLanguageTests(unittest.TestCase):
             "through, so the sentence is copy even though its signature names no "
             "string type")
 
+    def test_a_label_table_the_crate_maps_to_keys_is_not_copy(self):
+        root = self._root({
+            "apps/demo/src/lib.rs": "\n".join([
+                "const TEXT_SIZES: &[(&str, f64)] = &[",
+                '    ("Small", 0.85),',
+                '    ("Large", 1.3),',
+                "];",
+                "fn text_size_ftl(english: &str) -> &'static str {",
+                "    match english {",
+                '        "Small" => "demo-text-small",',
+                '        _ => "demo-text-large",',
+                "    }",
+                "}",
+                "fn labels() -> Vec<String> {",
+                "    TEXT_SIZES.iter()",
+                "        .map(|(label, _)| crate::strings::t(text_size_ftl(label)))",
+                "        .collect()",
+                "}",
+                "fn row() -> Node {",
+                "    Node::new(Role::List).with_description(Segment::new(labels()[0].clone()))",
+                "}",
+            ]) + "\n",
+        })
+        self.assertEqual(
+            [text for _, _, text in copy.source_copy_literals(root)],
+            [],
+            "the words are keys into the catalogue through the crate's own "
+            "mapping, so the window paints a translation, not the table")
+
+    def test_a_refusal_reported_to_the_caller_is_not_copy(self):
+        root = self._root({
+            "apps/demo/src/lib.rs": "\n".join([
+                "fn answer(name: &str) -> Result<(), String> {",
+                "    let value = lookup(name).ok_or_else(|| {",
+                '        format!("`{name}` is not a name this panel has")',
+                "    })?;",
+                "    if value.stale {",
+                '        return Err("the panel has moved on".to_string());',
+                "    }",
+                "    Ok(())",
+                "}",
+                "fn caption() -> String {",
+                '    "Nothing is selected.".to_string()',
+                "}",
+                "fn row() -> Node {",
+                "    Node::new(Role::List).with_description(caption());",
+                "    Node::new(Role::List).with_hint(answer(\"x\"));",
+                "}",
+            ]) + "\n",
+        })
+        self.assertEqual(
+            [text for _, _, text in copy.source_copy_literals(root)],
+            ["Nothing is selected."],
+            "a refusal answers the code that asked, in the words that code "
+            "shows; the sentence a function keeps is what a window paints")
+
     def test_the_tree_passes(self):
         self.assertEqual(
             copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS,

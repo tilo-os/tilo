@@ -4112,7 +4112,7 @@ mod tests {
                 "Quelle",
                 "Laufwerk",
                 "Anpassen",
-                "Bestätigen",
+                "Prüfen",
                 "Schreiben",
                 "Fertig"
             ]
