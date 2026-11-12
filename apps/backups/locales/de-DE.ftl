@@ -144,3 +144,17 @@ backups-bar-backing-up = Sicherung läuft…
 ## Wie die Seiten des Fensters heißen
 backups-page-all = Alle Sicherungen
 backups-page-destination = Ziel
+
+## Actions
+
+backups-operation-backup-now = Jetzt sichern
+backups-operation-setup = Sicherungen einrichten
+backups-operation-verify = Schnappschuss prüfen
+backups-operation-restore-snapshot = Schnappschuss in neuen oder leeren Ordner wiederherstellen …
+backups-operation-show-source = Quelle anzeigen
+backups-operation-show-destination = Zielordner anzeigen
+backups-operation-show-snapshot = Schnappschuss anzeigen
+backups-operation-order-snapshots = Schnappschüsse ordnen
+backups-operation-read-snapshot = Schnappschuss lesen
+backups-operation-show-schedule = Globale Aufbewahrungsrichtlinie anzeigen
+backups-workspace = Sicherungen

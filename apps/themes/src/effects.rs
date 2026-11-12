@@ -26,7 +26,7 @@ pub enum ThemesEffect {
         theme: String,
     },
     /// Import a theme file through the host's consented file chooser.
-    #[effect(attended, job, cancellable)]
+    #[effect(attended, job, cancellable, label = "themes-import")]
     Import,
     /// Duplicate a theme
     ///
@@ -41,7 +41,7 @@ pub enum ThemesEffect {
     ///
     /// Delete `theme` from the studio and show the presets. Nothing to delete
     /// where the studio never wrote it.
-    #[effect(view)]
+    #[effect(view, label = "themes-delete-button")]
     DeleteTheme {
         #[param("Id of the preset or written theme")]
         theme: String,

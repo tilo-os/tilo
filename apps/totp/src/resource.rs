@@ -36,7 +36,6 @@ impl Totp {
 
 #[resource(
     kind = "totp.vault",
-    label = "Authenticator",
     search = Totp::search,
     read_content = Totp::read_document
 )]
@@ -148,7 +147,7 @@ pub enum TotpEffect {
     ///
     /// Opens the protected form on this device: a setup link carries the
     /// secret, so it is never an action argument.
-    #[effect(kind = "read")]
+    #[effect(kind = "read", label = "totp-add-title-add")]
     AddAccount,
     /// Open account.
     #[effect(kind = "read")]
@@ -165,7 +164,7 @@ pub enum TotpEffect {
     /// Set up on this device.
     ///
     /// Opens the protected form for the account's secret on this device.
-    #[effect(kind = "read")]
+    #[effect(kind = "read", label = "totp-add-title-provision")]
     SetUpLocal {
         #[param("Id of the account")]
         account: String,

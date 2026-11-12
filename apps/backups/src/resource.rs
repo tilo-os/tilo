@@ -38,7 +38,6 @@ impl Backups {
 
 #[resource(
     kind = "backups.workspace",
-    label = "Backups",
     read_content = Backups::read_document
 )]
 impl Backups {}

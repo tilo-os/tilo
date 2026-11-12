@@ -550,12 +550,11 @@ impl Studio {
 
 #[resource(
     kind = "themes.studio",
-    label = "Themes",
     read_content = Studio::read_document
 )]
 impl Studio {
     /// Start a theme from a preset or from one of your themes.
-    #[action]
+    #[action(label = "themes-new")]
     pub fn new_theme(
         &mut self,
         #[param("Id for the new theme")] id: String,
@@ -623,7 +622,7 @@ impl Studio {
     }
 
     /// Delete a theme.
-    #[action(destructive)]
+    #[action(destructive, label = "themes-delete-button")]
     pub fn delete(&mut self, theme: &Id) -> Result<(), Refusal> {
         self.themes
             .remove(theme)

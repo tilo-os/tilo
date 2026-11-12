@@ -127,6 +127,16 @@ themes-preview-label-list = List preview of { $theme }
 themes-preview-label-dialog = Dialog preview of { $theme }
 themes-preview-label-presence = Presence colours of { $theme }
 
+## Actions
+
+themes-effect-apply-theme = Set as system theme
+themes-effect-export = Export theme
+themes-effect-duplicate-theme = Duplicate theme
+themes-studio = Themes
+themes-studio-import-theme = Import theme file
+themes-studio-reset = Reset to preset
+themes-studio-switch-polarity = Switch between light and dark
+
 ## The preview's own sample window
 themes-app-title = Theme Studio
 themes-preview-inbox = Inbox

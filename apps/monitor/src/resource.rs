@@ -50,7 +50,6 @@ impl Monitor {
 
 #[resource(
     kind = "monitor.processes",
-    label = "Processes",
     read_content = Monitor::read_document
 )]
 impl Monitor {}
@@ -64,7 +63,7 @@ impl Monitor {}
 #[effect(operation = "monitor.effect")]
 pub enum MonitorEffect {
     /// Refresh processes.
-    #[effect(kind = "read")]
+    #[effect(kind = "read", label = "monitor-effect-refresh")]
     Refresh,
     /// Show tab.
     #[effect(kind = "read")]

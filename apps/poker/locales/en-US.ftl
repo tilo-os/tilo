@@ -115,3 +115,11 @@ poker-all-in = Went all in
 poker-show = Showed their cards
 poker-skip = Folded a slow player's hand
 poker-rebuy = Bought back in
+
+## Actions
+
+so-tilo-poker-table = Poker table
+so-tilo-poker-table-leave = Leave table
+so-tilo-poker-table-deal = Deal
+so-tilo-poker-table-show = Show cards
+so-tilo-poker-table-skip = Fold idle player

@@ -35,7 +35,6 @@ impl Launcher {
 
 #[resource(
     kind = "launcher.search",
-    label = "Search",
     read_content = Launcher::read_document
 )]
 impl Launcher {}

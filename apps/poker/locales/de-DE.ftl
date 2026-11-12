@@ -115,3 +115,11 @@ poker-all-in = All in gegangen
 poker-show = Die eigenen Karten gezeigt
 poker-skip = Die Hand eines langsamen Spielers gefoldet
 poker-rebuy = Wieder eingestiegen
+
+## Actions
+
+so-tilo-poker-table = Pokertisch
+so-tilo-poker-table-leave = Tisch verlassen
+so-tilo-poker-table-deal = Geben
+so-tilo-poker-table-show = Karten zeigen
+so-tilo-poker-table-skip = Untätigen Spieler passen lassen

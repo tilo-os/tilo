@@ -614,12 +614,11 @@ impl Table {
 
 #[resource(
     kind = "so.tilo.poker.table",
-    label = "Poker table",
     read_content = Table::read_document
 )]
 impl Table {
     /// Take a seat at the table, with a buy-in of chips.
-    #[action]
+    #[action(label = "poker-take-seat")]
     pub fn sit(
         &mut self,
         cx: &mut ActionCx,
@@ -775,7 +774,7 @@ impl Table {
     }
 
     /// Fold your hand.
-    #[action]
+    #[action(label = "poker-action-fold")]
     pub fn fold(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
         let at = self.acting(cx)?;
         if let Some(p) = self.hand.players.get_mut(at) {
@@ -787,7 +786,7 @@ impl Table {
     }
 
     /// Check when nobody has bet, or call the bet you face.
-    #[action]
+    #[action(label = "poker-move-call")]
     pub fn call(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
         let at = self.acting(cx)?;
         self.bet_to(at, self.hand.current_bet);
@@ -796,7 +795,7 @@ impl Table {
     }
 
     /// Bet or raise to a total for this street.
-    #[action]
+    #[action(label = "poker-move-raise")]
     pub fn raise(
         &mut self,
         cx: &mut ActionCx,
@@ -819,7 +818,7 @@ impl Table {
     }
 
     /// Put all your chips in.
-    #[action]
+    #[action(label = "poker-move-all-in")]
     pub fn all_in(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
         let at = self.acting(cx)?;
         let to = self
@@ -874,7 +873,7 @@ impl Table {
     }
 
     /// Buy back in once you have no chips.
-    #[action]
+    #[action(label = "poker-action-rebuy")]
     pub fn rebuy(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
         let me = cx.author().ok_or("only a player can rebuy")?.to_owned();
         if self.hand.is_live(&me) {
