@@ -79,11 +79,11 @@ support-matrix decision remain
 separate from enabling the lane.
 
 The Fedora desktop lane also emits a small deterministic OS payload containing
-the same install-tested `shell`, `tilo-launcher`, and `tilo-unlock-helper`
-binaries. A successful `main` build publishes it immutably and advances
-`TILO_DESKTOP_PAYLOAD_{URL,SHA256}_{X86_64,AARCH64}`. Trusted OS composition
-downloads the matching architecture and omits those three Cargo packages from
-its build. OS-only changes therefore test the desktop/OS integration without
+the same install-tested `tilo-session`, `tilo-launcher`, `tilo-runtime-mcp`
+and `tilo-unlock-helper` binaries. A successful `main` build publishes it
+immutably and advances `TILO_DESKTOP_PAYLOAD_{URL,SHA256}_{X86_64,AARCH64}`.
+Trusted OS composition downloads the matching architecture and omits those four
+Cargo packages from its build. OS-only changes therefore test the desktop/OS integration without
 recompiling the desktop. Scheduled/manual OS builds exercise this immutable
 integration boundary; ordinary PRs do not run the OS image workflow. The OS
 build reuses the payload only while it is current: the payload's
