@@ -36,9 +36,8 @@ app gets on a real system:
              collaboration probe (crates/dev/collab-probe) is installed as Today
              (which declares that it reads Notes' kinds) and as Tasks (which
              declares no read), in a second start of the same throwaway session.
-             Tasks cannot join Notes' route at all; Today's join is refused
-             before the read it declares is read, by the broker that keeps what
-             it admits, a tilolang host holding an app's route.
+             Tasks cannot join Notes' route at all; Today joins it to read, and
+             its write is refused.
 
 Usage:
   scripts/headless-examples/tilolang-e2e.py [--no-build] [--out DIR] [--keep]
@@ -635,11 +634,7 @@ def check_routes(session: Session) -> dict:
     today = result.get(f"{app_id('today')} -> {app_id('notes')}", "")
     tasks = result.get(f"{app_id('tasks')} -> {app_id('notes')}", "")
     if not (today.startswith("JOINED") and "WRITE-REFUSED" in today and "changes nothing" in today):
-        why = ("this session's broker keeps what it admits and refuses an app process's join of "
-               "another app's route before the read it declares is read, a tilolang host holding "
-               "that route" if "host-owned worker descriptor admission" in today
-               else "it was not a read-only join")
-        raise Failed(f"Today's declared read of Notes: {why}: {today!r}")
+        raise Failed(f"Today's declared read of Notes was not a read-only join: {today!r}")
     if not tasks.startswith("JOIN-REFUSED"):
         raise Failed(f"Tasks, which declares no read of Notes, joined its route: {tasks!r}")
     return result
