@@ -854,6 +854,23 @@ enum What {
 const STAGING: usize = 6;
 
 impl Unit {
+    /// What this unit of work is, for the person reading why it did not run: the app, the window
+    /// it stages and what it does with it. Every unit runs at the same time, so the one that
+    /// failed is not the one whose turn came first: each says what it was.
+    fn named(&self, apps: &[App]) -> String {
+        let app = apps
+            .get(self.scene.app)
+            .map_or("an app that did not read", |app| app.short.as_str());
+        let what = match &self.what {
+            What::Scenario => "staged",
+            What::Opens { .. } => "with the views no layout showed opened on it",
+            What::Press => "with each primary action pressed",
+            What::Push => "held in the hand, the row it opened tapped",
+        };
+        let window = on_layer(&self.scene.scenario, self.scene.root.as_deref());
+        format!("{app}: the scenario `{window}` {what}")
+    }
+
     /// What this unit will cost, in layouts of a window: every window it stages and every
     /// layout it reads, so the units run costliest first.
     fn weight(&self, apps: &[App]) -> usize {
@@ -1032,12 +1049,31 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
         return Err(failure);
     }
     let mut out = Vec::with_capacity(units.len());
-    for slot in taken {
-        let found = slot
-            .into_inner()
-            .unwrap_or_else(PoisonError::into_inner)
-            .ok_or("a unit of work did not run: another failed first")?;
-        out.push(found?);
+    // A unit that failed stops the sweep, so the units after it never ran: the reason is the
+    // failure, named after the unit that hit it, never the first unit the stop left empty.
+    let mut failed: Option<String> = None;
+    let mut unrun: Option<String> = None;
+    for (at, slot) in taken.into_iter().enumerate() {
+        let held = slot.into_inner().unwrap_or_else(PoisonError::into_inner);
+        let named = || units.get(at).map(|unit| unit.named(apps));
+        match held {
+            Some(Ok(found)) => out.push(found),
+            Some(Err(why)) => {
+                if failed.is_none() {
+                    let unit = named().unwrap_or_default();
+                    failed = Some(format!("{unit}: {why}"));
+                }
+            }
+            None => {
+                if unrun.is_none() {
+                    let unit = named().unwrap_or_default();
+                    unrun = Some(format!("{unit}: it did not run"));
+                }
+            }
+        }
+    }
+    if let Some(failure) = failed.or(unrun) {
+        return Err(failure);
     }
     Ok(out)
 }
@@ -1124,7 +1160,10 @@ fn run_opens(
                 seed.extend(scenario.shown.iter().cloned());
             }
             let found = if scene.needs_opens(apps, &seed) {
-                let found = worker.check(&scene.opens(&seed))?;
+                let unit = scene.opens(&seed);
+                let found = worker
+                    .check(&unit)
+                    .map_err(|why| format!("{}: {why}", unit.named(apps)))?;
                 shown.extend(found.shown.iter().cloned());
                 found
             } else {

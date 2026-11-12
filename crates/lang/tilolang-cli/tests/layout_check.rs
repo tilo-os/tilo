@@ -451,6 +451,12 @@ fn a_state_the_run_stages_lays_the_window_out_there() {
         refused.contains("declares no filter `nonsense`"),
         "the run says what it could not stage: {refused}"
     );
+    // The units run at the same time, so a failure stops the sweep wherever it stands: the run
+    // names the unit that failed rather than the turn the stop left empty.
+    assert!(
+        refused.starts_with("tasks: the scenario `"),
+        "the run names the unit that failed: {refused}"
+    );
 }
 
 /// A window held in the hand shows its list; the row a person taps opens what it holds in

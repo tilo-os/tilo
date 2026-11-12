@@ -788,9 +788,13 @@ impl Staged {
                 .harness
                 .settle_for_capture(ui::time::Duration::from_secs(2))
         {
+            // A frame a widget asks for is named by the widget; one a motion asks for is named
+            // where the motion was started, which is what tells an animation that never ends
+            // from a view that keeps asking.
             return Err(format!(
-                "the window still moves after two seconds: {:?}",
-                self.harness.frame_requesters()
+                "the window still moves after two seconds: {:?} asked, {:?} started motions",
+                self.harness.frame_requesters(),
+                ui::motion::frames_wanted_by(ui::time::now()),
             ));
         }
         Ok(())
