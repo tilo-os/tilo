@@ -328,16 +328,135 @@ const SCENARIOS = {
     {shot: 'new-sheet'},
   ],
   'so.tilo.settings': [
-    // A chooser opened over the first pane, a density picked, then another
-    // pane: menial controls, none of them a window bar's button.
+    // Another pane first, then back to the first: a chooser opened over it,
+    // and a density picked. The pane comes first because a control that
+    // changes the density leaves the next press on nothing (the window is
+    // laid out again under it), and a pane measured after one would be the
+    // pane that press did not leave.
+    {click: 'Accessibility', role: 'TreeItem'},
+    {shot: 'pane'},
+    {click: 'Appearance', role: 'TreeItem'},
+    {shot: 'appearance'},
     {click: 'Interface size', role: 'ComboBox'},
     {shot: 'chooser'},
     {key: 'Escape'},
     {shot: 'chooser-closed'},
     {click: 'Compact', role: 'radio'},
     {shot: 'density'},
-    {click: 'Accessibility', role: 'TreeItem'},
-    {shot: 'pane'},
+  ],
+  'so.tilo.activity': [
+    // The workspace's own activity: a view picked from the sidebar, then the
+    // window's menu over the feed.
+    {click: 'History', role: 'TreeItem'},
+    {shot: 'history'},
+    {click: "What's new", role: 'TreeItem'},
+    {shot: 'whats-new'},
+    {click: 'More actions'},
+    {shot: 'menu'},
+    {key: 'Escape'},
+    {shot: 'menu-closed'},
+  ],
+  'so.tilo.tasks': [
+    // An issue written where the app says to write one, then the board the
+    // same list shows in, then the window's menu over it.
+    {click: 'What needs doing'},
+    {type: 'Sweep the parity notes'},
+    {key: 'Enter'},
+    {shot: 'issue-written'},
+    {click: 'Board', role: 'tab'},
+    {shot: 'board'},
+    {click: 'More actions'},
+    {shot: 'menu'},
+    {key: 'Escape'},
+    {shot: 'menu-closed'},
+  ],
+  'so.tilo.slides': [
+    // A slide's background picked from the inspector, the deck seen as an
+    // overview, and the deck named in the window bar, where the page shows
+    // the field as its own input.
+    {click: 'Background Accent', role: 'radio'},
+    {shot: 'background'},
+    {click: 'Overview', role: 'tab'},
+    {shot: 'overview'},
+    {click: 'Presentation title'},
+    {type: 'Parity deck'},
+    {shot: 'titled'},
+  ],
+  'so.tilo.maps': [
+    // The map is a picture: a zoom, a drag of the map itself, and the layer
+    // chooser over it.
+    {click: 'Zoom in'},
+    {shot: 'zoomed'},
+    {drag: [[620, 420], [860, 320]]},
+    {shot: 'panned'},
+    {click: 'Map layers'},
+    {shot: 'layers'},
+    {key: 'Escape'},
+    {shot: 'layers-closed'},
+  ],
+  'so.tilo.contacts': [
+    // A contact started from the sheet the empty book offers, and a group
+    // picked from the sidebar.
+    {click: 'New contact'},
+    {shot: 'new-contact'},
+    {key: 'Escape'},
+    {shot: 'dismissed'},
+    {click: 'Favorites', role: 'TreeItem'},
+    {shot: 'favorites'},
+  ],
+  'so.tilo.music': [
+    // The library's sides, and the window's menu over one of them.
+    {click: 'Songs', role: 'TreeItem'},
+    {shot: 'songs'},
+    {click: 'Albums', role: 'TreeItem'},
+    {shot: 'albums'},
+    {click: 'More actions'},
+    {shot: 'menu'},
+    {key: 'Escape'},
+    {shot: 'menu-closed'},
+  ],
+  'so.tilo.snippets': [
+    // A snippet started from the empty library, then another side of it.
+    {click: 'New snippet'},
+    {shot: 'new-snippet'},
+    {key: 'Escape'},
+    {click: 'Favorites', role: 'TreeItem'},
+    {shot: 'favorites'},
+  ],
+  'so.tilo.scratchpad': [
+    // A line typed into the pad, then the window's menu over it.
+    {click: 'Note text'},
+    {type: 'A line typed into the pad. '},
+    {shot: 'typed'},
+    {click: 'More actions'},
+    {shot: 'menu'},
+    {key: 'Escape'},
+    {shot: 'menu-closed'},
+  ],
+  'so.tilo.passwords': [
+    // An item started from the empty vault, then a side of it, then the
+    // window's menu.
+    {click: 'New item'},
+    {shot: 'new-item'},
+    {key: 'Escape'},
+    {shot: 'dismissed'},
+    {click: 'Logins', role: 'TreeItem'},
+    {shot: 'logins'},
+  ],
+  'so.tilo.ebook': [
+    // The chapter list over the page, and the page bookmarked from it.
+    {click: 'Contents'},
+    {shot: 'contents'},
+    {click: 'Bookmark this page'},
+    {shot: 'bookmarked'},
+  ],
+  'so.tilo.clocks': [
+    // A city added from the ones on offer, then another: the clocks the page
+    // compares.
+    {click: 'London, Europe'},
+    {shot: 'one-city'},
+    {click: 'Tokyo, Asia'},
+    {shot: 'two-cities'},
   ],
   'so.tilo.photos': [
     // The sides of the library, and the sheet a new album raises.
@@ -522,7 +641,11 @@ try {
       result.parity = {differingShare: compared.differingShare, meanDifference: compared.meanDifference, error: compared.error};
     } catch (error) { result.parity = {error: String(error)}; }
     // Each scenario step's frames, compared: a step whose renders differ is
-    // named by the step that made them differ.
+    // named by the step that made them differ. A step that changed nothing in
+    // a render is named too: the two shots then differ only by what the step
+    // itself never did, and a step whose press the app dropped reads as a
+    // pixel difference in whatever the previous step left on screen.
+    let last = {dom: `${app}${tag}-dom.png`, gpu: `${app}${tag}-gpu.png`};
     for (const entry of result.scenario ?? []) {
       if (entry.step.shot === undefined) continue;
       try {
@@ -531,6 +654,17 @@ try {
         if (compared.image) writeFileSync(join(out, `${app}${tag}-diff-${entry.step.shot}.png`), compared.image);
         entry.diff = {differingShare: compared.differingShare, meanDifference: compared.meanDifference, error: compared.error};
       } catch (error) { entry.diff = {error: String(error)}; }
+      const changed = {};
+      for (const render of RENDERS) {
+        const file = `${app}${tag}-${render}-${entry.step.shot}.png`;
+        try {
+          changed[render] = !readFileSync(join(out, file)).equals(readFileSync(join(out, last[render])));
+        } catch { changed[render] = null; }
+        last[render] = file;
+      }
+      entry.changed = changed;
+      const didNothing = Object.entries(changed).filter(([, moved]) => moved === false).map(([render]) => render);
+      if (didNothing.length) console.log(`${app}: ${JSON.stringify(entry.step)} changed nothing in ${didNothing.join(' and ')}`);
     }
     console.log(JSON.stringify(result));
     results.push(result);
