@@ -613,6 +613,13 @@ pub struct VirtualList<M: ListModel> {
     groups: Groups,
     /// The title over the list's tail group ([`RowGroup::Tail`]).
     tail_title: Option<String>,
+    /// The title of the view the list stands under, as its header reads it, and how many things
+    /// it counts beside it ([`Self::in_view`]).
+    view_title: Option<String>,
+    view_count: Option<usize>,
+    /// Whether the rows say the view's title already names their one group: `None` until read,
+    /// and read again whenever the rows are grouped anew ([`Self::heads_nothing`]).
+    heads_nothing: std::cell::Cell<Option<bool>>,
     /// What each row is grouped by, by key: the model is asked once for a row while its props
     /// stand as they were.
     row_groups: HashMap<M::Key, Option<groups::Group>>,
@@ -789,6 +796,9 @@ impl<M: ListModel> VirtualList<M> {
             names_item: std::cell::RefCell::new(None),
             groups: Groups::default(),
             tail_title: None,
+            view_title: None,
+            view_count: None,
+            heads_nothing: std::cell::Cell::new(None),
             row_groups: HashMap::new(),
             tree: None,
             tree_rows: HashMap::new(),

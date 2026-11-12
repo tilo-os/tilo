@@ -221,6 +221,15 @@ pub struct VirtualListProps {
     /// last group that names one. The rows keep the order their list gives. `None` leaves them
     /// among the others.
     pub ungrouped_title: Option<String>,
+    /// The title of the view this list stands under, as the view's header reads it, and how
+    /// many things it counts beside it (`view_count`): a list whose rows all stand in one group
+    /// heads them with nothing when that heading says what the title already says — the same
+    /// words, counting the same rows — since the title over the list says it once. The host
+    /// fills both from the shell of the window the list stands in
+    /// ([`VirtualList::in_view`]).
+    pub view_title: Option<String>,
+    /// How many things the view's title counts beside it (`view_title`).
+    pub view_count: Option<i64>,
     /// The list holds more than one selected row: a click with ctrl (or cmd) adds or takes
     /// away the row it lands on, one with shift takes the range from the last row chosen, and
     /// Escape puts the selection away. Without it a click chooses the one row the window shows.
@@ -1433,6 +1442,8 @@ impl Described for DescribedList {
             tail_title,
             tree,
             ungrouped_title,
+            view_title,
+            view_count,
             multi_select,
             unseen_from,
             mut rows,
@@ -1499,6 +1510,11 @@ impl Described for DescribedList {
         }
         if let Some(title) = tail_title {
             list = list.with_tail_title(title);
+        }
+        if let Some(title) = view_title {
+            // What the title counts, as the rows a heading counts: a number never negative.
+            let count = view_count.map(|count| usize::try_from(count.max(0)).unwrap_or(usize::MAX));
+            list = list.in_view(title, count);
         }
         // A column's one list takes the column's height and scrolls its rows; a list among a
         // page's other content is as tall as its rows, and the page scrolls them with the rest.
@@ -1612,6 +1628,8 @@ impl Described for DescribedList {
             selection_follows_focus,
             tail_title,
             ungrouped_title,
+            view_title,
+            view_count,
             multi_select,
             unseen_from,
             mut rows,
@@ -1644,6 +1662,8 @@ impl Described for DescribedList {
         };
         list.set_multi_select(multi_select);
         list.set_tail_title(tail_title);
+        let count = view_count.map(|count| usize::try_from(count.max(0)).unwrap_or(usize::MAX));
+        list.set_view_title(view_title, count);
         list.set_feel(feel);
         if replaced {
             // The rows build anew where they stand: the list's scroll, its keyboard row and

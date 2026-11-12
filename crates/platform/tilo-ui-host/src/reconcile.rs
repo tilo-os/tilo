@@ -282,7 +282,7 @@ fn lead(node: &UiNode) -> i16 {
 pub fn normalize(node: &UiNode) -> UiNode {
     let mut out = page_once(node);
     crate::attach::hoist_in(&mut out);
-    out
+    crate::shell::titled_lists(out)
 }
 
 /// The tree with a page inside another page, or inside a block's view, a plain stack.

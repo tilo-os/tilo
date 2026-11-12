@@ -154,7 +154,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // phone's screen.
             // Its trees fold rows on the line those rows' words stand on.
             | Kind::ChevronOffLine
-            | Kind::IndentedBody => "(no view)",
+            | Kind::IndentedBody
+            // Its lists group no rows under headings of their own.
+            | Kind::RepeatedGroupTitle => "(no view)",
         };
         assert_eq!(
             finding.view,

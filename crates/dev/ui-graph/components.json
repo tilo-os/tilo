@@ -5557,6 +5557,20 @@
           }
         },
         {
+          "name": "view_title",
+          "doc": "The title of the view this list stands under, as the view's header reads it, and how many things it counts beside it (`view_count`): a list whose rows all stand in one group heads them with nothing when that heading says what the title already says — the same words, counting the same rows — since the title over the list says it once. The host fills both from the shell of the window the list stands in ([`VirtualList::in_view`]).",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "view_count",
+          "doc": "How many things the view's title counts beside it (`view_title`).",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
           "name": "multi_select",
           "doc": "The list holds more than one selected row: a click with ctrl (or cmd) adds or takes away the row it lands on, one with shift takes the range from the last row chosen, and Escape puts the selection away. Without it a click chooses the one row the window shows.",
           "type": "bool"
