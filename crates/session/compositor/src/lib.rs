@@ -617,8 +617,15 @@ impl Compositor {
             if wait.is_zero() {
                 break;
             }
+            let asked = Instant::now();
             self.dispatch(wait)?;
             arrived(self);
+            // A clock held still never reaches the deadline, so a pass that asks again for a wait
+            // it has already spent would never draw the frame it owes. Once the wait it asked for
+            // has gone by on the machine, the frame is built rather than waited for again.
+            if asked.elapsed() >= wait {
+                break;
+            }
         }
         Ok(())
     }
