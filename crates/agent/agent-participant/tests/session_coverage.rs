@@ -1886,6 +1886,20 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
         ),
     )
     .await;
+    // The news names whoever changed a record from the workspace's presence, so
+    // this agent's board has to know Rae before what she posts is news: until
+    // it does, the same post reads with her name taken from the chat's own
+    // roster instead, which is a different sentence, not a different fact.
+    wait_for("the waiter to know Rae", || {
+        waiter.pump();
+        poster.pump();
+        let known = waiter
+            .remote_members()
+            .iter()
+            .any(|member| member.label == "Rae");
+        async move { known.then_some(()) }
+    })
+    .await;
     let theirs = poster.open(CHAT, None).unwrap();
     let begin = serde_json::json!({"name": "Rae", "initials": "RA", "color": 2});
     poster
@@ -2336,6 +2350,9 @@ async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting
     assert!(sent.try_recv().is_err(), "a roster change wakes no wait");
     assert!(workspace.ana.1.is_running(&task));
 
+    // What arrived is named from the workspace's presence, so Ana has to hear
+    // Rae before she posts.
+    workspace.ana_hears("Rae").await;
     post_in_chat(
         &mut workspace.rae.0,
         &workspace.rae.1,
