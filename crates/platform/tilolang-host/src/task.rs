@@ -10,7 +10,8 @@
 //!
 //! The connection carries one JSON object per line. The door sends `{"run": {source, confirm}}`
 //! or `{"catalogue": {}}` (answered `{"catalogue": …}`: every installed app's declarations,
-//! [`TaskSession::catalogue`]);
+//! [`TaskSession::catalogue`], and each app whose package did not load with what a program
+//! naming it is told, `can't be reached: <why>`);
 //! while the program runs, the host asks `{"record": {app, record}}` for a record it reads
 //! (answered `{"ok": {"document": base64}}`, `{"absent": true}` or `{"err": why}`: the record's
 //! committed content, read-only, which the host reads itself with the app's package,
@@ -40,7 +41,7 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::catalogue::NativeSurface;
 use tilolang_tilo::native::{Calls, Native, NativeReads};
 use tilolang_tilo::runtime::meta::PackageMeta;
-use tilolang_tilo::task::{Answered, TaskDoor, TaskSession};
+use tilolang_tilo::task::{Answered, TaskDoor, TaskSession, Unreachable};
 use tilolang_tilo::task_records::{RecordReads, RecordSource};
 
 /// The program connection, one line at a time.
@@ -334,10 +335,16 @@ impl Task {
             &apps.bundles,
             native,
         )?;
+        // An app whose payload did not read is reported as one whose package does not load: a
+        // program naming it reads that it can't be reached, and the task runs every other app.
+        for gone in &apps.unreachable {
+            session.could_not_load(&gone.app, &gone.reason);
+        }
         tracing::info!(
             task = request.task,
             apps = apps.bundles.len(),
             native = apps.native.len(),
+            unreachable = apps.unreachable.len(),
             "task host started"
         );
         let task = Self {
@@ -637,6 +644,9 @@ fn program(message: &Json) -> Result<(String, bool, tilolang_tilo::publish::Call
 struct Apps {
     bundles: Vec<Bundle>,
     native: Vec<PackageMeta>,
+    /// The apps whose payload did not read, by the app and why: reported with the packages that
+    /// do not load, so one broken app leaves only itself unreachable.
+    unreachable: Vec<Unreachable>,
 }
 
 /// The apps the sealed memfd `fd` holds, `len` bytes of them.
@@ -650,25 +660,42 @@ fn apps(fd: &OwnedFd, len: u64) -> Result<Apps, String> {
     let mut apps = Apps {
         bundles: Vec::new(),
         native: Vec::new(),
+        unreachable: Vec::new(),
     };
     for app in decode_apps(bytes).map_err(|error| error.to_string())? {
         match app {
-            App::Module(module) => apps.bundles.push(
-                Bundle::from_parts(module.wasm, module.ids, &module.imports)
-                    .map_err(|error| error.to_string())?,
-            ),
+            App::Module(module) => {
+                // The package names the app it is: a module without its metadata names none.
+                let named = PackageMeta::from_wasm(&module.wasm).map(|meta| meta.app);
+                match Bundle::from_parts(module.wasm, module.ids, &module.imports) {
+                    Ok(bundle) => apps.bundles.push(bundle),
+                    Err(error) => match named {
+                        Some(app) => apps.unreachable.push(Unreachable {
+                            app,
+                            reason: error.to_string(),
+                        }),
+                        None => {
+                            tracing::warn!(%error, "a package handed to a task names no app");
+                        }
+                    },
+                }
+            }
             App::Surface {
                 app,
                 title,
                 surface,
-            } => apps.native.push(
-                NativeSurface {
-                    app,
+            } => {
+                let published = NativeSurface {
+                    app: app.clone(),
                     title,
                     surface,
                 }
-                .package()?,
-            ),
+                .package();
+                match published {
+                    Ok(meta) => apps.native.push(meta),
+                    Err(reason) => apps.unreachable.push(Unreachable { app, reason }),
+                }
+            }
         }
     }
     Ok(apps)
@@ -688,16 +715,25 @@ mod tests {
     /// A task over the apps `native`, read as packages from their surfaces, its program
     /// connection's far end returned as the door's.
     fn task_with(native: &[PackageMeta]) -> (Task, BufReader<UnixStream>, UnixStream) {
+        task_over(&[], native)
+    }
+
+    /// A task over the packages `bundles` and the apps `native`, its program connection's far
+    /// end returned as the door's.
+    fn task_over(
+        bundles: &[Bundle],
+        native: &[PackageMeta],
+    ) -> (Task, BufReader<UnixStream>, UnixStream) {
         let (ours, door) = UnixStream::pair().expect("a socket pair");
         let line = Rc::new(Line {
             reader: RefCell::new(BufReader::new(ours.try_clone().expect("a clone"))),
             writer: RefCell::new(ours.try_clone().expect("a clone")),
         });
-        let apps = Rc::new(Native::of(&[], native));
+        let apps = Rc::new(Native::of(bundles, native));
         let reached = Rc::new(Door {
             line: Rc::clone(&line),
             reads: RecordReads::new(
-                &[],
+                bundles,
                 std::collections::BTreeMap::new(),
                 None,
                 Rc::clone(&line) as Rc<dyn RecordSource>,
@@ -710,8 +746,13 @@ mod tests {
             }),
             changed_at_record: std::collections::BTreeSet::new(),
         });
-        let session = TaskSession::new(None, &(Rc::clone(&reached) as Rc<dyn TaskDoor>), &[], apps)
-            .expect("a session");
+        let session = TaskSession::new(
+            None,
+            &(Rc::clone(&reached) as Rc<dyn TaskDoor>),
+            bundles,
+            apps,
+        )
+        .expect("a session");
         let task = Task {
             line,
             watched: OwnedFd::from(ours),
@@ -1256,6 +1297,113 @@ mod tests {
             why.contains("chat") || why.contains("chat.Conversation"),
             "{why}"
         );
+    }
+
+    /// The bundle of the package `source` declares, its ids lock `ids`.
+    fn bundle(source: &str, ids: &str) -> Bundle {
+        let lock = tilolang::IdsLock::parse(ids).expect("the ids lock reads");
+        let compiled = tilolang::compile_package(source, &lock, &[]).expect("the package compiles");
+        Bundle::new(&compiled, [])
+    }
+
+    /// Discussion, as its directory publishes it.
+    fn discussion() -> Bundle {
+        bundle(
+            include_str!("../../../../apps/tl/discussion/app.tl"),
+            include_str!("../../../../apps/tl/discussion/app.ids"),
+        )
+    }
+
+    /// Counter, as its directory publishes it.
+    fn counter() -> Bundle {
+        bundle(
+            include_str!("../../../../apps/tl/counter/app.tl"),
+            include_str!("../../../../apps/tl/counter/app.ids"),
+        )
+    }
+
+    /// The app the catalogue lists `app` as, by the name a program names it with.
+    fn listed(catalogue: &Json, app: &str) -> String {
+        let found = catalogue
+            .as_object()
+            .into_iter()
+            .flatten()
+            .find(|(_, listed)| listed["app"] == app);
+        match found {
+            Some((alias, _)) => alias.clone(),
+            None => panic!("{app} is not listed: {catalogue:#}"),
+        }
+    }
+
+    #[test]
+    fn a_package_that_does_not_load_leaves_only_its_app_unreachable() {
+        // One installed app among the rest whose package does not load here, as a module built
+        // for another runtime, or a payload damaged on its way to the device, hands one over.
+        let mut broken = counter();
+        let gone = broken.meta.app.clone();
+        broken.wasm = b"not a tilolang module".to_vec();
+        let (task, _reader, door) = task_over(&[discussion(), broken], &[]);
+        // The task starts: the catalogue lists the rest of the apps, and says of the broken one
+        // what a program naming it reads.
+        let catalogue = task.session.catalogue();
+        let alias = listed(&catalogue, &gone);
+        let said = catalogue[&alias]["unreachable"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{gone} is not reported: {catalogue:#}"))
+            .to_owned();
+        assert!(said.starts_with("can't be reached: "), "{said}");
+        let discussion = listed(&catalogue, "so.tilo.lang.discussion");
+        let signatures = catalogue[&discussion]["signatures"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<&Json>>();
+        let root = signatures
+            .iter()
+            .find(|signature| signature["kind"] == "root")
+            .and_then(|signature| signature["call"].as_str())
+            .expect("discussion names its root");
+        let comment = signatures
+            .iter()
+            .find(|signature| signature["kind"] == "action" && signature["name"] == "comment")
+            .unwrap_or_else(|| panic!("discussion lists no comment action: {catalogue:#}"));
+        let comment = comment["id"].as_str().unwrap_or_default().to_owned();
+        // Its actions resolve, and invoking one runs: the call goes to the app through the door,
+        // which answers the comment it made.
+        let called = scripted(&door, |message| {
+            if message.get("record").is_some() {
+                return json!({"absent": true});
+            }
+            json!({
+                "ok": {
+                    "value": null,
+                    "resources": ["tl:so.tilo.lang.discussion:hello"],
+                },
+            })
+        });
+        let answer = ran(
+            &task,
+            &format!("{discussion}.comment({root}, RichText(\"hello\"))"),
+        );
+        assert_eq!(answer["state"], "done", "{answer:#}");
+        assert_eq!(answer["changed"], 1, "{answer:#}");
+        closed(&door);
+        let calls = called.join().expect("the door");
+        let invoked = calls
+            .iter()
+            .find(|call| call.get("invoke").is_some())
+            .unwrap_or_else(|| panic!("discussion's action was not invoked: {calls:#?}"));
+        assert_eq!(
+            invoked["invoke"]["app"], "so.tilo.lang.discussion",
+            "{calls:#?}"
+        );
+        assert_eq!(invoked["invoke"]["action"], comment, "{calls:#?}");
+        // A program naming the app that did not load is rejected, as one naming no app is, and
+        // the task goes on with the apps it reaches.
+        let unknown = ran(&task, &format!("{alias}.messages"));
+        assert_eq!(unknown["state"], "rejected", "{unknown:#}");
+        let nothing = ran(&task, "print(1)");
+        assert_eq!(nothing["state"], "done", "{nothing:#}");
     }
 
     /// `tilolang check`'s packages: what the apps' directories publish.
