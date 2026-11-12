@@ -444,6 +444,9 @@ pub struct NodeSource<'a> {
     /// Whether the views in its slots are built: not when its props are read to take them in
     /// place, where the reconciler reaches the views it has.
     build_views: bool,
+    /// The words of the heading over the rows it reads, where one heads them: a row's day fact
+    /// that says the same day as the heading is the heading's to say.
+    under: Option<String>,
 }
 
 impl<'a> NodeSource<'a> {
@@ -459,6 +462,21 @@ impl<'a> NodeSource<'a> {
             description,
             reconciler,
             build_views: true,
+            under: None,
+        }
+    }
+
+    /// `node`, to build its widget, standing under `under`: the words of the heading over the
+    /// rows it holds.
+    pub fn under_heading(
+        node: &'a UiNode,
+        description: &'static Description,
+        reconciler: &'a mut Reconciler,
+        under: Option<String>,
+    ) -> Self {
+        Self {
+            under,
+            ..Self::new(node, description, reconciler)
         }
     }
 
@@ -481,7 +499,7 @@ impl<'a> NodeSource<'a> {
         if let (Type::Choice { name: choice, .. }, Some(base)) = (ty, name.strip_suffix("_tone"))
             && choice == "Tone"
             && !self.node.props.contains_key(name)
-            && let Some(tone) = crate::date::shown_tone(self.node, base)
+            && let Some(tone) = crate::date::shown_tone(self.node, base, self.under.as_deref())
         {
             let case = match tone {
                 ui::widget::Tone::Danger => "danger",
@@ -499,7 +517,8 @@ impl<'a> NodeSource<'a> {
         };
         if text {
             // A date or a time reads as briefly as is still clear, as lists show them.
-            return crate::date::shown_brief(self.node, name).map(Prop::Text);
+            return crate::date::shown_brief(self.node, name, self.under.as_deref())
+                .map(Prop::Text);
         }
         convert(value, ty, self.reconciler)
     }
@@ -795,6 +814,9 @@ impl Source for NodeSource<'_> {
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String> {
         let nodes = slot_parts(self.node, self.description, slot);
+        // The heading over the rows it holds: the group they stand in, where it names a day,
+        // else the heading the rows above it stood under.
+        let under = crate::date::group_heading(self.node).or_else(|| self.under.clone());
         let mut count = 0usize;
         for child in nodes {
             let Some(description) = description_of(child) else {
@@ -808,6 +830,7 @@ impl Source for NodeSource<'_> {
                 description,
                 reconciler: &mut *self.reconciler,
                 build_views: self.build_views,
+                under: under.clone(),
             };
             source.reconciler.adapter().remember(child, description);
             read(&mut source)?;

@@ -282,7 +282,7 @@ fn lead(node: &UiNode) -> i16 {
 pub fn normalize(node: &UiNode) -> UiNode {
     let mut out = page_once(node);
     crate::attach::hoist_in(&mut out);
-    crate::shell::titled_lists(out)
+    crate::date::under_headings(crate::shell::titled_lists(out))
 }
 
 /// The tree with a page inside another page, or inside a block's view, a plain stack.
@@ -1632,7 +1632,8 @@ impl Reconciler {
         match new_node.kind.as_str() {
             "image" => {
                 if same_shell_but(old_node, new_node, "value") {
-                    let value = crate::date::shown_brief(new_node, "value").unwrap_or_default();
+                    let value =
+                        crate::date::shown_brief(new_node, "value", None).unwrap_or_default();
                     self.set_text(&new_node.key, &value);
                     return None;
                 }

@@ -860,22 +860,25 @@ impl AppWindow {
     /// Keep rows for every virtual list of the views and of the rows they hold, and drop the
     /// rows of lists gone.
     fn track_rows(&self) {
-        let mut wanted: Vec<(String, Lane, String, &'static str, String)> = Vec::new();
+        // Each list with the words of the heading over it, where one heads its rows.
+        let mut wanted: Vec<(String, Lane, String, &'static str, String, Option<String>)> =
+            Vec::new();
         for (view, lane, prefix) in [
             (self.root.as_ref(), Lane::Root, ""),
             (self.detail.as_ref(), Lane::Detail, DETAIL),
         ] {
             let Some(view) = view else { continue };
-            for (list, item) in virtual_lists(&view.tree) {
-                wanted.push((format!("{prefix}{list}"), lane, list, prefix, item.clone()));
+            for (list, item, heading) in crate::rows::lists(&view.tree) {
+                wanted.push((format!("{prefix}{list}"), lane, list, prefix, item, heading));
             }
         }
         // A row a list holds can hold a list of its own — the document of a row standing open
         // where it stands — and so can that list's rows.
         let mut at = 0;
-        while let Some((key, lane, _, prefix, _)) = wanted.get(at) {
+        while let Some((key, lane, _, prefix, _, heading)) = wanted.get(at) {
             let (lane, prefix) = (*lane, *prefix);
-            let inner: Vec<(String, String)> = self
+            let heading = heading.as_deref();
+            let inner: Vec<(String, String, Option<String>)> = self
                 .rows
                 .borrow()
                 .get(key)
@@ -884,12 +887,12 @@ impl AppWindow {
                     rows.rendered()
                         .iter()
                         .filter_map(|row| rows.row(row))
-                        .flat_map(virtual_lists)
+                        .flat_map(|row| crate::rows::lists_under(row, heading))
                         .collect()
                 })
                 .unwrap_or_default();
-            for (list, item) in inner {
-                wanted.push((format!("{prefix}{list}"), lane, list, prefix, item));
+            for (list, item, heading) in inner {
+                wanted.push((format!("{prefix}{list}"), lane, list, prefix, item, heading));
             }
             at = at.saturating_add(1);
         }
@@ -897,10 +900,10 @@ impl AppWindow {
         registry.retain(|key, rows| {
             wanted
                 .iter()
-                .any(|(want, lane, list, _, _)| want == key && rows.borrow().reads(*lane, list))
+                .any(|(want, lane, list, ..)| want == key && rows.borrow().reads(*lane, list))
         });
-        for (key, lane, list, prefix, item) in wanted {
-            registry.entry(key).or_insert_with(|| {
+        for (key, lane, list, prefix, item, heading) in wanted {
+            let rows = registry.entry(key).or_insert_with(|| {
                 let reader = Rc::new(RefCell::new(Reconciler::sharing(&self.reconciler.borrow())));
                 Rc::new(RefCell::new(RemoteRows::new(
                     lane,
@@ -911,6 +914,7 @@ impl AppWindow {
                     Rc::clone(&self.bound),
                 )))
             });
+            rows.borrow_mut().under(heading);
         }
     }
 
@@ -2366,27 +2370,6 @@ fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
         .iter()
         .find(|node| takes_typing(node) && lane_of(&node.key).0 == lane)
         .map(|node| node.key.clone())
-}
-
-/// The virtual lists of a view's tree, by key, with the kind of the component each holds its
-/// rows as (`ui.ListItem`, a tree's `ui.TreeViewNode`).
-fn virtual_lists(tree: &UiNode) -> Vec<(String, String)> {
-    fn walk(node: &UiNode, out: &mut Vec<(String, String)>) {
-        if tilo_render_protocol::patch::is_virtual_list(&node.kind) {
-            let item = if node.kind == "ui.TreeView" {
-                crate::adapter::kind("TreeViewNode")
-            } else {
-                crate::adapter::kind("ListItem")
-            };
-            out.push((node.key.clone(), item));
-        }
-        for child in &node.children {
-            walk(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(tree, &mut out);
-    out
 }
 
 /// What `words` say, in the person's language.
