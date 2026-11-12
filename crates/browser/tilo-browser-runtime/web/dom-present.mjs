@@ -347,11 +347,17 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
           set(node, 'pointer-events', 'none');
           set(node, 'left', '0px'); set(node, 'top', '0px');
           set(node, 'opacity', String(op[1]));
+          set(node, 'mix-blend-mode', op[2] ?? 'normal');
         } else {
-          const [, x, y, w, h, extra, opacity] = op;
+          const [, x, y, w, h, extra, opacity, blend] = op;
           place(node, x, y, w, h, top.origin);
           origin = [x, y];
           set(node, 'opacity', String(opacity));
+          // A layer the frame blends with what is under it: a dialog's scrim
+          // dims the window the frames below painted. The layer above the
+          // canvas is a stacking context of its own, so the blend reaches
+          // exactly what the canvas's own target held when it drew it.
+          set(node, 'mix-blend-mode', blend ?? 'normal');
           if (kind === 'c') set(node, 'border-radius', extra ? px(extra) : '0');
           else set(node, 'clip-path', `path("${extra}")`);
           // The viewport of the widget this clip is drawn in, when that

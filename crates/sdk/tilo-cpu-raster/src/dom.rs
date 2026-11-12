@@ -9,6 +9,9 @@
 //! very font file the toolkit shaped it with, a rectangular clip a box that
 //! hides its overflow, a blurred rectangle a box shadow. Glyph runs without
 //! characters (an icon font's, a canvas's) become SVG paths of their outlines.
+//! A layer that blends with what is under it (a dialog's scrim is one: soft
+//! light, then a wash) is a group the page composites with that blend, so it
+//! dims what the frames below it painted, as on the canvas.
 //!
 //! The output is JSON, one array per operation, read by the page's DOM
 //! presenter (`web/dom-present.mjs`):
@@ -18,9 +21,9 @@
 //! | `"r"` | x, y, w, h, radius, fill, stroke, stroke width |
 //! | `"p"` | x, y, w, h (bounds), SVG path data relative to x/y, fill, stroke, stroke width, even-odd |
 //! | `"t"` | text, x, baseline y, font size, font family, variation settings, colour, advance to last glyph |
-//! | `"c"` | x, y, w, h, radius, opacity (a clip; `"e"` ends it) |
-//! | `"cp"` | x, y, w, h, SVG clip path relative to x/y, opacity |
-//! | `"g"` | opacity (a group without a clip) |
+//! | `"c"` | x, y, w, h, radius, opacity, blend (a clip; `"e"` ends it) |
+//! | `"cp"` | x, y, w, h, SVG clip path relative to x/y, opacity, blend |
+//! | `"g"` | opacity, blend (a group without a clip) |
 //! | `"s"` | x, y, w, h, radius, blur, colour (a shadow) |
 //! | `"i"` | x, y, w, h (the bounds it is clipped to), image id (or null), the image-to-device matrix a b c d e f, alpha |
 //! | `"e"` | end of the innermost clip or group |
@@ -36,7 +39,7 @@ use std::fmt::Write as _;
 
 use skrifa::{FontRef, MetadataProvider, Tag};
 use vello_cpu::kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape};
-use vello_cpu::peniko::{Extend, Fill, FontData, Gradient, GradientKind};
+use vello_cpu::peniko::{Extend, Fill, FontData, Gradient, GradientKind, Mix};
 use vello_encoding::{Encoding, MarkKind};
 
 use crate::Stats;
@@ -716,28 +719,31 @@ impl DomEncoder {
                     mode,
                     ..
                 } => {
-                    let opacity = if let LayerMode::Blend(_, alpha) = mode {
-                        *alpha
-                    } else {
-                        1.0
+                    let (opacity, blend) = match mode {
+                        LayerMode::Blend(blend_mode, alpha) => (*alpha, blend_css(*blend_mode)),
+                        _ => (1.0, None),
                     };
                     sep(&mut out);
                     match path {
                         // A layer without a clip: a group.
                         None => {
-                            let _ = write!(out, "[\"g\",{opacity}]");
+                            let _ = write!(out, "[\"g\",{opacity}");
+                            push_blend(&mut out, blend);
+                            out.push(']');
                         }
                         Some(index) => {
                             let path = self.list.path(*index);
                             if let Some((rect, radius)) = box_shape(path, *transform) {
                                 let _ = write!(
                                     out,
-                                    "[\"c\",{:.2},{:.2},{:.2},{:.2},{radius:.2},{opacity}]",
+                                    "[\"c\",{:.2},{:.2},{:.2},{:.2},{radius:.2},{opacity}",
                                     rect.x0,
                                     rect.y0,
                                     rect.width(),
                                     rect.height()
                                 );
+                                push_blend(&mut out, blend);
+                                out.push(']');
                             } else {
                                 let device = *transform * path.clone();
                                 let rect = device.bounding_box();
@@ -753,7 +759,9 @@ impl DomEncoder {
                                     &mut out,
                                     &(Affine::translate((-rect.x0, -rect.y0)) * device),
                                 );
-                                let _ = write!(out, "\",{opacity}]");
+                                let _ = write!(out, "\",{opacity}");
+                                push_blend(&mut out, blend);
+                                out.push(']');
                             }
                         }
                     }
@@ -984,6 +992,46 @@ fn css(color: vello_cpu::color::AlphaColor<vello_cpu::color::Srgb>) -> String {
         (b * 255.0).round() as u8,
         a
     )
+}
+
+/// The CSS blend a layer is composited with, for the modes CSS can show: the
+/// W3C compositing modes the toolkit blends with are CSS's own, so a scrim's
+/// soft light is the page's.
+///
+/// `None` is the source-over default, and also what a layer composed by any
+/// other operator gets: a page has no way to say "source atop" or "destination
+/// out", and painting the layer plain as source over is what such a layer got
+/// before — a guess, but one a page can make; the toolkit's own use of those
+/// operators is a canvas app's own artwork.
+fn blend_css(blend: vello_cpu::peniko::BlendMode) -> Option<&'static str> {
+    if blend.compose != vello_cpu::peniko::Compose::SrcOver {
+        return None;
+    }
+    Some(match blend.mix {
+        Mix::Normal => return None,
+        Mix::Multiply => "multiply",
+        Mix::Screen => "screen",
+        Mix::Overlay => "overlay",
+        Mix::Darken => "darken",
+        Mix::Lighten => "lighten",
+        Mix::ColorDodge => "color-dodge",
+        Mix::ColorBurn => "color-burn",
+        Mix::HardLight => "hard-light",
+        Mix::SoftLight => "soft-light",
+        Mix::Difference => "difference",
+        Mix::Exclusion => "exclusion",
+        Mix::Hue => "hue",
+        Mix::Saturation => "saturation",
+        Mix::Color => "color",
+        Mix::Luminosity => "luminosity",
+    })
+}
+
+/// The blend as an operation's last field, left out when it is the default.
+fn push_blend(out: &mut String, blend: Option<&str>) {
+    if let Some(blend) = blend {
+        let _ = write!(out, ",\"{blend}\"");
+    }
 }
 
 /// The background of a box filling `rect` (device pixels) with `brush`: a
