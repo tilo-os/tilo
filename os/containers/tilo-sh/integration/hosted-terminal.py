@@ -116,7 +116,7 @@ AGENT_COMMAND = "uname -srm && cat /etc/os-release | head -n 2"
 # Browser user asked to read the tenant's file (which the tenant's sudo can
 # ask, being the tenant's own VM).
 ISOLATION_COMMAND = (
-    "id -un; id -u"
+    'echo "runs as $(id -un) $(id -u)"'
     f" ; echo only-the-tenant > {REFUSED_MARKER}.tenant"
     f" ; chmod 600 {REFUSED_MARKER}.tenant"
     " ; ls /home/tilo-browser"
@@ -530,8 +530,11 @@ async def isolated() -> dict[str, object]:
         check(isinstance(answer, dict), f"the run answers what it did ({answer!r})")
         output = str(answer.get("output") or "")
         say("answered", f"{seconds:.2f} s: {output.strip()[:600]}")
-        lines = [line.strip() for line in output.splitlines() if line.strip()]
-        check(lines[:2] == ["tilo", "1000"], f"the session runs as the VM's tenant ({lines[:2]})")
+        check(
+            "runs as tilo 1000" in output,
+            f"the session runs as the VM's tenant, uid 1000 ({output.strip()[:200]})",
+        )
+        check(f"runs as {BROWSER_USER}" not in output, f"and not as {BROWSER_USER}")
         check(
             "Permission denied" in output,
             f"and may not read the Browser session's home ({output.strip()[-300:]})",
@@ -563,7 +566,7 @@ async def isolated() -> dict[str, object]:
         write_json("isolation.json", {"tenant": answer, "browser_user": other})
         return {
             "seconds": round(seconds, 2),
-            "session": lines[:2],
+            "session": "tilo 1000",
             "browser_user": "tilo-browser",
             "account": ACCOUNT,
         }
