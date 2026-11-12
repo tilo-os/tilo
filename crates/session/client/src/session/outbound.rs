@@ -107,6 +107,10 @@ impl Task {
             self.fail("signature-rejected", "the route's channel keys went away");
             return (Vec::new(), frames.len());
         };
+        // The state carrying these keys is written before a write sealed
+        // under them leaves ([`ChannelPeer::save_deferred`]): an admission
+        // taken in a moment ago survives a page that reloads now.
+        self.channels.save_pending();
         let artifact = route.artifact();
         let author = self.signer.device_public_key();
         let now = crate::clock::system_time(tilo_clock::unix_now_ns());
