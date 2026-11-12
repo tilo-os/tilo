@@ -183,7 +183,7 @@ fn a_crowd_asking_together_is_admitted_in_one_commit() {
 
 /// The signatures a device admitted to a channel of `members` checks in
 /// full while taking in its Welcome, and those of the tree's leaves it
-/// leaves to the committer ([`channel_crypto::welcome`]).
+/// leaves unchecked ([`channel_crypto::welcome`]).
 fn joining(members: u32) -> (u64, u64) {
     let channel = ChannelId::new();
     let mut committer = ChannelPeer::create_now(None, channel, Box::new(key(0)), &vault()).unwrap();
@@ -217,8 +217,8 @@ fn joining(members: u32) -> (u64, u64) {
 }
 
 /// A newcomer joining a channel of 300 checks as many signatures in full as
-/// one joining a channel of 30: the tree's leaves, one per member, are the
-/// committer's to have checked. Only the tree's hash, which every leaf goes
+/// one joining a channel of 30: the tree's leaves, one per member, go
+/// unchecked. Only the tree's hash, which every leaf goes
 /// into, still grows with the channel.
 #[test]
 fn joining_checks_the_same_signatures_at_300_members_as_at_30() {

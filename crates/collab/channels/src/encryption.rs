@@ -1676,6 +1676,16 @@ impl ChannelEncryption {
                 true
             }
             PeerEvent::Removed => true,
+            PeerEvent::WelcomeRefused(refusal) => {
+                tracing::warn!(%refusal, %workspace, channel = %channel.0, ?signer, "channel Welcome refused");
+                // As a desynchronised device: the members that took the
+                // commit hold this device admitted with the key it asked
+                // with, so it asks with a fresh one.
+                entry.request = None;
+                entry.retry = Backoff::now(now, REQUEST_FIRST);
+                entry.fresh_at = now;
+                true
+            }
             PeerEvent::Desynchronised => {
                 // Ask again with a fresh member key; any participant admits
                 // a member asking with another key than it joined with.

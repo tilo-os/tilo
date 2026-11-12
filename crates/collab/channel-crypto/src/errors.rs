@@ -98,6 +98,11 @@ pub enum Error {
     #[error("MLS governance error: {0}")]
     Governance(String),
 
+    /// A Welcome was refused before this device took it, for the reason
+    /// named.
+    #[error("Welcome refused: {0}")]
+    WelcomeRefused(WelcomeRefusal),
+
     /// No content key is held for the ciphertext's epoch: the member joined
     /// without that epoch's history, or was removed before it.
     #[error("no content key for epoch {0}")]
@@ -127,6 +132,21 @@ impl Error {
     pub(crate) fn tls_codec<E: std::fmt::Debug>(e: E) -> Self {
         Self::TlsCodec(format!("{e:?}"))
     }
+}
+
+/// Why a waiting device refused a Welcome. Each is a lie only a member of
+/// the channel can tell, so it is never mistaken for a lost frame: the
+/// device stays waiting and asks again for an honest one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+pub enum WelcomeRefusal {
+    /// The Welcome's `GroupInfo` is signed by a leaf naming another device
+    /// than the one that signed the frame carrying it.
+    #[error("its group information is signed by another device than its frame")]
+    SignedByAnotherDevice,
+    /// A leaf of the tree names a device the channel's membership does not
+    /// let read it.
+    #[error("its tree holds a device the membership does not allow")]
+    DeviceNotAllowed,
 }
 
 /// Crate-wide `Result` alias.

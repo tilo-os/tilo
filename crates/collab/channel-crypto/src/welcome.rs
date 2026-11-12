@@ -6,32 +6,38 @@
 //! per member, three quarters of what joining costs, and the newcomer waits
 //! for it before it holds the channel's keys.
 //!
-//! Those leaf signatures are the one check left to the committer here; the
-//! joiner still checks everything else the RFC lists. The trust argument:
+//! The joiner leaves those leaf signatures unchecked and checks everything
+//! else the RFC lists. Why that gives up nothing:
 //!
-//! - The tree is bound to the `GroupInfo`: its tree hash covers every leaf,
-//!   signature and all, and the joiner checks that hash against the
-//!   `GroupInfo` and the `GroupInfo`'s signature against the committer's leaf.
-//!   The frame carrying the Welcome is signed by the committer's device, and
-//!   the channel's membership must name that device and every device the
-//!   commit adds ([`crate::backs`]). Nobody but that committer can hand the
-//!   joiner a tree.
-//! - Every leaf in the committer's tree was checked, signature included,
-//!   when the commit that added or updated it was taken in: openmls verifies
-//!   an added key package's leaf and every update path's leaf, on the
-//!   committer as on every member. The committer attests a tree it checked.
-//! - A leaf's signature proves only that whoever made the leaf holds the
-//!   leaf's own signature key. A committer that lies about the tree makes
-//!   any leaf it likes with a valid signature by generating that key
-//!   itself, so the check refuses no tree a dishonest committer could not
-//!   otherwise send. Which device a leaf belongs to is never read from its
-//!   signature: Tilo binds it with frames and access requests signed by the
-//!   device's own key.
+//! - **Only the committer writes the tree.** The tree travels inside the
+//!   Welcome's group information, sealed under a key derived from the joiner
+//!   secret, which only the committer and the joiner hold. The joiner checks
+//!   the group information's signature against the leaf it names as signer,
+//!   and that this leaf names the device that signed the frame carrying the
+//!   Welcome; the channel's membership must allow that device, every device
+//!   the commit adds, and every device a leaf of the tree names
+//!   ([`crate::ChannelPeer::receive`]). So the tree is the committer's word,
+//!   whatever it holds.
+//! - **The committer already holds every secret the joiner gets.** It made
+//!   the joiner secret and the epoch's key schedule. A committer that lies
+//!   learns nothing by lying, and a leaf signature it would have to forge
+//!   proves only that whoever made the leaf holds that leaf's signature key:
+//!   a committer making up a tree makes up such keys as it likes.
+//! - **A tree other than the real one only splits the joiner off.** The tree
+//!   hash covers every leaf, signature and all, and goes into the group
+//!   context every key of the epoch is derived from. A joiner given any other
+//!   tree than the members hold derives other keys, and no real commit after
+//!   it applies: it is cut off from the channel, as a committer that sent it
+//!   nothing at all would leave it. Even a tree that names only allowed
+//!   devices and keeps their real signature keys cannot do more.
 //!
-//! So skipping that one check on a Welcome's tree is exactly as strong as
-//! making it. Every other signature (the `GroupInfo`'s, every commit's and
-//! every update path's leaf after the join) is verified as before, and the
-//! tree hash, parent hashes, unique keys, unmerged leaves, capabilities and
+//! The committer never checked every leaf it hands on: one that joined by
+//! Welcome itself inherited leaves it never checked. That does not matter
+//! here, because the argument above does not rest on it.
+//!
+//! Every other signature (the group information's, every commit's and every
+//! update path's leaf after the join) is verified in full, and the tree
+//! hash, parent hashes, unique keys, unmerged leaves, capabilities and
 //! lifetimes are all still checked.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -63,7 +69,7 @@ pub(crate) struct Provider {
 
 impl Provider {
     /// Leave the leaf signatures of the Welcome read with this provider
-    /// until the returned guard is dropped to its committer.
+    /// unchecked until the returned guard is dropped (see the module docs).
     pub(crate) fn reading_welcome(&self) -> ReadingWelcome<'_> {
         self.crypto.welcome.store(true, Ordering::Relaxed);
         ReadingWelcome(&self.crypto)
@@ -102,7 +108,7 @@ thread_local! {
     static SIGNATURES_CHECKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// The leaf signatures left to the committer and the signatures checked in
+/// The leaf signatures left unchecked and the signatures checked in
 /// full while reading Welcomes on this thread since the last call: what a
 /// test that joining does not grow with the group counts.
 #[doc(hidden)]
@@ -281,6 +287,7 @@ impl OpenMlsCrypto for TreeAttested {
 mod tests {
     use crate::{ChannelGroup, MemberKey};
     use collab_types::ChannelId;
+    use openmls_traits::types::SignatureScheme;
 
     /// A channel of `members` and the Welcome admitting one more, with the
     /// key that joins with it.
@@ -309,7 +316,8 @@ mod tests {
 
     /// Joining a channel of 30 checks as many signatures in full as joining
     /// one of 3: the `GroupInfo`'s, which binds the whole tree. Each leaf's is
-    /// the committer's, which checked it when the leaf came in.
+    /// left unchecked: the tree is the committer's word either way (see the
+    /// module docs).
     #[test]
     fn joining_checks_the_same_signatures_however_large_the_channel() {
         let mut checked = Vec::new();
@@ -321,7 +329,7 @@ mod tests {
             assert_eq!(
                 left,
                 u64::try_from(members + 1).unwrap(),
-                "every leaf of the tree, the joiner's own among them, was left to the committer"
+                "every leaf of the tree, the joiner's own among them, was left unchecked"
             );
             checked.push(full);
             assert_eq!(newcomer.member_count(), members + 1);
@@ -364,9 +372,72 @@ mod tests {
         assert!(!provider.crypto.welcome.load(super::Ordering::Relaxed));
     }
 
-    /// The party the joiner leaves leaf signatures to checks them: a key
-    /// package whose leaf signature was tampered with is refused before any
-    /// committer could add it.
+    /// A member's signer that breaks the signature of every leaf node it
+    /// signs, and signs everything else as the member.
+    struct BreaksLeaves<'a>(&'a openmls_basic_credential::SignatureKeyPair);
+
+    impl openmls_traits::signatures::Signer for BreaksLeaves<'_> {
+        fn sign(&self, payload: &[u8]) -> Result<Vec<u8>, openmls_traits::signatures::SignerError> {
+            let mut signature = self.0.sign(payload)?;
+            if payload.starts_with(super::LEAF_NODE_SIGNED) {
+                signature[0] ^= 1;
+            }
+            Ok(signature)
+        }
+
+        fn signature_scheme(&self) -> SignatureScheme {
+            self.0.signature_scheme()
+        }
+    }
+
+    /// A member that joined by Welcome checks every leaf signature of every
+    /// commit after it in full: a commit whose update path carries a leaf
+    /// with a broken signature is refused, and the same commit signed
+    /// honestly is taken. Leaving leaf signatures unchecked ends with the
+    /// Welcome.
+    #[test]
+    fn a_commit_after_the_join_with_a_broken_leaf_signature_is_refused() {
+        let (channel, mut founder, welcome, joiner) = welcome_into(4);
+        let mut newcomer = crate::ChannelGroup::process_welcome(channel, &welcome, joiner).unwrap();
+        let _ = super::take_welcome_signatures();
+        let forged = {
+            use openmls::prelude::tls_codec::Serialize as _;
+            let signer = BreaksLeaves(&founder.member.signer);
+            let bundle = founder
+                .group
+                .self_update(
+                    &founder.member.provider,
+                    &signer,
+                    openmls::prelude::LeafNodeParameters::default(),
+                )
+                .unwrap();
+            bundle.into_messages().0.tls_serialize_detached().unwrap()
+        };
+        founder.discard_pending_transaction().unwrap();
+        let epoch = newcomer.epoch();
+        assert!(
+            newcomer.process_commit(&forged).is_err(),
+            "a self-update whose leaf signature is broken is refused"
+        );
+        assert_eq!(newcomer.epoch(), epoch);
+        assert_eq!(
+            super::take_welcome_signatures(),
+            (0, 0),
+            "nothing after the Welcome is read as one"
+        );
+        let honest = founder
+            .stage_commit(&[], &[], &crate::ContentKeyring::new())
+            .unwrap();
+        founder.merge_pending_transaction().unwrap();
+        newcomer.process_commit(&honest.commit).unwrap();
+        assert_eq!(newcomer.epoch(), epoch + 1);
+        let sealed = founder.encrypt(b"after").unwrap();
+        assert_eq!(newcomer.decrypt(&sealed).unwrap(), b"after");
+    }
+
+    /// A key package whose leaf signature was tampered with is refused before
+    /// any member could add it: a device's own leaf reaches an honest group
+    /// only with its signature checked.
     #[test]
     fn a_leaf_with_a_broken_signature_never_reaches_a_tree() {
         let package = MemberKey::generate("someone")

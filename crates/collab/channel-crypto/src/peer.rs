@@ -170,6 +170,13 @@ pub enum PeerEvent {
     /// A commit admitted this waiting device with a member key it no longer
     /// holds. It still waits, and asks again with the key it holds now.
     AdmittedWithAnotherKey,
+    /// A Welcome for this waiting device was refused for the reason named:
+    /// a member of the channel sent it into a group that is not the one the
+    /// frame commits. Like [`Self::Desynchronised`], the device waits with a
+    /// fresh member key and must send a new access request: the members that
+    /// took the frame's commit hold this device admitted with the key it
+    /// asked with, and admit it again only when it asks with another.
+    WelcomeRefused(crate::WelcomeRefusal),
 }
 
 /// What [`ChannelPeer::reconcile`] changed.
@@ -1364,7 +1371,9 @@ impl ChannelPeer {
                 }
                 match &self.record {
                     MemberRecord::Joined(_) => self.receive_commit(frame, incoming, allowed, vault),
-                    MemberRecord::Waiting(_) => self.receive_welcome(frame, incoming, vault),
+                    MemberRecord::Waiting(_) => {
+                        self.receive_welcome(frame, incoming, allowed, vault)
+                    }
                     MemberRecord::Removed => Ok(PeerEvent::Ignored),
                 }
             }
@@ -1514,13 +1523,16 @@ impl ChannelPeer {
         let replaced = std::mem::replace(&mut self.record, parent);
         let lost = self.head.take();
         let applied = if joins_from_welcome {
-            self.receive_welcome(frame, incoming, vault)
+            self.receive_welcome(frame, incoming, allowed, vault)
         } else {
             self.apply_commit(frame, allowed, vault)
         };
         match applied {
             Ok(
-                PeerEvent::Ignored | PeerEvent::Desynchronised | PeerEvent::AdmittedWithAnotherKey,
+                PeerEvent::Ignored
+                | PeerEvent::Desynchronised
+                | PeerEvent::AdmittedWithAnotherKey
+                | PeerEvent::WelcomeRefused(_),
             )
             | Err(_) => {
                 self.record = replaced;
@@ -1632,10 +1644,19 @@ impl ChannelPeer {
 
     /// A commit for a waiting device: its admission when the frame carries
     /// a Welcome for this device's member key.
+    ///
+    /// The Welcome is refused unless the device that signed its `GroupInfo`
+    /// is the one that signed the frame, and (when this device can tell who
+    /// may read the channel) every leaf of its tree names a device `allowed`
+    /// lets read it. Without that any member could send this device into a
+    /// group of its own making, which would show only later, as a channel
+    /// whose commits never apply. Both are a look at each leaf's credential,
+    /// no signature work.
     fn receive_welcome(
         &mut self,
         frame: MlsGovernanceFrame,
         incoming: [u8; 32],
+        allowed: Option<&BTreeSet<Ed25519PublicKey>>,
         vault: &VaultKey,
     ) -> Result<PeerEvent> {
         let MemberRecord::Waiting(pending) = &self.record else {
@@ -1653,11 +1674,31 @@ impl ChannelPeer {
         }
         let attempt = pending.duplicate()?;
         let parent = MemberRecord::seal_waiting(pending, vault)?;
-        match ChannelGroup::process_welcome_with_history(
+        let signer = frame.signed_by;
+        let judge = |parties: &crate::group::WelcomeParties| {
+            if parties.sender != signer.as_bytes() {
+                return Err(Error::WelcomeRefused(
+                    crate::WelcomeRefusal::SignedByAnotherDevice,
+                ));
+            }
+            if let Some(allowed) = allowed
+                && !parties.members.iter().all(|member| {
+                    <[u8; 32]>::try_from(member.as_slice())
+                        .is_ok_and(|device| allowed.contains(&Ed25519PublicKey::from_bytes(device)))
+                })
+            {
+                return Err(Error::WelcomeRefused(
+                    crate::WelcomeRefusal::DeviceNotAllowed,
+                ));
+            }
+            Ok(())
+        };
+        match ChannelGroup::join_with_history_checked(
             self.channel,
             &material.welcome,
             &material.key_history,
             attempt,
+            judge,
         ) {
             Ok(group) => {
                 let epoch = group.epoch();
@@ -1692,6 +1733,10 @@ impl ChannelPeer {
                 }
                 self.save(vault)?;
                 Ok(PeerEvent::Joined { epoch })
+            }
+            Err(Error::WelcomeRefused(refusal)) => {
+                self.desynchronise(vault)?;
+                Ok(PeerEvent::WelcomeRefused(refusal))
             }
             // A Welcome for a key package this device no longer holds: stay
             // waiting; the next request is admitted anew.
@@ -1777,6 +1822,10 @@ impl std::fmt::Debug for ChannelPeer {
             .finish_non_exhaustive()
     }
 }
+
+#[cfg(test)]
+#[path = "peer_welcome_tests.rs"]
+mod welcome_tests;
 
 #[cfg(test)]
 mod format_tests {

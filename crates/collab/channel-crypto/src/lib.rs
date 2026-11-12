@@ -78,7 +78,7 @@ pub mod welcome;
 pub use content::{ContentKeyring, KeyHistory};
 pub use crypto::{CIPHERSUITE, MemberKey};
 pub use endpoint::{ChannelContentKeys, MEDIA_STREAM_TAG_LEN};
-pub use errors::{Error, Result};
+pub use errors::{Error, Result, WelcomeRefusal};
 pub use gate::{ChannelGate, admission};
 pub use group::{ChannelGroup, MemberAddition};
 #[cfg(not(target_arch = "wasm32"))]
