@@ -57,3 +57,35 @@ fn an_early_enter_opens_the_typed_rows_while_an_app_still_answers() {
         "Enter after \"notes\" chose {chosen}"
     );
 }
+
+/// An Enter pressed in the same batch as the keys before it opens in the first pass whose rows
+/// answer what was typed, as an Enter on rows already shown does: the search's slower sources
+/// still answering must not cost the open the frames they take.
+#[test]
+fn an_early_enter_opens_once_the_typed_rows_stand() {
+    let mut search = DesktopSearch::new();
+    search.open(data());
+    search.set_query("sheets");
+    settled(&mut search);
+    search.palette_mut().set_query("notes");
+    search.palette_mut().activate_selected();
+    search.observe();
+    // The desk's passes after the batch, up to the first that shows rows for "notes".
+    for _ in 0..50 {
+        search.refresh();
+        if search.shown_query.as_deref() == Some("notes") && !search.rows.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let chosen = format!(
+        "{:?}",
+        search
+            .take_choice()
+            .expect("Enter chose a row in the pass that showed the typed rows")
+    );
+    assert!(
+        chosen.contains("notes"),
+        "Enter after \"notes\" chose {chosen}"
+    );
+}

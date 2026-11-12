@@ -553,11 +553,13 @@ impl DesktopSearch {
             self.enter_waiting = None;
             return;
         }
-        // The rows that stand for the query are its answer, as the desk publishes it: an app's
-        // answer still coming on the host's clock may never come, and must not hold the key.
+        // The rows that stand for the query are its answer, as the desk publishes it, as they
+        // are for an Enter on rows already shown: a slower source still answering off the frame,
+        // or an app's answer on the host's clock that may never come, must not hold the key, and
+        // waiting for them costs the open the frames they take. Only a query with no rows yet
+        // waits for its first.
         if self.shown_query.as_deref() != Some(query.as_str())
-            || self.answering()
-            || (self.rows.is_empty() && self.waiting())
+            || (self.rows.is_empty() && (self.waiting() || self.answering()))
             || !ui::search::engine_ready()
         {
             return;
