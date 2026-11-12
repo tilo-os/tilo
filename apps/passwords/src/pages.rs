@@ -179,12 +179,13 @@ fn copy_label(kind: SecretItemKind) -> String {
 }
 
 /// The name of the favorite toggle, by whether the item is one.
-pub(crate) fn favorite_label(favorite: bool) -> &'static str {
-    if favorite {
-        "Remove from favorites"
+pub(crate) fn favorite_label(favorite: bool) -> String {
+    let message = if favorite {
+        "passwords-unfavorite"
     } else {
-        "Add to favorites"
-    }
+        "passwords-favorite"
+    };
+    crate::CATALOG.t(message)
 }
 
 fn detail_header(item: &SecretItem, requests: &Requests, actions_in_bar: bool) -> Vec<Element> {
@@ -200,7 +201,8 @@ fn detail_header(item: &SecretItem, requests: &Requests, actions_in_bar: bool) -
     let star = {
         let requests = Rc::clone(requests);
         let id = item.id.clone();
-        Button::icon_only("passwords.favorite", Icon::Star, favorite_label(favorite))
+        let favorite_label = favorite_label(favorite);
+        Button::icon_only("passwords.favorite", Icon::Star, &favorite_label)
             .toggled(favorite)
             .on_own_device_effect(move || {
                 requests
@@ -348,16 +350,18 @@ fn input(shared: &Shared, field: DraftField, value: &str) -> TextInput {
         .on_change_view(move |value| core.borrow_mut().set_draft(field, value))
 }
 
-fn field_label(kind: SecretItemKind, field: DraftField) -> &'static str {
+fn field_label(kind: SecretItemKind, field: DraftField) -> String {
     match field {
-        DraftField::Name => "Name",
+        DraftField::Name => crate::CATALOG.t("passwords-field-name"),
         DraftField::Username => identity_label(kind),
         DraftField::Origin => origin_label(kind, 2),
-        DraftField::Password => secret_label(kind),
-        DraftField::Notes if kind == SecretItemKind::SecureNote => "Note",
-        DraftField::Notes => "Notes",
-        DraftField::Tags => "Tags",
-        DraftField::CustomFields => "Custom fields",
+        DraftField::Password => secret_label(kind).to_owned(),
+        DraftField::Notes if kind == SecretItemKind::SecureNote => {
+            crate::CATALOG.t("passwords-field-note")
+        }
+        DraftField::Notes => crate::CATALOG.t("passwords-field-notes"),
+        DraftField::Tags => crate::CATALOG.t("passwords-field-tags"),
+        DraftField::CustomFields => crate::CATALOG.t("passwords-field-custom"),
     }
 }
 

@@ -173,3 +173,4 @@ print-centre-reason-unknown = Der Drucker meldet einen Zustand, der Aufmerksamke
 print-centre-device-answered = Der Drucker hat die letzte Statusabfrage beantwortet.
 print-centre-device-no-supplies = Dieser Drucker meldet keine Füllstände.
 print-centre-device-unreachable = Live-Details sind nicht verfügbar. Der Drucker ist vielleicht im Ruhezustand oder getrennt.
+print-job-document = Dokument { $number }

@@ -96,15 +96,12 @@ impl Proposal {
     /// What was noticed, in the person's words.
     #[must_use]
     pub fn evidence(&self) -> String {
-        let noun = if self.steps.len() == 1 {
-            "step"
-        } else {
-            "steps"
-        };
-        format!(
-            "You did these {} {noun} {} times in a row.",
-            self.steps.len(),
-            self.times
+        crate::locales::CATALOG.t_args(
+            "shortcuts-evidence",
+            &[
+                ("steps", ui::i18n::ArgValue::Number(self.steps.len() as f64)),
+                ("times", ui::i18n::ArgValue::Number(self.times as f64)),
+            ],
         )
     }
 

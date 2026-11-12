@@ -187,3 +187,5 @@ music-track-actions = Track actions
 music-empty-queue = There are no queued tracks
 music-shuffle-off = Turn shuffle off
 music-shuffle-on = Turn shuffle on
+music-show-in-sidebar = Show in sidebar
+music-show-in-player = Show in player

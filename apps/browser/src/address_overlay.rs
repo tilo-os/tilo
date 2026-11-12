@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use ui::i18n::ArgValue;
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -259,8 +260,14 @@ fn describe(row: &Row) -> String {
     match row.kind {
         RowKind::History | RowKind::Extension => row.detail.clone(),
         RowKind::Bookmark => bookmark_detail(row),
-        RowKind::Go => format!("Open {}", row.detail),
-        RowKind::Search | RowKind::Suggestion => format!("Search for {}", row.title),
+        RowKind::Go => crate::CATALOG.t_args(
+            "browser-open",
+            &[("address", ArgValue::Text(row.detail.clone()))],
+        ),
+        RowKind::Search | RowKind::Suggestion => crate::CATALOG.t_args(
+            "browser-search-for",
+            &[("query", ArgValue::Text(row.title.clone()))],
+        ),
     }
 }
 

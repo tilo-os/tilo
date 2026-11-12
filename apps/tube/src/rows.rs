@@ -238,7 +238,11 @@ fn segment_row(settings: &Settings, category: Category) -> LiveRow {
     LiveRow::new(
         format!("tube.setting:sponsor-category:{}", category.api_key()),
         "tube.setting",
-        format!("SponsorBlock {}: {}", category.label(), stored.label()),
+        format!(
+            "SponsorBlock {}: {}",
+            crate::i18n::t(category.message()),
+            crate::i18n::t(stored.message())
+        ),
     )
     .effect(&TubeEffect::SetSegmentHandling {
         category: category.api_key().to_owned(),

@@ -75,17 +75,18 @@ impl Category {
         Category::ALL.into_iter().find(|c| c.api_key() == s)
     }
 
-    /// Short human label for the seek bar legend + settings rows.
-    pub fn label(self) -> &'static str {
+    /// The catalogue message naming this category on the seek bar legend and
+    /// in the settings rows.
+    pub fn message(self) -> &'static str {
         match self {
-            Category::Sponsor => "Sponsor",
-            Category::SelfPromo => "Self-promo",
-            Category::Interaction => "Interaction reminder",
-            Category::Intro => "Intermission / intro",
-            Category::Outro => "Endcards / outro",
-            Category::Preview => "Preview / recap",
-            Category::MusicOfftopic => "Non-music section",
-            Category::Filler => "Filler tangent",
+            Category::Sponsor => "tube-category-sponsor",
+            Category::SelfPromo => "tube-category-self-promo",
+            Category::Interaction => "tube-category-interaction",
+            Category::Intro => "tube-category-intro",
+            Category::Outro => "tube-category-outro",
+            Category::Preview => "tube-category-preview",
+            Category::MusicOfftopic => "tube-category-music-offtopic",
+            Category::Filler => "tube-category-filler",
         }
     }
 
@@ -137,12 +138,12 @@ pub enum SkipMode {
 }
 
 impl SkipMode {
-    /// Short label for the settings mode selector.
-    pub fn label(self) -> &'static str {
+    /// The catalogue message naming this mode in the settings selector.
+    pub fn message(self) -> &'static str {
         match self {
-            SkipMode::Skip => "Auto-skip",
-            SkipMode::Show => "Show",
-            SkipMode::Disabled => "Off",
+            SkipMode::Skip => "tube-skip-auto",
+            SkipMode::Show => "tube-skip-show",
+            SkipMode::Disabled => "tube-skip-off",
         }
     }
 
@@ -257,11 +258,11 @@ impl SearchType {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn message(self) -> &'static str {
         match self {
-            SearchType::Video => "Video",
-            SearchType::Playlist => "Playlist",
-            SearchType::Creator => "Creator",
+            SearchType::Video => "tube-type-video",
+            SearchType::Playlist => "tube-type-playlist",
+            SearchType::Creator => "tube-type-creator",
         }
     }
 }

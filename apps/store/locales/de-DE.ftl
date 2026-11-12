@@ -352,3 +352,8 @@ store-remotes-configured = Eingerichtete Quellen
 # The installed list, with what the apps on it take on this device in all.
 store-installed-total = { $count } installiert, { $size } insgesamt
 store-window-name = App Store
+
+store-app-tilo = Tilo-App
+store-app-flatpak = Flatpak-App
+store-app-flatpak-from = Flatpak-App von { $source }
+store-app-flatpak-from-version = Flatpak-App von { $source }, Version { $version }

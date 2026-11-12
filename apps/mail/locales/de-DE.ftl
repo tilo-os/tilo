@@ -214,3 +214,13 @@ mail-bulk-unread = Ausgewählte Nachrichten als ungelesen markieren
 mail-bulk-purge = Ausgewählte gelöschte Nachrichten endgültig löschen
 mail-bulk-delete = Ausgewählte Nachrichten in den Papierkorb legen
 mail-draft-subject-to = Entwurf: { $subject }, an { $to }
+
+## What the folders are called
+mail-folder-inbox = Posteingang
+mail-folder-starred = Markiert
+mail-folder-sent = Gesendet
+mail-folder-drafts = Entwürfe
+mail-folder-archive = Archiv
+mail-folder-trash = Papierkorb
+mail-folder-junk = Spam
+mail-refresh-offline = { $folder } für { $account } lässt sich nicht aktualisieren, solange IMAP offline ist

@@ -283,3 +283,4 @@ video-editor-split-off-audio = Ton abtrennen
 video-editor-link-state-linked = Ton und Bild verknüpft
 video-editor-link-state-unlinked = Nicht verknüpft
 video-editor-link-state-no-audio = Kein verknüpfter Ton-Clip
+video-clip-missing-media = Fehlendes Medium

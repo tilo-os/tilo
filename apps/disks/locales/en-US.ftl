@@ -40,3 +40,5 @@ disks-open-in-files = Open in Files
 disks-space-left = How much space is left?
 disks-swap = Swap space
 disks-filesystem-at = { $filesystem } at { $path }
+disks-in-use = In use
+disks-not-in-use = Not in use

@@ -63,15 +63,6 @@ pub enum FeedKind {
 }
 
 impl FeedKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            FeedKind::Rss => "RSS",
-            FeedKind::Atom => "Atom",
-            FeedKind::Json => "JSON",
-            FeedKind::Gemini => "Gemini",
-        }
-    }
-
     /// The form OPML and the reader's "via" line name it by.
     pub fn as_str(self) -> &'static str {
         match self {

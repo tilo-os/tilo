@@ -357,3 +357,8 @@ store-remotes-configured = Configured repositories
 # The installed list, with what the apps on it take on this device in all.
 store-installed-total = { $count } installed, { $size } in all
 store-window-name = App Store
+
+store-app-tilo = Tilo app
+store-app-flatpak = Flatpak app
+store-app-flatpak-from = Flatpak app from { $source }
+store-app-flatpak-from-version = Flatpak app from { $source }, version { $version }

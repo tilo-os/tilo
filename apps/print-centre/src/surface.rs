@@ -7,6 +7,7 @@ use ui::framework::{
     Dispatcher, Effect as _, EffectAnswer, EffectCx, EffectStatus, Effected, Live, LiveRow,
     Publishes, RunMode, ViewCx,
 };
+use ui::i18n::ArgValue;
 use ui::image_codec::DecodedImage;
 use ui::widget::Element;
 
@@ -407,11 +408,17 @@ fn display_name(raw: &str) -> String {
 }
 fn job_title(job: &os_actions::printing::PrintJob) -> String {
     job.title.clone().unwrap_or_else(|| {
-        format!(
-            "Document {}",
-            job.id
-                .rsplit_once('-')
-                .map_or(job.id.as_str(), |(_, id)| id)
+        crate::locales::CATALOG.t_args(
+            "print-job-document",
+            &[(
+                "number",
+                ArgValue::Text(
+                    job.id
+                        .rsplit_once('-')
+                        .map_or(job.id.as_str(), |(_, id)| id)
+                        .to_owned(),
+                ),
+            )],
         )
     })
 }

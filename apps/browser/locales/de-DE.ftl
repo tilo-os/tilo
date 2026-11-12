@@ -451,3 +451,5 @@ browser-settings-search-engine-detail = Suchen aus dem Adressfeld gehen dorthin.
 ## What the window shows
 browser-quit-keep-downloading = Weiter herunterladen
 browser-quit-cancel-downloads = Downloads abbrechen und beenden
+browser-open = { $address } öffnen
+browser-search-for = Nach { $query } suchen

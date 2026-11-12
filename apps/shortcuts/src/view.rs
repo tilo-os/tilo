@@ -855,14 +855,14 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
                     (Some(produced), Some(degraded)) => format!("{produced} ({degraded})"),
                     (Some(produced), None) => produced,
                     (None, Some(degraded)) => CATALOG.t_args(
-                        "shortcuts-finished-degraded",
+                        "shortcuts-finished-at-degraded",
                         &[("detail", ui::i18n::ArgValue::Text(degraded.clone()))],
                     ),
                     (None, None) => CATALOG.t("shortcuts-finished"),
                 }
             }
             RunStatus::Failed(reason) => CATALOG.t_args(
-                "shortcuts-stopped",
+                "shortcuts-stopped-at",
                 &[("detail", ui::i18n::ArgValue::Text(reason.clone()))],
             ),
         };
@@ -894,19 +894,29 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
 /// What the last run of `shortcut` came to, in words.
 fn last_run_text(door: &DoorState, shortcut: &str) -> String {
     let Some(run) = door.last_run(shortcut) else {
-        return String::from("Not run yet");
+        return CATALOG.t("shortcuts-not-run-yet");
     };
+    let time = || ui::i18n::ArgValue::Text(run.started.to_string());
     match &run.status {
-        RunStatus::Running => format!("Running since {}", run.started),
+        RunStatus::Running => CATALOG.t_args("shortcuts-running-since", &[("time", time())]),
         RunStatus::Completed {
             degraded: Some(degraded),
             ..
-        } => format!(
-            "Finished at {}, with steps that fell short: {degraded}",
-            run.started
+        } => CATALOG.t_args(
+            "shortcuts-finished-degraded",
+            &[
+                ("time", time()),
+                ("steps", ui::i18n::ArgValue::Text(degraded.clone())),
+            ],
         ),
-        RunStatus::Completed { .. } => format!("Finished at {}", run.started),
-        RunStatus::Failed(reason) => format!("Stopped at {}: {reason}", run.started),
+        RunStatus::Completed { .. } => CATALOG.t_args("shortcuts-finished-at", &[("time", time())]),
+        RunStatus::Failed(reason) => CATALOG.t_args(
+            "shortcuts-stopped",
+            &[
+                ("time", time()),
+                ("reason", ui::i18n::ArgValue::Text(reason.clone())),
+            ],
+        ),
     }
 }
 

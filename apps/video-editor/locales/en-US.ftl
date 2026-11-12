@@ -283,3 +283,4 @@ video-editor-split-off-audio = Split off audio
 video-editor-link-state-linked = Linked audio and video
 video-editor-link-state-unlinked = Not linked
 video-editor-link-state-no-audio = No linked audio clip
+video-clip-missing-media = Missing media

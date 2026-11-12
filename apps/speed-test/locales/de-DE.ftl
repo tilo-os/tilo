@@ -22,3 +22,5 @@ speed-test-complete = Test abgeschlossen
 speed-test-ready-again = Bereit für einen neuen Versuch
 speed-test-down = { $rate } Mbps herunter
 speed-test-up-and-ping = { $rate } Mbps hoch, { $ping } ms Ping
+speed-test-measures-against = Misst gegen { $server }
+speed-test-measures-nearest = Misst gegen den nächsten Cloudflare-Server

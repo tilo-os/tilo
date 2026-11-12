@@ -124,3 +124,14 @@ shortcuts-param-type-secret = Geheimnis
 shortcuts-param-type-resource = Element aus einer App
 shortcuts-param-type-object = Gruppe von Werten
 shortcuts-param-type-array = Liste
+
+## What the last run of a shortcut came to
+shortcuts-not-run-yet = Noch nicht ausgeführt
+shortcuts-running-since = Läuft seit { $time }
+shortcuts-finished-at = Um { $time } beendet
+shortcuts-finished-at-degraded = Um { $time } beendet, mit Schritten, die zurückblieben: { $steps }
+shortcuts-stopped-at = Um { $time } gestoppt: { $reason }
+shortcuts-evidence = Du hast diese { $steps } { $steps ->
+    [one] Schritt
+   *[other] Schritte
+} { $times } Mal hintereinander gemacht.

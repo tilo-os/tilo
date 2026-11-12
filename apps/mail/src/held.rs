@@ -406,7 +406,7 @@ impl Mail {
                     .iter()
                     .map(|folder| serde_json::json!({
                         "item": format!("mail.folder:{}", folder.as_key()),
-                        "name": folder.title(),
+                        "name": folder.as_key(),
                         "messages": self.held_newest().iter().filter(|(_, _, state)| state.folder == *folder).count(),
                     }))
                     .collect::<Vec<_>>(),

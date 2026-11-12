@@ -81,3 +81,14 @@ firewall-stop-confirm = Firewall ausschalten
 firewall-panic-title = Panikmodus einschalten?
 firewall-panic-body = Der gesamte ein- und ausgehende Verkehr wird verworfen, auch die entfernte Sitzung, mit der du diesen Rechner vielleicht gerade reparierst. Bestehende Verbindungen werden getrennt.
 firewall-panic-confirm = Gesamten Verkehr verwerfen
+
+## What each zone is for
+firewall-zone-drop-description = Eingehender Datenverkehr wird ohne Antwort verworfen. Ausgehender Datenverkehr ist erlaubt.
+firewall-zone-block-description = Eingehende Verbindungen werden abgelehnt. Ausgehender Datenverkehr ist erlaubt.
+firewall-zone-public-description = Für nicht vertrauenswürdige öffentliche Netzwerke. Nur die von dir erlaubten Dienste sind erreichbar.
+firewall-zone-external-description = Für die Außenseite eines Routers, der dein Netzwerk maskiert.
+firewall-zone-dmz-description = Für öffentlich erreichbare Hosts mit begrenztem Zugang zum internen Netzwerk.
+firewall-zone-work-description = Für Arbeitsnetzwerke, in denen du den anderen Computern meist vertraust.
+firewall-zone-home-description = Für Heimnetzwerke, in denen du den anderen Computern meist vertraust.
+firewall-zone-internal-description = Für interne Netzwerke, in denen du den anderen Computern meist vertraust.
+firewall-zone-trusted-description = Alle Netzwerkverbindungen werden angenommen.

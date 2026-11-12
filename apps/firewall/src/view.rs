@@ -454,7 +454,7 @@ fn zone_status(model: &PageModel<'_>, intents: &Intents) -> Column {
         ));
     }
     column.push(Box::new(
-        Text::new(model.zone.kind.description())
+        Text::new(&crate::locales::CATALOG.t(model.zone.kind.description_message()))
             .with_role(TextRole::Body)
             .dimmed(),
     ))

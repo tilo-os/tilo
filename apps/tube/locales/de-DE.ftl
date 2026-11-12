@@ -221,3 +221,19 @@ tube-queue-shared = Gemeinsame Warteschlange
 tube-video = Video
 tube-creator = Kanal
 tube-playlist = Playlist
+
+## What the segment categories and the search types are called
+tube-category-sponsor = Werbung
+tube-category-self-promo = Eigenwerbung
+tube-category-interaction = Erinnerung zum Mitmachen
+tube-category-intro = Intro
+tube-category-outro = Outro
+tube-category-preview = Vorschau
+tube-category-music-offtopic = Abschnitt ohne Musik
+tube-category-filler = Abschweifung
+tube-skip-auto = Automatisch überspringen
+tube-skip-show = Anzeigen
+tube-skip-off = Aus
+tube-type-video = Video
+tube-type-playlist = Wiedergabeliste
+tube-type-creator = Kanal

@@ -3,6 +3,7 @@
 //! credential, trust a host key — and the outcome reported back for each.
 
 use crate::model::ConnectionId;
+use crate::resource::CATALOG;
 use crate::session::{SessionStatus, TransportReadiness, connection_readiness};
 use crate::ssh::{TransferDirection, transfer_name};
 use crate::view::Destination;
@@ -378,11 +379,12 @@ impl Store {
             let reason = if readiness == TransportReadiness::InvalidProfile {
                 saved
                     .profile_issue()
-                    .unwrap_or_else(|| readiness.detail(saved.kind))
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| CATALOG.t(readiness.detail_message(saved.kind)))
             } else {
-                readiness.detail(saved.kind)
+                CATALOG.t(readiness.detail_message(saved.kind))
             };
-            return Err(reason.to_string());
+            return Err(reason);
         }
         self.open_session(connection);
         let status = self.session.borrow().status();

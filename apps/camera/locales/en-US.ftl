@@ -70,3 +70,10 @@ camera-settings-geotag = Save location with photos
 camera-timer-3s = 3 seconds
 camera-timer-10s = 10 seconds
 camera-countdown-cancel-hint = Tap the shutter to cancel
+
+## What the scan choices are called
+camera-scan-scanner = Scanner
+camera-scan-resolution = Resolution
+camera-scan-color = Color
+camera-scan-paper-source = Paper source
+camera-scan-text-language = Text language

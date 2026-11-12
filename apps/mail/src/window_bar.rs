@@ -213,7 +213,7 @@ pub(crate) fn location(state: &MailState, composing: Option<&str>) -> String {
     if state.all_inboxes {
         "All inboxes".to_owned()
     } else {
-        state.folder.title().to_owned()
+        crate::i18n::t(state.folder.message())
     }
 }
 

@@ -54,6 +54,7 @@ use crate::model::{
     AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Remote, Screen,
     Workspace,
 };
+use crate::resource::CATALOG;
 use crate::session::{SessionStatus, TransportReadiness, connection_readiness};
 use crate::ssh::SshSession;
 use crate::view::{
@@ -108,7 +109,7 @@ impl LiveSession {
             LiveSession::Tilo(s) => s.status.clone(),
             LiveSession::Error(e) => SessionStatus::Failed(e.clone()),
             LiveSession::Unavailable { readiness, kind } => {
-                SessionStatus::Unavailable(readiness.detail(*kind).into())
+                SessionStatus::Unavailable(CATALOG.t(readiness.detail_message(*kind)))
             }
             LiveSession::Preview(s) => s.clone(),
             #[cfg(feature = "samples")]

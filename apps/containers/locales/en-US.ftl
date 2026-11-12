@@ -74,3 +74,16 @@ containers-action-remove = Remove
 containers-prompt-name = Name
 containers-prompt-tag = New tag
 containers-prompt-image = Image
+
+## What a removal leaves behind and what a pull is fetching
+containers-remove-container-body = The container and the changes made inside it are deleted. Its volumes stay.
+containers-remove-image-body = The image is deleted from this computer. You can pull it again later.
+containers-remove-volume-body = The volume and the data stored in it are deleted.
+containers-used-by = { $count ->
+    [0] Not used by any container
+    [one] Used by 1 container
+   *[other] Used by { $count } containers
+}
+containers-downloading = Downloading layers
+containers-downloading-of = Downloading layers: { $done } of { $total }
+containers-downloading-so-far = Downloading layers: { $done } so far

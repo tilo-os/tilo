@@ -221,3 +221,19 @@ tube-queue-shared = Shared watch queue
 tube-video = Video
 tube-creator = Creator
 tube-playlist = Playlist
+
+## What the segment categories and the search types are called
+tube-category-sponsor = Sponsor
+tube-category-self-promo = Self-promo
+tube-category-interaction = Interaction reminder
+tube-category-intro = Intro
+tube-category-outro = Outro
+tube-category-preview = Preview
+tube-category-music-offtopic = Non-music section
+tube-category-filler = Filler
+tube-skip-auto = Auto-skip
+tube-skip-show = Show
+tube-skip-off = Off
+tube-type-video = Video
+tube-type-playlist = Playlist
+tube-type-creator = Creator

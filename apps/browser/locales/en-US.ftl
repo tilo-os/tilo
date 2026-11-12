@@ -451,3 +451,5 @@ browser-settings-search-engine-detail = Searches from the address field go here.
 ## What the window shows
 browser-quit-keep-downloading = Keep downloading
 browser-quit-cancel-downloads = Cancel downloads and quit
+browser-open = Open { $address }
+browser-search-for = Search for { $query }

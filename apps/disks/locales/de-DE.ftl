@@ -40,3 +40,5 @@ disks-open-in-files = In Dateien öffnen
 disks-space-left = Wie viel Platz ist noch frei?
 disks-swap = Auslagerungsspeicher
 disks-filesystem-at = { $filesystem } unter { $path }
+disks-in-use = In Benutzung
+disks-not-in-use = Nicht in Benutzung

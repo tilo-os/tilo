@@ -71,16 +71,13 @@ impl Confirm {
         format!("Remove {}?", self.name)
     }
 
-    fn body(&self) -> &'static str {
-        match self.target {
-            ConfirmTarget::Container { .. } => {
-                "The container and the changes made inside it are deleted. Its volumes stay."
-            }
-            ConfirmTarget::Image { .. } => {
-                "The image is deleted from this computer. You can pull it again later."
-            }
-            ConfirmTarget::Volume { .. } => "The volume and the data stored in it are deleted.",
-        }
+    fn body(&self) -> String {
+        let message = match self.target {
+            ConfirmTarget::Container { .. } => "containers-remove-container-body",
+            ConfirmTarget::Image { .. } => "containers-remove-image-body",
+            ConfirmTarget::Volume { .. } => "containers-remove-volume-body",
+        };
+        crate::resource::CATALOG.t(message)
     }
 
     fn verb(&self) -> &'static str {
@@ -561,7 +558,7 @@ impl ContainersApp {
                 let dismiss = self.intents.clone();
                 ModalDialog::new(
                     confirm.title(),
-                    Text::new(confirm.body()).with_role(TextRole::Body),
+                    Text::new(&confirm.body()).with_role(TextRole::Body),
                 )
                 .with_test_id("containers-confirm-dialog")
                 .with_destructive(true)

@@ -83,8 +83,11 @@ fn account_sections(state: &MailState) -> Vec<NavSection> {
             let items = AccountStore::folders_for(account)
                 .into_iter()
                 .map(|folder| {
-                    let item = NavItem::new(folder_row_id(index, folder), folder.title())
-                        .icon(folder.icon());
+                    let item = NavItem::new(
+                        folder_row_id(index, folder),
+                        crate::i18n::t(folder.message()),
+                    )
+                    .icon(folder.icon());
                     if !active {
                         if folder != Folder::Inbox {
                             return item;

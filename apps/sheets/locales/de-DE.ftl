@@ -102,3 +102,6 @@ sheets-a11y-column = Spalte { $letter }
 
 ## What the window shows
 sheets-no-replies = Keine Antworten
+
+sheets-comment-you = Du
+sheets-comment-someone = Jemand

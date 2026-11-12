@@ -6,7 +6,6 @@
 //! theme decides how it looks. Interaction leaves as an [`Intent`] that the
 //! app applies to the window, the draft and the engine.
 
-use std::borrow::Cow;
 use std::cell::Cell;
 use std::rc::Rc;
 use ui::num::u32_of_usize;
@@ -897,11 +896,10 @@ fn shell(model: &DetailModel<'_>, intents: &Intents) -> Element {
 }
 
 fn used_by(n: u32) -> String {
-    match n {
-        0 => "Not used by any container".into(),
-        1 => "Used by 1 container".into(),
-        n => format!("Used by {n} containers"),
-    }
+    CATALOG.t_args(
+        "containers-used-by",
+        &[("count", ui::i18n::ArgValue::Number(f64::from(n)))],
+    )
 }
 
 /// One page of a section: a sentence about the whole, then its list, both
@@ -1087,18 +1085,20 @@ pub(crate) fn distrobox_page(
 
 /// What the pull sheet says it is fetching: the bytes Podman reported, or
 /// just the phase where it named none.
-fn downloading_text(fetched: Option<(u64, Option<u64>)>) -> Cow<'static, str> {
+fn downloading_text(fetched: Option<(u64, Option<u64>)>) -> String {
     match fetched {
-        Some((done, Some(total))) => Cow::Owned(format!(
-            "Downloading layers: {} of {}",
-            ui::format::size(done),
-            ui::format::size(total)
-        )),
-        Some((done, None)) => Cow::Owned(format!(
-            "Downloading layers: {} so far",
-            ui::format::size(done)
-        )),
-        None => Cow::Borrowed("Downloading layers"),
+        Some((done, Some(total))) => CATALOG.t_args(
+            "containers-downloading-of",
+            &[
+                ("done", ui::i18n::ArgValue::Text(ui::format::size(done))),
+                ("total", ui::i18n::ArgValue::Text(ui::format::size(total))),
+            ],
+        ),
+        Some((done, None)) => CATALOG.t_args(
+            "containers-downloading-so-far",
+            &[("done", ui::i18n::ArgValue::Text(ui::format::size(done)))],
+        ),
+        None => CATALOG.t("containers-downloading"),
     }
 }
 

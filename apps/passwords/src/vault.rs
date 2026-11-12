@@ -16,6 +16,7 @@ use ui::widget::NavPane;
 use vello::kurbo::Rect;
 use zeroize::Zeroizing;
 
+use crate::CATALOG;
 use crate::actions::PasswordsEffect;
 use crate::transfer::ImportLogin;
 
@@ -76,16 +77,17 @@ impl VaultFilter {
     }
 
     /// The list's title and the sidebar row's label.
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::All => "All items",
-            Self::Favorites => "Favorites",
-            Self::Kind(SecretItemKind::Login) => "Logins",
-            Self::Kind(SecretItemKind::ApiKey) => "API keys",
-            Self::Kind(SecretItemKind::SecureNote) => "Secure notes",
-            Self::Kind(SecretItemKind::Wifi) => "Wi-Fi",
-            Self::Kind(SecretItemKind::Other) => "Other secrets",
-        }
+    pub(crate) fn label(self) -> String {
+        let message = match self {
+            Self::All => "passwords-filter-all",
+            Self::Favorites => "passwords-filter-favorites",
+            Self::Kind(SecretItemKind::Login) => "passwords-filter-logins",
+            Self::Kind(SecretItemKind::ApiKey) => "passwords-filter-api-keys",
+            Self::Kind(SecretItemKind::SecureNote) => "passwords-filter-notes",
+            Self::Kind(SecretItemKind::Wifi) => "passwords-filter-wifi",
+            Self::Kind(SecretItemKind::Other) => "passwords-filter-other",
+        };
+        CATALOG.t(message)
     }
 
     pub(crate) fn matches(self, item: &SecretItem) -> bool {
@@ -246,14 +248,15 @@ pub(crate) fn now_unix() -> u64 {
 }
 
 /// What a kind is called in the detail view and the editor.
-pub(crate) fn kind_label(kind: SecretItemKind) -> &'static str {
-    match kind {
-        SecretItemKind::Login => "Login",
-        SecretItemKind::ApiKey => "API key",
-        SecretItemKind::SecureNote => "Secure note",
-        SecretItemKind::Wifi => "Wi-Fi network",
-        SecretItemKind::Other => "Secret",
-    }
+pub(crate) fn kind_label(kind: SecretItemKind) -> String {
+    let message = match kind {
+        SecretItemKind::Login => "passwords-kind-login",
+        SecretItemKind::ApiKey => "passwords-kind-api-key",
+        SecretItemKind::SecureNote => "passwords-kind-note",
+        SecretItemKind::Wifi => "passwords-kind-wifi",
+        SecretItemKind::Other => "passwords-kind-secret",
+    };
+    CATALOG.t(message)
 }
 
 /// What the secret of a kind is called.
@@ -267,21 +270,25 @@ pub(crate) fn secret_label(kind: SecretItemKind) -> &'static str {
 }
 
 /// What the identity of a kind (the username row) is called.
-pub(crate) fn identity_label(kind: SecretItemKind) -> &'static str {
-    match kind {
-        SecretItemKind::ApiKey => "Account",
-        SecretItemKind::Wifi => "Network",
-        SecretItemKind::Login | SecretItemKind::Other | SecretItemKind::SecureNote => "Username",
-    }
+pub(crate) fn identity_label(kind: SecretItemKind) -> String {
+    let message = match kind {
+        SecretItemKind::ApiKey => "passwords-identity-account",
+        SecretItemKind::Wifi => "passwords-identity-network",
+        SecretItemKind::Login | SecretItemKind::Other | SecretItemKind::SecureNote => {
+            "passwords-identity-username"
+        }
+    };
+    CATALOG.t(message)
 }
 
 /// What the origins of a kind are called.
-pub(crate) fn origin_label(kind: SecretItemKind, count: usize) -> &'static str {
-    match (kind, count) {
-        (SecretItemKind::ApiKey, _) => "Service",
-        (_, 0 | 1) => "Website",
-        _ => "Websites",
-    }
+pub(crate) fn origin_label(kind: SecretItemKind, count: usize) -> String {
+    let message = match (kind, count) {
+        (SecretItemKind::ApiKey, _) => "passwords-origin-service",
+        (_, 0 | 1) => "passwords-origin-website",
+        _ => "passwords-origin-websites",
+    };
+    CATALOG.t(message)
 }
 
 /// The identity a row shows: the network for Wi-Fi, else the username.

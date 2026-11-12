@@ -1226,7 +1226,7 @@ impl Mail {
             .map(|folder| {
                 ui::search::ScopeDecl::new(
                     format!("mail.folder:{}", folder.as_key()),
-                    folder.title(),
+                    crate::i18n::t(folder.message()),
                 )
             })
             .collect::<Vec<_>>();
@@ -1248,7 +1248,7 @@ impl Mail {
         let mut places = Vec::new();
         let copies = self.draft_copy_ids();
         for folder in Folder::ALL {
-            let mut place = Derived::new(folder.title())
+            let mut place = Derived::new(crate::i18n::t(folder.message()))
                 .of_kind("folder")
                 .identified(folder_place_id(folder.as_key()))
                 .with_effect(&MailEffect::Open {

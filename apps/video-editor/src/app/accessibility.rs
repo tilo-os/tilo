@@ -287,9 +287,10 @@ impl VideoEditorApp {
     /// A clip's accessible name: the media it places, so the reader says
     /// "Interview" rather than a UUID the user has never seen.
     pub(super) fn a11y_clip_name(&self, clip: &Clip) -> String {
-        self.project
-            .media(clip.media)
-            .map_or_else(|| "Missing media".into(), |m| m.name.clone())
+        self.project.media(clip.media).map_or_else(
+            || crate::resource::CATALOG.t("video-clip-missing-media"),
+            |m| m.name.clone(),
+        )
     }
 
     /// What a reader says about a clip beyond its name: where it sits, how long

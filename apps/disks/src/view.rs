@@ -782,8 +782,8 @@ fn partition_summary(drive: &Drive, part: &Partition) -> String {
         .filter(|purpose| !purpose.eq_ignore_ascii_case(part.display_label().trim()));
     let mut summary = match purpose {
         Some(purpose) => purpose.to_owned(),
-        None if part.mountpoint.is_some() => "In use".to_owned(),
-        None => "Not in use".to_owned(),
+        None if part.mountpoint.is_some() => crate::locales::CATALOG.t("disks-in-use"),
+        None => crate::locales::CATALOG.t("disks-not-in-use"),
     };
     match locked {
         Some(true) => summary.push_str(", encrypted and locked"),
