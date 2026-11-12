@@ -114,8 +114,9 @@ view strips(a: Arrangement) {
 ///
 /// The places at points on a pannable, zoomable canvas, each in its own frame.
 view frames(a: Arrangement) {
+    let lists = desk_lists(false, space.width_class == .expanded or space.width_class == .wide)
     desk_style(a, false) {
-        canvas(a, "Canvas", true, fill)
+        canvas(a, "Canvas", true, lists, fill)
     }
 }
 
@@ -124,7 +125,7 @@ view frames(a: Arrangement) {
 /// The places at points, each drawn as its own view standing as content.
 view spaces(a: Arrangement) {
     desk_style(a, false) {
-        canvas(a, "Spaces", false, fill)
+        canvas(a, "Spaces", false, false, fill)
     }
 }
 
