@@ -975,7 +975,7 @@ doc = false
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial2-0_2_37" = { package = "serial2", version = "^0.2.37", default-features = false, features = [] }
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
-"settings" = { path = "../../../apps/settings", default-features = false, features = [] }
+"settings" = { path = "../../../apps/settings", default-features = false, features = ["default", "tilo-os"] }
 "settings-sections" = { path = "../../../crates/system/settings-sections", default-features = false, features = [] }
 "settings-store" = { path = "../../../crates/system/settings-store", default-features = false, features = ["model", "watch"] }
 "sevenz-rust2-0_24_1" = { package = "sevenz-rust2", version = "^0.24.1", default-features = false, features = ["bzip2"] }
@@ -1093,6 +1093,7 @@ doc = false
 "termcolor-1_4_1" = { package = "termcolor", version = "^1.4.1", default-features = false, features = [] }
 "terminal" = { path = "../../../apps/terminal", default-features = false, features = ["samples"] }
 "test-http" = { path = "../../../crates/dev/test-http", default-features = false, features = [] }
+"test-relay" = { path = "../../../crates/dev/test-relay", default-features = false, features = [] }
 "themes" = { path = "../../../apps/themes", default-features = false, features = [] }
 "thin-vec-0_2_19" = { package = "thin-vec", version = "^0.2.19", default-features = false, features = ["default", "std"] }
 "thiserror-1_0_69" = { package = "thiserror", version = "^1.0.69", default-features = false, features = [] }
@@ -3594,7 +3595,7 @@ doc = false
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial2-0_2_37" = { package = "serial2", version = "^0.2.37", default-features = false, features = [] }
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
-"settings" = { path = "../../../apps/settings", default-features = false, features = [] }
+"settings" = { path = "../../../apps/settings", default-features = false, features = ["default", "tilo-os"] }
 "settings-sections" = { path = "../../../crates/system/settings-sections", default-features = false, features = [] }
 "settings-store" = { path = "../../../crates/system/settings-store", default-features = false, features = ["model", "watch"] }
 "sevenz-rust2-0_24_1" = { package = "sevenz-rust2", version = "^0.24.1", default-features = false, features = ["bzip2"] }
@@ -3712,6 +3713,7 @@ doc = false
 "termcolor-1_4_1" = { package = "termcolor", version = "^1.4.1", default-features = false, features = [] }
 "terminal" = { path = "../../../apps/terminal", default-features = false, features = ["samples"] }
 "test-http" = { path = "../../../crates/dev/test-http", default-features = false, features = [] }
+"test-relay" = { path = "../../../crates/dev/test-relay", default-features = false, features = [] }
 "themes" = { path = "../../../apps/themes", default-features = false, features = [] }
 "thin-vec-0_2_19" = { package = "thin-vec", version = "^0.2.19", default-features = false, features = ["default", "std"] }
 "thiserror-1_0_69" = { package = "thiserror", version = "^1.0.69", default-features = false, features = [] }
