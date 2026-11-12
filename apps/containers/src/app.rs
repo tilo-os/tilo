@@ -2255,7 +2255,7 @@ fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> Live
             distrobox: distrobox.name.clone(),
         },
         engine_live,
-        "Distrobox actions are unavailable in demo mode",
+        &crate::resource::CATALOG.t("containers-demo-unavailable"),
     ))
 }
 

@@ -584,7 +584,11 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                     list_controls.button(
                         Button::new(
                             &format!("clocks.alarm.{id}.toggle"),
-                            if alarm.enabled { "Turn off" } else { "Turn on" },
+                            &CATALOG.t(if alarm.enabled {
+                                "clocks-alarm-turn-off"
+                            } else {
+                                "clocks-alarm-turn-on"
+                            }),
                         )
                         .control_size(ui::widget::ControlSize::Large),
                         Clocks::SET_ALARM_ENABLED.with((id.clone(), !alarm.enabled)),
@@ -859,7 +863,11 @@ fn timer_card(
                             controls.effect(
                                 Button::new(
                                     &format!("clocks.timer.{id}.pin"),
-                                    if floating { "Hide" } else { "Float" },
+                                    &CATALOG.t(if floating {
+                                        "clocks-timer-hide"
+                                    } else {
+                                        "clocks-timer-float"
+                                    }),
                                 )
                                 .with_icon(Icon::PictureInPicture2)
                                 .with_accessible_name(float_label)
@@ -962,7 +970,10 @@ fn timers_screen(
                 let floating = s.device.floating_timers.contains(id.as_str());
                 col = col.push(timer_card(&card_state, id, timer, floating, &list_controls));
             }
-            Box::new(clock_card("Active timers", Box::new(col)))
+            Box::new(clock_card(
+                &CATALOG.t("clocks-active-timers"),
+                Box::new(col),
+            ))
         },
     );
     let add = controls.dispatcher.clone();
@@ -976,7 +987,7 @@ fn timers_screen(
             || Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element,
             |message| {
                 Box::new(clock_card(
-                    "Timer needs a duration",
+                    &CATALOG.t("clocks-timer-needs-duration"),
                     Box::new(Text::new(message)),
                 ))
             },
@@ -1019,7 +1030,7 @@ fn timers_screen(
     // The custom timer is the form that needs the width; the quick starts
     // stand beside it, and under it once the window is narrow.
     let setup = Columns::new(Box::new(clock_card(
-        "Custom timer",
+        &CATALOG.t("clocks-custom-timer"),
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -1063,7 +1074,7 @@ fn timers_screen(
         ),
     )))
     .aside(Box::new(clock_card(
-        "Quick starts",
+        &CATALOG.t("clocks-quick-starts"),
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -1172,11 +1183,11 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                     controls.effect(
                         Button::new(
                             "clocks.stopwatch.pin",
-                            if floating {
-                                "Stop floating"
+                            &CATALOG.t(if floating {
+                                "clocks-stop-floating"
                             } else {
-                                "Keep stopwatch visible"
-                            },
+                                "clocks-keep-visible"
+                            }),
                         )
                         .with_icon(Icon::PictureInPicture2)
                         .control_size(ui::widget::ControlSize::Large),
@@ -1540,8 +1551,15 @@ impl ClocksApp {
             } => (native_alarm_id(id.as_str()), *native_scheduled),
         };
         let (title, body, activation, alarm) = match event {
-            DueEvent::Alarm { id, label, .. } => ("Alarm".to_owned(), label, ALARMS_URI, Some(id)),
-            DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label, TIMERS_URI, None),
+            DueEvent::Alarm { id, label, .. } => (
+                CATALOG.t("clocks-notify-alarm"),
+                label,
+                ALARMS_URI,
+                Some(id),
+            ),
+            DueEvent::Timer { label, .. } => {
+                (CATALOG.t("clocks-notify-timer"), label, TIMERS_URI, None)
+            }
         };
         let notification_id = uuid::Uuid::new_v4().simple().to_string();
         if self.live {

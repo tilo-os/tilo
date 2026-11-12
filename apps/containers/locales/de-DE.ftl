@@ -37,3 +37,18 @@ containers-images-summary = { $count ->
    *[other] { $count } Images belegen { $size } auf der Festplatte.
 }
 containers-volumes-in-use = { $in_use } von { $total } Volumes sind in Benutzung.
+
+## What the window shows
+containers-logs-unavailable = Die Protokollausgabe ist nicht verfügbar: { $detail }
+containers-logs-empty = Der Container hat noch nichts ins Protokoll geschrieben.
+containers-usage-waiting = Die Auslastung zeigt sich, solange der Container läuft.
+containers-usage-unavailable = Die Auslastung ist nicht verfügbar. Podman hat keinen Messwert geliefert.
+containers-cpu = CPU
+containers-memory = Speicher (RSS)
+containers-processes = Prozesse
+containers-open-shell = Shell öffnen
+containers-start = Starten
+containers-stop-download = Den Download stoppen
+containers-new = Neuer Container
+containers-close-details = Details schließen
+containers-demo-unavailable = Distrobox-Aktionen sind im Demo-Modus nicht verfügbar

@@ -94,3 +94,17 @@ clocks-timer-duration = Timer duration: { $name }
 clocks-field-hours = Hours
 clocks-field-minutes = Minutes
 clocks-field-seconds = Seconds
+
+## What the window shows
+clocks-alarm-turn-off = Turn off
+clocks-alarm-turn-on = Turn on
+clocks-timer-hide = Hide
+clocks-timer-float = Float
+clocks-active-timers = Active timers
+clocks-timer-needs-duration = Timer needs a duration
+clocks-custom-timer = Custom timer
+clocks-quick-starts = Quick starts
+clocks-stop-floating = Stop floating
+clocks-keep-visible = Keep stopwatch visible
+clocks-notify-alarm = Alarm
+clocks-notify-timer = Timer finished

@@ -54,3 +54,14 @@ feeds-a11y-subscriptions = Abos
 ## Fakten, Eigenschaftsnamen und Bereichstitel
 feeds-a11y-star = { $article } markieren
 feeds-a11y-tag = Schlagwort { $tag }
+
+## What the window shows
+feeds-add-caption = Füge die Adresse eines RSS-, Atom- oder Gemini-Feeds ein, oder die einer Website, die einen anbietet.
+feeds-add-label = Feed-Adresse
+feeds-folder-caption = Ordner fassen verwandte Abos zusammen.
+feeds-folder-label = Ordnername
+feeds-folder-placeholder = Newsletter
+feeds-rename-caption = Wähle einen eigenen Namen für dieses Abo.
+feeds-rename-label = Name des Abos
+feeds-tags-caption = Trenne Schlagwörter durch Kommas.
+feeds-tags-label = Schlagwörter

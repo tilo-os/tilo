@@ -44,6 +44,7 @@ use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation};
 
 use crate::chrome::reader_settings_panel;
 use crate::fetch::{FetchRequest, FetchResult, FetchWorker, RefreshFailure};
+use crate::i18n::CATALOG;
 use crate::list_pane::{ListPane, ListState};
 use crate::modal::{ModalBody, ModalIntent};
 use crate::model::{
@@ -275,8 +276,8 @@ impl FeedsModal {
 
     fn add_subscription() -> Self {
         let body = ModalBody::input(
-            "Paste the address of an RSS, Atom or Gemini feed, or of a website that has one.",
-            "Feed URL",
+            &CATALOG.t("feeds-add-caption"),
+            &CATALOG.t("feeds-add-label"),
             "",
             "https://example.com/feed.xml",
             TextInputKind::Url,
@@ -291,10 +292,10 @@ impl FeedsModal {
 
     fn add_folder() -> Self {
         let body = ModalBody::input(
-            "Folders group your subscriptions in the sidebar.",
-            "Folder name",
+            &CATALOG.t("feeds-folder-caption"),
+            &CATALOG.t("feeds-folder-label"),
             "",
-            "Newsletters",
+            &CATALOG.t("feeds-folder-placeholder"),
             TextInputKind::Name,
         );
         Self::new(ModalIntent::AddFolder, "New folder", body, "Create folder")
@@ -302,10 +303,10 @@ impl FeedsModal {
 
     fn rename(feed_id: Id, title: &str) -> Self {
         let body = ModalBody::input(
-            "Choose the name this feed shows in the sidebar.",
-            "Feed name",
+            &CATALOG.t("feeds-rename-caption"),
+            &CATALOG.t("feeds-rename-label"),
             title,
-            "Feed name",
+            &CATALOG.t("feeds-rename-label"),
             TextInputKind::Name,
         );
         Self::new(
@@ -318,8 +319,8 @@ impl FeedsModal {
 
     fn edit_tags(article_id: Id, tags: &[String]) -> Self {
         let body = ModalBody::input(
-            "Separate tags with commas.",
-            "Tags",
+            &CATALOG.t("feeds-tags-caption"),
+            &CATALOG.t("feeds-tags-label"),
             &tags.join(", "),
             "design, research",
             TextInputKind::Prose,

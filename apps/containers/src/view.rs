@@ -620,10 +620,13 @@ fn as_of(unix_ms: Option<u64>) -> Option<ui::time::SystemTime> {
 
 fn logs(c: &Container) -> Element {
     if let Some(error) = &c.logs_error {
-        return note(&format!("Log output is unavailable: {error}"));
+        return note(&crate::resource::CATALOG.t_args(
+            "containers-logs-unavailable",
+            &[("detail", ui::i18n::ArgValue::Text(error.to_string()))],
+        ));
     }
     if c.logs.is_empty() {
-        return note("The container hasn't written any log output.");
+        return note(&crate::resource::CATALOG.t("containers-logs-empty"));
     }
     let now = ui::time::wall();
     let fact = match as_of(c.logs_fetched_unix_ms) {
@@ -700,11 +703,11 @@ fn bytes_tile(label: &str, bytes: u64) -> Element {
 
 fn stats(c: &Container) -> Element {
     if !c.status.is_running() {
-        return note("Usage appears while the container runs.");
+        return note(&crate::resource::CATALOG.t("containers-usage-waiting"));
     }
     let s = &c.stats;
     if !s.available {
-        return note("Usage is unavailable. Podman did not return a telemetry sample.");
+        return note(&crate::resource::CATALOG.t("containers-usage-unavailable"));
     }
     let cpu = format!("{:.0}%", s.cpu_percent * 100.0);
     let memory = if s.mem_limit_bytes > 0 {
@@ -737,9 +740,9 @@ fn stats(c: &Container) -> Element {
         Section::titled(
             CATALOG.t("containers-section-usage"),
             vec![
-                usage("CPU", &cpu, s.cpu_percent),
-                usage("Memory (RSS)", &memory, s.mem_fraction()),
-                line("Processes", &s.pids.to_string()),
+                usage(&CATALOG.t("containers-cpu"), &cpu, s.cpu_percent),
+                usage(&CATALOG.t("containers-memory"), &memory, s.mem_fraction()),
+                line(&CATALOG.t("containers-processes"), &s.pids.to_string()),
                 Box::new(
                     Text::new(&fact.caption(now))
                         .with_role(TextRole::Caption)
@@ -864,7 +867,7 @@ fn shell(model: &DetailModel<'_>, intents: &Intents) -> Element {
             verb_button(
                 model,
                 "shell",
-                "Open shell",
+                &CATALOG.t("containers-open-shell"),
                 Icon::Terminal,
                 Intent::OpenShell(c.id.clone()),
                 intents,
@@ -876,7 +879,7 @@ fn shell(model: &DetailModel<'_>, intents: &Intents) -> Element {
             verb_button(
                 model,
                 "start",
-                "Start",
+                &CATALOG.t("containers-start"),
                 Icon::Play,
                 Intent::Lifecycle {
                     id: c.id.clone(),
@@ -1138,9 +1141,12 @@ pub(crate) fn pull_body(pull: &crate::app::PullProgress, intents: &Intents) -> C
         // A mistaken multi-gigabyte pull must be stoppable, not only hidable.
         let stop = intents.clone();
         column = column.push(Box::new(
-            Button::new("containers-pull-stop", "Stop the download")
-                .role(ButtonRole::Secondary)
-                .on_view(move || stop.push(Intent::StopPull)),
+            Button::new(
+                "containers-pull-stop",
+                &CATALOG.t("containers-stop-download"),
+            )
+            .role(ButtonRole::Secondary)
+            .on_view(move || stop.push(Intent::StopPull)),
         ));
     }
     column
@@ -1258,7 +1264,7 @@ fn window_shell(m: &Model, parts: &Parts) -> ui::widget::NavShell {
             // The list column is narrow; its one action is a glyph so the
             // title keeps its room beside the sidebar toggle.
             actions.push(Box::new(
-                Button::icon_only("containers-new", Icon::Plus, "New container")
+                Button::icon_only("containers-new", Icon::Plus, &CATALOG.t("containers-new"))
                     .role(ButtonRole::Primary)
                     .on_view(intents.sender(Intent::NewContainer)),
             ));
@@ -1318,8 +1324,12 @@ fn detail_commands(parts: &Parts) -> Element {
             }
             Box::new(
                 row.push(Box::new(
-                    Button::icon_only("detail-close", Icon::PanelRight, "Close details")
-                        .on_view(intents.sender(Intent::Select(None))),
+                    Button::icon_only(
+                        "detail-close",
+                        Icon::PanelRight,
+                        &CATALOG.t("containers-close-details"),
+                    )
+                    .on_view(intents.sender(Intent::Select(None))),
                 )),
             )
         },

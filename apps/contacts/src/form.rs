@@ -620,7 +620,13 @@ impl EditForm {
                 Button::icon_only(
                     &format!("contacts.form.remove.{}", target.key()),
                     Icon::X,
-                    &format!("Remove {}", target.spoken().to_lowercase()),
+                    &crate::account_editor::CATALOG.t_args(
+                        "contacts-remove-field",
+                        &[(
+                            "field",
+                            ui::i18n::ArgValue::Text(target.spoken().to_lowercase()),
+                        )],
+                    ),
                 )
                 .on_view(queue(shared, Request::Remove(target))),
             )),
@@ -636,13 +642,9 @@ impl EditForm {
         )
     }
 
-    fn add_button(label: &str, kind: RowKind, shared: &Shared) -> Element {
-        let id = format!(
-            "contacts.form.add.{}",
-            label.to_lowercase().replace(' ', "-")
-        );
+    fn add_button(id: &str, label: &str, kind: RowKind, shared: &Shared) -> Element {
         Box::new(
-            Button::new(&id, label)
+            Button::new(id, label)
                 .with_icon(Icon::Plus)
                 .role(ButtonRole::Plain)
                 .on_view(queue(shared, Request::Add(kind))),
@@ -670,13 +672,23 @@ impl EditForm {
         for i in 0..self.draft.phones.len() {
             phones = phones.content(self.typed_row(TypeTarget::Phone(i), Slot::Phone(i), shared));
         }
-        phones = phones.content(Self::add_button("Add phone", RowKind::Phone, shared));
+        phones = phones.content(Self::add_button(
+            "contacts.form.add.phone",
+            &crate::account_editor::CATALOG.t("contacts-add-phone"),
+            RowKind::Phone,
+            shared,
+        ));
 
         let mut emails = FormSection::new("Email");
         for i in 0..self.draft.emails.len() {
             emails = emails.content(self.typed_row(TypeTarget::Email(i), Slot::Email(i), shared));
         }
-        emails = emails.content(Self::add_button("Add email", RowKind::Email, shared));
+        emails = emails.content(Self::add_button(
+            "contacts.form.add.email",
+            &crate::account_editor::CATALOG.t("contacts-add-email"),
+            RowKind::Email,
+            shared,
+        ));
 
         let mut addresses = FormSection::new("Address");
         for i in 0..self.draft.addresses.len() {
@@ -685,20 +697,25 @@ impl EditForm {
                 .content(self.pair(Slot::AddrCity(i), Slot::AddrRegion(i), shared))
                 .content(self.pair(Slot::AddrPostal(i), Slot::AddrCountry(i), shared));
         }
-        addresses = addresses.content(Self::add_button("Add address", RowKind::Address, shared));
+        addresses = addresses.content(Self::add_button(
+            "contacts.form.add.address",
+            &crate::account_editor::CATALOG.t("contacts-add-address"),
+            RowKind::Address,
+            shared,
+        ));
 
-        let calendar_label = if self.calendar_open {
-            "Hide calendar"
+        let calendar_label = crate::account_editor::CATALOG.t(if self.calendar_open {
+            "contacts-hide-calendar"
         } else {
-            "Choose from calendar"
-        };
+            "contacts-choose-from-calendar"
+        });
         let mut details = FormSection::new("Details")
             .field(
                 Field::new("Birthday", self.input(Slot::Birthday, shared))
                     .with_help("Year, month and day, such as 1990-04-25"),
             )
             .content(Box::new(
-                Button::new("contacts.form.calendar", calendar_label)
+                Button::new("contacts.form.calendar", &calendar_label)
                     .with_icon(Icon::Calendar)
                     .on_view(queue(shared, Request::ToggleCalendar)),
             ));

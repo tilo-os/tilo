@@ -204,3 +204,13 @@ reason = "A measuring sample a list row lays out to find its height, never a wor
 file = "apps/weather/src/presentation.rs"
 text = "Ag"
 reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/contacts/src/view.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/feeds/src/list_pane.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."

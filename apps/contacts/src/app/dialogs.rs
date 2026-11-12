@@ -248,7 +248,7 @@ impl ContactsApp {
                 Box::new(
                     dialog(
                         &format!("Save changes to {name}?"),
-                        body("Your changes are lost if you don't save them."),
+                        body(&CATALOG.t("contacts-changes-lost")),
                         shared,
                         "Save",
                         "Don't save",
@@ -271,9 +271,13 @@ impl ContactsApp {
                 let existing = self.name_of(conflict.existing);
                 Box::new(
                     dialog(
-                        &format!("Import {} as a new contact?", conflict.incoming.display_name()),
-                        body(&format!(
-                            "The imported card has the same identity as {existing} in your book, but different details."
+                        &format!(
+                            "Import {} as a new contact?",
+                            conflict.incoming.display_name()
+                        ),
+                        body(&CATALOG.t_args(
+                            "contacts-import-same-identity",
+                            &[("existing", ui::i18n::ArgValue::Text(existing))],
                         )),
                         shared,
                         "Import as new",
@@ -294,9 +298,12 @@ impl ContactsApp {
             .with_no_padding()
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Section)
-            .push(Box::new(body(&format!(
-                "These cards share {}. This card stays, with every phone number, email, address and group of both.",
-                shared_facts(&review.reasons)
+            .push(Box::new(body(&CATALOG.t_args(
+                "contacts-cards-share",
+                &[(
+                    "facts",
+                    ui::i18n::ArgValue::Text(shared_facts(&review.reasons)),
+                )],
             ))));
         // Each field the cards disagree on: its name and which value the
         // merged card keeps, then both values in full.
@@ -414,14 +421,16 @@ impl ContactsApp {
                 Row::new()
                     .with_padding_rhythm(None, None)
                     .push(Box::new(
-                        Button::new("contacts.export.all", "Select all").on_view(move || {
-                            all_state.set(ids.iter().copied().collect());
-                        }),
+                        Button::new("contacts.export.all", &CATALOG.t("contacts-select-all"))
+                            .on_view(move || {
+                                all_state.set(ids.iter().copied().collect());
+                            }),
                     ))
                     .push(Box::new(
-                        Button::new("contacts.export.none", "Select none").on_view(move || {
-                            none_state.set(HashSet::new());
-                        }),
+                        Button::new("contacts.export.none", &CATALOG.t("contacts-select-none"))
+                            .on_view(move || {
+                                none_state.set(HashSet::new());
+                            }),
                     )),
             ))
             .push(Box::new(ExportSelection { table }))

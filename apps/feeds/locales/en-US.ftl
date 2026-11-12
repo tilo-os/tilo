@@ -54,3 +54,14 @@ feeds-a11y-subscriptions = Subscriptions
 ## Facts, property labels and section titles
 feeds-a11y-star = Star { $article }
 feeds-a11y-tag = Tag { $tag }
+
+## What the window shows
+feeds-add-caption = Paste the address of an RSS, Atom or Gemini feed, or of a website that offers one.
+feeds-add-label = Feed URL
+feeds-folder-caption = Folders keep related subscriptions together.
+feeds-folder-label = Folder name
+feeds-folder-placeholder = Newsletters
+feeds-rename-caption = Choose any name for this feed.
+feeds-rename-label = Feed name
+feeds-tags-caption = Separate tags with commas.
+feeds-tags-label = Tags
