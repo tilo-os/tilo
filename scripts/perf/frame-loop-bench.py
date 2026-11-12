@@ -772,7 +772,9 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> 
                             "--app-id",
                             "dev.tilo.frame-loop-load",
                             "--seconds",
-                            str(process_seconds),
+                            # The client stops before the session it draws on does, so its own
+                            # count is printed instead of the session closing under it.
+                            str(max(1.0, process_seconds - 1.0)),
                             "--windows",
                             str(args.load_windows),
                         ]
@@ -885,11 +887,12 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> 
                     load_proc.kill()
                     cout, _ = load_proc.communicate(timeout=5)
                 for line in (cout or "").splitlines():
-                    if line.startswith("LOADCLIENT"):
-                        print(f"[bench] {line}")
+                    print(f"[bench] load client: {line}")
                 if sys.exc_info()[0] is None:
                     if load_proc.returncode != 0:
-                        raise RuntimeError(f"requested load client failed: {load_proc.returncode}")
+                        raise RuntimeError(
+                            f"requested load client failed: {load_proc.returncode}"
+                        )
                     if not re.search(r"^LOADCLIENT frames=[1-9][0-9]*(?:\s|$)", cout or "", re.MULTILINE):
                         raise RuntimeError("requested load client produced no frames")
             ctl_path.unlink(missing_ok=True)

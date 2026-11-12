@@ -406,9 +406,15 @@ usage: tilo-loadclient [--seconds S] [--windows N] [--fullscreen]
         while !client.exit {
             // Frames keep arriving while the windows draw, so each dispatch either draws the next
             // one or is the run's last.
-            queue
-                .blocking_dispatch(&mut client)
-                .map_err(|error| format!("dispatch: {error}"))?;
+            match queue.blocking_dispatch(&mut client) {
+                Ok(_) => {}
+                // The session ended under the run: the frames it drew are the answer, not a failure.
+                Err(error) if client.frames > 0 => {
+                    eprintln!("tilo-loadclient: the session closed: {error}");
+                    break;
+                }
+                Err(error) => return Err(format!("dispatch: {error}")),
+            }
         }
         println!(
             "LOADCLIENT frames={} windows={} seconds={}",

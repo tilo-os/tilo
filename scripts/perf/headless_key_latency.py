@@ -186,6 +186,18 @@ def start_client(args: argparse.Namespace, session, env: dict) -> subprocess.Pop
         env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def placed_window(session, app: str, timeout: float) -> dict:
+    """The app's window once the desk has drawn it somewhere: a row says where it is only after
+    the window mapped, so a click has a rectangle to land in."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for row in session.windows():
+            if row.get("app_id") == app and row.get("rect"):
+                return row
+        time.sleep(0.1)
+    raise RuntimeError(f"{app} showed no window to type into")
+
+
 def app_frames(session, app: str) -> int:
     """How many frames the app's window has committed: a rise is a key it answered."""
     return max((int(row.get("frames") or 0) for row in session.windows()
@@ -237,10 +249,8 @@ def measure(args: argparse.Namespace) -> dict:
             # The window has the keyboard, but its editor has to have the caret before a key
             # changes anything it draws: a click where the person types puts it there.
             across, down = (float(part) for part in args.click_at.split(","))
-            rect = window.get("rect")
-            if rect is None:
-                sys.exit(f"[key-latency] {args.app} showed no window to type into")
-            left, top, width, height = (int(value) for value in rect)
+            placed = placed_window(session, args.app, args.app_timeout)
+            left, top, width, height = (int(value) for value in placed["rect"])
             session.click_at(left + int(width * across), top + int(height * down))
             time.sleep(0.5)
             frames_before = app_frames(session, args.app)

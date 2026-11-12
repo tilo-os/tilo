@@ -56,7 +56,7 @@
 "tilo-install" = 13   # 10.7 MB
 "tilo-installer" = 22   # 18.7 MB
 "tilo-launcher" = 4   # 2.8 MB
-"tilo-loadclient" = 1   # 0.7 MB
+"tilo-loadclient" = 2   # 0.9 MB
 "tilo-app-package" = 14   # 12.1 MB
 "tilo-registry-server" = 4   # 2.8 MB
 "tilo-relay" = 16   # 13.8 MB
