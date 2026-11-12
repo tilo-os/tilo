@@ -21,7 +21,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_clock::time::Instant;
 
-use channel_crypto::{Access, ChannelContentKeys, ChannelPeer, PeerEvent, VaultKey};
+use channel_crypto::{
+    Access, ChannelContentKeys, ChannelPeer, PeerEvent, VaultKey, WelcomeRefusal,
+};
 use collab_types::signer::{DeviceSigner, SignFuture};
 use collab_types::{
     ChannelId, ChannelRoute, Ed25519PublicKey, EncryptionMetadata, MlsAccessRequestV1,
@@ -66,6 +68,15 @@ const DEFERRED_SAVE: Duration = Duration::from_secs(2);
 const CHANNELS_DIR: &str = "channels";
 /// Channels remembered as having a group this device takes no part in.
 const MAX_GROUPS_SEEN: usize = 1 << 16;
+/// How long a waiting device holds a Welcome whose tree names a device its
+/// view of the membership does not, judging it again as that view changes,
+/// before it gives up and asks with a fresh member key. Such a tree is an
+/// honest one whenever this device's view is behind the committer's (a device
+/// admitted a moment ago) or ahead of it (one removed a moment ago), and
+/// asking again costs the whole group a commit: a lag of a moment is waited
+/// out, and only a view that does not come round in this long, or a Welcome
+/// the channel moved past, is given up on.
+const WELCOME_WAIT: Duration = Duration::from_secs(10);
 /// Frames one channel keeps for the policy that has not named their signer
 /// yet. Bounded, newest kept: a frame this device's policy still does not
 /// back after that many later ones is not going to be applied.
@@ -104,6 +115,69 @@ fn found_after(device: &Ed25519PublicKey, channel: ChannelId) -> Duration {
             })
             % FOUNDING_SPREAD_MS;
     REQUEST_FIRST.saturating_add(Duration::from_millis(spread))
+}
+
+impl PeerEntry {
+    /// Keep a Welcome `event` refused for a device the view `allowed` did not
+    /// name (`frame`, kept while this device waited), judged again as that
+    /// view changes; or give up on the one held once a later commit (at
+    /// `epoch`) arrived, as a held Welcome is followed by nothing but its own
+    /// commit: the members moved past it, and this device asks again to be
+    /// admitted where they are. Whether this device now asks again.
+    fn hold_welcome(
+        &mut self,
+        event: &PeerEvent,
+        frame: Option<MlsGovernanceFrame>,
+        allowed: Option<BTreeSet<Ed25519PublicKey>>,
+        epoch: u64,
+        store: &ChannelEncryptionConfig,
+        now: Instant,
+    ) -> bool {
+        if let (PeerEvent::WelcomeRefused(WelcomeRefusal::DeviceNotAllowed), Some(frame)) =
+            (event, frame)
+        {
+            let until = self
+                .welcome
+                .as_ref()
+                .filter(|held| held.frame == frame)
+                .map_or_else(
+                    || now.checked_add(WELCOME_WAIT).unwrap_or(now),
+                    |held| held.until,
+                );
+            self.welcome = Some(HeldWelcome {
+                frame,
+                judged: allowed,
+                until,
+            });
+            return false;
+        }
+        if !self
+            .welcome
+            .as_ref()
+            .is_some_and(|held| held.frame.epoch < epoch || self.peer.access() != Access::Waiting)
+        {
+            return false;
+        }
+        self.welcome = None;
+        if self.peer.access() != Access::Waiting {
+            return false;
+        }
+        give_up_welcome(self, store, now);
+        true
+    }
+}
+
+/// Give up on the Welcome `entry` held for its view of the membership: wait
+/// with a fresh member key and ask with it at once, as a desynchronised device
+/// does.
+fn give_up_welcome(entry: &mut PeerEntry, store: &ChannelEncryptionConfig, now: Instant) {
+    entry.welcome = None;
+    if let Err(error) = entry.peer.refuse_welcome(&store.vault) {
+        tracing::warn!(%error, workspace = %entry.workspace, "channel state could not be written");
+    }
+    entry.request = None;
+    entry.retry = Backoff::now(now, REQUEST_FIRST);
+    entry.fresh_at = now;
 }
 
 /// What an application endpoint may do with a route's content right now.
@@ -659,9 +733,22 @@ struct PeerEntry {
     /// frame from a device admitted a moment ago is judged again once the
     /// policy here names it.
     held: Vec<MlsGovernanceFrame>,
+    /// A Welcome refused for a device this device's view of the membership
+    /// did not name ([`WELCOME_WAIT`]).
+    welcome: Option<HeldWelcome>,
     /// Since when the peer holds a change it has not written
     /// ([`DEFERRED_SAVE`]).
     unsaved_since: Option<Instant>,
+}
+
+/// A Welcome a waiting device holds for its view of the membership.
+struct HeldWelcome {
+    frame: MlsGovernanceFrame,
+    /// The devices the view named when it last refused the Welcome: it is
+    /// judged again once the view names others.
+    judged: Option<BTreeSet<Ed25519PublicKey>>,
+    /// When the device gives up on it.
+    until: Instant,
 }
 
 /// A channel an endpoint asked about that this device could not open: no
@@ -1391,6 +1478,7 @@ impl ChannelEncryption {
             self.receive(inbound, now, wall);
         }
         self.retry_held(now, wall);
+        self.judge_held_welcomes(now, wall);
         // Read before the policy is: a change announced while the groups
         // reconcile has a later epoch and makes the next re-check due.
         let epoch = self.directory.policy_epoch();
@@ -1521,6 +1609,11 @@ impl ChannelEncryption {
             .values()
             .filter_map(|entry| entry.retry.as_ref().map(|retry| retry.due))
             .min();
+        let welcome = self
+            .peers
+            .values()
+            .filter_map(|entry| entry.welcome.as_ref().map(|held| held.until))
+            .min();
         let unsaved = self
             .peers
             .values()
@@ -1530,6 +1623,7 @@ impl ChannelEncryption {
         policy
             .into_iter()
             .chain(unsaved)
+            .chain(welcome)
             .chain(turn)
             .chain(asking)
             .chain(founding)
@@ -1615,6 +1709,46 @@ impl ChannelEncryption {
         }
     }
 
+    /// Judge again each Welcome held for this device's view of the
+    /// membership once that view changed, and give up on one held for
+    /// [`WELCOME_WAIT`].
+    fn judge_held_welcomes(&mut self, now: Instant, wall: u64) {
+        let held: Vec<ChannelId> = self
+            .peers
+            .iter()
+            .filter(|(_, entry)| entry.welcome.is_some())
+            .map(|(channel, _)| *channel)
+            .collect();
+        for channel in held {
+            let Some(entry) = self.peers.get(&channel) else {
+                continue;
+            };
+            let allowed = self.directory.allowed_devices(
+                entry.workspace,
+                channel,
+                entry.route.as_ref(),
+                wall,
+            );
+            let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
+                continue;
+            };
+            let Some(held) = &entry.welcome else {
+                continue;
+            };
+            if entry.peer.access() != Access::Waiting {
+                entry.welcome = None;
+            } else if now >= held.until {
+                give_up_welcome(entry, store, now);
+                self.bump(channel);
+            } else if held.judged != allowed {
+                // Held again by `receive_frame` if the view still does not
+                // back it, keeping when it is given up on.
+                let (workspace, frame) = (entry.workspace, held.frame.clone());
+                self.receive_frame(workspace, frame, now, wall);
+            }
+        }
+    }
+
     fn receive_frame(
         &mut self,
         workspace: WorkspaceId,
@@ -1684,6 +1818,9 @@ impl ChannelEncryption {
             return;
         }
         let (epoch, signer) = (frame.epoch, frame.signed_by);
+        // A waiting device keeps the frame in case it carries a Welcome its
+        // view of the membership does not back yet.
+        let kept = (entry.peer.access() == Access::Waiting).then(|| frame.clone());
         let received = match &allowed {
             Some(allowed) => entry.peer.receive(frame, allowed, &store.vault),
             None => entry.peer.follow(frame, &store.vault),
@@ -1713,19 +1850,15 @@ impl ChannelEncryption {
                 true
             }
             PeerEvent::Removed => true,
-            PeerEvent::WelcomeRefused(refusal) => {
-                tracing::warn!(%refusal, %workspace, channel = %channel.0, ?signer, "channel Welcome refused");
-                // As a desynchronised device: the members that took the
-                // commit hold this device admitted with the key it asked
-                // with, so it asks with a fresh one.
-                entry.request = None;
-                entry.retry = Backoff::now(now, REQUEST_FIRST);
-                entry.fresh_at = now;
-                true
-            }
-            PeerEvent::Desynchronised => {
+            PeerEvent::Desynchronised
+            | PeerEvent::WelcomeRefused(WelcomeRefusal::SignedByAnotherDevice) => {
+                if let PeerEvent::WelcomeRefused(refusal) = &event {
+                    tracing::warn!(%refusal, %workspace, channel = %channel.0, ?signer, "channel Welcome refused");
+                }
                 // Ask again with a fresh member key; any participant admits
-                // a member asking with another key than it joined with.
+                // a member asking with another key than it joined with (the
+                // members that took a refused Welcome's commit hold this
+                // device admitted with the key it asked with).
                 entry.request = None;
                 entry.retry = Backoff::now(now, REQUEST_FIRST);
                 entry.fresh_at = now;
@@ -1737,8 +1870,13 @@ impl ChannelEncryption {
                 entry.retry = Backoff::now(now, REQUEST_FIRST);
                 false
             }
-            PeerEvent::Genesis | PeerEvent::Duplicate | PeerEvent::Ignored => false,
+            // A Welcome refused for this device's view is held below.
+            PeerEvent::Genesis
+            | PeerEvent::Duplicate
+            | PeerEvent::Ignored
+            | PeerEvent::WelcomeRefused(WelcomeRefusal::DeviceNotAllowed) => false,
         };
+        let changed = entry.hold_welcome(&event, kept, allowed, epoch, store, now) || changed;
         let gate = entry.peer.gate();
         self.register_gate(channel, gate);
         if changed {
@@ -2170,6 +2308,7 @@ impl ChannelEncryption {
                 },
                 wanted: true,
                 held: Vec::new(),
+                welcome: None,
                 unsaved_since: None,
             },
         );

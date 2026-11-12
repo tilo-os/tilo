@@ -134,9 +134,8 @@ impl Error {
     }
 }
 
-/// Why a waiting device refused a Welcome. Each is a lie only a member of
-/// the channel can tell, so it is never mistaken for a lost frame: the
-/// device stays waiting and asks again for an honest one.
+/// Why a waiting device refused a Welcome. Neither is mistaken for a lost
+/// frame: the device stays waiting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum WelcomeRefusal {
     /// The Welcome's `GroupInfo` is signed by a leaf naming another device
@@ -144,7 +143,9 @@ pub enum WelcomeRefusal {
     #[error("its group information is signed by another device than its frame")]
     SignedByAnotherDevice,
     /// A leaf of the tree names a device the channel's membership does not
-    /// let read it.
+    /// let read it, as this device sees the membership now. A lie, or this
+    /// device's view behind or ahead of the committer's, so the Welcome is
+    /// judged again as that view changes.
     #[error("its tree holds a device the membership does not allow")]
     DeviceNotAllowed,
 }
