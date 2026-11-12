@@ -19,8 +19,9 @@ use std::collections::BTreeMap;
 // The table is read against what a person feels as instant, and against what the instance's
 // evaluation and the layout cost within it: a keystroke must not wait for the workspace's size,
 // and neither must a place switch, a check-off, a page or a scroll. The targets do not move
-// with the machine: a step over one is reported with its gap, and the gate on the work a change
-// does is the instruction count the `budgets` test holds.
+// with the machine: a step over one is reported with its gap, and a step past what it is held to
+// (what it costs now, with room for a loaded machine) fails. The gate on the work a change does
+// is also the instruction count the `budgets` test holds.
 
 /// The workspace the interactions are measured in: what a person who has used Tasks for years
 /// keeps.
@@ -37,6 +38,29 @@ const SEEDED_LARGE: usize = 100_000;
 struct Target {
     step_us: u64,
     eval_layout_us: u64,
+    /// The step's CPU time it is held to, past which the test fails: see [`Held`].
+    held: Held,
+}
+
+/// What a step's CPU time is held to, in an optimized build and in a development one, whose
+/// proofs and unoptimized code cost several times as much: what the step costs now, with room
+/// for a loaded machine. A step past it got slower by a clear margin, which no machine's noise
+/// explains; the target is where the step is brought down to, and this follows it down.
+#[derive(Clone, Copy, Debug)]
+struct Held {
+    optimized_us: u64,
+    development_us: u64,
+}
+
+impl Held {
+    /// What this build holds the step to.
+    fn here(self) -> u64 {
+        if cfg!(debug_assertions) {
+            self.development_us
+        } else {
+            self.optimized_us
+        }
+    }
 }
 
 /// One interaction, measured once.
@@ -122,15 +146,13 @@ impl Costs {
 
     /// The reading against the targets every interaction is held to: what it costs, on this
     /// machine, beside what a person would feel as instant, and the gap between them. A reading
-    /// over its target is reported, not failed: the gate on the work a change does is the
-    /// instruction count [`tilolang_tilo::bench::Work`] and `tilolang-tilo`'s `budgets` test
-    /// hold, which counts the same work the same on every machine, where this table measures
-    /// the machine it runs on as much as the window.
+    /// over its target is reported; one past what the step is held to ([`Held`]) is returned,
+    /// each with its numbers, for the test to fail on.
     #[allow(
         clippy::print_stderr,
         reason = "why a measurement was not held is part of its report"
     )]
-    fn report(&self, targets: &[(&'static str, Target)]) {
+    fn report(&self, targets: &[(&'static str, Target)]) -> Vec<String> {
         let ms = |us: u64| format!("{:.2}", us as f64 / 1000.0);
         let gap = |measured: u64, target: u64| {
             if measured == 0 {
@@ -139,32 +161,43 @@ impl Costs {
                 format!("{:.1}x target", measured as f64 / target as f64)
             }
         };
-        eprintln!("interaction        cpu p50 vs instant   instance+layout p50 vs instant");
+        eprintln!(
+            "interaction        cpu p50 vs instant   instance+layout p50 vs instant   held to"
+        );
         let mut behind = Vec::new();
+        let mut past = Vec::new();
         for (label, target) in targets {
             if !self.0.contains_key(label) {
-                behind.push(format!("{label}: no interaction measured"));
+                past.push(format!("{label}: no interaction measured"));
                 continue;
             }
             let cpu = self.p50(label, |cost| cost.cpu_us);
             let eval_layout = self.p50(label, Cost::eval_layout_us);
+            let held = target.held.here();
             eprintln!(
-                "{label:<18} {:>10} ms ({:>9}), {:>10} ms ({:>9})",
+                "{label:<18} {:>10} ms ({:>9}), {:>10} ms ({:>9})   {:>8} ms",
                 ms(cpu),
                 gap(cpu, target.step_us),
                 ms(eval_layout),
                 gap(eval_layout, target.eval_layout_us),
+                ms(held),
             );
             if cpu > target.step_us || eval_layout > target.eval_layout_us {
                 behind.push(label.to_string());
             }
+            if cpu > held {
+                past.push(format!(
+                    "{label}: {} ms of CPU, held to {} ms (instant is {} ms)",
+                    ms(cpu),
+                    ms(held),
+                    ms(target.step_us)
+                ));
+            }
         }
         if !behind.is_empty() {
-            eprintln!(
-                "not instant yet: {} - reported, not failed: the gate counts instructions",
-                behind.join(", ")
-            );
+            eprintln!("not instant yet: {}", behind.join(", "));
         }
+        past
     }
 }
 
@@ -365,21 +398,26 @@ fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Sess
 /// 16 ms for a step a person waits on, 8 ms for a frame of scrolling under the pointer, and
 /// 300 ms to open ten thousand tasks — the one step that reads the whole workspace, once. They
 /// are the targets, not what this workspace costs: a step over one is reported with its gap (see
-/// [`Costs::report`]), and the work of bringing it down is the publication's.
+/// [`Costs::report`]), and one past what it is held to ([`Held`]) fails.
 ///
 /// The same targets, counted rather than timed, are how a change is gated: a modern core of
 /// 3.5 GHz at an IPC of 2.5 retires 8.75 million instructions a millisecond, so 8 ms is 70
 /// million instructions, 16 ms 140 million and 300 ms 2.6 billion, and a callgrind run counts
-/// the same work the same on every machine. This test reports the times;
-/// [`tilolang_tilo::bench::Work`] and `tilolang-tilo`'s `budgets` test hold the counts (a change
-/// publishes the rows it touched, whatever the workspace holds). Opening a workspace reads the
-/// workspace's index rather than the workspace: [`opening_a_window_reads_the_workspaces_index`].
+/// the same work the same on every machine. This test reports the times and fails a step past
+/// what it is held to; [`tilolang_tilo::bench::Work`] and `tilolang-tilo`'s `budgets` test hold
+/// the counts (a change publishes the rows it touched, whatever the workspace holds). Opening a
+/// workspace reads the workspace's index rather than the workspace:
+/// [`opening_a_window_reads_the_workspaces_index`].
 const TARGETS: &[(&str, Target)] = &[
     (
         "open",
         Target {
             step_us: 300_000,
             eval_layout_us: 300_000,
+            held: Held {
+                optimized_us: 1_600_000,
+                development_us: 7_000_000,
+            },
         },
     ),
     (
@@ -387,6 +425,10 @@ const TARGETS: &[(&str, Target)] = &[
         Target {
             step_us: 8_000,
             eval_layout_us: 8_000,
+            held: Held {
+                optimized_us: 40_000,
+                development_us: 120_000,
+            },
         },
     ),
     (
@@ -394,6 +436,10 @@ const TARGETS: &[(&str, Target)] = &[
         Target {
             step_us: 16_000,
             eval_layout_us: 16_000,
+            held: Held {
+                optimized_us: 300_000,
+                development_us: 700_000,
+            },
         },
     ),
     (
@@ -401,6 +447,10 @@ const TARGETS: &[(&str, Target)] = &[
         Target {
             step_us: 16_000,
             eval_layout_us: 16_000,
+            held: Held {
+                optimized_us: 250_000,
+                development_us: 800_000,
+            },
         },
     ),
     (
@@ -408,6 +458,10 @@ const TARGETS: &[(&str, Target)] = &[
         Target {
             step_us: 16_000,
             eval_layout_us: 16_000,
+            held: Held {
+                optimized_us: 150_000,
+                development_us: 500_000,
+            },
         },
     ),
     (
@@ -415,6 +469,10 @@ const TARGETS: &[(&str, Target)] = &[
         Target {
             step_us: 16_000,
             eval_layout_us: 16_000,
+            held: Held {
+                optimized_us: 550_000,
+                development_us: 1_900_000,
+            },
         },
     ),
     (
@@ -422,6 +480,10 @@ const TARGETS: &[(&str, Target)] = &[
         Target {
             step_us: 8_000,
             eval_layout_us: 8_000,
+            held: Held {
+                optimized_us: 50_000,
+                development_us: 200_000,
+            },
         },
     ),
 ];
@@ -571,7 +633,12 @@ fn what_the_interactions_a_person_feels_cost() {
     scroll_the_list(&mut session, &mut costs);
 
     costs.print();
-    costs.report(TARGETS);
+    let past = costs.report(TARGETS);
+    assert!(
+        past.is_empty(),
+        "interactions got slower than they are held to:\n{}",
+        past.join("\n")
+    );
 }
 
 /// What one open of a window did, in counts that do not depend on the machine: the work opening
@@ -2045,7 +2112,7 @@ fn adding_a_task_runs_the_row_it_adds_not_every_row() {
     session.settle();
     let rows = rows_shown(&mut session);
     let done = step(&mut session, |session| {
-        session.window.press_key(NamedKey::Enter)
+        session.window.press_key(NamedKey::Enter);
     });
     assert!(
         record_has_task(&session, "Buy"),
