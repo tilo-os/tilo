@@ -623,9 +623,15 @@ impl CameraApp {
             dispatcher: Self::unattached_dispatcher(),
             bar: window_bar::Bar::new(Self::unattached_dispatcher().as_ref()),
             clock: None,
-            photos_handoff: Self::media_handoff_emitter("so.tilo.photos", "Photos"),
+            photos_handoff: Self::media_handoff_emitter(
+                "so.tilo.photos",
+                &crate::CATALOG.t("camera-app-photos"),
+            ),
             photos_browse: Self::photos_browse_emitter(),
-            video_handoff: Self::media_handoff_emitter("so.tilo.video-player", "Video Player"),
+            video_handoff: Self::media_handoff_emitter(
+                "so.tilo.video-player",
+                &crate::CATALOG.t("camera-app-video-player"),
+            ),
         }
     }
 
@@ -635,8 +641,14 @@ impl CameraApp {
         let spec = crate::actions::ApplicationLaunch::content_spec(
             app_id,
             "open",
-            &format!("Open {label}"),
-            &format!("Open the latest capture in {label}"),
+            &crate::CATALOG.t_args(
+                "camera-app-open",
+                &[("app", ui::i18n::ArgValue::Text(label.to_owned()))],
+            ),
+            &crate::CATALOG.t_args(
+                "camera-app-open-latest",
+                &[("app", ui::i18n::ArgValue::Text(label.to_owned()))],
+            ),
         );
         ResourceSpec::new(format!("{app_id}.app"), "applications.app", label).with_action(spec)
     }
@@ -665,9 +677,12 @@ impl CameraApp {
         // affordance. The action payload itself delegates to Photos, but the
         // host can still re-resolve this address against the current Camera
         // resource surface before permitting the launch.
-        let resource =
-            ui::tilo_actions::ResourceSpec::new("camera.capture", "camera.capture", "Capture")
-                .with_action(crate::actions::open_photos_action());
+        let resource = ui::tilo_actions::ResourceSpec::new(
+            "camera.capture",
+            "camera.capture",
+            crate::CATALOG.t("camera-resource-capture"),
+        )
+        .with_action(crate::actions::open_photos_action());
         ActionBinding::unit_for(&resource, "open-photos")
             .ok()
             .map(ActionEmitter::new)
@@ -958,26 +973,28 @@ impl CameraApp {
         let (role, name, state) = match action {
             Action::Nav(screen) => (
                 Role::Button,
-                format!("Open {}", screen.label()),
+                crate::CATALOG.t_args(
+                    "camera-a11y-open-screen",
+                    &[("screen", ui::i18n::ArgValue::Text(screen.label()))],
+                ),
                 AccessState::new().focusable(true),
             ),
             Action::Back => (
                 Role::Button,
-                "Back".into(),
+                crate::CATALOG.t("camera-a11y-back"),
                 AccessState::new().focusable(true),
             ),
             Action::Shutter => (
                 Role::Button,
                 if self.is_counting_down() {
-                    "Cancel capture timer"
+                    crate::CATALOG.t("camera-a11y-cancel-timer")
                 } else if self.is_recording() {
-                    "Stop recording"
+                    crate::CATALOG.t("camera-action-stop-recording")
                 } else if self.mode == CaptureMode::Video {
-                    "Start recording"
+                    crate::CATALOG.t("camera-a11y-start-recording")
                 } else {
-                    "Take photo"
-                }
-                .into(),
+                    crate::CATALOG.t("camera-a11y-take-photo")
+                },
                 // With no picture there is nothing to capture: the shutter
                 // is drawn dimmed and reads as unavailable.
                 AccessState::new().focusable(true).disabled(
@@ -986,68 +1003,83 @@ impl CameraApp {
             ),
             Action::OpenPhotos => (
                 Role::Button,
-                "Open Photos to browse your library".into(),
+                crate::CATALOG.t("camera-a11y-open-photos"),
                 AccessState::new().focusable(true),
             ),
             Action::OpenRecentCapture => (
                 Role::Button,
                 self.captures.first().map_or_else(
-                    || "Latest capture".into(),
+                    || crate::CATALOG.t("camera-a11y-latest-capture"),
                     |capture| {
                         let (_, destination) =
                             crate::actions::capture_destination(capture.is_video());
-                        format!("Open latest capture in {destination}")
+                        crate::CATALOG.t_args(
+                            "camera-a11y-open-latest-capture",
+                            &[("app", ui::i18n::ArgValue::Text(destination.to_owned()))],
+                        )
                     },
                 ),
                 AccessState::new().focusable(true),
             ),
             Action::SetMode(mode) => (
                 Role::RadioButton,
-                format!("{} mode", mode.as_str()),
+                crate::CATALOG.t_args(
+                    "camera-a11y-mode",
+                    &[("mode", ui::i18n::ArgValue::Text(mode.label()))],
+                ),
                 AccessState::new()
                     .focusable(true)
                     .checked(self.mode == *mode),
             ),
             Action::CycleFacing => (
                 Role::Button,
-                format!("Switch camera, currently {}", self.facing.label()),
+                crate::CATALOG.t_args(
+                    "camera-a11y-switch-camera",
+                    &[("facing", ui::i18n::ArgValue::Text(self.facing.label()))],
+                ),
                 AccessState::new().focusable(true),
             ),
             Action::DismissScan => (
                 Role::Button,
-                "Dismiss scan result".into(),
+                crate::CATALOG.t("camera-a11y-dismiss-scan"),
                 AccessState::new().focusable(true),
             ),
             Action::Scan(_) => (
                 Role::Button,
-                "Use scanned result".into(),
+                crate::CATALOG.t("camera-a11y-use-scan"),
                 AccessState::new().focusable(true),
             ),
             Action::ImportScanImage => (
                 Role::Button,
-                "Choose an image to scan".into(),
+                crate::CATALOG.t("camera-a11y-choose-scan-image"),
                 AccessState::new()
                     .focusable(true)
                     .disabled(self.scan_import_pending()),
             ),
             Action::CycleResolution => (
                 Role::Button,
-                format!(
-                    "Change resolution, currently {}",
-                    self.settings.resolution.label()
+                crate::CATALOG.t_args(
+                    "camera-a11y-resolution",
+                    &[(
+                        "resolution",
+                        ui::i18n::ArgValue::Text(self.settings.resolution.label().to_owned()),
+                    )],
                 ),
                 AccessState::new().focusable(true),
             ),
             Action::SetTimer(timer) => (
                 Role::RadioButton,
-                format!("{} timer", timer.label()),
+                crate::CATALOG.t_args(
+                    "camera-a11y-timer",
+                    &[("timer", ui::i18n::ArgValue::Text(timer.label()))],
+                ),
                 AccessState::new()
                     .focusable(true)
                     .checked(self.settings.timer == *timer),
             ),
             Action::ToggleGrid => (
                 Role::Switch,
-                "Composition grid".into(),
+                crate::CATALOG.t("camera-a11y-composition-grid"),
                 AccessState::new()
                     .focusable(true)
                     .checked(self.settings.grid),
@@ -1061,43 +1093,46 @@ impl CameraApp {
             ),
             Action::RetryCamera => (
                 Role::Button,
-                "Refresh available cameras".into(),
+                crate::CATALOG.t("camera-a11y-refresh-cameras"),
                 AccessState::new().focusable(true),
             ),
             Action::OpenCameraPrivacySettings => (
                 Role::Button,
-                "Open camera privacy settings".into(),
+                crate::CATALOG.t("camera-a11y-camera-privacy"),
                 AccessState::new().focusable(true),
             ),
             Action::OpenCameraChooser => (
                 Role::Button,
-                "Choose a camera".into(),
+                crate::CATALOG.t("camera-a11y-choose-camera"),
                 AccessState::new().focusable(true),
             ),
             Action::SelectCamera(device) => (
                 Role::RadioButton,
-                format!("Use {device}"),
+                crate::CATALOG.t_args(
+                    "camera-action-use-device",
+                    &[("device", ui::i18n::ArgValue::Text(device.clone()))],
+                ),
                 AccessState::new()
                     .focusable(true)
                     .checked(self.selected_camera.as_deref() == Some(device.as_str())),
             ),
             Action::CaptureDocument => (
                 Role::Button,
-                "Scan document page".into(),
+                crate::CATALOG.t("camera-a11y-scan-page"),
                 AccessState::new()
                     .focusable(true)
                     .disabled(self.selected_scanner.is_none() || self.document_job.is_some()),
             ),
             Action::ApplyDocumentCrop => (
                 Role::Button,
-                "Apply crop".into(),
+                crate::CATALOG.t("camera-a11y-apply-crop"),
                 AccessState::new()
                     .focusable(true)
                     .disabled(self.document_crop_editor.is_none()),
             ),
             Action::CancelDocumentCrop => (
                 Role::Button,
-                "Cancel crop".into(),
+                crate::CATALOG.t("camera-a11y-cancel-crop"),
                 AccessState::new().focusable(true),
             ),
         };
@@ -3909,7 +3944,7 @@ mod tests {
         }
         {
             // The lens selector caption must not be the word "Back".
-            assert_eq!(Facing::Back.label(), "Rear");
+            assert_eq!(Facing::Back.label(), crate::CATALOG.t("camera-facing-rear"));
             assert_ne!(Facing::Back.label(), "Back");
         }
         {

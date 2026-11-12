@@ -53,10 +53,10 @@ struct States {
 fn options<T: Copy>(
     all: &[T],
     value: fn(T) -> &'static str,
-    label: fn(T) -> &'static str,
+    label: impl Fn(T) -> String,
 ) -> Vec<(String, String)> {
     all.iter()
-        .map(|item| (value(*item).to_owned(), label(*item).to_owned()))
+        .map(|item| (value(*item).to_owned(), label(*item)))
         .collect()
 }
 
@@ -133,21 +133,27 @@ impl States {
             .grouped()
             .field(choice(
                 "Resolution",
-                options(&Resolution::ALL, Resolution::as_str, Resolution::label),
+                options(&Resolution::ALL, Resolution::as_str, |item| {
+                    Resolution::label(item).to_owned()
+                }),
                 &self.resolution,
                 actions,
                 CameraEffect::SET_RESOLUTION,
             ))
             .field(choice(
                 "Photo format",
-                options(&PhotoFormat::ALL, PhotoFormat::as_str, PhotoFormat::label),
+                options(&PhotoFormat::ALL, PhotoFormat::as_str, |item| {
+                    PhotoFormat::label(item).to_owned()
+                }),
                 &self.photo_format,
                 actions,
                 CameraEffect::SET_PHOTO_FORMAT,
             ))
             .field(choice(
                 "Self-timer",
-                options(&Timer::ALL, timer_value, timer_label),
+                options(&Timer::ALL, timer_value, |item| {
+                    timer_label(item).to_owned()
+                }),
                 &self.timer,
                 actions,
                 CameraEffect::SET_TIMER,

@@ -930,61 +930,77 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
     through another helper of the same crate.
 
     A helper is a function a surface builds its words through
-    (`fn button(&self, id: &str, label: &str) -> Button`); a name defined more
-    than once says nothing with certainty about which one a call reaches, so
-    those are left out.
+    (`fn button(&self, id: &str, label: &str) -> Button`). Apps grow the same
+    helper in several modules (`fn button(&self, id, label, action)` in each of
+    them); a name keeps its place only when every definition paints the same
+    argument, because only then does a call site say which word is copy — a
+    name the crate uses for two different jobs (`new`) says nothing.
     """
-    defined: dict[str, int] = {}
-    lands: dict[str, set[int]] = {}
-    flows: list[tuple[str, int, str, int]] = []
+    bodies: list[tuple[str, list[str], str, int, int]] = []
     for path in paths:
         text = path.read_text(errors="replace")
         if "fn " not in text:
             continue
         code, _ = rust_source.lex(text)
         for function in FUNCTION.finditer(code):
-            name = function.group(1)
-            defined[name] = defined.get(name, 0) + 1
             names = parameters(code, function.end())
             # A receiver is not an argument at a call site.
             if names and names[0] == "self":
                 names = names[1:]
             brace = code.find("{", function.end())
-            if not names or brace < 0:
+            if names and brace >= 0:
+                bodies.append((function.group(1), names, code, brace,
+                               rust_source.matching(code, brace)))
+
+    lands: dict[int, set[int]] = {}
+    flows: list[tuple[int, int, str, int]] = []
+    for number, (name, names, code, brace, body_end) in enumerate(bodies):
+        painted_at: set[tuple[int, str]] = set()
+        for call, index in TEXT_CONSTRUCTORS + SPEC_BUILDERS:
+            at = code.find(call, brace, body_end)
+            while at >= 0:
+                begin, end = argument(code, at + len(call), index)
+                if begin < end:
+                    painted_at.add((begin, code[begin:end]))
+                at = code.find(call, at + len(call), body_end)
+        passed_on: list[tuple[str, int, str]] = []
+        for hand in re.finditer(r"[A-Za-z_][A-Za-z0-9_:]*\s*\(", code[brace:body_end]):
+            callee = hand.group(0)[:-1].strip().rsplit("::", 1)[-1]
+            open_paren = brace + hand.start() + len(hand.group(0)) - 1
+            for called, (begin, end) in enumerate(calls_of(code, open_paren)):
+                if begin < end:
+                    passed_on.append((callee, called, code[begin:end]))
+        for index, parameter in enumerate(names):
+            if not parameter or parameter == "self":
                 continue
-            body_end = rust_source.matching(code, brace)
-            painted_at: set[tuple[int, str]] = set()
-            for call, index in TEXT_CONSTRUCTORS + SPEC_BUILDERS:
-                at = code.find(call, brace, body_end)
-                while at >= 0:
-                    begin, end = argument(code, at + len(call), index)
-                    if begin < end:
-                        painted_at.add((begin, code[begin:end]))
-                    at = code.find(call, at + len(call), body_end)
-            passed_on: list[tuple[str, int, str]] = []
-            for hand in re.finditer(r"[A-Za-z_][A-Za-z0-9_:]*\s*\(", code[brace:body_end]):
-                callee = hand.group(0)[:-1].strip().rsplit("::", 1)[-1]
-                open_paren = brace + hand.start() + len(hand.group(0)) - 1
-                for called, (begin, end) in enumerate(calls_of(code, open_paren)):
-                    if begin < end:
-                        passed_on.append((callee, called, code[begin:end]))
-            for index, parameter in enumerate(names):
-                if not parameter or parameter == "self":
-                    continue
-                if any(bare(source, parameter) for _, source in painted_at):
-                    lands.setdefault(name, set()).add(index)
-                for callee, called, source in passed_on:
-                    if bare(source, parameter):
-                        flows.append((name, index, callee, called))
+            if any(bare(source, parameter) for _, source in painted_at):
+                lands.setdefault(number, set()).add(index)
+            for callee, called, source in passed_on:
+                if bare(source, parameter):
+                    flows.append((number, index, callee, called))
+    by_name: dict[str, set[int]] = {}
+    for number, (name, _, _, _, _) in enumerate(bodies):
+        by_name.setdefault(name, set()).add(number)
+
+    def painted_by(name: str) -> set[int]:
+        found: set[int] = set()
+        for number in by_name.get(name, ()):
+            found |= lands.get(number, set())
+        return found
+
     changed = True
     while changed:
         changed = False
-        for caller, caller_index, callee, callee_index in flows:
-            if callee_index in lands.get(callee, set()):
-                if caller_index not in lands.setdefault(caller, set()):
-                    lands[caller].add(caller_index)
-                    changed = True
-    return {name: indexes for name, indexes in lands.items() if defined[name] == 1}
+        for number, index, callee, callee_index in flows:
+            if callee_index in painted_by(callee) and index not in lands.get(number, set()):
+                lands.setdefault(number, set()).add(index)
+                changed = True
+    table: dict[str, set[int]] = {}
+    for name, numbers in by_name.items():
+        sets = [lands.get(number, set()) for number in numbers]
+        if sets[0] and all(other == sets[0] for other in sets):
+            table[name] = sets[0]
+    return table
 
 
 def calls_of(code: str, open_paren: int):
