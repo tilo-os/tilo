@@ -390,16 +390,7 @@ impl Session {
                 }) else {
                     return false;
                 };
-                let to = match agents.kept(&workspace, &policy, &person) {
-                    Some((id, name)) => ui::floating_surface::Recipient::found(
-                        ui::floating_surface::RecipientKind::Agent,
-                        id,
-                        name,
-                    ),
-                    None => ui::floating_surface::Recipient::new_agent(crate::i18n::t(
-                        "session-agent-name",
-                    )),
-                };
+                let to = crate::agents::agent_recipient(agents.kept(&workspace, &policy, &person));
                 let arguments = serde_json::json!({
                     "to": [to],
                     "text": text,

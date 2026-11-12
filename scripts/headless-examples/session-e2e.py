@@ -41,13 +41,15 @@ unit tests and found only by starting a session by hand:
            ("a document change carries no claim") and after which the workspace's readers miss the
            record: the check fails on any refused change, so it fails on integration
            70ba3301da0 until `open_stored` commits the Genesis (fix not landed yet).
-  ask      asking an agent sends the person's request to the agent they keep — a new one when
-           they keep none — through the session's one send (`session:send-to#send`, the action a
-           window's box, text typed on the canvas and an agent all run). The session then starts
-           that agent, it asks the model, and its answer lands in the person's conversation with
-           it, where Chat shows it. The model is TestOnlyFixedReplyModel below: a loopback
-           OpenAI-compatible endpoint inside this script that gives one fixed reply. It exists
-           for this test only; never point a live session at it.
+  ask      handing an agent work from search sends the person's request to the agent they keep —
+           a new one when they keep none — through the session's one send
+           (`session:send-to#send`, the action a window's box, text typed on the canvas and an
+           agent all run): the desk's search is typed into with the request, and its row "Send to
+           …" is chosen. The session then starts that agent, it asks the model, and its answer
+           lands in the person's conversation with it, where Chat shows it. The model is
+           TestOnlyFixedReplyModel below: a loopback OpenAI-compatible endpoint inside this script
+           that gives one fixed reply. It exists for this test only; never point a live session at
+           it.
            Catches a send that never reaches the agent's conversation (the request then lies
            unanswered in Chat, as it did in a session with no Chat installed: "so.tilo.chat is
            not installed here"), an agent the session never starts, and a turn whose steps are
@@ -112,9 +114,13 @@ from replay_model import OpenAiReplay  # noqa: E402
 # conversations an agent works in and the agents a workspace keeps.
 TL_APPS = ["notes", "tasks", "mail", "chat"]
 NATIVE = "agent tasks chat"
-# The provider the session publishes its own actions under
-# (tilo_actions::remote::SESSION_ACTIONS_PROVIDER).
+# The provider the session publishes its own actions under, the desk's among them
+# (tilo_actions::remote::SESSION_ACTIONS_PROVIDER), and the resource the desk publishes, whose
+# `search` verb opens search on what was typed (tilo_desktop::desk_verbs::DESK_RESOURCE) and
+# whose rows are children of its open search (SEARCH_RESOURCE).
 SESSION_PROVIDER = "so.tilo.session"
+DESK_RESOURCE = "desktop:desk"
+SEARCH_RESOURCE = "desktop:search"
 # How long any one wait may take before it counts as a hang: a first frame takes well under a
 # second here, so this bounds only a path that never answers.
 HANG_BOUND = float(os.environ.get("TILO_TEST_HANG_BOUND_SECS", "30"))
@@ -653,20 +659,37 @@ def refusals(session: Session) -> list[str]:
 
 
 def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
-    """Asking an agent sends the person's request to the agent they keep (a new one when they
-    keep none) through the session's one send, and the agent the session starts answers it: it
-    asks the model, and its answer lands in the person's conversation with it, where Chat shows
-    it."""
+    """Handing an agent work from search sends the person's request to the agent they keep (a new
+    one when they keep none) through the session's one send, and the agent the session starts
+    answers it: it asks the model, and its answer lands in the person's conversation with it, where
+    Chat shows it."""
     session.provision(model)
-    # The action every ask runs: the one a window's box and text typed on the canvas invoke, and
-    # the one the desk's catalogue lists for an agent to run.
-    row = wait_for("the session's send, as the desk lists it", lambda: next((
-        a for a in session.actions("send")
-        if a.get("provider") == SESSION_PROVIDER and a.get("operation") == "send"), None),
-        lambda: [{"provider": a.get("provider"), "title": a.get("title"),
-                  "operation": a.get("operation")} for a in session.actions("send")])
-    session.invoke(row["provider"], row["id"],
-                   {"to": [{"kind": "new-agent", "name": ""}], "text": REQUEST}, job=True)
+    # What the person does: the desk's own search, with the request typed into it.
+    desk = wait_for("the desk's search", lambda: next((
+        a for a in session.actions("search")
+        if a.get("resource") == DESK_RESOURCE and a.get("operation") == "search"), None),
+        lambda: [{"resource": a.get("resource"), "operation": a.get("operation")}
+                 for a in session.actions("search")])
+    session.invoke(desk["provider"], desk["id"], {"query": REQUEST})
+
+    def shown_rows() -> list[dict]:
+        """The rows the open search shows, in the desk's order."""
+        return session.control_json("raw", json.dumps({"op": "search_rows"}))["answer"]["rows"]
+
+    def agent_row() -> dict | None:
+        """The row handing what was typed to the person's agent, at the place the desk gives it
+        (`desk_verbs::search_row_id`)."""
+        for at, row in enumerate(shown_rows()):
+            title = row.get("title") or ""
+            if title.startswith("Send to ") and REQUEST in title:
+                return {"id": f"{SEARCH_RESOURCE}:row:{at}\u001fchoose-search-row",
+                        "title": title}
+        return None
+
+    row = wait_for("search's row handing the request to the person's agent", agent_row,
+                   lambda: [row.get("title") for row in shown_rows()])
+    # Chosen as a person chooses it: the row's own action, which runs the session's send.
+    session.invoke(SESSION_PROVIDER, row["id"], job=True)
 
     def reached_the_agent() -> bool:
         """Whether the agent was asked, failing at once with what the session refused."""

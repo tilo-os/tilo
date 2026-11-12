@@ -105,8 +105,10 @@ pub(super) fn entries_for(
 }
 
 /// Whether `groups` hold nothing but the web search every query is offered
-/// ("Search the web for …"): what was typed matched nothing. A service a
-/// query names ("youtube cats") is a match, and stays.
+/// ("Search the web for …"): what was typed matched nothing. A service a query
+/// names ("youtube cats") is a match, and stays, and so does the row handing
+/// what was typed to the person's agent: it takes text nothing matched, as the
+/// canvas does.
 pub(super) fn nothing_matched(groups: &[KindGroup<Hit>]) -> bool {
     groups
         .iter()

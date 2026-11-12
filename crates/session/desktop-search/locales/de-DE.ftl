@@ -5,6 +5,10 @@ search-kind-answers = Antworten
 search-kind-web = Web
 search-kind-websites = Websites
 search-kind-ask = Antwort
+# The row that hands what was typed to the person's agent, and the group it
+# is listed under.
+search-kind-agent = Dein Agent
+search-send-to-agent = An { $agent } senden: { $query }
 search-ask-for = { $provider } fragen: { $query }
 search-ask-answering = Antwortet…
 search-ask-copy = Antwort kopieren

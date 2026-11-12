@@ -355,6 +355,12 @@ no run and no transcript; it places the channel like any resource.
   keep none) through `session:send-to#send`, the one send a send-to box, an agent and a
   script run. It lands in their direct conversation with the agent, and Chat opens that
   conversation on the desk, started without a window first when it was not running.
+- **Asking from search.** The palette offers the same send for what was typed: one row, "Send to
+  {agent}: …", standing after everything the query names. Choosing it runs
+  `session:send-to#send` with the agent the person keeps in the workspace the search was opened
+  in (a new one when they keep none), so the request lands in their conversation with it exactly
+  as the canvas's text does. It is a row every query is offered, so text that names nothing is a
+  request the person can hand over rather than a dead end.
 - **The view.** The conversation is Chat's own: the window Chat opens shows it with Chat's
   views, so the canvas gets no second chat.
 - **Any action.** The agent's tools are the broker's catalogue. The session publishes its

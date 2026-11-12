@@ -1646,3 +1646,111 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
         labels(&session)
     );
 }
+
+/// A session with the apps a development session seeds, which keep Chat's records: the
+/// conversations and the agents a workspace keeps. Its desk's search reads the agents each
+/// workspace keeps, which the pass hands it before a search opens.
+fn session_with_agents() -> Session {
+    let mut session = crate::common::headless(Options {
+        person: common::PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: vec![Box::new(common::seeded_apps())],
+        ..Options::default()
+    });
+    for _ in 0..3 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    session
+}
+
+/// The `n`th send the session carried out, as `session:send-to` reads, once it is there.
+fn sent(session: &mut Session, n: usize) -> serde_json::Value {
+    until(session, |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array()?.get(n).cloned())
+            .is_some()
+    });
+    session
+        .read("session:send-to")
+        .and_then(|sent| sent.as_array()?.get(n).cloned())
+        .expect("the send is read")
+}
+
+/// A request typed into search is the person's send of those words to the workspace's agent — one
+/// where they keep none yet, named as the workspace names its agent — through the session's one
+/// send (`session:send-to#send`), and search closes behind the row.
+#[test]
+fn a_request_typed_into_search_is_sent_to_the_workspaces_agent() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_agents();
+    let request = "book a table for two";
+    let row = find_row(
+        &mut session,
+        request,
+        "Send to Assistant: book a table for two",
+    );
+    assert!(
+        row.presentation.is_none(),
+        "the row says who takes the request, and nothing else"
+    );
+    invoke(
+        &mut session,
+        row.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    let first = sent(&mut session, 0);
+    assert_eq!(first["text"], request, "{first}");
+    assert_eq!(
+        first["to"],
+        serde_json::json!([{"kind": "new-agent", "name": "Assistant"}]),
+        "the person kept no agent yet: {first}"
+    );
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_none()
+    });
+}
+
+/// The agent the first request made is the one every later request goes to: the workspace's record
+/// names it as the person's, so asking again continues that conversation rather than making a
+/// second agent.
+#[test]
+fn a_second_request_goes_to_the_agent_the_first_made() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_agents();
+    let row = find_row(&mut session, "book a table for two", "Send to Assistant");
+    invoke(
+        &mut session,
+        row.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    sent(&mut session, 0);
+    // The agent the send made is the workspace's to keep once the pass has read its record, as a
+    // person's next search is opened long after.
+    for _ in 0..10 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+
+    let row = find_row(&mut session, "and move it to Friday", "Send to Assistant");
+    invoke(
+        &mut session,
+        row.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    let second = sent(&mut session, 1);
+    assert_eq!(second["text"], "and move it to Friday", "{second}");
+    let to = &second["to"][0];
+    assert_eq!(to["kind"], "agent", "the agent kept now: {second}");
+    assert_eq!(to["name"], "Assistant", "{second}");
+    assert!(
+        to["id"].as_str().is_some_and(|id| !id.is_empty()),
+        "named by its id: {second}"
+    );
+}

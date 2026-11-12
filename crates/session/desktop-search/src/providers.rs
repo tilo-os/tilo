@@ -3,6 +3,7 @@
 //! published (resources, actions, the desktop's model) or what a service
 //! answers; none reads a host's own chrome state.
 
+pub mod ask_agent;
 #[cfg(feature = "catalogue")]
 pub mod catalogue;
 pub mod downloaded;
