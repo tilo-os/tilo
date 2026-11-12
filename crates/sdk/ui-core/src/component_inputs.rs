@@ -530,7 +530,6 @@ mod tests {
         let (live, other) = (Shared::new(0), Shared::new(0));
         let ((), reads) = reading(&handle, || {
             live.read();
-            other.read();
         });
         assert!(reads.stand().is_ok(), "nothing moved");
         other.moved();
