@@ -963,8 +963,15 @@ up_native() {
   echo native > "$state/mode"
   use_mode native
   make_secrets
-  # The VM host runs from its images as root, so it starts before the relay:
-  # the relay reads where to place a workspace once, when it starts.
+  # The stack's own TLS first: the VM host's member device joins the workspace
+  # at the relay, whose home relay is that TLS origin, so the host is given the
+  # authority that signed it — which this makes. The host starts before the
+  # relay, which reads where to place a workspace once, when it starts.
+  [[ -z $discord ]] || start_native_discord
+  start_native_tls
+  trust_bundle
+  say "tls up ($((SECONDS - phase))s)"
+  phase=$SECONDS
   local vm_skipped
   vm_skipped=$(vm_host_blocker)
   if [[ -z $vm_skipped ]]; then
@@ -978,11 +985,6 @@ up_native() {
     say "vm-host up ($((SECONDS - phase))s)"
     phase=$SECONDS
   fi
-  [[ -z $discord ]] || start_native_discord
-  start_native_tls
-  trust_bundle
-  say "tls up ($((SECONDS - phase))s)"
-  phase=$SECONDS
   start_native_relay
   wait_relay
   local room
