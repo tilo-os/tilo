@@ -24,7 +24,7 @@ app gets on a real system:
   snapshot   a PNG of the nested session per app, in OUT
   windows    a second window of Tasks, opened as a person opens one from search (its row
              with Ctrl+Enter), is a second window of the same process and its instance runs
-             in the same host; a task typed into one window shows in the other at once
+             in the same host; a task typed into either window shows in the other at once
   native     native Notes (so.tilo.notes), installed beside them, launches and
              presents a frame (native-notes.png)
   activation "Show this window" answers for tilolang Notes as for native Notes
@@ -386,6 +386,14 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
     session.control({"op": "key", "key": "Enter"})
     after = until("the task in both of Tasks' windows", lambda: (lambda now: now if all(
         a != b for a, b in zip(now, before)) else None)(shot("after")), 30, 1.0)
+    # Then into the second: the workspace's committed read of the first task reached both
+    # instances, and each still sends what its person does next.
+    focus(session, windows[1])
+    time.sleep(0.5)
+    session.control({"op": "type", "text": "Call the plumber"})
+    session.control({"op": "key", "key": "Enter"})
+    until("the second task in both of Tasks' windows", lambda: (lambda now: now if all(
+        a != b for a, b in zip(now, after)) else None)(shot("next")), 30, 1.0)
     return {"windows": [{"group": w["group"], "tab": w["tab"]} for w in windows],
             "process": procs[0], "host": hosts[0], "changed": len(after)}
 
