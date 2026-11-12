@@ -172,6 +172,28 @@ async fn post(addr: SocketAddr, path: &str, body: Vec<u8>) -> (u16, Vec<u8>) {
 }
 
 #[test]
+fn a_link_origin_naming_port_zero_takes_the_port_the_listener_bound() {
+    assert_eq!(
+        named_port("https://127.0.0.1:0", 43123),
+        "https://127.0.0.1:43123"
+    );
+    assert_eq!(
+        named_port("https://[::1]:0/some/path", 443),
+        "https://[::1]:443/some/path"
+    );
+    // A published origin is reached exactly as written, whatever port the
+    // listener behind the ingress bound.
+    assert_eq!(
+        named_port("https://link.tilo.so", 43123),
+        "https://link.tilo.so"
+    );
+    assert_eq!(
+        named_port("https://link.tilo.so:8443", 43123),
+        "https://link.tilo.so:8443"
+    );
+}
+
+#[test]
 fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
     let files = |host| TlsSource::Files {
         certificate_chain: "unused.pem".into(),

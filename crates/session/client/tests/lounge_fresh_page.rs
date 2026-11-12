@@ -195,20 +195,15 @@ impl Lounge {
     ) -> Self {
         let owner_root = owner_root.unwrap_or_else(|| read_root(root_file));
         let entrypoint = entrypoint();
-        // Pages reach the host over WebTransport at an origin naming its
-        // UDP port, as the deployment's own name does.
-        let link_port = std::net::UdpSocket::bind("127.0.0.1:0")
-            .and_then(|socket| socket.local_addr())
-            .expect("a free UDP port")
-            .port();
         let mut command = Command::new("sh");
         command
             .arg(&entrypoint)
-            .env("TILO_ROOMS_LINK", format!("127.0.0.1:{link_port}"))
-            .env(
-                "TILO_ROOMS_LINK_ORIGIN",
-                format!("https://127.0.0.1:{link_port}"),
-            )
+            // Pages reach the host over WebTransport at an origin naming its
+            // UDP port, as the deployment's own name does. The host takes the
+            // port the kernel picks and publishes it at `/host`, so nothing
+            // here holds a port no one is bound to.
+            .env("TILO_ROOMS_LINK", "127.0.0.1:0")
+            .env("TILO_ROOMS_LINK_ORIGIN", "https://127.0.0.1:0")
             .env("PATH", relay_on_path())
             // eu1's environment, as apps/tilo-eu1/deployment.yaml sets it,
             // without the Discord, mail and model secrets: this run starts no
@@ -295,6 +290,15 @@ impl Lounge {
         .expect("the host's certificate");
         let host_cert = info.host_cert;
         let address = info.address.expect("the host publishes its iroh endpoint");
+        let link = address
+            .web
+            .as_ref()
+            .expect("the host publishes its WebTransport listener");
+        assert!(
+            !link.origin.ends_with(":0"),
+            "the host names the UDP port it bound: {}",
+            link.origin
+        );
         Self {
             child,
             stdin,

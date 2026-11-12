@@ -81,7 +81,9 @@ pub struct WebArgs {
     #[arg(long = "link-listen", value_name = "ADDR", requires = "link_origin")]
     pub link_listen: Option<SocketAddr>,
     /// The `https://` origin pages open those sessions at; its name must
-    /// lead to `--link-listen` and be on the host's certificate.
+    /// lead to `--link-listen` and be on the host's certificate. An origin
+    /// ending in `:0` takes the port the listener bound, which the host
+    /// publishes as the link pages dial.
     #[arg(long = "link-origin", value_name = "ORIGIN", requires = "link_listen")]
     pub link_origin: Option<String>,
     /// Run this host's own iroh packet relay at this address, and have its
