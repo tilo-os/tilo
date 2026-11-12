@@ -7495,10 +7495,23 @@ impl FrameHarness {
         self.providers.insert(provider.into(), serve);
     }
 
+    /// Stop answering `provider`'s actions in this process: what the app's
+    /// controls invoke there goes to the session this window is served by
+    /// again ([`Self::set_session_door`]).
+    pub fn stop_serving_provider(&mut self, provider: &str) {
+        self.invalidate_local();
+        self.providers.remove(provider);
+    }
+
     /// Carry out at its provider an invocation the door resolved as another
-    /// provider's ([`crate::bound_dispatch::BoundActionError::Hosted`]).
+    /// provider's ([`crate::bound_dispatch::BoundActionError::Hosted`]), as
+    /// the operation `operation`: in this process where the host serves that
+    /// provider here ([`Self::serve_provider`]), else through the session
+    /// this window is served by ([`Self::set_session_door`]), as a native
+    /// window's broker carries it there.
     fn run_hosted(
         &mut self,
+        operation: tilo_actions::InvocationId,
         started: Result<
             crate::widget::ResourceOperationStart,
             crate::bound_dispatch::BoundActionError,
@@ -7508,17 +7521,47 @@ impl FrameHarness {
         let Err(crate::bound_dispatch::BoundActionError::Hosted(hosted)) = started else {
             return started;
         };
-        let Some(serve) = self.providers.get_mut(&hosted.provider) else {
-            return Err(crate::bound_dispatch::BoundActionError::Hosted(hosted));
+        if let Some(serve) = self.providers.get_mut(&hosted.provider) {
+            let output = serve(&ProvidedInvocation {
+                address: &hosted.address,
+                argument: &hosted.argument,
+                actor: &hosted.actor,
+                confirmed: hosted.confirmed,
+            })?;
+            self.invalidate_local();
+            return Ok(crate::widget::ResourceOperationStart::Completed(output));
+        }
+        let Some(door) = self.session_door.as_mut() else {
+            tracing::warn!(provider = %hosted.provider, "no session serves this frame's provider");
+            return Err(tilo_actions::DoorError::Unavailable {
+                code: "authoritative_host_unavailable".into(),
+                reason: format!("no session serves `{}` to this frame", hosted.provider),
+            }
+            .into());
         };
-        let output = serve(&ProvidedInvocation {
-            address: &hosted.address,
-            argument: &hosted.argument,
-            actor: &hosted.actor,
-            confirmed: hosted.confirmed,
-        })?;
+        let started = crate::session_door::SessionDoor::invoke(
+            door,
+            operation,
+            false,
+            tilo_actions::remote::InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: hosted.provider,
+                    address: hosted.address,
+                },
+                argument: hosted.argument,
+                context: None,
+                confirmation: hosted
+                    .confirmed
+                    .then_some(tilo_actions::remote::Confirmation::Confirmed),
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+            },
+        )?;
         self.invalidate_local();
-        Ok(crate::widget::ResourceOperationStart::Completed(output))
+        Ok(started)
     }
 
     /// Invoke `address` as `delivered` says: under its invocation, for its
@@ -7611,7 +7654,7 @@ impl FrameHarness {
                 route: None,
             },
         );
-        let started = self.run_hosted(started)?;
+        let started = self.run_hosted(invocation, started)?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
             self.bound_invocations.insert(invocation, target);
         }
@@ -7863,7 +7906,7 @@ impl FrameHarness {
             self.pending_control_invocations.remove(&invocation);
             self.bound_invocations.remove(&invocation);
             if let Err(error) = result {
-                tracing::warn!(code = error.code(), %error, "headless: an app did not open");
+                tracing::warn!(code = error.code(), %error, "headless: the session refused an invocation");
                 self.refuse_visibly(&error);
             }
         }
@@ -9311,7 +9354,7 @@ impl crate::host_core::ControlHost for FrameHarness {
             },
         );
         let started = self
-            .run_hosted(result)
+            .run_hosted(invocation, result)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
             self.bound_invocations.insert(invocation, target.clone());

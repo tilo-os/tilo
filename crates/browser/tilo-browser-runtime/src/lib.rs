@@ -270,6 +270,9 @@ mod disk_key;
 mod semantics_status;
 #[cfg(target_arch = "wasm32")]
 mod settings;
+// The person's settings sections the page keeps: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod kept_settings;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod shell;
 #[cfg(target_arch = "wasm32")]

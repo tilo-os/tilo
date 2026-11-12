@@ -182,35 +182,7 @@ fn serve_kept<A: ResourceApp>(
             &kept,
             settings.clone(),
         );
-        let person = author.to_owned();
-        harness.serve_provider(
-            provider,
-            Box::new(move |invocation| {
-                // The person's own settings: the host admits nobody else.
-                if invocation.actor != person {
-                    return Err(tilo_actions::DoorError::Unavailable {
-                        code: "permission_denied".into(),
-                        reason: format!("only {person} changes their settings"),
-                    });
-                }
-                let arguments = match invocation.argument {
-                    tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
-                    tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
-                    tilo_actions::remote::InvokeArgument::Text(_) => {
-                        return Err(tilo_actions::DoorError::InvalidArguments(
-                            "a settings change carries typed arguments".into(),
-                        ));
-                    }
-                };
-                records.invoke(
-                    invocation.address,
-                    &arguments,
-                    invocation.confirmed,
-                    &tilo_actions::ActionInvoker::actor(&person),
-                    None,
-                )
-            }),
-        );
+        harness.serve_provider(provider, records.served_for(author));
     }
 }
 
@@ -761,6 +733,24 @@ impl<A: ResourceApp> HeadlessApp<A> {
             _settled: settled,
             marker: std::marker::PhantomData,
         })
+    }
+
+    /// Hand the records the app declares kept by other providers
+    /// ([`Records::kept_by`](super::Records::kept_by)) to `host`, in place of
+    /// the test's own stand-in: a host under test (a page keeping the
+    /// person's settings) is told the window's frame, the profile's settings
+    /// document and the person at the window, and serves them as it does
+    /// for a live window.
+    pub fn kept_by_host(
+        &mut self,
+        host: impl FnOnce(&mut FrameHarness, &ui_core::storage::SettingsDocument, &str),
+    ) {
+        let mut declared = super::Records::declaring();
+        A::records(&mut declared);
+        for (provider, _) in declared.into_kept() {
+            self.harness.stop_serving_provider(provider);
+        }
+        host(&mut self.harness, &self.profile.settings(), &self.author);
     }
 
     /// The app's file areas in this profile, which the running app writes

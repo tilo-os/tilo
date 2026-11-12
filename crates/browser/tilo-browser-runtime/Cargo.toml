@@ -23,6 +23,8 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-automerge.workspace = true
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
+# The person's settings sections, which this page keeps as their session does.
+settings-sections = { version = "0.1.0", path = "../../system/settings-sections" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # The model service clients, and the page's own model service with the
 # gateway's provider dialects.
@@ -178,3 +180,9 @@ postcard = { workspace = true, features = ["use-std"] }
 # The device list's keys as text, as the page's own module writes them.
 hex.workspace = true
 
+# The person's settings the page keeps, and Settings' window changing them
+# (src/kept_settings.rs).
+tilo-app = { version = "0.1.0", path = "../../sdk/tilo-app", features = ["test-support"] }
+settings-sections = { version = "0.1.0", path = "../../system/settings-sections" }
+settings = { path = "../../../apps/settings", default-features = false }
+tilo-test-env = { path = "../../dev/test-env" }
