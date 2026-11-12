@@ -82,6 +82,7 @@ import json
 import os
 import re
 import select
+import shlex
 import shutil
 import signal
 import subprocess
@@ -751,11 +752,16 @@ def check_dev(session: Session) -> dict:
 CHECKS = ["audio", "open", "canvas", "repl", "ask", "restart", "dev"]
 
 
-def build_session(out: Path) -> Path:
-    """The nested-session build of this tree, compiled on the arm builder."""
+def build_session(out: Path, remote: str | None = None) -> Path:
+    """The nested-session build of this tree, compiled on the arm builder.
+
+    Through `remote` (a command prefix, e.g. a remote-exec wrapper), the build runs where
+    this machine cannot: a program that forwards the builder's environment, not this one's,
+    carries the app list in its own."""
     target = out / "nested-session"
-    subprocess.run(["bash", REPO / "dist/dev/nested-session-build.sh", target],
-                   cwd=REPO, check=True, env={**os.environ, "TILO_NESTED_APPS": NATIVE})
+    command = ["bash", str(REPO / "dist/dev/nested-session-build.sh"), str(target)]
+    argv = [*shlex.split(remote), "env", f"TILO_NESTED_APPS={NATIVE}", *command] if remote else command
+    subprocess.run(argv, cwd=REPO, check=True, env={**os.environ, "TILO_NESTED_APPS": NATIVE})
     return target
 
 
@@ -785,6 +791,9 @@ def prepare(build: Path, state: Path, out: Path) -> list[Path]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--build", action="store_true", help="build the nested session of this tree first")
+    parser.add_argument("--remote-exec", default=os.environ.get("TILO_NESTED_SESSION_BUILD_EXEC"),
+                        help="command prefix the session's build runs through (default "
+                             "$TILO_NESTED_SESSION_BUILD_EXEC)")
     parser.add_argument("--out", type=Path, default=REPO / "target/session-e2e")
     parser.add_argument("--keep", action="store_true", help="leave the session running at the end")
     parser.add_argument("--only", help="comma list of checks to run (default: all, in order)")
@@ -794,7 +803,7 @@ def main() -> int:
     for stale in out.glob("*.log"):
         stale.unlink()
     began = time.monotonic()
-    build = build_session(out) if args.build else Path(
+    build = build_session(out, args.remote_exec) if args.build else Path(
         os.environ.get("TILO_NESTED_SESSION_BUILD", REPO / "target/nested-session")).resolve()
     if not (build / "bin/tilo-session").is_file():
         print(f"session-e2e: no nested-session build at {build} (pass --build, or set "
