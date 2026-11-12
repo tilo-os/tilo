@@ -66,6 +66,10 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [dev-dependencies]
 fnv.workspace = true
+# The records a device's apps write: what a member's link carries and this
+# device's apps read.
+automerge.workspace = true
+tilo-automerge-isolate.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 tempfile.workspace = true
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }

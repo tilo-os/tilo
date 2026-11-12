@@ -4360,3 +4360,10 @@ fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "a test's device keeps its owner and its links for the whole run"
+)]
+mod member_apps_tests;

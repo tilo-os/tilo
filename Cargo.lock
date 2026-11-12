@@ -20049,6 +20049,8 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-action-broker",
  "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
