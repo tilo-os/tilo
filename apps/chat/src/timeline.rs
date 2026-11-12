@@ -36,9 +36,10 @@ use crate::render_chat::{MessageColumn, RowM};
 const KEPT_SCENES: usize = 160;
 
 /// What a row stands for, in the timeline's own height, before it is measured: the
-/// least a row can cost, so a conversation none of whose rows was measured yet is
+/// least a row can cost — one group step, the room a line of body text and the
+/// header above it take — so a conversation none of whose rows was measured yet is
 /// still laid out where its newest edge is.
-const ROW_ESTIMATE_FLOOR: f64 = 24.0;
+const ROW_ESTIMATE_FLOOR: f64 = ui::tokens::Spacing::BASE.rhythm.group as f64;
 
 /// What the timeline did in its last frame, counted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

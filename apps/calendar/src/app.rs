@@ -181,8 +181,9 @@ enum Action {
 }
 
 /// How far a press on a month chip travels before it is a drag of the event
-/// rather than a click on it: the slop a press's hand wobbles within.
-const CHIP_DRAG_SLOP: f64 = 4.0;
+/// rather than a click on it: the slop a press's hand wobbles within, the
+/// same every control on every display allows.
+const CHIP_DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.click_slop as f64;
 
 /// An event's chip pressed in the month grid: which event, where the press
 /// landed, the day it is drawn on, and — once the pointer has moved far
