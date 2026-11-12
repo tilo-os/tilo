@@ -82,7 +82,7 @@ class NextestPolicyTests(unittest.TestCase):
         output = subprocess.run([sys.executable, str(REPO / "tools/ci/nextest_filters.py")],
                                 check=True, capture_output=True, text=True).stdout
         names = [line.split("=", 1)[0] for line in output.splitlines()]
-        self.assertEqual(names, ["GOLDEN_FILTER", "PUSH_ONLY_FILTER", "MICRO_VM_FILTER"])
+        self.assertEqual(names, ["GOLDEN_FILTER", "PUSH_ONLY_FILTER"])
 
     def test_a_run_leaves_out_the_tests_whose_capability_this_machine_lacks(self) -> None:
         # The ci profile's setup promises every mapped capability, so a test of
