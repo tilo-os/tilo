@@ -954,6 +954,7 @@ fn panels(theme: &Theme, out: &Path) {
         message: None,
         documents: &[],
         action_label: Some("New project"),
+        hint: None,
         error: false,
     };
     let rect = Rect::new(MARGIN, p.y, MARGIN + 720.0, p.y + 220.0);
