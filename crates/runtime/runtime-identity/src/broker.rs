@@ -160,8 +160,8 @@ mod tests {
             _ => panic!("both readers hold the broker connection"),
         }
         drop(env);
-        drop(again);
-        drop(connected);
-        thread.join().unwrap();
+        // The process keeps the connection, so the host's side never sees it
+        // close; its thread ends with the test's process.
+        drop(thread);
     }
 }
