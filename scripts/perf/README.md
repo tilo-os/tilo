@@ -115,8 +115,8 @@ executable stand-alone; the higher-level flow is described below.
 
 1. `pgo-instrument.sh` — build tilo-session + terminal + file-explorer +
    tilo-install with `-C profile-generate` into `target/pgo-instrumented/`.
-   Run the resulting binaries; they drop `.profraw` files into
-   `target/pgo-profraw/`.
+   Run the resulting binaries with the `LLVM_PROFILE_FILE` export the script
+   prints; they drop `.profraw` files into `target/pgo-profraw/`.
 2. `pgo-merge.sh` — merge every `target/pgo-profraw/*.profraw` into
    `os/pgo/tilo.profdata`. **Commit that file** — pinning the profile
    bytes in-tree is what makes the second-phase build reproducible
