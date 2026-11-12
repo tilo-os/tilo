@@ -224,7 +224,11 @@ pub(crate) fn shown(
     notification.from = sent
         .sender_name
         .zip(sent.contact_endpoint)
-        .map(|(name, identity)| NotificationPerson { name, identity });
+        .map(|(name, identity)| NotificationPerson {
+            name,
+            identity,
+            agent: false,
+        });
     // A call rings for the person it is from; the category alone is only the app's word.
     if sent.incoming_call && notification.from.is_some() {
         notification.rings = true;

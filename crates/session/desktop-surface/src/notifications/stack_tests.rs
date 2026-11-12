@@ -1289,7 +1289,7 @@ fn a_notice_in_its_senders_own_name_has_no_source_line_repeating_it() {
         "Claude Code finished: 8 changes in Workspace",
         "Working in Notes",
     )
-    .with_from("Claude Code", "agent-key")
+    .with_agent_from("Claude Code", "agent-key")
     .with_app_name("Claude Code");
     assert_eq!(NotificationStack::source_line(&own), "");
     let about = Notification::new("Ada sent a message", "Lunch?")
@@ -1298,4 +1298,41 @@ fn a_notice_in_its_senders_own_name_has_no_source_line_repeating_it() {
     assert_eq!(NotificationStack::source_line(&about), "Chat");
     let plain = Notification::new("Saved", "").with_app_name("Notes");
     assert_eq!(NotificationStack::source_line(&plain), "Notes");
+}
+
+/// Once it has arrived and until it starts to leave, a banner stands at full strength on the
+/// floating card's opaque ground, in either theme: never a see-through card over the windows.
+#[test]
+fn a_banner_at_rest_is_solid() {
+    let host = TestHost::default();
+    host.push(
+        Notification::new(
+            "Claude Code finished: 8 changes in Workspace",
+            "Launch notes",
+        )
+        .with_agent_from("Claude Code", "agent-key"),
+    );
+    let mut stack = NotificationStack::new();
+    stack.set_viewport(Rect::new(0.0, 0.0, 1280.0, 800.0));
+    draw(&mut stack, &host, &Theme::dark());
+    let n = host.log().active()[0].clone();
+    let shown = n.dwell.first_shown().expect("it is on screen");
+    let (alpha, dx) = NotificationStack::animation_state(
+        &n,
+        shown + Duration::from_secs(1),
+        (false, false),
+        360.0,
+    );
+    assert!(
+        (alpha - 1.0).abs() < f32::EPSILON,
+        "it stands at full strength: {alpha}"
+    );
+    assert!(dx.abs() < 0.5, "and in its place: {dx}");
+    for theme in [Theme::light(), Theme::dark()] {
+        let (ground, _) = ui::widget::toast::card_ground(&theme);
+        assert!(
+            (ground.components[3] - 1.0).abs() < f32::EPSILON,
+            "the card's ground is opaque: {ground:?}"
+        );
+    }
 }

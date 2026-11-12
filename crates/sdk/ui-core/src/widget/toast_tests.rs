@@ -629,3 +629,48 @@ fn a_title_too_long_for_a_phone_wraps_to_a_second_line() {
         "{glyphs} glyphs for {must_paint} letters ({painted}): the title was elided"
     );
 }
+
+/// A card from an agent leads with the agent's own face, the square agent mark in its client's
+/// hue, as the bar, who is here and its card draw it; a person's card keeps their avatar.
+#[test]
+fn an_agents_card_leads_with_its_own_face() {
+    let card = ToastCard::new("Claude Code finished: 8 changes", ToastKind::Info)
+        .agent("Claude Code", "publisher-1");
+    let face = agent_or_person_face(&card, "Claude Code", "publisher-1");
+    let expected = crate::widget::AvatarFace::new("Claude Code", "publisher-1")
+        .hue(crate::tokens::colors::PresenceHue::Orange)
+        .agent();
+    assert_eq!(format!("{face:?}"), format!("{expected:?}"));
+
+    let person = card.person("Ada", "ada");
+    assert!(!person.person_agent, "a person's card is theirs again");
+    let face = agent_or_person_face(&person, "Ada", "ada");
+    assert_eq!(
+        format!("{face:?}"),
+        format!("{:?}", crate::widget::AvatarFace::new("Ada", "ada"))
+    );
+}
+
+/// Without an app's name over the title, how long ago a card arrived follows its body instead of
+/// standing alone on a line of its own, at the end of a text column an action cuts short.
+#[test]
+fn a_time_without_an_app_follows_the_body() {
+    let card = ToastCard::new("Claude Code finished: 8 changes", ToastKind::Info)
+        .body("Launch notes")
+        .time("just now");
+    let text = CardText::of(&card);
+    assert!(
+        !text.has_header(),
+        "no line over the title for the time alone"
+    );
+    assert_eq!(text.body, "Launch notes \u{b7} just now");
+    let bare = CardText::of(&ToastCard::new("Done", ToastKind::Info).time("just now"));
+    assert_eq!(bare.body, "just now");
+    let attributed = CardText::of(&card.caption("Notes"));
+    assert!(
+        attributed.has_header(),
+        "beside an app's name it stays on its line"
+    );
+    assert_eq!(attributed.time, "just now");
+    assert_eq!(attributed.body, "Launch notes");
+}

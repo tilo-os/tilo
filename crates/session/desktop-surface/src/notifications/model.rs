@@ -162,6 +162,9 @@ pub const INLINE_REPLY: &str = "inline-reply";
 pub struct NotificationPerson {
     pub name: String,
     pub identity: String,
+    /// Software, not a person: an agent leads with its own square face in its client's tint, as
+    /// it shows in the bar, who is here and its card, never a person's initials.
+    pub agent: bool,
 }
 
 /// A single notification. `id` is a process-unique token for the desktop's own bookkeeping;
@@ -270,6 +273,18 @@ impl Notification {
         self.from = Some(NotificationPerson {
             name: name.into(),
             identity: identity.into(),
+            agent: false,
+        });
+        self
+    }
+
+    /// From the agent `name` , whose stable `identity` is its publisher: its own face leads.
+    #[must_use]
+    pub fn with_agent_from(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
+        self.from = Some(NotificationPerson {
+            name: name.into(),
+            identity: identity.into(),
+            agent: true,
         });
         self
     }
