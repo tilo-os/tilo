@@ -55,11 +55,25 @@ as much when a closure or a conditional picks the literal
 when the builder is handed it directly, so both count.
 
 A surface — an app's window or a session role's — paints through the toolkit's
-text constructors (`Text::new`, the `with_*`/`set_*` label and accessible-name
-setters, the paint helpers that take the scene first, a property list's own
-label, a section's title), not only through the builders above. A literal
-handed to one of those is the same defect on a German desktop, so surfaces are
-checked for them too.
+text constructors (`Text::new`, `Button::new`, the `with_*`/`set_*` label and
+accessible-name setters, the paint helpers that take the scene first, a
+property list's own label, a section's title), not only through the builders
+above. A literal handed to one of those is the same defect on a German desktop,
+so surfaces are checked for them too. A name a person reads is as often
+selected as it is written: a literal in the result position of a `match` arm or
+an `if` branch is painted when the selection reaches a constructor, whether
+through a tuple pattern (`let (role, name, state) = match …`) or a local.
+
+Two more ways a word reaches a window without the constructor coming first:
+
+- through a helper — a function that hands its parameter to a text constructor
+  (`fn button(&self, id: &str, label: &str) -> Button { Button::new(id,
+  label) }`): a literal at the parameter's position at any call site of it is
+  painted just the same, and so is one passed on through a second helper;
+- as a resource's or an action's title (`ResourceSpec::new(…, "History
+  paused")`, `.unavailable(…, "Open a web page first")`): the action directory
+  and the palette show those as the rows a person reads before invoking
+  anything.
 A sentence built around a value is copy as much as a plain one: a `format!`
 whose template reads as English and whose result reaches one of those calls —
 as an argument, or through the local it is stored in — fails, because a German
@@ -477,6 +491,9 @@ TEXT_CONSTRUCTORS = (
     ("SectionHeader::group(", 0),
     ("Text::new(", 0),
     ("Notification::new(", 0),
+    ("Button::new(", 1),
+    ("Button::icon_only(", 2),
+    ("ListRow::new(", 1),
     (".with_name(", 0),
     (".with_label(", 0),
     (".with_title(", 0),
@@ -509,8 +526,17 @@ TEXT_CONSTRUCTORS = (
 # window a person opens.
 SURFACE_ROOTS = ("apps/", "crates/session/")
 
+# What a surface titles a published resource or action with: the action
+# directory and the palette show it as the row a person reads before invoking
+# anything, and a reason an action is unavailable is a sentence they read.
+SPEC_BUILDERS = (
+    ("ResourceSpec::new(", 2),
+    (".unavailable(", 1),
+)
+
 BINDING = re.compile(
-    r"(?m)^\s*(?:let\s+(?:mut\s+)?([a-z_][a-z0-9_]*)|[\w.()]+\.([a-z_][a-z0-9_]*))\s*"
+    r"(?m)^\s*(?:let\s+(?:mut\s+)?([a-z_][a-z0-9_]*)|let\s+\(([^)]*)\)"
+    r"|[\w.()]+\.([a-z_][a-z0-9_]*))\s*"
     r"(?::[^=;\n]+)?=(?!=)"
 )
 
@@ -599,12 +625,13 @@ def painted_literals(code: str, starts: list[int],
                      begin: int, end: int) -> list[rust_source.Literal]:
     """The literals a copy builder's first argument paints, in `[begin, end)`.
 
-    The argument itself, and what a closure or a conditional inside it hands
-    back: `map_or_else(|| "Search", |named| …)` and `if open { "Shown" } else
-    { "Hidden" }` both reach the label as surely as the literal argument does,
-    and so does a default (`origin.unwrap_or("No secure page")`). A literal
-    that only feeds a call (`|word| say(word, "Search")`) is not painted, and
-    does not count.
+    The argument itself, and what a closure, a `match` arm or a conditional
+    inside it hands back: `map_or_else(|| "Search", |named| …)`,
+    `if open { "Shown" } else { "Hidden" }` and `match mode { A => "Back",
+    … }` all reach the label as surely as the literal argument does, and so
+    does a default (`origin.unwrap_or("No secure page")`). A literal that only
+    feeds a call (`|word| say(word, "Search")`) is not painted, and does not
+    count.
     """
     found = []
     at = bisect.bisect_left(starts, begin)
@@ -615,10 +642,38 @@ def painted_literals(code: str, starts: list[int],
                 or wrapped(code, begin, literal.start)
                 or after == "}"
                 or (arrow_before(code, literal.start) and after in ",}")
-                or fallback(code, begin, literal.start, end)):
+                or fallback(code, begin, literal.start, end)
+                or (arm_result(code, begin, literal.start)
+                    and closes_value(code, literal.end, end))):
             found.append(literal)
         at += 1
     return found
+
+
+# A match arm's or a branch's `=>`, `|` or `{`, then the wrappers a value can
+# sit in after it (`=> Some("Move")`).
+ARM_OPEN = re.compile(
+    r"(?:=>|\||\{)\s*(?:&\s*)?(?:(?:Some|String::from|String::from_utf8_lossy|"
+    r"Cow::Borrowed|ToOwned::to_owned)\s*\(\s*)*$")
+CONVERSION_CALL = re.compile(r"\s*\.(?:into|to_string|to_owned|as_str|as_ref)\(\)")
+
+
+def arm_result(code: str, begin: int, start: int) -> bool:
+    """`code[begin:start]` opens what a match arm or a branch hands back."""
+    return ARM_OPEN.search(code[begin:start]) is not None
+
+
+def closes_value(code: str, start: int, end: int) -> bool:
+    """`code[start:end]` only converts or closes the literal: it is the value."""
+    at = start
+    while at < end:
+        conversion = CONVERSION_CALL.match(code, at)
+        if not conversion:
+            break
+        at = conversion.end()
+    if at >= end:
+        return True
+    return next_significant(code, at) in ",})]"
 
 
 def argument(code: str, start: int, index: int) -> tuple[int, int]:
@@ -679,37 +734,116 @@ def statement_end(code: str, start: int) -> int:
     return len(code)
 
 
+def top_level_parts(code: str, begin: int, end: int) -> list[tuple[int, int]]:
+    """The ranges between the top-level commas of `[begin, end)`."""
+    parts = []
+    start = position = begin
+    while position < end:
+        if code[position] in "([{":
+            position = rust_source.matching(code, position)
+            continue
+        if code[position] == ",":
+            parts.append((start, position))
+            start = position + 1
+        position += 1
+    if start < end:
+        parts.append((start, end))
+    return parts
+
+
+def top_level_find(code: str, begin: int, end: int, needle: str) -> int:
+    """Where `needle` starts in `[begin, end)` outside any bracket, or -1."""
+    position = begin
+    while position < end:
+        if code[position] in "([{":
+            position = rust_source.matching(code, position)
+            continue
+        if code.startswith(needle, position):
+            return position
+        position += 1
+    return -1
+
+
+def tuple_arms(code: str, begin: int, end: int,
+               element: int) -> list[tuple[int, int]]:
+    """Element `element` of each tuple the arms of the `match` in `[begin, end)`
+    hand back: the names a tuple pattern binds are those elements."""
+    if not code[begin:end].lstrip().startswith("match "):
+        return []
+    brace = code.find("{", begin, end)
+    if brace < 0:
+        return []
+    close = rust_source.matching(code, brace) - 1
+    found = []
+    for part_begin, part_end in top_level_parts(code, brace + 1, close):
+        arrow = top_level_find(code, part_begin, part_end, "=>")
+        if arrow < 0:
+            continue
+        body = arrow + 2
+        while body < part_end and code[body].isspace():
+            body += 1
+        if body < part_end and code[body] == "(":
+            open_element, close_element = argument(code, body + 1, element)
+            if open_element < close_element:
+                found.append((open_element, close_element))
+    return found
+
+
+def bound_names(binding: re.Match[str]) -> list[tuple[str, int | None]]:
+    """The names a `let` binds, and for a tuple pattern each one's position."""
+    if binding.group(1):
+        return [(binding.group(1), None)]
+    if binding.group(2) is not None:
+        names = []
+        for element, piece in enumerate(binding.group(2).split(",")):
+            piece = piece.strip().removeprefix("mut ").strip()
+            if re.fullmatch(r"[a-z_][A-Za-z0-9_]*", piece) and piece != "_":
+                names.append((piece, element))
+        return names
+    return [(binding.group(3), None)] if binding.group(3) else []
+
+
 def copy_bindings(code: str, starts: list[int],
                   by_start: dict[int, rust_source.Literal],
                   kept: str) -> dict[str, list[rust_source.Literal]]:
-    """Sentences of words built around a value, by the name they are stored in,
-    so a constructor handed that name counts as handing it the sentence.
+    """Words a constructor is handed through the name they are stored in.
 
-    Only a value that is the sentence (a `format!`, a `match`/`if` that picks
-    one, or a plain literal) counts. A sentence built inside a call — an error
-    in `ok_or_else(|| format!(…))?` — is an outcome the surface shows in its own
+    Only a value that is the sentence counts: a `format!`, a `match`/`if` that
+    picks one (in a tuple pattern, the tuple's element at that name's
+    position), or a plain literal. A sentence built inside a call — an error in
+    `ok_or_else(|| format!(…))?` — is an outcome the surface shows in its own
     words, not a value a constructor gets handed.
     """
     found: dict[str, list[rust_source.Literal]] = {}
     for binding in BINDING.finditer(code):
-        name = binding.group(1) or binding.group(2)
-        value = code[binding.end():statement_end(code, binding.end())]
-        words = value.lstrip()
-        for prefix in ("&", "Some(", "Some (", "match ", "if "):
-            if words.startswith(prefix):
-                words = words[len(prefix):].lstrip()
-                break
-        if not words.startswith(("format!", "match ", "if ")):
-            literal = (stored_literal(code, starts, by_start, kept, binding.end(),
-                                      statement_end(code, binding.end()))
-                       if binding.group(1) else None)
-            if literal is not None and english_words(literal.value):
-                found.setdefault(name, []).append(literal)
-            continue
-        for literal in format_template(code, starts, by_start, binding.end(),
-                                       statement_end(code, binding.end())):
-            if kept[literal.start] == "x" and english_words(literal.value):
-                found.setdefault(name, []).append(literal)
+        begin = binding.end()
+        end = statement_end(code, begin)
+        value = code[begin:end].lstrip()
+        for wrapper in ("&", "Some(", "Some ("):
+            if value.startswith(wrapper):
+                value = value[len(wrapper):].lstrip()
+        selection = value.startswith(("match ", "if "))
+        for name, element in bound_names(binding):
+            ranges = ([(begin, end)] if element is None
+                      else tuple_arms(code, begin, end, element))
+            for range_begin, range_end in ranges:
+                words = [literal for literal
+                         in format_template(code, starts, by_start, range_begin, range_end)
+                         if kept[literal.start] == "x" and english_words(literal.value)]
+                if element is None:
+                    stored = (stored_literal(code, starts, by_start, kept, range_begin,
+                                             range_end)
+                              if binding.group(1) else None)
+                    if stored is not None and english_words(stored.value):
+                        words.append(stored)
+                if selection or element is not None:
+                    words.extend(literal for literal
+                                 in painted_literals(code, starts, by_start,
+                                                     range_begin, range_end)
+                                 if kept[literal.start] == "x"
+                                 and english_words(literal.value))
+                for literal in dict.fromkeys(words):
+                    found.setdefault(name, []).append(literal)
     return found
 
 
@@ -746,26 +880,150 @@ def named_in(code: str, begin: int, end: int, name: str) -> bool:
     return False
 
 
+FUNCTION = re.compile(r"\bfn\s+([a-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(")
+# A call to a helper: a free function, a method on `self`, an associated call.
+HELPER_CALL = r"(?<![\w$]){name}\s*\("
+
+
+def parameters(code: str, start: int) -> list[str]:
+    """A function's parameter names in order, from the `(` at `start - 1`; an
+    empty string where a pattern has no plain name, to keep the positions."""
+    end = rust_source.matching(code, start - 1) - 1
+    pieces = []
+    begin = position = start
+    generic = 0
+    while position < end:
+        char = code[position]
+        if char in "([{":
+            position = rust_source.matching(code, position)
+            continue
+        if char == "<":
+            generic += 1
+        elif char == ">" and code[position - 1] != "-":
+            generic = max(generic - 1, 0)
+        elif char == "," and generic == 0:
+            pieces.append(code[begin:position])
+            begin = position + 1
+        position += 1
+    pieces.append(code[begin:end])
+    names = []
+    for piece in pieces:
+        piece = piece.strip()
+        head = piece.split(":", 1)[0] if ":" in piece else piece
+        words = head.replace("&", " ").replace("mut ", " ").split()
+        name = words[-1] if words else ""
+        names.append(name if re.fullmatch(r"[a-z_][A-Za-z0-9_]*", name) else "")
+    return names
+
+
+def bare(argument_text: str, name: str) -> bool:
+    """`argument_text` is `name` itself, only wrapped or converted on the way."""
+    text = re.sub(r"^\s*(?:&\s*)?(?:(?:Some|String::from)\s*\(\s*)*", "", argument_text)
+    text = re.sub(r"(?:\s*\))*\s*(?:\.(?:into|to_string|to_owned|as_str|as_ref)\(\))*\s*$",
+                  "", text)
+    return text == name
+
+
+def helper_table(paths: list[Path]) -> dict[str, set[int]]:
+    """Per function of one crate, the argument indexes its callers fill with
+    copy: the parameter at that index reaches a text constructor, directly or
+    through another helper of the same crate.
+
+    A helper is a function a surface builds its words through
+    (`fn button(&self, id: &str, label: &str) -> Button`); a name defined more
+    than once says nothing with certainty about which one a call reaches, so
+    those are left out.
+    """
+    defined: dict[str, int] = {}
+    lands: dict[str, set[int]] = {}
+    flows: list[tuple[str, int, str, int]] = []
+    for path in paths:
+        text = path.read_text(errors="replace")
+        if "fn " not in text:
+            continue
+        code, _ = rust_source.lex(text)
+        for function in FUNCTION.finditer(code):
+            name = function.group(1)
+            defined[name] = defined.get(name, 0) + 1
+            names = parameters(code, function.end())
+            # A receiver is not an argument at a call site.
+            if names and names[0] == "self":
+                names = names[1:]
+            brace = code.find("{", function.end())
+            if not names or brace < 0:
+                continue
+            body_end = rust_source.matching(code, brace)
+            painted_at: set[tuple[int, str]] = set()
+            for call, index in TEXT_CONSTRUCTORS + SPEC_BUILDERS:
+                at = code.find(call, brace, body_end)
+                while at >= 0:
+                    begin, end = argument(code, at + len(call), index)
+                    if begin < end:
+                        painted_at.add((begin, code[begin:end]))
+                    at = code.find(call, at + len(call), body_end)
+            passed_on: list[tuple[str, int, str]] = []
+            for hand in re.finditer(r"[A-Za-z_][A-Za-z0-9_:]*\s*\(", code[brace:body_end]):
+                callee = hand.group(0)[:-1].strip().rsplit("::", 1)[-1]
+                open_paren = brace + hand.start() + len(hand.group(0)) - 1
+                for called, (begin, end) in enumerate(calls_of(code, open_paren)):
+                    if begin < end:
+                        passed_on.append((callee, called, code[begin:end]))
+            for index, parameter in enumerate(names):
+                if not parameter or parameter == "self":
+                    continue
+                if any(bare(source, parameter) for _, source in painted_at):
+                    lands.setdefault(name, set()).add(index)
+                for callee, called, source in passed_on:
+                    if bare(source, parameter):
+                        flows.append((name, index, callee, called))
+    changed = True
+    while changed:
+        changed = False
+        for caller, caller_index, callee, callee_index in flows:
+            if callee_index in lands.get(callee, set()):
+                if caller_index not in lands.setdefault(caller, set()):
+                    lands[caller].add(caller_index)
+                    changed = True
+    return {name: indexes for name, indexes in lands.items() if defined[name] == 1}
+
+
+def calls_of(code: str, open_paren: int):
+    """The argument ranges of the call whose `(` is at `open_paren`."""
+    close = rust_source.matching(code, open_paren) - 1
+    yield from top_level_parts(code, open_paren + 1, close)
+
+
 def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
     """(file, line, text) of each English literal handed to a copy builder by a
-    crate that ships translations, in production code; and of each literal or
-    `format!` sentence a surface hands to a text constructor."""
+    crate that ships translations, in production code; of each literal or
+    `format!` sentence a surface hands to a text constructor or through a
+    helper of its crate; and of each title it publishes for a resource or an
+    action."""
     from check_app_copy import first_argument
 
     units = translated_units(root)
     windows = surfaces(root)
+    sources = rust_sources(root)
+    by_crate: dict[str, list[Path]] = {}
+    for path in sources:
+        location = path.relative_to(root).as_posix()
+        for crate in windows:
+            if location.startswith(f"{crate}/"):
+                by_crate.setdefault(crate, []).append(path)
+    helpers: dict[str, dict[str, set[int]]] = {}
     found = []
-    for path in rust_sources(root):
+    for path in sources:
         unit = path.relative_to(root).as_posix()
         builder_unit = any(unit.startswith(f"{crate}/") for crate in units)
-        window = any(unit.startswith(f"{crate}/") for crate in windows)
+        crate = next((c for c in windows if unit.startswith(f"{c}/")), None)
+        window = crate is not None
         if not builder_unit and not window:
             continue
         text = path.read_text(errors="replace")
         builders = tuple(b for b in COPY_BUILDERS if b in text) if builder_unit else ()
         labels = builder_unit and ACTION_LABEL.search(text) is not None
         if (not builders and not labels
-                and not any(call in text for call, _ in TEXT_CONSTRUCTORS)):
+                and not any(call in text for call, _ in TEXT_CONSTRUCTORS + SPEC_BUILDERS)):
             continue
         code, literals = rust_source.lex(text)
         marked = list(code)
@@ -783,6 +1041,20 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 if kept[literal.start] == "x" and english_words(literal.value):
                     hits.append(literal)
 
+        def sentences(begin: int, end: int, close: int, bindings) -> None:
+            """The words at `[begin, end)`, and a sentence or a selected local
+            anywhere in the call ending at `close`."""
+            painted(begin, end)
+            for literal in format_template(code, starts, by_start, begin, close):
+                if kept[literal.start] == "x" and english_words(literal.value):
+                    hits.append(literal)
+            for name, stored in bindings.items():
+                if not named_in(code, begin, close, name):
+                    continue
+                for literal in stored:
+                    if kept[literal.start] == "x":
+                        hits.append(literal)
+
         for builder in builders:
             start = code.find(builder)
             while start >= 0:
@@ -795,35 +1067,24 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                     if window or labels else {})
         if labels:
             for field in ACTION_LABEL.finditer(code):
-                begin = field.end()
-                end = statement_end(code, begin)
-                painted(begin, end)
-                for literal in format_template(code, starts, by_start, begin, end):
-                    if kept[literal.start] == "x" and english_words(literal.value):
-                        hits.append(literal)
-                for name, stored in bindings.items():
-                    if not named_in(code, begin, end, name):
-                        continue
-                    for literal in stored:
-                        if kept[literal.start] == "x":
-                            hits.append(literal)
+                end = statement_end(code, field.end())
+                sentences(field.end(), end, end, bindings)
         if window:
-            for call, index in TEXT_CONSTRUCTORS:
+            for call, index in TEXT_CONSTRUCTORS + SPEC_BUILDERS:
                 start = code.find(call)
                 while start >= 0:
                     begin, end = argument(code, start + len(call), index)
-                    painted(begin, end)
-                    close = rust_source.matching(code, start + len(call) - 1)
-                    for literal in format_template(code, starts, by_start, begin, close):
-                        if kept[literal.start] == "x" and english_words(literal.value):
-                            hits.append(literal)
-                    for name, stored in bindings.items():
-                        if not named_in(code, begin, close, name):
-                            continue
-                        for literal in stored:
-                            if kept[literal.start] == "x":
-                                hits.append(literal)
+                    sentences(begin, end, rust_source.matching(code, start + len(call) - 1),
+                              bindings)
                     start = code.find(call, start + len(call))
+            if crate not in helpers:
+                helpers[crate] = helper_table(by_crate[crate])
+            for name, indexes in helpers[crate].items():
+                pattern = re.compile(HELPER_CALL.format(name=re.escape(name)))
+                for hand in pattern.finditer(code):
+                    for index in indexes:
+                        begin, end = argument(code, hand.end(), index)
+                        sentences(begin, end, end, bindings)
         for literal in dict.fromkeys(hits):
             found.append((
                 path.relative_to(root).as_posix(),

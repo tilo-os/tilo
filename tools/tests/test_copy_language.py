@@ -358,6 +358,101 @@ class CopyLanguageTests(unittest.TestCase):
                 "is what the menu and the action directory show; a field that "
                 "holds a person's own content is not copy")
 
+    def test_a_table_of_names_reaches_the_accessible_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn node(&self, action: &Action) -> Node {",
+                "    let (role, name, state) = match action {",
+                '        Action::Back => (Role::Button, "Back".into(), State::new()),',
+                "        Action::Shutter => (",
+                "            Role::Button,",
+                '            if self.counting { "Cancel capture timer" } else { "Take photo" }',
+                "                .into(),",
+                "            State::new(),",
+                "        ),",
+                '        Action::Photos => (Role::Button, "Open Photos".into(), State::new()),',
+                "    };",
+                "    AccessNode::new(role).with_name(name).with_state(state)",
+                "}",
+                "fn reference(&self) -> ResourceSpec {",
+                '    ResourceSpec::new("demo.thing", "demo.thing", CATALOG.t("demo-name"))',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Back", "Cancel capture timer", "Take photo", "Open Photos"],
+                "a name the table of a match picks is what the accessible name "
+                "shows, whether the pattern names it alone or in a tuple")
+
+    def test_a_helper_that_forwards_its_argument_paints_the_callers_words(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn button(&self, id: &str, label: &str, action: Action) -> Button {",
+                "    Button::new(id, label).on_effect(self.command(action))",
+                "}",
+                "fn action_button(&self, label: &str) -> Button {",
+                '    self.button("demo.action", label, Action::Go)',
+                "}",
+                "fn treated(&self, text: &str) -> Box<dyn Widget> {",
+                "    Box::new(Text::new(text).with_role(TextRole::Body))",
+                "}",
+                "fn panel(&self) -> Node {",
+                '    self.button("demo.fill", "Fill login", Action::Fill);',
+                '    self.action_button("Delete account");',
+                '    self.treated(CATALOG.t("demo-name"));',
+                '    self.treated(word);',
+                "    Node::new(Role::Panel)",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Fill login", "Delete account"],
+                "a helper hands its parameter to a label, so a literal at that "
+                "position at any call site is painted — also through a second "
+                "helper; a catalogue key or a value is not")
+
+    def test_a_resource_title_and_an_action_reason_are_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn resources(&self) -> Vec<ResourceSpec> {",
+                '    let session = ResourceSpec::new("demo.session", "demo.session",',
+                '        if self.paused() { "History paused" } else { "History recording" });',
+                "    let clear = E::ClearHistory",
+                '        .bound()',
+                '        .unavailable("already_empty", "Browsing history is already empty");',
+                '    let history = ResourceSpec::new("demo.history", "demo.history",',
+                '        CATALOG.t("demo-name"));',
+                "    vec![session, clear, history]",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["History paused", "History recording",
+                 "Browsing history is already empty"],
+                "a resource's title and the reason an action is unavailable are "
+                "rows a person reads in the action directory")
+
     def test_the_tree_passes(self):
         self.assertEqual(
             copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS,
