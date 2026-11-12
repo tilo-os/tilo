@@ -697,9 +697,10 @@ impl Worker {
             .bounded_replica(workspace_id, who, route, state)
             .map_err(Outcome::Rejected)?;
         // Out of the map while it runs, and back in once what it changed is
-        // saved: a caller's next action reuses what they opened instead of
-        // opening the record afresh, which costs more with every change the
-        // record holds. An action whose change is not saved leaves it behind,
+        // handed over: a caller's next action reuses what they opened instead
+        // of opening the record afresh, which costs more with every change
+        // the record holds. An action whose change is refused leaves it
+        // behind, and one not saved at once lets it go ([`Worker::saved`]),
         // so nothing unsaved is ever acted on.
         let held = self
             .bounded
@@ -764,7 +765,8 @@ impl Worker {
     /// Save what an action changed for `who`: every field of every change
     /// checked against their standing read now, so that a member removed or
     /// narrowed since their replica opened writes nothing, and only then
-    /// applied here and saved durably.
+    /// applied here and handed to the session: the action is done once the
+    /// host holds it ([`Worker::saving`]).
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -818,7 +820,7 @@ impl Worker {
                     tracing::warn!(%error, "workspace actions: a change made for someone did not merge here");
                 }
             }
-            self.commit_durably(workspace_id, &changed, &mutation)
+            self.commit(workspace_id, &changed, &mutation)
                 .map_err(|reason| super::commit_failed(reason, true))?;
         }
         Ok(())

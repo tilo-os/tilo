@@ -165,3 +165,82 @@ fn a_request_waits_only_for_the_keys_of_what_it_reads() {
         "acting on a record always waits for its keys"
     );
 }
+
+/// A write answered pending ends as its save does: done once the host holds
+/// it, failed with the host's reason when it refuses it, and failed when the
+/// session ends before the host held it. Until then it cannot be cancelled:
+/// it ran.
+#[test]
+fn a_pending_write_settles_as_its_save_does() {
+    use std::sync::{Arc, Mutex, mpsc};
+    use tilo_actions::remote::{InvokeRequest, RemoteActionTarget};
+    use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
+    let caller = tilo_actions::remote::Caller::local_person("ada");
+    let request = || InvokeRequest {
+        on_behalf_of: None,
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: "record:so.tilo.notes".into(),
+            address: tilo_actions::door::ActionAddress::new("notes.page", "append"),
+        },
+        argument: tilo_actions::remote::InvokeArgument::default(),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let ledger = Arc::new(Mutex::new(super::Ledger::default()));
+    // Each write: its save's outcome, sent or dropped, and how it settled.
+    let settle = |outcome: Option<Result<(), String>>| {
+        let asked = request();
+        let invocation = asked.invocation;
+        {
+            let mut held = ledger.lock().unwrap();
+            assert!(held.insert(&caller, asked));
+            held.entries.get_mut(&invocation).unwrap().saving = true;
+        }
+        let (answer, saved) = tilo_session_client::answer();
+        let (settled, heard) = mpsc::channel();
+        let shared = Arc::clone(&ledger);
+        super::publish::Unsaved::waiting(saved).settle(move |saved| {
+            super::publish::settle_saved(&shared, invocation, ActionOutput::default(), saved);
+            let _ = settled.send(());
+        });
+        match outcome {
+            Some(outcome) => {
+                let _ = answer.send(outcome);
+            }
+            None => drop(answer),
+        }
+        heard
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the save's outcome settles the write");
+        let (saving, update) = ledger
+            .lock()
+            .unwrap()
+            .entries
+            .get(&invocation)
+            .map(|entry| (entry.saving, entry.update.clone()))
+            .unwrap();
+        assert!(!saving, "a settled write is saving no more");
+        update
+    };
+
+    assert!(
+        matches!(settle(Some(Ok(()))), InvocationUpdate::Succeeded { .. }),
+        "a write the host holds is done"
+    );
+    let refused = settle(Some(Err("workspace membership changed".into())));
+    assert!(
+        matches!(&refused, InvocationUpdate::Failed { error, .. }
+            if error.message.contains("workspace membership changed") && error.retryable),
+        "a write the host refuses fails with its reason: {refused:?}"
+    );
+    let ended = settle(None);
+    assert!(
+        matches!(&ended, InvocationUpdate::Failed { error, .. }
+            if error.message.contains("session ended")),
+        "a write whose session ended unsaved fails: {ended:?}"
+    );
+}

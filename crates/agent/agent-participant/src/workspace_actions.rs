@@ -584,6 +584,11 @@ impl WorkspaceActions {
                 reason: "the action is already running".into(),
             });
         }
+        if entry.saving {
+            return Err(ActionHostError::NotCancellable {
+                reason: "the action ran; its change is being saved".into(),
+            });
+        }
         entry.update = InvocationUpdate::Cancelled {
             invocation: *id,
             message: Some("cancelled before it started".into()),
@@ -666,6 +671,9 @@ struct Mounted {
 fn is_part(record: &str) -> bool {
     ui::record::RecordId::parse(record).is_some_and(|id| id.chain_part().is_some())
 }
+
+/// What running an action came to: its answer and where it left its actor.
+pub(super) type Performed = Result<(ActionOutput, Option<ActorPlace>), Outcome>;
 
 /// A record saved, and the revision it was saved at.
 type Saved = (Vec<u8>, [u8; 32]);
@@ -1101,6 +1109,10 @@ struct Worker {
     /// What the apps call the records the host changes, read in a confined
     /// worker kept for the next ([`publish`]).
     titles: crate::worker::ConfinedTitles,
+    /// The writes the job being served handed to the session, by workspace:
+    /// an invocation is answered done only once the host holds them
+    /// ([`publish::Worker::saving`]).
+    handed: HashMap<u64, Vec<publish::Written>>,
 }
 
 /// The door's answer for an action it has nothing by that address.
@@ -1230,6 +1242,7 @@ impl Worker {
             titles: crate::worker::ConfinedTitles::default(),
             joining: HashMap::new(),
             clock: 0,
+            handed: HashMap::new(),
         }
     }
 
@@ -1546,6 +1559,9 @@ impl Worker {
                 )),
             }
         }
+        // What a job that answers no invocation wrote (a run it records), or
+        // what a failed one wrote before it failed, is logged once saved.
+        self.watch_handed();
     }
 
     fn ledger(&self) -> std::sync::MutexGuard<'_, Ledger> {
@@ -2064,7 +2080,8 @@ impl Worker {
         if let Some(receipt) = self.terminal(workspace_id, &caller, &request) {
             return receipt;
         }
-        let outcome = self.perform(workspace_id, &caller, &request);
+        let performed = self.perform(workspace_id, &caller, &request);
+        let (outcome, unsaved) = self.saved(workspace_id, performed);
         let about = self
             .ledger()
             .entries
@@ -2090,6 +2107,10 @@ impl Worker {
             &request,
             (&run_voice::ended_phase(&outcome), left),
         );
+        let outcome = match (outcome, unsaved) {
+            (Ok(done), Some(unsaved)) => return self.answer_pending(invocation, done, unsaved),
+            (outcome, _) => outcome,
+        };
         let mut ledger = self.ledger();
         ledger.running = None;
         let (update, left_at) = match outcome {
@@ -2457,9 +2478,9 @@ impl Worker {
     }
 
     /// Commit what the owner's action changed, each record on its own
-    /// route: a part it started is held beside the record it acted on.
-    /// Whether the host comes to hold each durably is logged
-    /// ([`Self::watch_saved`]). The error is why a commit failed.
+    /// route: a part it started is held beside the record it acted on. The
+    /// action is done once the host holds them ([`Self::saving`]). The error
+    /// is why a commit failed.
     fn commit_taken(
         &mut self,
         workspace_id: u64,
@@ -2467,15 +2488,12 @@ impl Worker {
         taken: Vec<(DocumentRoute, DocumentMutation)>,
     ) -> Result<(), String> {
         let holder = self.holder_of(route);
-        let mut written = Vec::with_capacity(taken.len());
         for (changed, mutation) in taken {
             if changed != holder {
                 self.beside.insert(changed.clone(), holder.clone());
             }
             self.commit(workspace_id, &changed, &mutation)?;
-            written.push(publish::Written::of(&changed, &mutation));
         }
-        self.watch_saved(workspace_id, written);
         Ok(())
     }
 

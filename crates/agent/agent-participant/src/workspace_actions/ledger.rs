@@ -25,6 +25,9 @@ pub(super) struct Entry {
     /// The person was asked to allow it ([`super::bounded`]): it was answered
     /// accepted, and settles as failed rather than being forgotten.
     pub(super) asked: bool,
+    /// It ran, and is answered done once the host holds what it changed:
+    /// too late to cancel.
+    pub(super) saving: bool,
     /// The token naming the person's answer, once they allowed it.
     pub(super) witness: Option<String>,
     /// What the person is asked about it, once it waits for their answer
@@ -71,6 +74,7 @@ impl Ledger {
                 left_at: None,
                 stop: None,
                 asked: false,
+                saving: false,
                 witness: None,
                 about: None,
             },
