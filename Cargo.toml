@@ -250,6 +250,7 @@ members = [
     "crates/doc/tilo-doc",
     "crates/doc/tilo-doc-codecs",
     "crates/doc/tilo-document",
+    "crates/doc/tilo-docs",
     "crates/doc/tilo-doc-pdf",
     "crates/doc/tilo-automerge",
     "crates/doc/tilo-automerge-isolate",

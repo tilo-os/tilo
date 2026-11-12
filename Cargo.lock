@@ -18780,6 +18780,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-docs"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "clap",
+ "pulldown-cmark",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-document"
 version = "0.1.0"
 dependencies = [
