@@ -46,8 +46,30 @@ const browserArgs = [
   '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
+  // Chromium's own log on stderr: why a renderer or the GPU process died is said there.
+  '--enable-logging=stderr', '--v=0',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ];
+
+// The memory the browser's processes hold, read from /proc as the gate runs the browser beside
+// this script: each renderer and the GPU process (which holds a software GPU's buffers), and what
+// the machine has left. Sampled while a tab runs, so a renderer that dies says what it held.
+const browserMemory = () => {
+  const kib = (text, field) => Number(text.match(new RegExp(`^${field}:\\s+(\\d+) kB`, 'm'))?.[1] ?? 0);
+  const processes = [];
+  for (const pid of readdirSync('/proc').filter(name => /^\d+$/.test(name))) {
+    try {
+      const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+      const type = command.match(/--type=([a-z-]+)/)?.[1];
+      if (!type || !['renderer', 'gpu-process'].includes(type)) continue;
+      const status = readFileSync(`/proc/${pid}/status`, 'utf8');
+      processes.push(`${type} ${pid}: ${Math.round(kib(status, 'VmRSS') / 1024)} MiB (peak ${Math.round(kib(status, 'VmHWM') / 1024)} MiB)`);
+    } catch { /* gone between the listing and the read */ }
+  }
+  let available = '?';
+  try { available = `${Math.round(kib(readFileSync('/proc/meminfo', 'utf8'), 'MemAvailable') / 1024)} MiB`; } catch {}
+  return `${processes.join(', ') || 'no renderer or GPU process'}; the machine has ${available} available`;
+};
 
 const finish = async (code, message) => {
   if (message) report.error = message;
@@ -205,11 +227,35 @@ const visit = async name => {
     } else if (method === 'Page.frameNavigated' && !params.frame.parentId) tab.log.push(`${at()} PAGE now at ${address(params.frame.url)}`);
     else if (method === 'Page.navigatedWithinDocument') tab.log.push(`${at()} PAGE moved within to ${address(params.url)}`);
     else if (method === 'Page.javascriptDialogOpening') tab.log.push(`${at()} PAGE dialog ${params.type}: ${params.message}`);
-    else if (method === 'Inspector.targetCrashed') tab.log.push(`${at()} PAGE the renderer crashed`);
+    else if (method === 'Inspector.targetCrashed') {
+      tab.log.push(`${at()} PAGE the renderer crashed; just before, ${lastMemory}`);
+      tab.log.push(`${at()} PAGE memory now: ${browserMemory()}`);
+      // The browser reports a renderer's end a moment after the event.
+      setTimeout(() => tab.log.push(`${at()} PAGE the browser said:\n${browser.crashLines() || '(nothing)'}`), 1000);
+    }
     else if (method === 'Page.loadEventFired') tab.log.push(`${at()} PAGE loaded`);
     else if (method === 'Runtime.consoleAPICalled' && !['error', 'warning'].includes(params.type)) {
       tab.log.push(`${params.type.toUpperCase()} ${params.args.map(a => a.value ?? a.description ?? '').join(' ')}`.slice(0, 600));
     }
+  });
+  // The page's own heap and the browser's processes, every half second, so the sample from
+  // just before a crash is in the log; and before every navigation the page asks for.
+  let lastMemory = 'nothing sampled';
+  const sample = async () => {
+    const heap = await tab.evaluate('JSON.stringify(performance.memory ? {usedJSHeapMiB: Math.round(performance.memory.usedJSHeapSize / 1048576), totalJSHeapMiB: Math.round(performance.memory.totalJSHeapSize / 1048576)} : null)', {timeout: 400})
+      .catch(() => 'no answer');
+    lastMemory = `at ${at()}: page heap ${heap}; ${browserMemory()}`;
+  };
+  let sampling = false;
+  const sampler = setInterval(() => {
+    if (sampling) return;
+    sampling = true;
+    sample().catch(() => {}).finally(() => { sampling = false; });
+  }, 500);
+  sampler.unref?.();
+  browser.on(({sessionId, method}) => {
+    if (sessionId !== tab.sessionId || method !== 'Page.frameRequestedNavigation') return;
+    tab.log.push(`${at()} PAGE memory before it: ${lastMemory}`);
   });
   await tab.send('Network.enable', {}).catch(() => {});
   await tab.send('Inspector.enable', {}).catch(() => {});
