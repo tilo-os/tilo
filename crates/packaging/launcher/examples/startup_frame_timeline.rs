@@ -1,14 +1,31 @@
 //! Execute the synthetic native-app startup proof in the build environment.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+/// The checkout this program runs in: the tree above it that holds the tool. A build made in
+/// another checkout (`/src/tilo` on a builder) names that one at compile time, and the tree beside
+/// the executable is the one whose tools run here.
+fn repo(exe: &Path) -> PathBuf {
+    let tool = Path::new("scripts/headless-examples/startup-frame-timeline.py");
+    exe.ancestors()
+        .skip(1)
+        .find(|directory| directory.join(tool).is_file())
+        .map_or_else(
+            || {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap_or(Path::new("."))
+                    .to_path_buf()
+            },
+            Path::to_path_buf,
+        )
+}
+
 fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(3)
-        .ok_or("launcher crate must live under crates/packaging")?;
     let exe = std::env::current_exe()?;
+    let repo = repo(&exe);
     let binaries = exe
         .parent()
         .and_then(Path::parent)

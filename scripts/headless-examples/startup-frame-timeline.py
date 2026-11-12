@@ -2,6 +2,8 @@
 """Measure a native SDK test payload through the production sandbox launcher.
 
 No app installation, identity enrollment, file grants or app networking. The
+payload carries the build's pinned font catalog beside its executable, as an
+installed app does; without one an app has no face to set its text in. The
 headless developer fixture is separate from an ordinary first-login OS session.
 Window-frame observation is not physical display or device-to-photon latency.
 """
@@ -16,6 +18,7 @@ import pathlib
 import shutil
 import signal
 import subprocess
+import sys
 import time
 
 from _control import call
@@ -181,6 +184,19 @@ def stop(child: subprocess.Popen | None) -> None:
         child.wait(timeout=5)
 
 
+def prepare_fonts(payload: pathlib.Path, profile: pathlib.Path) -> None:
+    """Lay the faces the app sets its text in beside its executable, as an installed app carries
+    them: this build's pinned catalog, prepared by the tree's own tooling from the artifact cache.
+    A payload without one draws nothing — text layout has no font to measure."""
+    cache = os.environ.get("TILO_FONT_ASSET_CACHE") or str(profile / "cache/font-artifacts")
+    subprocess.run(
+        [sys.executable, "-I", str(REPO / "tools/font-catalog.py"), "prepare",
+         str(REPO / "crates/sdk/ui-core/assets/fonts"), str(payload / "bin/fonts"),
+         "--scope", "fixtures", "--cache", cache],
+        check=True, stdout=subprocess.DEVNULL,
+    )
+
+
 def windows(sock: pathlib.Path) -> list[dict]:
     """The desk's open windows: each with `window`, `app_id`, `rect` (`[x, y, width, height]`,
     null while no window of the tab is mapped) and `frames`, the frames its client committed."""
@@ -288,6 +304,7 @@ def main() -> None:
     payload = out / "payload"
     (payload / "bin").mkdir(parents=True)
     shutil.copy2(paths["probe"], payload / "bin/probe")
+    prepare_fonts(payload, profile)
     seed_dir = (payload / "startup-mesa-seed" if args.mesa_seed_source == "package"
                 else runtime / "tilo/pipeline-seed")
     try:
