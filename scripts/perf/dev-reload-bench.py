@@ -92,6 +92,26 @@ class Lines:
                 self.cond.wait(remaining)
 
 
+def kill_named(fragment: str) -> None:
+    """Kill every process whose command line names `fragment`.
+
+    The app's runtime daemon leaves the development run's group when it
+    daemonizes, and its profile sits under this run's directory either way.
+    """
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            command = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        if fragment.encode() in command:
+            try:
+                os.kill(int(entry.name), signal.SIGKILL)
+            except OSError:
+                pass
+
+
 def kill_group(proc: subprocess.Popen, sig=signal.SIGTERM, grace=5.0):
     if proc.poll() is not None:
         return
@@ -286,6 +306,7 @@ def main() -> int:
         if dev is not None:
             kill_group(dev, signal.SIGINT, grace=15)
         kill_group(compositor)
+        kill_named(str(runtime))
         comp_log.close()
     reports = []
     if not args.no_timings:
