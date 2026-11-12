@@ -535,6 +535,40 @@ impl CommittedDocument {
         // between its check and its wait is never missed.
         self.merge_wake.notify_one();
     }
+    /// Take this capture into `document`, the owner's copy of the route's
+    /// record, through `merge`, the owner's own receive path, which merges
+    /// it with whatever the owner made meanwhile: acknowledged once merged
+    /// ([`Self::applied`]), so the reader confirms it and the route opens
+    /// again. Changes the owner holds no base of, or cannot read, are
+    /// refused ([`Self::refuse`]) and said why: the reader reads the
+    /// document whole instead. `None` when nothing was merged.
+    pub fn take_into<D: automerge::ReadDoc, T, E: std::fmt::Display>(
+        &self,
+        document: &mut D,
+        merge: impl FnOnce(&mut D, &collab_types::DocumentMutation) -> Result<T, E>,
+    ) -> Option<T> {
+        if !self.is_current() {
+            return None;
+        }
+        if !self.applies_to(document) {
+            tracing::warn!("committed changes refused: the owner holds none of their base");
+            self.refuse();
+            return None;
+        }
+        match self.with_mutation(|mutation| merge(document, mutation)) {
+            Ok(Ok(merged)) => {
+                self.applied();
+                Some(merged)
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "committed history refused: the owner cannot read it");
+                self.refuse();
+                None
+            }
+            // ignored-failure: the route's read was replaced; its reader no longer waits on this one
+            Err(_) => None,
+        }
+    }
     /// A current capture of `bytes`: the changes since `base`, or the whole
     /// document when `base` is `None`.
     #[cfg(any(test, feature = "test-support"))]

@@ -517,18 +517,7 @@ fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it
     // The person presses + in the window: its control is bound to the instance's own action, so
     // the window sends the invocation, and the instance runs it and commits it as their step.
     let before = documents_sent(&sent);
-    let address = hosted
-        .published()
-        .iter()
-        .find(|action| action.action_label == "Increment")
-        .expect("the instance publishes the action the button runs")
-        .address
-        .clone();
-    window.send(&[ToApp::Invoke {
-        address,
-        argument: None,
-    }]);
-    settle(&mut host, &mut window);
+    press_increment(&mut host, &mut window);
     let hosted = host.instances().next().unwrap();
     assert_eq!(value_of(hosted), 1, "the press reached the runtime");
     assert!(
@@ -571,6 +560,75 @@ fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it
         (true, false),
         "and it is ada's to undo again"
     );
+}
+
+/// The person at `window` presses the counter's +: the instance runs the action it publishes.
+fn press_increment(host: &mut TilolangHost, window: &mut Window) {
+    let address = host
+        .instances()
+        .next()
+        .unwrap()
+        .published()
+        .iter()
+        .find(|action| action.action_label == "Increment")
+        .expect("the instance publishes the action the button runs")
+        .address
+        .clone();
+    window.send(&[ToApp::Invoke {
+        address,
+        argument: None,
+    }]);
+    settle(host, window);
+}
+
+/// What grace did in her window on another device reaches ada's hosted window as the workspace's
+/// committed read of the record: ada sees it, beside the press she made meanwhile, and the read
+/// is acknowledged, so her connection's reader confirms it and the record takes her next change.
+#[test]
+fn another_devices_edit_shows_in_a_hosted_window_beside_its_own() {
+    let (mut host, mut window, _sent, inbox, route) = running("ada");
+    settle(&mut host, &mut window);
+    let held = host.instances().next().unwrap().record().doc().clone();
+    let (mut elsewhere, mut graces, _, _, _) =
+        running_on("grace", APP, counter(), Rc::default(), held);
+    settle(&mut elsewhere, &mut graces);
+    press_increment(&mut elsewhere, &mut graces);
+    let theirs = elsewhere
+        .instances()
+        .next()
+        .unwrap()
+        .record()
+        .doc()
+        .clone()
+        .save();
+
+    press_increment(&mut host, &mut window);
+    let mine = host
+        .instances()
+        .next()
+        .unwrap()
+        .record()
+        .doc()
+        .clone()
+        .get_heads();
+    let read = collaboration::CommittedDocument::for_test(theirs, None);
+    inbox
+        .borrow_mut()
+        .push_back(CollabEvent::CommittedDocument {
+            route,
+            read: read.clone(),
+        });
+    settle(&mut host, &mut window);
+
+    let hosted = host.instances().next().unwrap();
+    assert_eq!(value_of(hosted), 2, "grace's press shows beside ada's");
+    let mut record = hosted.record().doc().clone();
+    assert!(
+        mine.iter()
+            .all(|head| record.get_change_by_hash(head).is_some()),
+        "ada's own press is kept"
+    );
+    assert!(read.was_applied(), "the read is acknowledged once merged");
 }
 
 /// The last change a window's press sent the workspace.

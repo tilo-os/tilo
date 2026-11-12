@@ -1133,14 +1133,9 @@ impl InstanceRecord {
             return;
         };
         let request = CollabRequest::document_snapshot(doc.committed_document().save());
-        let sent = match self.send_on(chunk, request) {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::warn!(chunk, %error, "workspace: a snapshot for a late joiner was not sent");
-                false
-            }
-        };
-        let _ = sent;
+        if let Err(error) = self.send_on(chunk, request) {
+            tracing::warn!(chunk, %error, "workspace: a snapshot for a late joiner was not sent");
+        }
     }
 
     /// Commit every change `instance` queued for the workspace, in order, as a step each, and send
@@ -1508,12 +1503,41 @@ impl InstanceRecord {
         let mut record_changed = false;
         let mut routes = self.taken_routes();
         for event in self.manager.poll() {
-            let (envelope, decrypted_payload) = match event {
+            let (chunk, before, applied) = match event {
                 CollabEvent::Document {
                     envelope,
                     decrypted_payload,
                     ..
-                } => (envelope, decrypted_payload),
+                } => {
+                    let Some(taken) =
+                        self.take_document(&routes, &envelope, decrypted_payload.as_deref())
+                    else {
+                        continue;
+                    };
+                    taken
+                }
+                CollabEvent::CommittedDocument { route, read } => {
+                    // What the workspace committed of a route this replica holds, read for it
+                    // by the broker: another replica's changes, or the whole record once this one
+                    // was handed nothing of it. It is merged with what this replica made
+                    // meanwhile, as a change arriving on the route is, and acknowledged then.
+                    let Some(&(_, chunk)) = routes.iter().find(|(held, _)| *held == route) else {
+                        tracing::warn!(
+                            "workspace: a committed read of another route was not taken in"
+                        );
+                        continue;
+                    };
+                    let before = self
+                        .chunks
+                        .mirror(chunk)
+                        .map(Doc::committed_heads)
+                        .unwrap_or_default();
+                    let Some(applied) = read.take_into(self.open_chunk(chunk), load_mutation)
+                    else {
+                        continue;
+                    };
+                    (chunk, before, applied)
+                }
                 CollabEvent::DocumentSnapshotRequested { route } => {
                     // The broker chose this connection as the one that answers a late joiner of
                     // the record or of one of its chunks: nobody else does, so it is answered
@@ -1527,51 +1551,6 @@ impl InstanceRecord {
                     other(event);
                     continue;
                 }
-            };
-            // The envelope names the route it was sealed for: the record's, or the route of the
-            // chunk its content belongs to.
-            let mut taken = None;
-            for (route, chunk) in routes.clone() {
-                let Some(payload) =
-                    validated_route_payload_with(&route, &envelope, decrypted_payload.as_deref())
-                else {
-                    continue;
-                };
-                let mutation =
-                    match decode_routed_mutation(&route, payload, decrypted_payload.as_deref()) {
-                        Ok(mutation) => mutation,
-                        Err(error) => {
-                            tracing::warn!(
-                                ?error,
-                                "workspace: a change that does not decode was not taken in"
-                            );
-                            break;
-                        }
-                    };
-                let before = self
-                    .chunks
-                    .mirror(chunk)
-                    .map(Doc::committed_heads)
-                    .unwrap_or_default();
-                let loaded = match &mutation {
-                    DocumentMutation::Incremental(bytes) => {
-                        self.open_chunk(chunk).load_incoming(bytes)
-                    }
-                    DocumentMutation::Snapshot(bytes) => {
-                        self.open_chunk(chunk).load_incoming_whole(bytes)
-                    }
-                };
-                match loaded {
-                    Ok(applied) => taken = Some((chunk, before, applied)),
-                    Err(error) => {
-                        tracing::warn!(%error, chunk, "workspace: a change was not taken in");
-                    }
-                }
-                break;
-            }
-            let Some((chunk, before, applied)) = taken else {
-                tracing::warn!("workspace: a change for another route was not taken in");
-                continue;
             };
             // What is taken in counts as a change only when the chunk gained one: a change this
             // replica made comes back on its own route (the broker hands every holder what a
@@ -1591,6 +1570,59 @@ impl InstanceRecord {
             self.join_chunks();
         }
         changed
+    }
+
+    /// Take in a change that arrived on one of `routes` as the signed `envelope` the broker
+    /// relays: the chunk it was of, its heads before, and how many changes it gained.
+    fn take_document(
+        &mut self,
+        routes: &[(RouteSpec, ChunkNo)],
+        envelope: &collab_types::SignedOp,
+        decrypted_payload: Option<&[u8]>,
+    ) -> Option<(ChunkNo, Vec<ChangeHash>, usize)> {
+        // The envelope names the route it was sealed for: the record's, or the route of the
+        // chunk its content belongs to.
+        for (route, chunk) in routes {
+            let Some(payload) = validated_route_payload_with(route, envelope, decrypted_payload)
+            else {
+                continue;
+            };
+            let mutation = match decode_routed_mutation(route, payload, decrypted_payload) {
+                Ok(mutation) => mutation,
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        "workspace: a change that does not decode was not taken in"
+                    );
+                    return None;
+                }
+            };
+            let before = self
+                .chunks
+                .mirror(*chunk)
+                .map(Doc::committed_heads)
+                .unwrap_or_default();
+            return match load_mutation(self.open_chunk(*chunk), &mutation) {
+                Ok(applied) => Some((*chunk, before, applied)),
+                Err(error) => {
+                    tracing::warn!(%error, chunk, "workspace: a change was not taken in");
+                    None
+                }
+            };
+        }
+        tracing::warn!("workspace: a change for another route was not taken in");
+        None
+    }
+}
+
+/// Take `mutation` into `doc`, merged with what `doc` holds: the number of changes it gained.
+fn load_mutation(
+    doc: &mut Doc,
+    mutation: &DocumentMutation,
+) -> Result<usize, automerge::AutomergeError> {
+    match mutation {
+        DocumentMutation::Incremental(bytes) => doc.load_incoming(bytes),
+        DocumentMutation::Snapshot(bytes) => doc.load_incoming_whole(bytes),
     }
 }
 

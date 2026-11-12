@@ -239,6 +239,13 @@ mod portable_committed {
         pub fn refuse(&self) {
             match self.never {}
         }
+        pub fn take_into<D, T, E>(
+            &self,
+            _document: &mut D,
+            _merge: impl FnOnce(&mut D, &collab_types::DocumentMutation) -> Result<T, E>,
+        ) -> Option<T> {
+            match self.never {}
+        }
     }
 }
 pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};

@@ -72,6 +72,7 @@ tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tempfile.workspace = true
 uuid.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 # The toolkit's words, as the session's hosts read them: what the tests' published
 # types are labelled in.
 tilo-ui-host = { version = "0.1.0", path = "../tilo-ui-host" }

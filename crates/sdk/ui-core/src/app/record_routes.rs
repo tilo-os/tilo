@@ -460,29 +460,11 @@ impl RouteDocument {
     fn apply_committed(&mut self, doc: &mut AutoCommit) -> bool {
         let mut merged = false;
         for read in std::mem::take(&mut self.committed) {
-            if !read.is_current() {
-                continue;
-            }
-            if !read.applies_to(&*doc) {
-                read.refuse();
-                continue;
-            }
             let before = doc.get_heads();
-            let applied = read.with_mutation(|mutation| {
-                crate::history_mode::routes::merge_committed(doc, mutation)
-            });
-            match applied {
-                Ok(Ok(changed)) => {
-                    read.applied();
-                    merged |= changed;
-                    self.observed(&before, doc);
-                }
-                Ok(Err(error)) => {
-                    tracing::warn!(%error, "a held route delivered unreadable committed history");
-                }
-                Err(error) => {
-                    tracing::debug!(%error, "a held route's committed history was replaced")
-                }
+            if let Some(changed) = read.take_into(doc, crate::history_mode::routes::merge_committed)
+            {
+                merged |= changed;
+                self.observed(&before, doc);
             }
         }
         merged
