@@ -146,17 +146,17 @@ class BuilderCandidates(unittest.TestCase):
         # t has no aarch64 node, so only x86_64's runs anywhere by itself.
         self.assertNotIn('on', tests)
         [x86_64] = [s for s in tests['matrix']['set'] if s['when'] == {'arch': 'x86_64'}]
-        self.assertEqual(x86_64['on'], ['stable', 'dispatch', 'idle'])
+        self.assertEqual(x86_64['on'], ['dispatch', 'idle'])
         # Every signature and publication waits for the candidate's Chromium; a release
-        # candidate's also for its browser regressions, and a dispatched one where it runs.
+        # (dispatched on its tag) also for its browser regressions, a dev one where they ran.
         for name in ('sign-ci-builder', 'sign-dev-ci-builder', 'publish-ci-builder'):
             self.assertIn(smoke_check, checks[name]['needs'], name)
         self.assertIn(tests_check, checks['sign-ci-builder']['needs'])
-        self.assertEqual(checks['sign-ci-builder']['on'], ['stable'])
+        self.assertEqual(checks['sign-ci-builder']['on'], ['dispatch'])
         for name in ('sign-dev-ci-builder', 'publish-ci-builder'):
             self.assertIn(tests_check, checks[name]['optional_needs'], name)
             self.assertNotIn(tests_check, checks[name]['needs'], name)
-        self.assertIn('stable', checks['publish-ci-builder']['on'])
+        self.assertIn('dispatch', checks['publish-ci-builder']['on'])
 
     def test_windows_recipe_preserves_tooling_without_the_crypto_cli(self):
         builder = (ROOT / 'os/Containerfile.builder').read_text()

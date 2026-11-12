@@ -230,7 +230,9 @@ has "$repo/tools/ci/publish/lib.sh" '[[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rp
   'the relay image accepts only a digest-pinned published RPM snapshot'
 has "$repo/tools/ci/publish/oci-sign.sh" 'require_published_snapshot "$out/rpms-source"' \
   'an image built from an unpublished RPM snapshot is never signed'
-has "$build_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
+has "$build_script" '.buildDefinition.externalParameters.architecture == $native_arch' \
+  'local OS builds take only RPM provenance of their own architecture'
+has "$build_script" "frozen RPM provenance does not bind this machine's architecture, package set, digest and base" \
   'local OS builds verify exact RPM snapshot provenance'
 has "$rpms_build" 'assets=$(pinned_assets virtio-win-0.1.302-1.noarch.rpm)' \
   'snapshot takes the checksum-verified external input from os-assets'
