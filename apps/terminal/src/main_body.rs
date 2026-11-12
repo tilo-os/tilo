@@ -5656,77 +5656,11 @@ pub(crate) fn snap_to_device_pixels(transform: Affine, rect: Rect) -> Rect {
     )
 }
 
-/// Resolve the user's native shell for the standalone fallback path.
-/// Windows uses `COMSPEC`, falling back to `cmd.exe`.
-///
-/// Unix resolution order:
-/// 1. **`$SHELL`** when set and non-empty — the user's explicit preference
-///    (this is how fish, when it is the login shell, gets launched here).
-/// 2. **The passwd database** (`getpwuid(getuid()).pw_shell`) — the login
-///    shell the system records for this account. A login session that spawned
-///    the terminal through a path that does not export `$SHELL` still lands on
-///    the right shell instead of a hardcoded `/bin/sh`.
-/// 3. **`/bin/sh`** — last resort so a session never fails to start.
-pub fn resolve_login_shell() -> String {
-    #[cfg(windows)]
-    {
-        std::env::var("COMSPEC")
-            .ok()
-            .filter(|shell| !shell.trim().is_empty())
-            .unwrap_or_else(|| "cmd.exe".into())
-    }
-    #[cfg(unix)]
-    resolve_login_shell_with(std::env::var("SHELL").ok(), login_shell_from_passwd())
-}
-
-/// Pure core of [`resolve_login_shell`], with the two environment lookups
-/// injected so the precedence is testable without mutating process-global
-/// state (which would race parallel tests).
-#[cfg(unix)]
-pub(crate) fn resolve_login_shell_with(
-    shell_env: Option<String>,
-    passwd_shell: Option<String>,
-) -> String {
-    if let Some(s) = shell_env
-        && !s.is_empty()
-    {
-        return s;
-    }
-    if let Some(s) = passwd_shell
-        && !s.is_empty()
-    {
-        return s;
-    }
-    "/bin/sh".into()
-}
-
-/// The command the Host target runs off Tilo: the user's native shell as chosen
-/// by [`resolve_login_shell`], with the process environment inherited.
+/// The command the Host target runs off Tilo: the login shell this account
+/// starts ([`tilo_process::login_shell`]), with the process environment
+/// inherited.
 pub(crate) fn login_shell_command() -> CommandBuilder {
-    CommandBuilder::new(resolve_login_shell())
-}
-
-/// The login shell recorded for the current real user in the passwd database
-/// (`pw_shell`). `None` if the entry is missing or has an empty shell field.
-#[cfg(unix)]
-pub(crate) fn login_shell_from_passwd() -> Option<String> {
-    use std::ffi::CStr;
-    // SAFETY: `getpwuid` returns a pointer into a static buffer owned by libc
-    // (valid until the next passwd/`getpwuid` call, of which we make none
-    // before copying out). We null-check before dereferencing, and copy the
-    // `pw_shell` C string into an owned `String` while the pointer is live.
-    unsafe {
-        let uid = tilo_process::uid();
-        let pw = libc::getpwuid(uid);
-        if pw.is_null() {
-            return None;
-        }
-        let shell = (*pw).pw_shell;
-        if shell.is_null() {
-            return None;
-        }
-        Some(CStr::from_ptr(shell).to_string_lossy().into_owned())
-    }
+    CommandBuilder::new(tilo_process::login_shell::login_shell())
 }
 
 /// A PTY master with no process behind it.

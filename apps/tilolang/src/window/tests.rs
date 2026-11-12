@@ -2571,6 +2571,20 @@ fn later_notes(edit: impl Fn(&str) -> String) -> tilolang_tilo::bundle::Bundle {
     tilolang_tilo::bundle::Bundle::new(&compiled, used)
 }
 
+/// `signature`'s parameter list with its last parameter — the tag a tag
+/// action takes — made `Int`, whatever the source calls that parameter: an
+/// edit that changed a field's type must not stop compiling because a
+/// parameter was renamed.
+fn tag_takes_int(source: &str, signature: &str) -> String {
+    let from = source
+        .find(signature)
+        .unwrap_or_else(|| panic!("{signature} is in the notes package"))
+        + signature.len();
+    let to = from + source[from..].find(')').expect("the parameters end");
+    let at = from + source[from..to].rfind(": Text").expect("the tag is Text");
+    format!("{}: Int{}", &source[..at], &source[at + ": Text".len()..])
+}
+
 /// Whether `text` is shown anywhere under `node`.
 fn shows_text(node: &UiNode, text: &str) -> bool {
     node.props
@@ -2622,27 +2636,15 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
     assert_eq!(workspace.opened_note(), workspace.tree_row_note("Q3 plan"));
 
     crate::updates::hand_over(later_notes(|source| {
-        let source = source
-            .replace("tags: Set<Text>", "tags: Set<Int>")
-            .replace(
-                "action tag(n: Note, t: Text)",
-                "action tag(n: Note, t: Int)",
-            )
-            .replace(
-                "action untag(n: Note, t: Text)",
-                "action untag(n: Note, t: Int)",
-            )
-            .replace(
-                "action file_note(nb: Notebook, title: Text, t: Text)",
-                "action file_note(nb: Notebook, title: Text, t: Int)",
-            )
-            .replace("ui.Chip(t)", "ui.Chip(\"{t}\")");
-        ["planning", "work", "q3"]
+        let source = ["action tag(", "action untag(", "action file_note("]
             .iter()
-            .enumerate()
-            .fold(source, |source, (n, tag)| {
-                source.replace(&format!("tags.add(\"{tag}\")"), &format!("tags.add({n})"))
-            })
+            .fold(
+                source.replace("tags: Set<Text>", "tags: Set<Int>"),
+                |source, signature| tag_takes_int(&source, signature),
+            );
+        source
+            .replace("ui.Chip(t)", "ui.Chip(\"{t}\")")
+            .replace("tags.add(\"planning\")", "tags.add(0)")
     }));
     workspace.settle();
 

@@ -3206,13 +3206,15 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
 
     // Case `default_shell_runs_typed_command_through_pty`.
     {
-        // Spawn the user's default shell in a real PTY, then type a command
-        // exactly the way a keystroke sends it (`write_input`), and prove the
-        // shell ran it and the output flowed back into the grid.
+        // Spawn a shell in a real PTY, then type a command exactly the way a
+        // keystroke sends it (`write_input`), and prove the shell ran it and
+        // the output flowed back into the grid. The shell is the test's own, a
+        // POSIX `sh`: what the person who runs the tests uses for a shell is
+        // not something a test can type into.
         #[cfg(unix)]
         let home = tempfile::tempdir().expect("scratch HOME");
         #[cfg(unix)]
-        let cmd = hermetic_default_shell_command(home.path());
+        let cmd = hermetic_shell_command("/bin/sh", home.path());
         #[cfg(windows)]
         let cmd = crate::inner::login_shell_command();
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn default shell");
@@ -3282,26 +3284,14 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
     }
 }
 
-/// The user's default shell exactly as the Host target off Tilo resolves it, but
-/// started in a controlled environment: a scratch `HOME`, a minimal env and no
-/// system or user startup files. Host startup scripts may read the terminal's
-/// stdin (distrobox's `profile.d` hook runs `host-spawn` when no display
-/// variables are set, swallowing typed input), so a test that types into the
-/// shell must not let them run.
+/// `shell` started in a controlled environment: a scratch `HOME`, a minimal env
+/// and no system or user startup files. Host startup scripts may read the
+/// terminal's stdin (distrobox's `profile.d` hook runs `host-spawn` when no
+/// display variables are set, swallowing typed input), so a test that types
+/// into the shell must not let them run.
 #[cfg(unix)]
-fn hermetic_default_shell_command(home: &std::path::Path) -> portable_pty::CommandBuilder {
-    let mut cmd = crate::inner::login_shell_command();
-    let shell = cmd
-        .get_argv()
-        .first()
-        .map(std::path::PathBuf::from)
-        .expect("login shell command has a program");
-    match shell.file_name().and_then(|n| n.to_str()) {
-        Some("bash") => cmd.args(["--noprofile", "--norc"]),
-        Some("zsh") => cmd.arg("-f"),
-        Some("fish") => cmd.arg("--no-config"),
-        _ => {}
-    }
+fn hermetic_shell_command(shell: &str, home: &std::path::Path) -> portable_pty::CommandBuilder {
+    let mut cmd = crate::CommandBuilder::new(shell);
     let empty_rc = home.join("empty-rc");
     std::fs::write(&empty_rc, b"").expect("write empty rc file");
     cmd.env_clear();
@@ -4132,90 +4122,30 @@ fn real_pty_query_replies_and_fish_startup() {
 }
 
 // ---------------------------------------------------------------
-// Default-shell resolution: honour $SHELL, then the passwd login shell,
-// then /bin/sh. fish must launch when it is the user's login shell.
+// The default shell: the one this account starts, in a real PTY.
 // ---------------------------------------------------------------
 
-/// Login-shell resolution order and the default spawn using it.
+/// The terminal opens on the shell this account starts, whatever their shell
+/// was: the resolution's order is [`tilo_process::login_shell`]'s own test,
+/// this is the spawn a person gets when their chosen shell is gone.
 #[test]
 #[cfg(unix)]
-fn login_shell_resolution_and_default_spawn() {
-    // Body of case `spawn_default_command_uses_the_resolved_login_shell` (a function so its early `return`/`?` stays local).
-    fn spawn_default_command_uses_the_resolved_login_shell() {
-        // The real resolver: when $SHELL is set (as it is in an interactive
-        // session), spawn_default launches exactly that shell. We assert on the
-        // resolver the spawn path calls, not a reimplementation.
-        if let Ok(shell) = std::env::var("SHELL")
-            && !shell.is_empty()
-        {
-            assert_eq!(
-                crate::inner::resolve_login_shell(),
-                shell,
-                "spawn_default's shell resolution must honour $SHELL"
-            );
-            return;
-        }
-        // No $SHELL in this environment: the resolver must still yield an
-        // absolute shell path from passwd (or /bin/sh), never an empty string.
-        let resolved = crate::inner::resolve_login_shell();
-        assert!(
-            resolved.starts_with('/'),
-            "resolved shell must be absolute, got {resolved:?}"
-        );
-    }
-
-    // Case `resolve_login_shell_prefers_shell_env`.
-    {
-        assert_eq!(
-            crate::inner::resolve_login_shell_with(
-                Some("/usr/bin/fish".into()),
-                Some("/bin/bash".into())
-            ),
-            "/usr/bin/fish",
-            "$SHELL wins when it is set and non-empty"
-        );
-    }
-
-    // Case `resolve_login_shell_falls_back_to_passwd_when_shell_unset`.
-    {
-        assert_eq!(
-            crate::inner::resolve_login_shell_with(None, Some("/usr/bin/zsh".into())),
-            "/usr/bin/zsh",
-            "with $SHELL unset the passwd login shell is used, not a hardcoded /bin/sh"
-        );
-        assert_eq!(
-            crate::inner::resolve_login_shell_with(
-                Some(String::new()),
-                Some("/usr/bin/zsh".into())
-            ),
-            "/usr/bin/zsh",
-        );
-    }
-
-    // Case `resolve_login_shell_last_resort_is_sh`.
-    {
-        assert_eq!(
-            crate::inner::resolve_login_shell_with(None, None),
-            "/bin/sh",
-            "with neither source available the session still starts on /bin/sh"
-        );
-    }
-
-    // Case `passwd_lookup_resolves_a_real_login_shell`.
-    {
-        // Proves the getpwuid fallback actually reads a plausible shell for the
-        // account running the tests (an absolute path). This is the source the
-        // resolver uses when $SHELL is unset.
-        let shell = crate::inner::login_shell_from_passwd()
-            .expect("the current user must have a passwd entry with a login shell");
-        assert!(
-            shell.starts_with('/'),
-            "passwd login shell should be an absolute path, got {shell:?}"
-        );
-    }
-
-    // Case `spawn_default_command_uses_the_resolved_login_shell`.
-    spawn_default_command_uses_the_resolved_login_shell();
+fn the_default_terminal_spawns_the_shell_this_account_starts() {
+    let resolved = tilo_process::login_shell::login_shell();
+    assert!(
+        resolved.starts_with('/'),
+        "the login shell names a program, got {resolved:?}"
+    );
+    let command = crate::inner::login_shell_command();
+    assert_eq!(
+        command
+            .get_argv()
+            .first()
+            .map(|arg| arg.to_string_lossy().into_owned()),
+        Some(resolved),
+        "the terminal starts the shell the resolution names"
+    );
+    TerminalWidget::spawn_command(command).expect("a terminal opens on the login shell");
 }
 
 /// Locate a `fish` binary for the live-fish test. Returns `None` if fish is

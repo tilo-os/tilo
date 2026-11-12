@@ -139,8 +139,16 @@ mod test_environment {
                 // recognised however the worktree path spells it.
                 let root = root.canonicalize().unwrap_or(root);
                 for ancestor in root.ancestors() {
-                    let metadata = std::fs::metadata(ancestor)?;
-                    above.insert((metadata.dev(), metadata.ino()));
+                    match std::fs::metadata(ancestor) {
+                        Ok(metadata) => {
+                            above.insert((metadata.dev(), metadata.ino()));
+                        }
+                        // A root a fixture is about to make does not exist
+                        // yet: the machine's directories above it are the
+                        // ones this recognises.
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error),
+                    }
                 }
             }
             above

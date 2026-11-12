@@ -4482,7 +4482,9 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("import.operation.0.next-issues")
-                        .name_contains("First issue page")
+                        .name_contains(&super::super::strings::t(
+                            "imager-import-action-first-issues",
+                        ))
                         .enabled(true),
                 )
                 .unwrap();

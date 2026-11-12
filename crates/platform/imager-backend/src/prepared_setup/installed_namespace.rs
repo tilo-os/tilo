@@ -59,11 +59,38 @@ pub fn chain(path: &Path, create: bool) -> io::Result<Vec<File>> {
 pub fn public_certificate_chain(path: &Path) -> io::Result<Vec<File>> {
     chain_with_privacy(path, false, Privacy::Inherit)
 }
+/// The filesystem a directory handle is on.
+fn device(file: &File) -> io::Result<u64> {
+    Ok(file.metadata()?.dev())
+}
+
+/// The filesystem a directory at `path` is on: the one its deepest existing
+/// ancestor is on, since a created child stays on its parent's.
+fn destination_device(path: &Path) -> io::Result<u64> {
+    let mut existing = path;
+    loop {
+        match std::fs::symlink_metadata(existing) {
+            Ok(metadata) => return Ok(metadata.dev()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                existing = existing.parent().ok_or_else(invalid)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn chain_with_privacy(path: &Path, create: bool, privacy: Privacy) -> io::Result<Vec<File>> {
     root()?;
     if !path.is_absolute() {
         return Err(invalid());
     }
+    // Only directories on the destination's own filesystem can change what
+    // the path means: above a mount, the mount point cannot be renamed or
+    // unlinked, so an ancestor there decides nothing about the directory this
+    // publishes into. Its permission profile is that of the machine the
+    // process runs on (a container's FUSE root, a host's tmpfs) and never the
+    // destination's.
+    let destination = destination_device(path)?;
     let mut result = vec![
         File::options()
             .read(true)
@@ -78,7 +105,9 @@ fn chain_with_privacy(path: &Path, create: bool, privacy: Privacy) -> io::Result
             return Err(invalid());
         };
         let parent = result.last().ok_or_else(invalid)?;
-        controlled(parent)?;
+        if device(parent)? == destination {
+            controlled(parent)?;
+        }
         let next = match open(parent, name) {
             Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
                 let encoded = CString::new(name.as_encoded_bytes()).map_err(io::Error::other)?;
@@ -92,7 +121,9 @@ fn chain_with_privacy(path: &Path, create: bool, privacy: Privacy) -> io::Result
             }
             other => other?,
         };
-        controlled(&next)?;
+        if device(&next)? == destination {
+            controlled(&next)?;
+        }
         result.push(next);
     }
     StorageDirectory::from_file(result.last().ok_or_else(invalid)?.try_clone()?)?
