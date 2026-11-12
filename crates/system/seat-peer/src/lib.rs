@@ -10,7 +10,7 @@
 //! - whether it shares the service's user and mount namespaces, which no
 //!   sandboxed app does.
 //!
-//! The compositor (`/usr/bin/shell`) of the person at the seat is recognised
+//! The compositor (`/usr/bin/tilo-session`) of the person at the seat is recognised
 //! by all three. `kernel.yama.ptrace_scope` is 3 on Tilo, so no process can be
 //! steered from outside once running.
 
@@ -41,7 +41,7 @@ pub struct Seat {
 impl Default for Seat {
     fn default() -> Self {
         Self {
-            trusted_ui: PathBuf::from("/usr/bin/shell"),
+            trusted_ui: PathBuf::from("/usr/bin/tilo-session"),
             seat: PathBuf::from("/run/systemd/seats/seat0"),
             users: PathBuf::from("/run/systemd/users"),
         }
@@ -168,7 +168,7 @@ mod tests {
             fs::write(&seat, format!("IS_SEAT0=1\nACTIVE=c2\nACTIVE_UID={uid}\n")).unwrap();
         }
         Seat {
-            trusted_ui: PathBuf::from("/usr/bin/shell"),
+            trusted_ui: PathBuf::from("/usr/bin/tilo-session"),
             seat,
             users: dir.join("users"),
         }
@@ -177,7 +177,7 @@ mod tests {
     fn shell(uid: u32) -> PeerFacts {
         PeerFacts {
             uid,
-            exe: Some(PathBuf::from("/usr/bin/shell")),
+            exe: Some(PathBuf::from("/usr/bin/tilo-session")),
             host_namespaces: true,
         }
     }

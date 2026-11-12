@@ -70,7 +70,7 @@ fn config(state: &Path) -> Config {
         record: state.join("record.json"),
         dns_marker: state.join("dns"),
         seat: seat_peer::Seat {
-            trusted_ui: PathBuf::from("/usr/bin/shell"),
+            trusted_ui: PathBuf::from("/usr/bin/tilo-session"),
             seat: state.join("seat0"),
             users: state.join("users"),
         },

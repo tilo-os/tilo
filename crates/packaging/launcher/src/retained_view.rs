@@ -536,7 +536,7 @@ impl RetainedLaunchGate {
                 gate.write_all(&process_binding::MAGIC)?;
                 gate.write_all(&challenge)?;
                 let shell = process_binding::receive(gate, &challenge, uid)?;
-                let shell_image = protected_program("/usr/bin/shell")?;
+                let shell_image = protected_program("/usr/bin/tilo-session")?;
                 check_executing_image(&shell, &shell_image)?;
                 gate.write_all(&[1])?;
                 process_binding::complete(gate)?;
@@ -561,7 +561,7 @@ impl RetainedLaunchGate {
     }
     fn check(&self) -> io::Result<()> {
         check_executing_image(&self.shell, &self.shell_image)?;
-        let current = protected_program("/usr/bin/shell")?.metadata()?;
+        let current = protected_program("/usr/bin/tilo-session")?.metadata()?;
         let held = self.shell_image.metadata()?;
         if (current.dev(), current.ino()) != (held.dev(), held.ino()) {
             return Err(refused("retained native Shell image changed"));

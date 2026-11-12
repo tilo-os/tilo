@@ -674,7 +674,7 @@ pub enum Class {
 /// One difference between the booted and the staged `/usr`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
-    /// Absolute, e.g. `/usr/bin/shell`.
+    /// Absolute, e.g. `/usr/bin/tilo-session`.
     pub path: String,
     pub kind: ChangeKind,
 }

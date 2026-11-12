@@ -32,7 +32,7 @@ pub struct Collected {
 /// One file or symlink in a layer, as the slot sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayerFile {
-    /// Absolute, e.g. `/usr/bin/shell`.
+    /// Absolute, e.g. `/usr/bin/tilo-session`.
     pub path: String,
     pub sha256: Option<String>,
     pub link: Option<String>,
