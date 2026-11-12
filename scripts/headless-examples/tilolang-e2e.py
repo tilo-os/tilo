@@ -478,14 +478,24 @@ def tasks_titles(session: Session) -> list[str]:
 
 def check_record_open(session: Session, out: Path) -> dict:
     """A task no window shows opens from search. With both windows of Tasks on Today, Enter on an
-    Inbox task's row opens it where Tasks shows it: a window of Tasks goes to the Inbox, shows the
-    task as its page and comes forward, its tab named by the task, and no window is added.
+    Inbox task's row opens it where Tasks shows it: a window of Tasks goes to the Inbox, opens the
+    task's row into its page and comes forward, its tab named by the task, and no window is added.
     Ctrl+Enter on the row then opens a window of its own beside it, as Ctrl+Enter opens an app's,
     showing the task's page, in front and named by the task."""
     tasks = app_id("tasks")
     title = "Book the ferry"
     def tasks_windows() -> list[dict]:
         return [w for w in session.windows() if w.get("app_id") == tasks]
+    def shows_page(window: dict) -> None:
+        # The task's page stands in the window: the controls of its fields, which its row has not.
+        names: list[str] = []
+        def shows_task() -> bool:
+            names[:] = window_controls(session, window)
+            return "Add date" in names
+        try:
+            until(f"window {window['tab']} showing the page of {title!r}", shows_task, 30)
+        except Failed:
+            raise Failed(f"window {window['tab']} named {title!r} shows no task's page: {names}") from None
     before = tasks_windows()
     if [w.get("title") for w in before] != ["Today"] * len(before):
         raise Failed(f"Tasks' windows do not all stand on Today: {before}")
@@ -498,6 +508,7 @@ def check_record_open(session: Session, out: Path) -> dict:
         raise Failed(f"Enter opened another window: {tasks_windows()}")
     time.sleep(1.0)
     session.control_cmd("snapshot", str(out / "record-open-in-place.png"))
+    shows_page(shown)
     search_beside(session, title)
     def opened_beside() -> dict | None:
         new = [w for w in tasks_windows() if w["tab"] not in {b["tab"] for b in before}]
@@ -507,15 +518,7 @@ def check_record_open(session: Session, out: Path) -> dict:
         raise Failed(f"the window opened for the task is not in front: {beside}")
     time.sleep(1.0)
     session.control_cmd("snapshot", str(out / "record-open-beside.png"))
-    # The task's page stands in the window: the controls of its fields, which its row has not.
-    names: list[str] = []
-    def shows_task() -> bool:
-        names[:] = window_controls(session, beside)
-        return "Add date" in names
-    try:
-        until(f"the window named {title!r} showing the task's page", shows_task, 30)
-    except Failed:
-        raise Failed(f"the window named {title!r} shows no task's page: {names}") from None
+    shows_page(beside)
     return {"in_place": {"tab": shown["tab"], "title": shown.get("title")},
             "beside": {"tab": beside["tab"], "title": beside.get("title")},
             "titles": tasks_titles(session)}
@@ -1019,8 +1022,9 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         ("windows", lambda: check_windows(session, summary["checks"]["processes"], pid, out)),
         ("titles", lambda: check_titles(session, out)),
         ("today", lambda: check_today(session, out, today_before[0])),
-        ("record-open", lambda: check_record_open(session, out)),
         ("kept", lambda: keep_task(session)),
+        # After a task was typed into a window, as a person opens tasks after typing one.
+        ("record-open", lambda: check_record_open(session, out)),
         ("places", lambda: check_places(session, out)),
     ])
     stop_session(proc)
