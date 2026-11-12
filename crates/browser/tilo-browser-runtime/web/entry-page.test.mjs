@@ -49,7 +49,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     createInvitation: async () => { calls.push('invite'); return 'signed-secret'; },
     // A member, not the owner, of a host that keeps its wait list to whoever
     // it lets invite.
-    membership: {list: async () => ({name: 'Current', members: []}), waitList: async () => { throw new Error('only someone the room lets invite lists the wait list'); }},
+    membership: {list: async () => ({name: 'Current', members: []}), mayInvite: async () => false, waitList: async () => { throw new Error('only someone the room lets invite lists the wait list'); }},
     workspaces: {create: async name => ({room: 'created', name}), enter: async () => calls.push('enter')},
     dispose: async () => calls.push('dispose')};
   const page = {peer: own ? null : {...peer, ...member}, entry: {base: 'https://web.example/'},
@@ -215,7 +215,7 @@ test('a wait-list invitation is the short link its site keeps, not the invitatio
   const {calls, diagnostics} = await fixture({member: {
     createInvitation: async () => 'SIGNED-invitation',
     membership: {list: async () => ({name: 'Current', members: []}),
-      waitList: async () => [ed], unlist: async () => {}, mailInvite: async () => { throw new Error('this door sends no mail'); }},
+      mayInvite: async () => true, waitList: async () => [ed], unlist: async () => {}, mailInvite: async () => { throw new Error('this door sends no mail'); }},
   }});
   diagnostics.onHostAction('waiting-to-join');
   await tick();

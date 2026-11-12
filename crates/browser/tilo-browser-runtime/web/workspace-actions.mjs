@@ -140,9 +140,13 @@ export function createWorkspaceActions({
         // The host may keep its member list to the owner.
       }
       // The host shows the wait list to the owner and to members of a
-      // workspace that has its members invite people; a host that keeps it
-      // from this person refuses, which is nobody to invite, not a failure.
-      lettingIn = await peer.membership.waitList().then(() => true, () => false);
+      // workspace that has its members invite people. Whether this person is
+      // one is asked first, so a page never asks for a list its person may
+      // not see (every guest of a public workspace would be refused, each
+      // refusal a warning on the host); a list the host still refuses is
+      // nobody to invite, not a failure.
+      lettingIn = await peer.membership.mayInvite().catch(() => false)
+        && await peer.membership.waitList().then(() => true, () => false);
       refresh();
     },
     /** Make a workspace on the machine at `origin` (one just set up). */
