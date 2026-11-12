@@ -82,3 +82,45 @@ test('the searching predicate reads only the desk’s own answer', async () => {
   assert.equal(await searching(tab), true);
   assert.match(seen.at(-1), /searchSearching/);
 });
+
+test('a settle with idleMs ends on the desk drawing nothing, not on its timeout', async () => {
+  // The tour's case: no answer of the desk's own to read, frames that never
+  // move, and a desk that has simply stopped drawing. Waiting for the timeout
+  // spends it on every screen.
+  let clock = 0;
+  const evaluate = async expression => (expression.includes('frames') ? 5 : false);
+  const how = await settle({
+    evaluate,
+    by: 3,
+    owed: () => true,
+    idleMs: 2_500,
+    sleep: async ms => { clock += ms; },
+    now: () => clock,
+    timeoutMs: 20_000,
+    pollMs: 100,
+  });
+  assert.equal(how, 'idle');
+  assert.ok(clock >= 2_500 && clock < 4_000, `it ended after ${clock} ms of silence, not at its timeout`);
+});
+
+test('a desk still drawing keeps an idle wait alive until its frames come', async () => {
+  // A frame a second on a slow rasteriser: every frame pushes the silence
+  // back, so the wait ends on the third frame and never calls the desk idle.
+  let clock = 0;
+  let frame = 0;
+  const evaluate = async expression => {
+    if (!expression.includes('frames')) return false;
+    clock += 1_000;
+    return frame++;
+  };
+  const how = await settle({
+    evaluate,
+    by: 3,
+    owed: () => true,
+    idleMs: 2_500,
+    sleep: async () => {},
+    now: () => clock,
+    timeoutMs: 20_000,
+  });
+  assert.equal(how, 'frames');
+});

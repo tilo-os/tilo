@@ -36,11 +36,14 @@ const browser = await launch({args: [
 ]});
 mark('the browser started');
 const report = {site, relay, screens: [], problems: []};
+// The screens are numbered as they are taken, across the three appearances, so
+// a listing of them reads in the order a newcomer met the site.
 let shotNo = 0;
 // What the tour spent waiting for the desk to stand still: a fixed pause after
 // each step adds up over three appearances, and this says how much of the tour
-// it was.
+// it was, and what each wait ended on.
 let quietMs = 0;
+const quietHow = {};
 
 // The computer the agent runs on, as agent-setup.mjs sets it up: its own home,
 // a `claude` that records how it was asked to add Tilo's tools, and the relay's
@@ -184,9 +187,14 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     }
     await sleep(600);
   };
-  const quiet = async (ms = 1500) => {
+  // The desk standing still before a picture: three frames, or the silence of
+  // a desk with nothing left to draw (`idleMs`), then a moment as a person
+  // would look at it. Waiting only for frames costs the whole timeout on every
+  // screen a still desk drew nothing for.
+  const quiet = async (ms = 400) => {
     const began = Date.now();
-    await waits.settle({evaluate: tab.evaluate.bind(tab), by: 3, owed: () => true, sleep, timeoutMs: 20_000});
+    const how = await waits.settle({evaluate: tab.evaluate.bind(tab), by: 3, owed: () => true, idleMs: 2500, sleep, timeoutMs: 20_000});
+    quietHow[how] = (quietHow[how] ?? 0) + 1;
     await sleep(ms);
     quietMs += Date.now() - began;
   };
@@ -374,6 +382,10 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   await tab.close().catch(() => {});
 };
 
+// One appearance after another: three desks drawn at once share one software
+// rasteriser and one machine, and the tour then reads pages that never arrived
+// (measured: 19 minutes with three at once against 23 one after another, and
+// screens of a search that was still opening).
 await tour({name: 'desk', width: 1280, height: 800});
 mark('the desk appearance');
 await tour({name: 'dark', width: 1280, height: 800, scheme: 'dark'});
@@ -382,5 +394,5 @@ await tour({name: 'phone', width: 390, height: 844, mobile: true});
 mark('the phone appearance');
 writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2));
 await browser.close().catch(() => {});
-console.log(`TIMING quiet=${(quietMs / 1000).toFixed(1)}s of the tour was waiting for the desk to stand still`);
+console.log(`TIMING quiet=${(quietMs / 1000).toFixed(1)}s of the tour was waiting for the desk to stand still (${Object.entries(quietHow).map(([how, n]) => `${n} ${how}`).join(', ')})`);
 console.log(JSON.stringify({screens: report.screens.length, problems: report.problems}));
