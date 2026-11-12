@@ -37,8 +37,8 @@ app gets on a real system:
              and Notes
   places     a window grouped beside another, too narrow for Tasks' sidebar, still reaches its
              places through its own toggle, pressed by name as a tool presses a control, though
-             another window goes by that name too: Inbox chosen there, the tabs read Today and
-             Inbox (places-*.png)
+             another window goes by that name too: Inbox chosen there takes that window to the
+             Inbox, the other staying where it was (places-*.png)
   reopened   a task Tasks holds before the session stops shows in Today's card after it starts
              again and Today opens: Today reads what Tasks' record already held, not only what
              arrives while it is open (today-reopened.png)
@@ -524,19 +524,25 @@ def check_record_open(session: Session, out: Path) -> dict:
 def check_places(session: Session, out: Path) -> dict:
     """A window grouped beside another is too narrow for Tasks' sidebar, and still reaches its
     places: its own sidebar toggle shows them — pressed by name, as a tool presses a control, even
-    though another window goes by that name too — and Inbox chosen there takes the window to the
-    Inbox, so the two tabs read Today and Inbox."""
+    though another window goes by that name too — and Inbox chosen there takes that window to the
+    Inbox while the other stays where it was."""
     tasks = app_id("tasks")
-    window = next(w for w in session.windows() if w.get("app_id") == tasks)
+    window = next(w for w in session.windows()
+                  if w.get("app_id") == tasks and w.get("title") == "Today")
+    def tabs() -> dict[str, str]:
+        return {w["tab"]: w.get("title") for w in session.windows() if w.get("app_id") == tasks}
+
+    others = {tab: title for tab, title in tabs().items() if tab != window["tab"]}
     press_in(session, window, "Show sidebar")
     time.sleep(1.0)
     session.control_cmd("snapshot", str(out / "places-sidebar.png"))
     press_in(session, window, "Inbox")
-    titles = until("the tabs to read Today and Inbox",
-                   lambda: (read := tasks_titles(session)) == ["Inbox", "Today"] and read, 30)
+    _ = until(f"window {window['tab']} on the Inbox, the other windows as they were",
+              lambda: (seen := tabs()).get(window["tab"]) == "Inbox"
+              and all(seen.get(tab) == title for tab, title in others.items()), 30)
     time.sleep(1.0)
     session.control_cmd("snapshot", str(out / "places-inbox.png"))
-    return {"titles": titles}
+    return {"titles": tabs()}
 
 
 def window_controls(session: Session, window: dict) -> list[str]:
