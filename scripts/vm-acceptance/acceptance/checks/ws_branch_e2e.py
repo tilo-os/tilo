@@ -848,14 +848,30 @@ def post_chat(ctx, ws: dict, text: str) -> None:
                 f"t=$(date -d {shlex.quote(first.group(1))} +%s); journalctl --no-pager -o short-precise "
                 "--since @$((t-20)) --until @$((t+2)) 2>/dev/null | grep -aE 'Started app-|launch|segfault|core' "
                 "| tail -n 30 | cut -c1-300", timeout=120, check=False)
-        said = crash + "\n" + said
+        running = app_processes(ctx, CHAT)
+        said = crash + "\n" + running + "\n" + said
         ctx.write("WB01-chat-said.txt", said)
         raise Unobservable(f"Chat in {ws.get('name')} shows no {COMPOSER!r} and offers no post; it offers "
-                           f"{offered(ctx, CHAT)}; Chat's crash: {crash[-2000:]}; its drawing: {gpu[-2500:]}; "
+                           f"{offered(ctx, CHAT)}; Chat's crash: {crash[-3000:]}; "
+                           f"its processes: {running[-3000:]}; its drawing: {gpu[-2500:]}; "
                            f"{app_evidence(ctx, CHAT)}")
     ae.press(ctx, COMPOSER)
     ctx.vm.input("type", text)
     ctx.vm.key("Return")
+
+
+def app_processes(ctx, app: str) -> str:
+    """`app`'s running processes: each one's threads, what they wait in, and what its scope
+    logged, whatever words it used. For an app whose window never came."""
+    return ctx.vm.root_exec(
+        f"for c in $(find /sys/fs/cgroup -type d -name 'app-tilo-{app}-*.scope' 2>/dev/null); do "
+        "echo \"== $c\"; for p in $(cat \"$c\"/cgroup.procs 2>/dev/null); do "
+        "echo \"pid $p $(tr '\\0' ' ' < /proc/$p/cmdline | cut -c1-200)\"; "
+        "for t in /proc/$p/task/*; do echo \"$(cat $t/comm) $(cut -d' ' -f3 $t/stat) $(cat $t/wchan 2>/dev/null)\"; "
+        "done | sort | uniq -c | sort -rn | head -n 25; done; u=$(basename \"$c\"); "
+        "journalctl --no-pager -o short-precise _SYSTEMD_USER_UNIT=$u 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' "
+        "| grep -avE 'FRAME-LIFECYCLE|paint-stats' | tail -n 60 | cut -c1-300; done",
+        timeout=180, check=False)
 
 
 def app_evidence(ctx, app: str) -> str:
