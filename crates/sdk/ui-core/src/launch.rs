@@ -127,6 +127,10 @@ pub struct LaunchArgs {
     /// logical pixel (1 to [`MAX_SHOT_DEVICE_SCALE`]), as a HiDPI display
     /// draws the same window.
     pub device_scale: Option<u32>,
+    /// `--touch`: the capture is a touch-only window — a phone — which
+    /// reports a finger and no pointer, so controls offer the gestures it can
+    /// make rather than those only a dragged pointer can.
+    pub touch: bool,
     /// `--distinct-letters on|off`: a capture renders with "Always
     /// distinguish similar letters" on or off, whatever the theme's face
     /// would choose.
@@ -1155,6 +1159,11 @@ fn dispatch_definition_with(
         if args.theme.is_some() || std::env::var_os("TILO_SHOTS_THEME").is_some() {
             driver.set_theme(shot_theme(args));
         }
+        // A capture of a phone reports the device a phone is: a finger and
+        // no pointer, before any scenario stages its frame.
+        if args.touch {
+            driver.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+        }
         if !args.native_audit
             && let Some(scenario) = spec.component_capture_scenario
             && let Err(source) = scenario(&mut driver, args)
@@ -1557,6 +1566,12 @@ fn parse_args_extended(
                 }
                 parsed.window_bar = true;
             }
+            "--touch" if inline.is_none() => {
+                if parsed.touch {
+                    return Err(LaunchError::Duplicate(flag.to_owned()));
+                }
+                parsed.touch = true;
+            }
             // A Jump List task: run this host command once the window exists.
             #[cfg(all(windows, feature = "native"))]
             crate::host_chrome::windows_items::LAUNCH_OPTION => {
@@ -1625,6 +1640,9 @@ fn parse_args_extended(
     }
     if parsed.window_bar && parsed.shots.is_none() {
         return Err(LaunchError::ShotsOnly("--window-bar".to_owned()));
+    }
+    if parsed.touch && parsed.shots.is_none() && parsed.shots_dir.is_none() {
+        return Err(LaunchError::ShotsOnly("--touch".to_owned()));
     }
     if parsed.search.is_some()
         && parsed.shots.is_none()
@@ -2077,6 +2095,17 @@ mod tests {
             assert!(matches!(
                 parse_args(&strings(&["app", "--window-bar"]), &[], &[]),
                 Err(LaunchError::ShotsOnly(flag)) if flag == "--window-bar"
+            ));
+            let phone = parse_args(
+                &strings(&["app", "--shots", "/tmp/a.png", "--touch"]),
+                &[],
+                &[],
+            )
+            .unwrap();
+            assert!(phone.touch, "a capture can be a touch-only window");
+            assert!(matches!(
+                parse_args(&strings(&["app", "--touch"]), &[], &[]),
+                Err(LaunchError::ShotsOnly(flag)) if flag == "--touch"
             ));
             let shot = parse_args(
                 &strings(&["app", "--shots", "/tmp/a.png", "--search", "café"]),
