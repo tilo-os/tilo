@@ -24,8 +24,7 @@ use collaboration::history_source::authors::handle_actor_hex;
 pub use collaboration::history_source::authors::{
     AGENT_NAMESPACE, APP_NAMESPACE, BOT_NAMESPACE, DeviceActors, ParticipantNames, ResolveAuthor,
     SHORTCUT_NAMESPACE, UNKNOWN_AUTHOR_NAME, actor_handle, actor_name, app_name, app_words,
-    author_coloured, device_actor, installed_app_name, name_words, set_installed_apps, short_id,
-    stable_hue,
+    author_coloured, device_actor, name_words, set_installed_apps, short_id, stable_hue,
 };
 #[cfg(test)]
 use collaboration::history_source::authors::{SHORT_LEN, rgb_to_hue};

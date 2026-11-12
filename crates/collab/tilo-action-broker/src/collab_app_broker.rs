@@ -7567,9 +7567,9 @@ impl AppBrokerState {
     }
 
     /// Tell one native context subscriber what its workspace's governance now
-    /// admits: the roster, and the apps installed here by their names, one is
-    /// installed or removed since it was last told. Returns whether it heard
-    /// something new.
+    /// admits: the roster, and the name of every app installed here, when one
+    /// was installed or removed since it was last told. Returns whether it
+    /// heard something new.
     fn tell_context_subscriber(
         &self,
         route: &CrdtRoute,

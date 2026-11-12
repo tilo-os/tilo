@@ -1375,7 +1375,12 @@ impl Hosted {
             }
         }
         if let CollabEvent::Context { apps, .. } = &event {
-            return collaboration::history_source::authors::set_installed_apps(apps.clone());
+            // Apps installed or removed since the last frame: what the views show of who made a
+            // change is published again.
+            if collaboration::history_source::authors::set_installed_apps(apps.clone()) {
+                self.instance.names_changed();
+            }
+            return true;
         }
         let (id, invocation, resource, action, argument, actor, context) = match event {
             CollabEvent::Invocation {
