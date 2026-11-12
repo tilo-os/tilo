@@ -106,6 +106,22 @@ impl Task {
         let Some(keys) = self.keys_of(route) else {
             return false;
         };
+        // A change needs the record it changes. The keys of a record this device opened can come
+        // before the record does, and a change drafted then would be refused and let go, while the
+        // next change, which builds on it, is taken once the record is here: the record would
+        // hold a change whose base no device ever sends, and every reader is refused it as
+        // incomplete. The writes wait for the record as they wait for its keys, and go as it
+        // lands ([`Self::landed`]); a write that founds the record needs none.
+        let changes_first = frames.first().is_some_and(|frame| {
+            collab_types::ContentRetention::of_frame(frame) == collab_types::ContentRetention::Delta
+        });
+        if changes_first
+            && owner.with_current(workspace, |view| {
+                Ok(view.peer().holds_document(&route.app_id, &route.record))
+            }) == Ok(false)
+        {
+            return false;
+        }
         // The state carrying these keys is written before a write sealed
         // under them leaves ([`ChannelPeer::save_deferred`]): an admission
         // taken in a moment ago survives a page that reloads now.
