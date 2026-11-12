@@ -234,10 +234,9 @@ pub struct HereState {
     /// This person's own agents already met on this page, by publisher
     /// ([`HereState::take_own_agents_arrived`]).
     met_agents: std::collections::BTreeSet<String>,
-    /// Every agent present, by publisher: its name, what it last said it was doing, and when it was
-    /// last here (Unix milliseconds), so one gone for good is said to have finished
-    /// ([`HereState::take_agents_finished`]).
-    working_agents: HashMap<String, (String, Option<String>, u64)>,
+    /// Every agent present, by publisher: its name and when it was last here (Unix milliseconds),
+    /// so one gone for good is said to have finished ([`HereState::take_agents_finished`]).
+    working_agents: HashMap<String, (String, u64)>,
 }
 
 /// An agent that left the workspace: its work is over.
@@ -246,16 +245,18 @@ pub struct AgentFinished {
     pub publisher: String,
     /// Its name ("Claude Code").
     pub label: String,
-    /// What it last said it was doing.
-    pub last: Option<String>,
 }
 
-/// What an agent's newest run did, as its finished notice says it: how many of its actions
-/// changed a record (a command it ran or a page it read changed none), and the workspace it
-/// worked in, when the history names it.
+/// What an agent's newest run did, as its finished notice says it: the run, as the history keeps
+/// it, so one run is told once however many sessions of the agent worked it; how many of its
+/// actions changed a record (a command it ran or a page it read changed none); the records it
+/// changed, by their titles, first changed first; and the workspace it worked in, when the history
+/// names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunSummary {
+    pub run: String,
     pub changes: usize,
+    pub records: Vec<String>,
     pub workspace: Option<String>,
 }
 
@@ -274,8 +275,24 @@ impl AgentFinished {
             .iter()
             .filter(|run| ui::presence::agent_client(&run.agent.name) == client)
             .max_by_key(|run| run.last_ms)?;
+        let mut records: Vec<String> = Vec::new();
+        for action in &run.actions {
+            if !matches!(
+                action.view,
+                tilo_actions::remote::workspace_activity::ActionView::File { .. }
+                    | tilo_actions::remote::workspace_activity::ActionView::Record { .. }
+            ) {
+                continue;
+            }
+            let title = action.view.target().label.trim();
+            if !title.is_empty() && !records.iter().any(|known| known == title) {
+                records.push(title.to_owned());
+            }
+        }
         Some(RunSummary {
+            run: run.id.clone(),
             changes: run.changes(),
+            records,
             workspace: run.workspace.clone().filter(|name| !name.trim().is_empty()),
         })
     }
@@ -443,9 +460,24 @@ impl HereState {
         arrived
     }
 
+    /// The clients of the agents present now ([`ui::presence::agent_client`]): "Claude Code" for a
+    /// "Claude Code #2".
+    fn agent_clients_here(&self) -> std::collections::BTreeSet<&str> {
+        self.members
+            .iter()
+            .flatten()
+            .filter(|member| member.kind == "agent")
+            .map(|member| ui::presence::agent_client(&member.label))
+            .collect()
+    }
+
     /// The agents that left since the last call, each once: gone from the live layer for longer than
     /// a reconnect takes (`REJOIN_QUIET_MS`), so a page renewing its grant is no agent finishing.
     /// An agent's finishing is news the person did not cause, which a notice says.
+    ///
+    /// An agent's client restarts its session often (a new `tilo mcp` per restart), each a
+    /// publisher of its own working the same run: an agent is finished once no session of its
+    /// client is here, and its sessions that left are said finished together, as one.
     pub fn take_agents_finished(&mut self, now_ms: u64) -> Vec<AgentFinished> {
         let Some(members) = &self.members else {
             return Vec::new();
@@ -454,21 +486,33 @@ impl HereState {
             let held = self
                 .working_agents
                 .entry(member.publisher.clone())
-                .or_insert_with(|| (member.label.clone(), None, now_ms));
+                .or_insert_with(|| (member.label.clone(), now_ms));
             held.0.clone_from(&member.label);
-            if let Some(activity) = member.activity.as_deref().filter(|a| !a.trim().is_empty()) {
-                held.1 = Some(activity.to_owned());
-            }
-            held.2 = now_ms;
+            held.1 = now_ms;
         }
-        let mut finished: Vec<AgentFinished> = self
+        let due = self.agents_due();
+        let gone: Vec<(String, (String, u64))> = self
             .working_agents
-            .extract_if(|_, (_, _, seen)| now_ms.saturating_sub(*seen) >= REJOIN_QUIET_MS)
-            .map(|(publisher, (label, last, _))| AgentFinished {
-                publisher,
-                label,
-                last,
+            .extract_if(|_, (label, _)| {
+                due.get(ui::presence::agent_client(label))
+                    .is_some_and(|at| *at <= now_ms)
             })
+            .collect();
+        // One per client: the session that was here last speaks for it.
+        let mut by_client: std::collections::BTreeMap<String, (String, String, u64)> =
+            std::collections::BTreeMap::new();
+        for (publisher, (label, seen)) in gone {
+            let client = ui::presence::agent_client(&label).to_owned();
+            let entry = by_client
+                .entry(client)
+                .or_insert_with(|| (publisher.clone(), label.clone(), seen));
+            if (seen, &publisher) > (entry.2, &entry.0) {
+                *entry = (publisher, label, seen);
+            }
+        }
+        let mut finished: Vec<AgentFinished> = by_client
+            .into_values()
+            .map(|(publisher, label, _)| AgentFinished { publisher, label })
             .collect();
         finished.sort_by(|a, b| a.publisher.cmp(&b.publisher));
         finished
@@ -476,22 +520,29 @@ impl HereState {
 
     /// When an agent that left is next due to be said finished, on the clock
     /// [`Self::take_agents_finished`] is handed: the reconnect's grace after it was last here.
-    /// `None` while every agent seen is still here. A page draws only when something changes, and
-    /// nothing changes when an agent stays gone: it wakes for this, or the notice waits for
-    /// whatever draws next.
+    /// `None` while every agent seen is still here, or another session of its client is. A page
+    /// draws only when something changes, and nothing changes when an agent stays gone: it wakes
+    /// for this, or the notice waits for whatever draws next.
     #[must_use]
     pub fn next_agent_finished_ms(&self) -> Option<u64> {
-        let here = |publisher: &str| {
-            self.members
-                .iter()
-                .flatten()
-                .any(|member| member.kind == "agent" && member.publisher == publisher)
-        };
-        self.working_agents
-            .iter()
-            .filter(|(publisher, _)| !here(publisher))
-            .map(|(_, (_, _, seen))| seen.saturating_add(REJOIN_QUIET_MS))
-            .min()
+        self.agents_due().into_values().min()
+    }
+
+    /// When each client none of whose sessions is here is due to be said finished: the reconnect's
+    /// grace after the last of its sessions was here, so a session back within it was never gone.
+    fn agents_due(&self) -> HashMap<String, u64> {
+        let here = self.agent_clients_here();
+        let mut due: HashMap<String, u64> = HashMap::new();
+        for (label, seen) in self.working_agents.values() {
+            let client = ui::presence::agent_client(label);
+            if here.contains(client) {
+                continue;
+            }
+            let at = seen.saturating_add(REJOIN_QUIET_MS);
+            let entry = due.entry(client.to_owned()).or_insert(at);
+            *entry = (*entry).max(at);
+        }
+        due
     }
 
     /// Who joined since the last call, by the name everyone here sees: a person who was not in the
@@ -1368,16 +1419,17 @@ mod tests {
         let finished = AgentFinished {
             publisher: "claude".into(),
             label: "Claude Code".into(),
-            last: None,
         };
         assert_eq!(
             finished.summary(&runs),
             Some(RunSummary {
+                run: "mcp:Claude Code #29".into(),
                 changes: 8,
+                records: vec!["Welcome".into()],
                 workspace: Some("Storefront".into()),
             }),
             "its newest run, counting the two changes of each of its four record edits and not the \
-             command"
+             command, naming the one record they changed once"
         );
         let unknown = AgentFinished {
             label: "Cursor".into(),
@@ -1415,10 +1467,45 @@ mod tests {
             [AgentFinished {
                 publisher: "claude".into(),
                 label: "Claude Code".into(),
-                last: Some("Editing notes/Welcome".into()),
             }]
         );
         assert!(here.take_agents_finished(later + 1).is_empty(), "said once");
+    }
+
+    /// An agent's client restarting its session is a new publisher working on: the agent has not
+    /// finished while any session of it is here, and once the last leaves its sessions are said
+    /// finished as one, by the one here last.
+    #[test]
+    fn an_agent_restarting_its_session_finishes_once() {
+        let mut here = HereState::default();
+        let session = |publisher: &str| member(publisher, "agent", "Claude Code");
+        here.set_members(None, Some(vec![session("first")]));
+        assert!(here.take_agents_finished(1_000).is_empty());
+        // Its client restarts it: the first session left, a second works on.
+        here.set_members(None, Some(vec![session("second")]));
+        assert!(here.take_agents_finished(2_000).is_empty());
+        let later = 3_000 + REJOIN_QUIET_MS * 2;
+        assert!(
+            here.take_agents_finished(later).is_empty(),
+            "the first session left long ago, but the agent is still here"
+        );
+        assert_eq!(
+            here.next_agent_finished_ms(),
+            None,
+            "nothing is due while it is here"
+        );
+        here.set_members(None, Some(Vec::new()));
+        assert_eq!(here.next_agent_finished_ms(), Some(later + REJOIN_QUIET_MS));
+        assert_eq!(
+            here.take_agents_finished(later + REJOIN_QUIET_MS),
+            [AgentFinished {
+                publisher: "second".into(),
+                label: "Claude Code".into(),
+            }],
+            "one notice for the agent, from the session here last"
+        );
+        assert!(here.take_agents_finished(later * 3).is_empty(), "said once");
+        assert_eq!(here.next_agent_finished_ms(), None);
     }
 
     /// An agent that left is due to be said finished once the reconnect's grace has passed since

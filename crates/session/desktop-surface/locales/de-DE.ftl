@@ -1123,6 +1123,8 @@ browser-new-workspace-name = Arbeitsbereich { $number }
 workspace-notice-joined = { $name } ist dazugekommen
 workspace-notice-agent-finished = { $agent } ist fertig
 workspace-notice-agent-card = Karte öffnen
+# Die Einträge, die der Lauf eines Agenten geändert hat, unter seiner Fertig-Meldung: zwei mit Namen und wie viele mehr.
+workspace-notice-agent-records-more = { $records } und { $count } weitere
 workspace-notice-agent-finished-changes = { $agent } ist fertig: { $count ->
     [one] 1 Änderung
    *[other] { $count } Änderungen

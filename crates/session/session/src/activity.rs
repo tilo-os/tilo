@@ -1676,7 +1676,6 @@ mod tests {
         let finished = tilo_desktop::here::AgentFinished {
             publisher: String::new(),
             label: "Claude Code".into(),
-            last: None,
         };
         assert_eq!(
             finished.summary(&first).map(|summary| summary.changes),

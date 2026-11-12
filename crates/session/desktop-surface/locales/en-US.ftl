@@ -1104,6 +1104,8 @@ browser-new-workspace-name = Workspace { $number }
 workspace-notice-joined = { $name } joined
 workspace-notice-agent-finished = { $agent } finished
 workspace-notice-agent-card = Open card
+# The records an agent's run changed, under its finished notice: two by name and how many more.
+workspace-notice-agent-records-more = { $records } and { $count } more
 workspace-notice-agent-finished-changes = { $agent } finished: { $count ->
     [one] 1 change
    *[other] { $count } changes

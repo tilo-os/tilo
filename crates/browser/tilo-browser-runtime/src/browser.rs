@@ -597,6 +597,9 @@ pub(crate) struct Desktop {
             u64,
         )>,
     >,
+    /// The runs a finished notice already told, by the history's id: an agent's sessions that
+    /// worked one run are told of once.
+    told_runs: RefCell<std::collections::BTreeSet<String>>,
 }
 
 impl Desktop {
@@ -1360,6 +1363,7 @@ fn present_desktop(
             permissions: opening_permissions,
             workspace: config.workspace.clone(),
             finishing: RefCell::default(),
+            told_runs: RefCell::default(),
         }),
         waiting: None,
     })

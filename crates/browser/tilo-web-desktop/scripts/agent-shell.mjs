@@ -2050,6 +2050,14 @@ try {
           for (const dx of [0, 1, 0]) await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: x + dx, y});
         }
         await restingShot(tab, combo, 'agent-finished', async () => (await semantics(tab)).some(finishedNotice));
+        // The agent's sessions (one per tilo mcp above) worked one run: it is told once, and a
+        // session that changed nothing tells nothing. Told once it is done, the notice names what
+        // the run changed, never a live status ("Working in Notes") it no longer has.
+        const told = (await semantics(tab)).filter(node => /^claude code finished/i.test(node.name));
+        check(`${combo}: one run is one finished notice`, told.length === 1,
+          told.map(node => `"${node.name}"`).join(', ') || 'none');
+        const statusLine = told.map(node => node.description ?? '').find(text => /\b(looking at|working in|reading|writing)\b/i.test(text));
+        check(`${combo}: the finished notice says no live status`, !statusLine, statusLine ?? '');
 
         const exceptions = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
         check(`${combo}: no exceptions in the page`, exceptions.length === 0, exceptions.join(' | '));
