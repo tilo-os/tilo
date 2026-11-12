@@ -133,22 +133,40 @@ impl NativeWorkspaceOwner {
 
     /// Record where this device's own host of `workspace` is reached: the
     /// hint [`Self::create_workspace`] writes as it founds one, for a
-    /// workspace founded before its record said. A workspace this device does
-    /// not host, or one whose record reaches its host through an enrollment
-    /// or a vouch, keeps what it has. Answers whether it wrote.
+    /// workspace founded before its record said, and again once the relays it
+    /// answers through changed — those are what its people dial, and an
+    /// address naming the network the host stood in a moment ago reaches
+    /// nobody. A record naming another address on the same relays keeps it: a
+    /// net report moves the addresses beside them, and its people pay for
+    /// every record published. A workspace this device does not host, or one
+    /// whose record reaches its host through an enrollment or a vouch, keeps
+    /// what it has. Answers whether it wrote.
     ///
     /// # Errors
     /// The workspace is not held here, `hint` is not this workspace's address
     /// signed by this device, or the record cannot be published.
     pub fn name_host(&self, workspace: WorkspaceId, hint: TransportHint) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
-        if self.host_already_named(workspace)? {
+        let candidate = self.view(workspace)?;
+        // What the record names is this device's own host only when this
+        // device hosts it: a record another device hosts, or one that reaches
+        // its host through an enrollment or a vouch, says where that host is
+        // reached and is left as it is.
+        if candidate.record.device != candidate.record.workspace_host
+            || candidate.record.enrollment.is_some()
+            || candidate
+                .record
+                .vouched
+                .as_ref()
+                .is_some_and(|vouched| vouched.hint.is_some())
+        {
             return Ok(false);
         }
-        // Only a record this device hosts and that says nothing yet is
-        // written here ([`Self::host_already_named`]), so what it names is its
-        // own host: the hint must be this workspace's, signed by this device.
-        let candidate = self.view(workspace)?;
+        if let Some(named) = &candidate.record.host_hint
+            && host_relays(named)? == host_relays(&hint)?
+        {
+            return Ok(false);
+        }
         crate::owner::validate_host_hint(
             &hint,
             &workspace.to_string(),
@@ -160,24 +178,19 @@ impl NativeWorkspaceOwner {
         self.publish_record(workspace, &candidate, record, None)?;
         Ok(true)
     }
+}
 
-    /// Whether `workspace`'s record is left as it is by [`Self::name_host`]:
-    /// this device does not host it, or the record already says where its
-    /// host is reached. What decides is read first: most workspaces this
-    /// device holds are another device's to host, and their records are not
-    /// copied to find that out.
-    fn host_already_named(&self, workspace: WorkspaceId) -> Result<bool, String> {
-        let current = self.0.current.read();
-        if self.0.fenced(&current, workspace) {
-            return Err("native owner continuity is fenced".into());
-        }
-        let record = &current
-            .workspaces
-            .get(&workspace)
-            .ok_or("workspace has no committed native enrollment")?
-            .record;
-        let named = record.device != record.workspace_host || record.names_host();
-        drop(current);
-        Ok(named)
-    }
+/// The relays `hint` says a host is reached through, which are what reaches
+/// it from outside its own network.
+fn host_relays(hint: &TransportHint) -> Result<std::collections::BTreeSet<String>, String> {
+    let (payload, _) =
+        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+            hint,
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(payload
+        .endpoint_addr
+        .relay_urls()
+        .map(ToString::to_string)
+        .collect())
 }

@@ -45,6 +45,9 @@ ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
 getrandom.workspace = true
 tilo-content = { path = "../../system/content", default-features = false }
+# The address this host answers at once its endpoint reached a relay, which is
+# what its workspaces' governance names of it.
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true

@@ -21107,6 +21107,7 @@ dependencies = [
  "tilo-content",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
+ "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-lock",
  "tilo-peer-state",

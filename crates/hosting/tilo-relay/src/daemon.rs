@@ -201,13 +201,6 @@ pub struct Relay {
     /// The packet relay this host runs for the pages it serves, when it runs
     /// one ([`RelayConfig::packet_relay`]).
     packet_server: Option<iroh_relay::server::Server>,
-    /// The relay the host's pages reach it through, as they are told it: its
-    /// own packet relay, or the one it was configured with. A page has no UDP
-    /// socket, so a relay is the only way it reaches its host, and this is the
-    /// configuration's answer — an endpoint reports a relay only once it has
-    /// connected to it, which a start that restarts on kept state outruns.
-    #[cfg(feature = "web")]
-    pub(crate) pages_reach: Option<iroh::RelayUrl>,
 }
 
 /// The relay state the page's pre-session routes answer with.
@@ -543,10 +536,6 @@ impl Relay {
             }
             None => (None, relay_mode),
         };
-        #[cfg(feature = "web")]
-        let pages_reach = relay_mode
-            .as_ref()
-            .and_then(|mode| mode.relay_map().urls::<Vec<_>>().into_iter().next());
         let endpoint = match endpoint {
             Some(endpoint) => endpoint,
             None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
@@ -723,8 +712,6 @@ impl Relay {
             content,
             _channels: channels,
             packet_server: packet_relay,
-            #[cfg(feature = "web")]
-            pages_reach,
         })
     }
 

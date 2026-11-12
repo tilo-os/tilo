@@ -1626,12 +1626,13 @@ impl Engine {
         }
     }
 
-    /// Name where this device's own host of each workspace it holds is reached at `endpoint` , for
-    /// one founded before its record said: a workspace founded here is reached at its own host, and
-    /// a record that does not say so leaves its records where no device reaches them.
+    /// Name where this device's own host of each workspace it hosts is reached at `endpoint`:
+    /// where members and anyone a link reaches dial it. A record that says nothing gets the
+    /// address, and one naming another relay gets it again ([`NativeWorkspaceOwner::name_host`]),
+    /// so what a workspace says keeps up with the relays this device answers through.
     #[cfg(target_os = "linux")]
     pub fn name_own_hosts(&self, endpoint: &iroh_base::EndpointAddr) {
-        for workspace in self.owner.hosts_unnamed() {
+        for workspace in self.owner.hosted() {
             let hint = match self.own_host_hint(&workspace.to_string(), endpoint) {
                 Ok(hint) => hint,
                 Err(error) => {
@@ -1649,6 +1650,18 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// Whether this device holds a link into a workspace that still admits someone: a person who
+    /// redeems it dials this device, so its relays stay up until the link is taken back or lapses.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub fn invitations_open(&self, now: SystemTime) -> bool {
+        self.workspaces().into_iter().any(|workspace| {
+            self.owner
+                .pending_invitations(workspace, now)
+                .is_ok_and(|pending| !pending.is_empty())
+        })
     }
 
     /// Name the workspace a join is installing into by the workspace id it holds: an enrollment

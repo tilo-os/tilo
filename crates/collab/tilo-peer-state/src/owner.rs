@@ -655,19 +655,19 @@ impl NativeWorkspaceOwner {
         self.0.current.read().required.contains(&workspace) || self.0.store.uncertain(workspace)
     }
 
-    /// The workspaces this device hosts whose record does not say where their
-    /// host is reached, in one read of the record: the ones founded here
-    /// before the record kept its own host's hint, which no device reaches a
-    /// host for until it does.
+    /// The workspaces this device hosts itself, in one read of the record: its
+    /// own host orders their records, whether or not the record says where
+    /// that host is reached. What names its own address in them reads this
+    /// ([`NativeWorkspaceOwner::name_host`]): most workspaces a device holds
+    /// are another device's to host, and their records are not copied to find
+    /// that out.
     #[must_use]
-    pub fn hosts_unnamed(&self) -> Vec<WorkspaceId> {
+    pub fn hosted(&self) -> Vec<WorkspaceId> {
         let current = self.0.current.read();
         current
             .workspaces
             .iter()
-            .filter(|(_, view)| {
-                view.record.device == view.record.workspace_host && !view.record.names_host()
-            })
+            .filter(|(_, view)| view.record.hosted_here())
             .map(|(workspace, _)| *workspace)
             .collect()
     }

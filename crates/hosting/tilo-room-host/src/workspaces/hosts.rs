@@ -10,11 +10,9 @@
 //! device to the workspace as one of the owner's, which is how the workspace's
 //! governance tells every member it may hold the workspace.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use iroh::Watcher as _;
 use iroh_base::EndpointAddr;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
@@ -52,31 +50,6 @@ impl Drop for Answer {
 /// The device a signed host address names.
 const fn host_device(hint: &TransportHint) -> [u8; 32] {
     hint.host.device_public_key
-}
-
-/// How long a host that is about to name its address waits for the relay it
-/// is reached through: about what iroh's first net report and a relay
-/// handshake take before an endpoint has one.
-const RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(iroh::NET_REPORT_TIMEOUT);
-
-/// The relays `addr` says a host is reached through.
-fn relays_of(addr: &EndpointAddr) -> BTreeSet<iroh::RelayUrl> {
-    addr.relay_urls().cloned().collect()
-}
-
-/// Wait until `endpoint` answers through a relay: an address it signs before
-/// then names only what its own network knows, and a stranger cannot dial it.
-/// Bounded by iroh's net report window, so a host with no way out still names
-/// the address it has.
-pub async fn await_relay(endpoint: &iroh::Endpoint) {
-    if tokio::time::timeout(RELAY_WAIT, endpoint.online())
-        .await
-        .is_err()
-    {
-        tracing::warn!(
-            "the endpoint reached no relay yet; its address names its own network alone"
-        );
-    }
 }
 
 impl Workspaces {
@@ -158,31 +131,21 @@ impl Workspaces {
     /// nothing: the address it named stays what a workspace says, and a member
     /// reaches it again through the relay once it comes back.
     pub(super) fn follow_own_address(&self) {
-        let endpoint = self.inner.host.endpoint.clone();
-        let workspaces = Arc::downgrade(&self.inner);
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let following = runtime.spawn(async move {
-            let mut watch = endpoint.watch_addr();
-            let mut relays = relays_of(&watch.get());
-            loop {
-                // The watcher disconnects once the endpoint is gone.
-                if watch.updated().await.is_err() {
-                    return;
+        let workspaces = Arc::downgrade(&self.inner);
+        let following =
+            tilo_endpoint_reachability::follow(&self.inner.host.endpoint, &runtime, move |_| {
+                let workspaces = workspaces.clone();
+                async move {
+                    let Some(inner) = workspaces.upgrade() else {
+                        return;
+                    };
+                    Self { inner }.name_own_hosts().await;
                 }
-                let now = relays_of(&watch.get());
-                if now == relays || now.is_empty() {
-                    continue;
-                }
-                relays = now;
-                let Some(inner) = workspaces.upgrade() else {
-                    return;
-                };
-                Self { inner }.name_own_hosts().await;
-            }
-        });
-        let _ = self.inner.own_address.set(following.abort_handle());
+            });
+        let _ = self.inner.own_address.set(following);
     }
 
     /// Change which hosts `workspace`'s governance names with `change`, as its

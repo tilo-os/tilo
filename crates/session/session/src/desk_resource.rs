@@ -768,11 +768,12 @@ impl Desk {
             (name, _) => name,
         };
         // The link names this device, which answers whoever redeems it: a session taking part in no
-        // transport has no address to name.
+        // transport has no address to name, and one that has says where it is reached through its
+        // relay, so the link works from behind any network ([`crate::sync::Client::invitation_addr`]).
         let endpoint = self
             .sync
             .as_ref()
-            .map(|sync| sync.endpoint_addr())
+            .map(|sync| sync.invitation_addr())
             .ok_or_else(|| {
                 DoorError::Failed(
                     "this session takes part in no transport, so no link can name it".to_owned(),

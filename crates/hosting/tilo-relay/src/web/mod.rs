@@ -288,14 +288,11 @@ impl Relay {
         }
         let host_cert = context.relay.identity.cert.clone();
         // Where a page dials this host: its endpoint's key and addresses, and
-        // the relay it was told to reach it through. A page has no UDP socket,
-        // so without that relay an endpoint it binds carries no packet at all —
-        // and an endpoint names its relay only once it has connected to it,
-        // which a start that restarts on kept state opens its listener before.
-        let mut endpoint_addr = self.node_addr();
-        if let Some(relay) = &self.pages_reach {
-            endpoint_addr = endpoint_addr.with_relay_url(relay.clone());
-        }
+        // the relay it is reached through — which the endpoint names from the
+        // moment this host serves anything ([`Relay::start`] waits for it), as
+        // a page has no UDP socket and its own endpoint carries no packet
+        // without one.
+        let endpoint_addr = self.node_addr();
         let relay_url = endpoint_addr.relay_urls().next().map(ToString::to_string);
         let (link_listener, web_link) =
             bind_link(&config, udp, addr, public_origin.as_ref(), &identity).map_err(failed)?;

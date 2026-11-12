@@ -42,9 +42,11 @@
 
 pub mod directory;
 pub mod lan;
+pub mod own_address;
 pub mod relays;
 pub use directory::{Gate, Watchonly, collaborating};
 pub use lan::lan;
+pub use own_address::{RELAY_WAIT, await_relay, follow, relay_addr};
 pub use relays::{EndpointRelays, relays};
 
 use std::sync::{Arc, Mutex, Weak};
@@ -224,40 +226,23 @@ impl Reachability {
     /// `within` for one: an invite that carries it lets the invitee reach
     /// this device from behind any NAT at once, instead of after address
     /// lookup finds the relay. `None` when this handle holds nothing back
-    /// (the endpoint's own address is as good as it gets) or no home relay
-    /// arrived in time. Blocks the calling thread, which must not be one of
-    /// the network runtime's.
+    /// (the endpoint's own address is as good as it gets); a home relay that
+    /// arrives too late answers with the address the endpoint has, as a
+    /// device with no way out does ([`own_address::relay_addr`]). Blocks the
+    /// calling thread, which must not be one of the network runtime's.
     #[must_use]
     pub fn relay_addr_within(&self, within: Duration) -> Option<EndpointAddr> {
         let (endpoint, runtime) = with_held(&self.held, |held| {
             (held.endpoint.clone(), held.runtime.clone())
         })?;
-        let addr = endpoint.addr();
-        if addr.relay_urls().next().is_some() {
-            return Some(addr);
-        }
         let (found, answer) = std::sync::mpsc::sync_channel(1);
         runtime.spawn(async move {
-            use iroh::Watcher as _;
-            let mut watch = endpoint.watch_addr();
-            let relayed = async {
-                loop {
-                    let addr = watch.get();
-                    if addr.relay_urls().next().is_some() {
-                        return Some(addr);
-                    }
-                    if watch.updated().await.is_err() {
-                        return None;
-                    }
-                }
-            };
-            let _ = found.send(tokio::time::timeout(within, relayed).await.ok().flatten());
+            let _ = found.send(own_address::relay_addr(&endpoint, within).await);
         });
         // The task answers by `within`; the margin covers its scheduling.
         answer
             .recv_timeout(within.saturating_add(Duration::from_millis(250)))
             .ok()
-            .flatten()
     }
 }
 
@@ -603,11 +588,16 @@ mod tests {
         assert_eq!(endpoint.addr().relay_urls().count(), 0);
         let waiting = reachability.clone();
         let named = tokio::task::spawn_blocking(move || {
-            waiting.relay_addr_within(Duration::ZERO).is_none()
+            waiting
+                .relay_addr_within(Duration::ZERO)
+                .is_some_and(|addr| addr.relay_urls().count() == 0)
         })
         .await
         .unwrap();
-        assert!(named, "a dormant endpoint has no home relay to name");
+        assert!(
+            named,
+            "a dormant endpoint names the address it has, no relay in it"
+        );
 
         // The open invitation holds the relays up while the endpoint picks
         // its home relay: a bare wake would rest them after the 300 ms

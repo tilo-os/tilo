@@ -457,9 +457,15 @@ impl Client {
         self.sibling_arrived.replace(false)
     }
 
-    /// Where other devices reach this one: the endpoint it bound, with the addresses it bound on.
+    /// Where other devices reach this one, as it answers now: the endpoint it bound, with the
+    /// addresses and the relay it is reached through at this moment. A device that has not bound
+    /// one is reached where it was handed.
     #[must_use]
     pub fn endpoint_addr(&self) -> EndpointAddr {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(endpoint) = self.endpoint_handle.get() {
+            return endpoint.addr();
+        }
         self.endpoint.clone()
     }
 

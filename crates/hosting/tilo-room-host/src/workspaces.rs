@@ -53,7 +53,9 @@ mod device_rejoin_tests;
 mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod hosts;
-pub use hosts::await_relay;
+/// Wait until this host is reached through a relay, before it names its own
+/// address anywhere ([`tilo_endpoint_reachability::await_relay`]).
+pub use tilo_endpoint_reachability::await_relay;
 mod link_follow;
 mod session_carry;
 pub(crate) use link_follow::carry_admitted;
