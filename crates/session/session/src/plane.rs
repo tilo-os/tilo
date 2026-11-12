@@ -856,6 +856,13 @@ fn seams(
                 std::sync::Arc::clone(engine),
             )) as std::sync::Arc<dyn BrowserServiceSessionServices>
         });
+    // The hosts of the workspaces placed away from this device: where the person's actions on
+    // those workspaces go, where their workspace list is kept, and where the devices of that
+    // record are read back from.
+    let hosting = crate::hosted_workspaces::HostedWorkspaces::service(
+        engine.as_ref(),
+        tilo_rt::app().handle().clone(),
+    );
     Seams {
         // No approved-check runner is installed with this session: a check a
         // project's app asks for has nothing to run it.
@@ -1032,10 +1039,14 @@ fn seams(
         personal: Seam::when(personal),
         // A workspace placed on a host has its records changed there: the
         // person's actions on them are sent to the host, which decides and
-        // runs them, and the change reaches the windows here by sync.
-        hosted_workspaces: Seam::when(crate::hosted_workspaces::HostedWorkspaces::service(
-            engine.as_ref(),
-        )),
+        // runs them, and the change reaches the windows here by sync. The
+        // person's list is kept there too, and the devices of it read back
+        // from the host that keeps it, so Settings lists the same devices on
+        // every device of theirs.
+        hosted_workspaces: Seam::when(hosting.clone().map(|hosting| {
+            std::sync::Arc::new(hosting)
+                as std::sync::Arc<dyn tilo_action_broker::services::HostedWorkspaces>
+        })),
         // The steps only this session may take for the person: the
         // workspace's activity the Activity app reads, pairing a nearby
         // device, administering their identities and the devices trusted
@@ -1052,6 +1063,8 @@ fn seams(
                     std::sync::Arc::new(crate::identity_admin::BrokerDoor {
                         desk: desk_authority,
                         admin: crate::identity_admin::IdentityAdmin::session(),
+                        hosting,
+                        engine: engine.clone(),
                     }),
                     // The person's account with the host the session runs
                     // on: what Settings and the overview of their Tilo show,

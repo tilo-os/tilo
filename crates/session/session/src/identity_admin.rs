@@ -243,7 +243,9 @@ impl IdentityAdmin {
 
     /// Start `step` with `args`, which the door bound to [`params`] after
     /// it decided the caller administers `identity`, the identity the
-    /// caller's workspace selected, in `store`.
+    /// caller's workspace selected, in `store`. `announce` tells the people's
+    /// hosts of a revocation this device's root signs, which is how the key
+    /// is refused beyond this device.
     ///
     /// # Errors
     ///
@@ -254,6 +256,7 @@ impl IdentityAdmin {
         args: &ActionArgs,
         identity: &IdentityProfile,
         store: &Store,
+        announce: &dyn Fn(&tilo_user_identity::RevocationEntry),
     ) -> Result<Started, String> {
         match step {
             LIST => list(store).map(Started::Answered),
@@ -272,7 +275,11 @@ impl IdentityAdmin {
             DEVICES => devices(store, identity).map(Started::Answered),
             REVOKE => {
                 confirmed(args, "revoke this device")?;
-                revoke(store, identity, args).map(Started::Answered)
+                let (device, entry) = revoke(store, identity, args)?;
+                announce(&entry);
+                Ok(Started::Answered(
+                    serde_json::json!({ "device": device, "revoked": true }),
+                ))
             }
             HOME_PEER_REMOVE => {
                 confirmed(args, "remove this home server")?;
@@ -393,48 +400,68 @@ fn protect(store: &Store, id: &str) -> Answer {
 
 /// The keys `person`'s root certified that this device's identity store
 /// keeps: the fleet of that root, when this device holds it; none otherwise.
+/// A fleet is filed under its root's hex, as the identity is.
 pub(crate) fn root_certificates(person: &[u8; 32]) -> Vec<tilo_user_identity::DeviceCert> {
-    let Ok(store) = Store::from_env() else {
-        return Vec::new();
-    };
-    let Ok(identities) = runtime_identity::list_identities(&store.dir) else {
-        return Vec::new();
-    };
-    let fleets = store.fleets();
-    identities
-        .iter()
-        .filter(|identity| identity.public_key == *person)
-        .filter_map(|identity| fleets.load_cached(&identity.id).ok())
-        .flat_map(|fleet| fleet.certificates.clone())
-        .collect()
+    fleet_store()
+        .ok()
+        .and_then(|fleets| fleets.load_cached(&hex::encode(person)).ok())
+        .map(|fleet| fleet.certificates.clone())
+        .unwrap_or_default()
 }
 
-/// The devices trusted under `identity` , this one marked current.
-pub(crate) fn devices(store: &Store, identity: &IdentityProfile) -> Answer {
-    let devices = tilo_identity_host::device_admin::trusted_devices(
+/// The devices this device's fleet trusts under `identity`, this one marked
+/// current.
+fn fleet_devices(
+    store: &Store,
+    identity: &IdentityProfile,
+) -> Result<Vec<tilo_actions::remote::identity_admin::FleetDevice>, String> {
+    tilo_identity_host::device_admin::trusted_devices(
         &store.fleets(),
         &store.device,
         &identity.id,
         identity.user_public_key,
-    )?;
-    serde_json::to_value(devices).map_err(|error| error.to_string())
+    )
+}
+
+/// The devices trusted under `identity` , this one marked current.
+pub(crate) fn devices(store: &Store, identity: &IdentityProfile) -> Answer {
+    serde_json::to_value(fleet_devices(store, identity)?).map_err(|error| error.to_string())
+}
+
+/// The devices trusted under `identity`, and the keys `record` adds: the
+/// person's record on their hosts lists the keys their root certified on
+/// every device of theirs, so a device paired on another of their devices,
+/// or a browser certified in its own tab, is listed here too.
+pub(crate) fn devices_with_record(
+    store: &Store,
+    identity: &IdentityProfile,
+    record: Vec<(tilo_user_identity::DeviceCert, bool)>,
+) -> Answer {
+    let listed =
+        tilo_identity_host::device_admin::with_record(fleet_devices(store, identity)?, record);
+    serde_json::to_value(listed).map_err(|error| error.to_string())
 }
 
 /// Root-sign the permanent revocation of the device `args` names under
 /// `identity`, for the reason it gives (retired when none). The root key is
-/// opened here, in the session, and nowhere else.
+/// opened here, in the session, and nowhere else. Answers the entry the root
+/// signed, which is announced to the hosts the person keeps their record on.
 ///
 /// # Errors
 ///
 /// Why the device was not revoked.
-pub(crate) fn revoke(store: &Store, identity: &IdentityProfile, args: &ActionArgs) -> Answer {
-    let device = tilo_identity_host::device_admin::revoke(
+pub(crate) fn revoke(
+    store: &Store,
+    identity: &IdentityProfile,
+    args: &ActionArgs,
+) -> Result<(String, tilo_user_identity::RevocationEntry), String> {
+    let entry = tilo_identity_host::device_admin::revoke(
         &store.fleets(),
         &identity.id,
         args.text("device").unwrap_or_default(),
         args.text("reason").unwrap_or("retired"),
     )?;
-    Ok(serde_json::json!({ "device": device, "revoked": true }))
+    Ok((hex::encode(entry.revoked_device_public_key), entry))
 }
 
 /// Refuse unless `person` administers `workspace`'s identity: they may grant
@@ -575,9 +602,17 @@ pub(crate) fn outcome(answer: Answer) -> tilo_broker_core::steps::HostStepOutcom
 /// The broker's door to identity administration: how Settings lists and
 /// changes the person's identities and devices, as the person using it,
 /// without the identity store entering its sandbox.
+///
+/// The devices are the person's record, not this device's fleet alone:
+/// `hosting` is where their list is kept, and where the devices of it are
+/// read back from, so a device paired on another of their devices, or a
+/// browser certified in its own tab, is listed here too. `engine` is the
+/// workspaces whose hosts answer it.
 pub(crate) struct BrokerDoor {
     pub(crate) desk: Arc<crate::plane::DeskAuthority>,
     pub(crate) admin: &'static IdentityAdmin,
+    pub(crate) hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
+    pub(crate) engine: Option<Arc<crate::engine::Engine>>,
 }
 
 impl tilo_broker_core::steps::HostStepServices for BrokerDoor {
@@ -610,10 +645,30 @@ impl tilo_broker_core::steps::HostStepServices for BrokerDoor {
         let args = bind_slot(params(step), request.argument)?;
         let identity = authorize(&self.desk, request.workspace, person)?;
         let store = Store::from_env()?;
-        Ok(match self.admin.start(step, &args, &identity, &store)? {
-            Started::Answered(value) => Pending::ready(outcome(Ok(value))),
-            Started::Later(answer) => answer.map(outcome),
-        })
+        // A device the person's root certified elsewhere is in their record on the host that
+        // keeps it, and in no fleet of this one's: the list is read where it is kept, and the
+        // host's answer joins what this device knows.
+        if step == DEVICES
+            && let (Some(hosting), Some(engine)) = (&self.hosting, &self.engine)
+        {
+            return Ok(hosting
+                .record_devices(engine)
+                .map(move |record| outcome(devices_with_record(&store, &identity, record))));
+        }
+        let announce = |entry: &tilo_user_identity::RevocationEntry| {
+            if let (Some(hosting), Some(engine)) = (&self.hosting, &self.engine) {
+                hosting.announce_revocation(engine, entry);
+            }
+        };
+        Ok(
+            match self
+                .admin
+                .start(step, &args, &identity, &store, &announce)?
+            {
+                Started::Answered(value) => Pending::ready(outcome(Ok(value))),
+                Started::Later(answer) => answer.map(outcome),
+            },
+        )
     }
 }
 
@@ -623,6 +678,10 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::mpsc;
     use tilo_actions::remote::identity_admin::FleetDevice;
+
+    /// A device holding no workspace on a host: nothing hears of a revocation
+    /// here, and the store's own record is what a step's answer reads.
+    fn quiet(_: &tilo_user_identity::RevocationEntry) {}
 
     /// An identity store provisioned the way first boot does, in files, with the identity its
     /// workspace selects.
@@ -699,7 +758,7 @@ mod tests {
         } = provisioned();
         let (admin, commands) = recording("");
 
-        let listed = answered(admin.start(LIST, &ActionArgs::none(), &identity, &store));
+        let listed = answered(admin.start(LIST, &ActionArgs::none(), &identity, &store, &quiet));
         let entries = listed.as_array().expect("a list");
         assert_eq!(entries.len(), 1, "{listed}");
         let entry = &entries[0];
@@ -728,6 +787,7 @@ mod tests {
                     ),
                     &identity,
                     &store,
+                    &quiet,
                 )
                 .is_err(),
             "using an identity needs the person's confirmation"
@@ -737,7 +797,8 @@ mod tests {
                 ACTIVATE,
                 &args(ACTIVATE, &[("id", id.clone()), ("confirm", yes.clone())]),
                 &identity,
-                &store
+                &store,
+                &quiet
             )),
             serde_json::json!({ "id": summary.id, "active": true })
         );
@@ -746,6 +807,7 @@ mod tests {
             &args(PROTECT, &[("id", id.clone()), ("confirm", yes)]),
             &identity,
             &store,
+            &quiet,
         ));
         assert_eq!(protected["id"], summary.id.as_str());
 
@@ -762,6 +824,7 @@ mod tests {
             ),
             &identity,
             &store,
+            &quiet,
         );
         assert!(
             matches!(&unconfirmed, Err(reason) if reason.contains("confirmation")),
@@ -778,6 +841,7 @@ mod tests {
                     ),
                     &identity,
                     &store,
+                    &quiet,
                 )
                 .is_err(),
             "the active, final identity stays"
@@ -835,6 +899,7 @@ mod tests {
             &ActionArgs::none(),
             &identity,
             &store,
+            &quiet,
         )))
         .expect("devices");
         assert_eq!(devices.len(), 1, "{devices:?}");
@@ -857,6 +922,7 @@ mod tests {
                     ),
                     &identity,
                     &store,
+                    &quiet,
                 )
                 .is_err(),
             "revocation needs the person's confirmation"
@@ -875,6 +941,7 @@ mod tests {
                     ),
                     &identity,
                     &store,
+                    &quiet,
                 )
                 .is_err(),
             "an unknown reason is refused"
@@ -892,6 +959,7 @@ mod tests {
                 ),
                 &identity,
                 &store,
+                &quiet,
             )),
             serde_json::json!({ "device": phone_hex, "revoked": true })
         );
@@ -900,6 +968,7 @@ mod tests {
             &ActionArgs::none(),
             &identity,
             &store,
+            &quiet,
         )))
         .expect("devices");
         let phone = devices
@@ -939,6 +1008,7 @@ mod tests {
             ),
             &identity,
             &store,
+            &quiet,
         );
         assert!(unconfirmed.is_err());
         assert!(commands.lock().expect("commands").is_empty(), "nothing ran");
@@ -956,6 +1026,7 @@ mod tests {
                 ),
                 &identity,
                 &store,
+                &quiet,
             )
             .expect("starts")
         else {
@@ -970,7 +1041,13 @@ mod tests {
         assert_eq!(answer["decommissioned"], true);
 
         let Started::Later(retried) = admin
-            .start(HOME_PEER_RETRY, &ActionArgs::none(), &identity, &store)
+            .start(
+                HOME_PEER_RETRY,
+                &ActionArgs::none(),
+                &identity,
+                &store,
+                &quiet,
+            )
             .expect("starts")
         else {
             panic!("retrying reaches the home servers later");
