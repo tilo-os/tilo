@@ -583,10 +583,11 @@ needs no stored secret of its own:
 - Signing exchanges an OIDC identity token for the KMS signing
   role (`os/dev/configure-cosign-kms.sh`) and signs both digests with a transparency
   log entry; publishing pushes them with a `registry.tilo.so` identity token.
-- Pinning takes the published buildroots only when main would build
+- Pinning takes the published buildroots of a release only when main would build
   the same ones (the inputs digest), verifies both signatures with
   `keys/cosign.pub` and writes `os/kernel-buildroot-snapshot.env` through
-  `os/dev/open-snapshot-pr.py pins`.
+  `os/dev/open-snapshot-pr.py pins`, committed by hand: nothing moves the pins by
+  itself.
 
 Do not configure `COSIGN_PRIVATE_KEY` or `COSIGN_PASSWORD`.
 
