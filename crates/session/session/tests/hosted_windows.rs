@@ -117,7 +117,7 @@ fn a_window(id: u64) -> Window {
     }
 }
 
-/// A headless session over `home`'s app store whose apps it starts through `apps`.
+/// A headless session whose desk the tests open windows on, its apps started through `apps`.
 fn session(apps: Rc<Apps>) -> Session {
     common::headless(Options {
         person: PERSON.to_owned(),

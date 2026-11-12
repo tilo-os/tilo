@@ -24,7 +24,8 @@ app gets on a real system:
   snapshot   a PNG of the nested session per app, in OUT
   windows    a second window of Tasks, opened as a person opens one from search (its row
              with Ctrl+Enter), is a second window of the same process and its instance runs
-             in the same host; a task typed into either window shows in the other at once
+             in the same host; a task typed into either window shows in the other at once, and
+             each window names the controls of its own content where it stands
   today      Today's Tasks card reads Tasks' own record: the tasks typed into Tasks' Today
              show in Today's window, which holds none of them itself (today-*.png), and its
              "Morning cleanup" is a control the desk names, pressed by name here: it runs on one
@@ -425,8 +426,11 @@ def window_controls(session: Session, window: dict) -> list[str]:
         shown.get("tab") == window["tab"] and shown.get("active")
         for shown in session.windows()), 30)
     time.sleep(0.5)
-    x, y, width, height = next(shown["rect"] for shown in session.windows()
-                               if shown.get("tab") == window["tab"])
+    rect = next((shown["rect"] for shown in session.windows()
+                 if shown.get("tab") == window["tab"]), None)
+    if rect is None:
+        raise Failed(f"window {window['tab']} is not drawn on the desk to be read")
+    x, y, width, height = rect
     return [target["name"] for target in session.targets()
             if x <= target["rect"][0] < x + width and y <= target["rect"][1] < y + height]
 
