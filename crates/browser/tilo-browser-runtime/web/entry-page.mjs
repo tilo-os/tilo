@@ -26,7 +26,7 @@ import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetc
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
-import {createIdentityActions, SIGN_IN, syncProfile} from './identity-actions.mjs';
+import {createIdentityActions, SIGN_IN, setupOrigin, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, openFirstRun, setupDone} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
@@ -1889,9 +1889,11 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
     profiled: at => peer?.setProfileChanged?.(at),
     // The card's "Connect an agent" is the first screen's own setup, shown
     // again with a fresh code: the same prompt and the same MCP address the
-    // person saw when they arrived.
-    showAgentSetup: peer?.origin
-      ? () => { connectAnAgent({origin: peer.origin, identity, runtime, link}); }
+    // person saw when they arrived. On the person's own desktop no workspace
+    // peer is in front, so the code comes from their home host, as the first
+    // screen's did.
+    showAgentSetup: setupOrigin({peer, home})
+      ? () => { connectAnAgent({origin: setupOrigin({peer, home}), identity, runtime, link}); }
       : null,
   });
   void actions.attach(mount);
