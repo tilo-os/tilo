@@ -189,7 +189,13 @@ def focus(session: Session, app: str) -> dict:
                                  if w.get("app_id") == app and w.get("window") is not None), None),
                    180, 0.5)
     session.invoke(DESK, f"{WINDOWS}\u001ffocus", {"tab": str(window["tab"])})
-    time.sleep(0.5)
+    # The desk's own row says which tab is in front: keys typed before the switch has
+    # landed go to the window that had them, so the wait is on that row and the pause
+    # on the frame that follows it.
+    until(f"the desk on {session.tag} to put {app} in front",
+          lambda: next((row for row in session.windows()
+                        if row.get("tab") == window["tab"] and row.get("active")), None), 60, 0.2)
+    time.sleep(1.0)
     return window
 
 
@@ -242,7 +248,7 @@ def stumbles(session: Session) -> list[str]:
                    ("collaboration stopped", "outcome unknown", "did not become current"))][-4:]
 
 
-def tasks_content(session: Session) -> str:
+def tasks_content(session: Session, bound: float = 180.0) -> str:
     """What Tasks on this session holds: its own `read` of the workspace's records.
 
     A tilolang app answers a read of the workspace's records by kind and id, and a
@@ -256,7 +262,7 @@ def tasks_content(session: Session) -> str:
                 return action
         return None
     try:
-        action = until("Tasks' read action", read_action, 180, 0.5)
+        action = until("Tasks' read action", read_action, bound, 0.5)
     except Failed:
         return ""
     try:
@@ -456,7 +462,7 @@ def main() -> int:
                   f"{peer_tasks_drawn} frames, then {frames(peer, TASKS)} after "
                   f"{CROSSING_BOUND:.0f} s; the peer's session says {stumbles(peer)}")
         peer.snapshot(out / "06-peer-task.png")
-        listed = tasks_content(peer)
+        listed = tasks_content(peer, bound=30.0)
         check("the peer's own Tasks lists the task the host typed", task_title in listed,
               listed[:500])
 
