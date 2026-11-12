@@ -650,15 +650,25 @@ impl TabRecorder {
             secret: true, text, ..
         } = request
         {
-            let kept = clipped(text, MAX_TEXT_BYTES);
-            for secret in [text.as_str(), kept.as_str()] {
-                let digest = self.digest(secret);
-                if !self.withheld.contains(&digest) {
-                    if self.withheld.len() >= MAX_WITHHELD {
-                        self.withheld.remove(0);
-                    }
-                    self.withheld.push(digest);
+            self.sent_secret(text);
+        }
+    }
+
+    /// `secret` leaves this window as a secret (a secret fill's text, a
+    /// sign-in's password): it is remembered by its digest, so it is never
+    /// written whatever the engine lists.
+    pub(crate) fn sent_secret(&mut self, secret: &str) {
+        if !self.attached() {
+            return;
+        }
+        let kept = clipped(secret, MAX_TEXT_BYTES);
+        for secret in [secret, kept.as_str()] {
+            let digest = self.digest(secret);
+            if !self.withheld.contains(&digest) {
+                if self.withheld.len() >= MAX_WITHHELD {
+                    self.withheld.remove(0);
                 }
+                self.withheld.push(digest);
             }
         }
     }

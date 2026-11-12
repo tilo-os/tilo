@@ -105,6 +105,9 @@ mod regression_tests;
 mod remembered;
 mod review_hooks;
 mod side_panel;
+mod sign_in;
+#[cfg(test)]
+mod sign_in_tests;
 #[cfg(test)]
 #[allow(
     unused_mut,
@@ -494,6 +497,9 @@ pub struct BrowserWidget {
     /// "leave this page?"), shown over the window, and its dialog's node.
     page_dialogs: crate::page_dialogs::PageDialogs,
     page_dialog_node: Option<NodeId>,
+    /// The sign-in a site asks for before it answers, shown over the window
+    /// in the question's place while a request waits on it.
+    page_sign_in: crate::page_sign_in::PageSignIn,
     /// The page's file chooser a person opened, while the host's picker is
     /// open for it.
     page_files: crate::page_files::PageFiles,
@@ -1508,6 +1514,7 @@ impl BrowserWidget {
             site: crate::site_controls::SiteControls::default(),
             page_popups: crate::page_popups::PagePopups::default(),
             page_dialogs: crate::page_dialogs::PageDialogs::default(),
+            page_sign_in: crate::page_sign_in::PageSignIn::default(),
             page_files: crate::page_files::PageFiles::default(),
             page_dialog_node: None,
             page_dialog_answer: None,
@@ -2062,6 +2069,10 @@ impl BrowserWidget {
                 );
                 self.page_dialog_answer = Some(answer);
             }
+            BrowserOperation::AnswerPageSignIn {
+                sign_in,
+                credentials,
+            } => self.page_dialog_answer = Some(self.answer_sign_in(sign_in, credentials)?),
             BrowserOperation::AnswerPermission { request, allow } => {
                 let asked = self
                     .capabilities
@@ -3412,6 +3423,9 @@ impl BrowserWidget {
                     self.page_files
                         .apply(&event, &self.engine, self.browsing_mode);
                 }
+                event @ (WebViewEvent::HttpAuth(_) | WebViewEvent::HttpAuthClosed { .. }) => {
+                    self.structure_dirty |= self.page_sign_in.apply(&event, &self.engine);
+                }
                 WebViewEvent::HeldRequest(request) => self.hold_asked(&request),
                 WebViewEvent::HeldRequestClosed { id } => self.held_closed(id),
                 event @ (WebViewEvent::DownloadRequested { .. }
@@ -4434,7 +4448,7 @@ impl Widget for BrowserWidget {
         // The page's question stands over everything, the panel too: the
         // dialog's node covers the window out of flow.
         self.page_dialog_node = None;
-        if let Some(dialog) = self.page_dialogs.widget_mut() {
+        if let Some(dialog) = sign_in::modal_mut(&mut self.page_sign_in, &mut self.page_dialogs) {
             let node = dialog.build_layout(taffy, theme, node_map);
             children.push(node);
             self.page_dialog_node = Some(node);
@@ -4463,8 +4477,10 @@ impl Widget for BrowserWidget {
         {
             panel.apply_layout(taffy, panel_node, Point::new(self.rect.x0, self.rect.y0));
         }
-        if let (Some(node), Some(dialog)) = (self.page_dialog_node, self.page_dialogs.widget_mut())
-        {
+        if let (Some(node), Some(dialog)) = (
+            self.page_dialog_node,
+            sign_in::modal_mut(&mut self.page_sign_in, &mut self.page_dialogs),
+        ) {
             dialog.apply_layout(taffy, node, Point::new(self.rect.x0, self.rect.y0));
         }
         // The suggestions hang under the address field, as wide as it.
@@ -4563,7 +4579,7 @@ impl Widget for BrowserWidget {
             .draw_child(scene, transform, text_renderer, theme, presence);
         self.back_menu
             .draw_child(scene, transform, text_renderer, theme, presence);
-        if let Some(dialog) = self.page_dialogs.widget_mut() {
+        if let Some(dialog) = sign_in::modal_mut(&mut self.page_sign_in, &mut self.page_dialogs) {
             dialog.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
     }
@@ -4580,9 +4596,7 @@ impl Widget for BrowserWidget {
                 .composed
                 .element()
                 .is_some_and(Widget::needs_animation_frame)
-            || self
-                .page_dialogs
-                .widget()
+            || sign_in::modal(&self.page_sign_in, &self.page_dialogs)
                 .is_some_and(Widget::needs_animation_frame)
     }
 
@@ -4619,9 +4633,7 @@ impl Widget for BrowserWidget {
         // Toggling the settings pane swaps the content widget → rebuild.
         let own = std::mem::take(&mut self.structure_dirty);
         self.composition_dirty |= own;
-        let dialog = self
-            .page_dialogs
-            .widget_mut()
+        let dialog = sign_in::modal_mut(&mut self.page_sign_in, &mut self.page_dialogs)
             .is_some_and(Widget::take_structure_dirty);
         own || self.composed.take_structure_dirty() || dialog
     }
@@ -4641,12 +4653,15 @@ impl Widget for BrowserWidget {
             self.focus_control_preserving_selection(id);
             *ctx.focus_target = Some(node);
         }
-        if let (Some(node), Some(dialog)) = (self.page_dialog_node, self.page_dialogs.widget_mut())
-        {
+        if let (Some(node), Some(dialog)) = (
+            self.page_dialog_node,
+            sign_in::modal_mut(&mut self.page_sign_in, &mut self.page_dialogs),
+        ) {
             // The page waits on its question: the dialog owns the pointer
             // and the keyboard until it is answered.
             dialog.handle_event(event, &mut ctx.reborrow(ctx.path, node));
             self.structure_dirty |= self.page_dialogs.poll(&self.engine);
+            self.poll_sign_in();
             if matches!(
                 event,
                 WindowEvent::KeyboardInput { .. }
@@ -5125,7 +5140,9 @@ impl Widget for BrowserWidget {
             .min()
     }
     fn modal_capture(&self) -> Option<Rect> {
-        if let Some(capture) = self.page_dialogs.widget().and_then(Widget::modal_capture) {
+        if let Some(capture) =
+            sign_in::modal(&self.page_sign_in, &self.page_dialogs).and_then(Widget::modal_capture)
+        {
             return Some(capture);
         }
         if let Some(panel) = &self.anchored_panel {
@@ -5149,7 +5166,7 @@ impl Widget for BrowserWidget {
                     .as_ref()
                     .map(|p| p.as_ref() as &dyn Widget),
             )
-            .chain(self.page_dialogs.widget())
+            .chain(sign_in::modal(&self.page_sign_in, &self.page_dialogs))
             .collect()
     }
 
@@ -5163,7 +5180,10 @@ impl Widget for BrowserWidget {
                     .as_mut()
                     .map(|p| p.as_mut() as &mut (dyn Widget + '_)),
             )
-            .chain(self.page_dialogs.widget_mut())
+            .chain(sign_in::modal_mut(
+                &mut self.page_sign_in,
+                &mut self.page_dialogs,
+            ))
             .collect()
     }
 
@@ -5181,13 +5201,15 @@ impl Widget for BrowserWidget {
 }
 
 /// What a window publishes of its page: the rows it shows, the edits
-/// bound to the page and its row, the question the page waits on, and what
+/// bound to the page and its row, the question the page waits on, the
+/// sign-in a site asks for, and what
 /// the search finds of the history, downloads and personal bookmarks.
 pub(crate) struct PagePublication {
     pub(crate) rows: Vec<ui::framework::LiveRow>,
     pub(crate) bound: Vec<ui::tilo_resource::ActionDecl<Browser>>,
     page_row: Vec<ui::tilo_resource::ActionDecl<Browser>>,
     question: Option<ui::framework::LiveRow>,
+    sign_in: Option<ui::framework::LiveRow>,
     search_index: crate::search_provider::BrowserSearchIndex,
     personal_bookmarks: Rc<crate::personal_bookmarks::PersonalBookmarkState>,
 }
@@ -5207,6 +5229,9 @@ impl PagePublication {
     pub(crate) fn row(&self, id: &str) -> Option<ui::framework::LiveRow> {
         if id == crate::page_dialogs::ROW {
             return self.question.clone();
+        }
+        if id == crate::page_sign_in::ROW {
+            return self.sign_in.clone();
         }
         self.search_index
             .resource(id)
@@ -5250,6 +5275,10 @@ impl BrowserWidget {
             page_row: self.page_row_declarations(),
             question: self
                 .page_dialogs
+                .resource()
+                .map(ui::framework::LiveRow::from_resource),
+            sign_in: self
+                .page_sign_in
                 .resource()
                 .map(ui::framework::LiveRow::from_resource),
             search_index: self.search_index.clone(),
@@ -5797,6 +5826,7 @@ impl BrowserWidget {
         ];
         browser.children.extend(bookmark_rows);
         browser.children.extend(self.page_dialogs.resource());
+        browser.children.extend(self.page_sign_in.resource());
         browser.children.extend(self.capabilities.resource());
         for selection in &self.service_selections {
             browser.children.push(selection.resource());
@@ -6058,10 +6088,12 @@ impl BrowserWidget {
         self.structure_dirty |= self.extensions.sync(&self.engine, &self.current_uri);
         self.structure_dirty |= self.page_popups.sync(&self.engine);
         self.structure_dirty |= self.page_dialogs.sync(&self.engine);
+        self.structure_dirty |= self.page_sign_in.sync(&self.engine);
         self.page_files.sync(&self.engine, self.browsing_mode);
         // Whichever engine shows the page now copies to the system clipboard.
         self.engine.share_clipboard();
         self.structure_dirty |= self.page_dialogs.poll(&self.engine);
+        self.poll_sign_in();
         self.structure_dirty |= self.daily.sync(&self.engine);
         let site_was_open = self.site.open;
         self.structure_dirty |= self.site.sync(&self.engine);
@@ -6107,7 +6139,7 @@ impl BrowserWidget {
         if let Some(c) = self.composed.element_mut() {
             c.sync(state, path);
         }
-        if let Some(dialog) = self.page_dialogs.widget_mut() {
+        if let Some(dialog) = sign_in::modal_mut(&mut self.page_sign_in, &mut self.page_dialogs) {
             dialog.sync(state, path);
         }
         self.select_inline_completion();
@@ -6288,7 +6320,11 @@ impl BrowserWidget {
                 ),
                 _ => ui::tilo_actions::ActionOutput::default(),
             };
-            let answers_a_dialog = matches!(operation, BrowserOperation::AnswerPageDialog { .. });
+            let answers_a_dialog = matches!(
+                operation,
+                BrowserOperation::AnswerPageDialog { .. }
+                    | BrowserOperation::AnswerPageSignIn { .. }
+            );
             let answers_permission = matches!(operation, BrowserOperation::AnswerPermission { .. });
             self.perform_browser_operation(operation)?;
             let output = if answers_a_dialog {

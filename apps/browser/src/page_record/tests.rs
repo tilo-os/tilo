@@ -1562,3 +1562,130 @@ fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
         ]
     );
 }
+
+/// A sign-in's password never reaches the record either. The window sends it
+/// as a secret, so it is in no state of the record, no version of its
+/// history, no answer of a read and no byte of the document: not from the
+/// answer itself, which says only who was answered, and not when an engine
+/// lists the same text as something written afterwards.
+#[test]
+fn a_sign_ins_password_is_never_written() {
+    const PASSWORD: &str = "correct-horse-battery-staple-11";
+    const ASKER: &str = "https://shop.test";
+    let engine = TestEngine::new();
+    let mut app = open(&engine);
+    let ada = agent("agent:ada");
+    engine.push_event(ui::webview::WebViewEvent::HttpAuth(
+        ui::webview::HttpAuthChallenge {
+            id: 4,
+            asker: ASKER.into(),
+            proxy: false,
+            realm: "Members".into(),
+            scheme: "basic".into(),
+            retry: false,
+        },
+    ));
+    app.settle();
+    assert!(
+        published(&app.harness().resources(), crate::page_sign_in::ROW),
+        "the sign-in is the window's row"
+    );
+
+    // Ada's agent answers through the row, as the host does for an agent it
+    // admitted.
+    let sign_in = BrowserEffect::AnswerPageSignIn {
+        sign_in: 4,
+        username: "ada".into(),
+        password: PASSWORD.into(),
+    };
+    let said = invoke(
+        &mut app,
+        Some(&ada),
+        sign_in.address_on(crate::page_sign_in::ROW),
+        &sign_in.arguments(),
+    )
+    .expect("the sign-in answers")
+    .expect("and says what it did")
+    .to_string();
+    assert!(said.contains(ASKER), "it names who was answered: {said}");
+    assert!(
+        !said.contains(PASSWORD) && !said.contains("ada"),
+        "and never with what: {said}"
+    );
+    let sent: Vec<_> = engine
+        .commands()
+        .into_iter()
+        .filter_map(|command| match command {
+            WebViewCommand::AnswerHttpAuth {
+                id,
+                asker,
+                credentials,
+            } => Some((id, asker, credentials)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [(
+            4,
+            ASKER.to_owned(),
+            Some(ui::webview::HttpAuthCredentials::new("ada", PASSWORD))
+        )],
+        "the credentials reach the engine, for the asker that was shown"
+    );
+    assert!(
+        !format!("{:?}", engine.commands()).contains(PASSWORD),
+        "and print as nothing"
+    );
+    app.settle();
+    assert!(
+        !published(&app.harness().resources(), crate::page_sign_in::ROW),
+        "answered, the row goes"
+    );
+
+    // An engine that lists the same text as written, as chosen and as a
+    // form's answer: the window sent it as a secret, so it writes none.
+    engine_sets_down(
+        &engine,
+        &json!({"seq": 1, "time_ms": 1_700_000_000_001_u64, "actor": "agent:ada",
+            "action": "fill", "ok": true, "message": "Filled textbox \"Search\"", "url": PAGE,
+            "target": {"role": "textbox", "name": "Search"},
+            "text": PASSWORD, "values": [PASSWORD, "Members"],
+            "answers": [{"name": "Search", "value": PASSWORD},
+                {"name": "Area", "value": "Members area"}]}),
+    );
+    act(&mut app, Some(&ada), &fill("d1e2", "members")).expect("the fill answers");
+    app.settle();
+
+    let record = record(&mut app);
+    let tab = only_tab(&record);
+    assert_eq!(held(&record, &tab).len(), 1, "the fill is set down");
+    let read = review(&mut app, None).to_string();
+    let state = format!("{:?}", record.get());
+    let (bytes, versions) = record
+        .record()
+        .read(|doc| {
+            let mut doc = doc.clone();
+            let versions: Vec<String> = history::versions(&mut doc)
+                .into_iter()
+                .map(|version| {
+                    let then = history::read_at::<PageRecord>(&mut doc, &[version.hash])
+                        .expect("a past version of the record reads");
+                    format!("{then:?} {:?} {:?}", version.context, version.message)
+                })
+                .collect();
+            (doc.save_nocompress(), versions)
+        })
+        .expect("the record is open");
+    assert!(!read.contains(PASSWORD), "a read answers it: {read}");
+    assert!(!state.contains(PASSWORD), "the record holds it: {state}");
+    for version in &versions {
+        assert!(!version.contains(PASSWORD), "history holds it: {version}");
+    }
+    assert!(!contains(&bytes, PASSWORD), "the document's bytes hold it");
+    // The same search finds what was written beside it.
+    for written in ["Members area", "Search"] {
+        assert!(read.contains(written), "{written}: {read}");
+        assert!(contains(&bytes, written), "{written} is in the document");
+    }
+}

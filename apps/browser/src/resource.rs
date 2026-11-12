@@ -294,6 +294,8 @@ const SCENARIOS: &[&str] = &[
     "error",
     "permission",
     "page-dialog",
+    "page-sign-in",
+    "page-sign-in-again",
     "review",
     "site-forms",
     "suggestions",
@@ -384,7 +386,10 @@ impl ResourceApp for BrowserShell {
         match scenario {
             Some("pip-empty" | "suggestions") => (1000, 650),
             Some("settings" | "history-paused") => (900, 700),
-            Some("loading" | "error" | "permission" | "page-dialog") => (900, 620),
+            Some(
+                "loading" | "error" | "permission" | "page-dialog" | "page-sign-in"
+                | "page-sign-in-again",
+            ) => (900, 620),
             Some("review") => (1000, 1480),
             Some("site-forms") => (900, 1120),
             Some(name) if name.starts_with("library-") || name.starts_with("downloads-") => {
@@ -863,6 +868,39 @@ mod tests {
             !app.harness()
                 .targets()
                 .contains_key(crate::page_dialogs::ROW)
+        );
+    }
+
+    /// A site's sign-in is the window's row while its request waits, with
+    /// the prompt's two answers bound to it and nothing typed in it;
+    /// cancelled in the prompt, both go.
+    #[test]
+    fn a_sites_sign_in_is_answered_through_its_row() {
+        let mut app = TestApp::<BrowserShell>::capture(Some("page-sign-in")).unwrap();
+        app.settle();
+        let published = app.harness().resources();
+        let sign_in = find(&published, crate::page_sign_in::ROW)
+            .expect("the sign-in a request waits on is a row");
+        assert_eq!(sign_in.label, "Sign in to staging.example.org");
+        let ids: Vec<&str> = sign_in.actions.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["answer-page-sign-in", "cancel-page-sign-in"]);
+        assert!(
+            app.harness()
+                .targets()
+                .contains_key(crate::page_sign_in::ROW),
+            "the prompt stands over the page"
+        );
+
+        // A person cancels in the prompt, and the row goes with it.
+        app.harness()
+            .click_named(&format!("{}.secondary", crate::page_sign_in::ROW))
+            .unwrap();
+        app.settle();
+        assert!(find(&app.harness().resources(), crate::page_sign_in::ROW).is_none());
+        assert!(
+            !app.harness()
+                .targets()
+                .contains_key(crate::page_sign_in::ROW)
         );
     }
 

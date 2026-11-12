@@ -1018,6 +1018,34 @@ pub enum BrowserEffect {
         #[param("The question's id")]
         dialog: u32,
     },
+    /// Sign in to the site that asks
+    ///
+    /// What the sign-in prompt's Sign in button does: the site or proxy the
+    /// row names asked for a user name and a password before it answers,
+    /// and the request waits until it is answered. Both go only to the one
+    /// the row names; the password is a secret kept out of logs and
+    /// history.
+    #[effect(row, returns)]
+    AnswerPageSignIn {
+        #[param("The sign-in's id")]
+        sign_in: u32,
+        #[param("User name for the site that asks")]
+        username: String,
+        #[param(
+            secret,
+            "Password for the site that asks; kept out of logs and history"
+        )]
+        password: String,
+    },
+    /// Cancel the site's sign-in
+    ///
+    /// What the sign-in prompt's Cancel button does: nothing is sent, and
+    /// the page shows the server's own answer.
+    #[effect(row, returns)]
+    CancelPageSignIn {
+        #[param("The sign-in's id")]
+        sign_in: u32,
+    },
     /// Answer the site's permission request
     ///
     /// What its Allow or Block button does: the site's request for a
@@ -1258,6 +1286,18 @@ impl BrowserEffect {
                 dialog,
                 accept: false,
                 text: None,
+            },
+            Self::AnswerPageSignIn {
+                sign_in,
+                username,
+                password,
+            } => BrowserOperation::AnswerPageSignIn {
+                sign_in,
+                credentials: Some(ui::webview::HttpAuthCredentials::new(username, password)),
+            },
+            Self::CancelPageSignIn { sign_in } => BrowserOperation::AnswerPageSignIn {
+                sign_in,
+                credentials: None,
             },
             Self::AnswerPermission { request, allow } => {
                 BrowserOperation::AnswerPermission { request, allow }
@@ -1646,6 +1686,12 @@ pub enum BrowserOperation {
         dialog: u32,
         accept: bool,
         text: Option<String>,
+    },
+    /// Answer the sign-in `sign_in` a site asked for with `credentials`, or
+    /// cancel it with none. The credentials print as nothing.
+    AnswerPageSignIn {
+        sign_in: u32,
+        credentials: Option<ui::webview::HttpAuthCredentials>,
     },
     /// Answer the site's permission request `request`: allow it when
     /// `allow`, else deny it.

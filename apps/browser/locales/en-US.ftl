@@ -220,6 +220,20 @@ browser-file-chooser-folder = Choose a folder
 browser-file-chooser-choose = Choose
 browser-file-chooser-accepted = Accepted files
 
+## A server's sign-in (HTTP authentication): who asks is the origin the
+## credentials go to; the realm is the server's own text
+browser-page-sign-in-title = Sign in to { $site }
+browser-page-sign-in-title-long = Sign in to this site
+browser-page-sign-in-title-proxy = Sign in to the proxy { $site }
+browser-page-sign-in-title-proxy-long = Sign in to the proxy
+browser-page-sign-in-asks = { $asker } asks for a user name and password.
+browser-page-sign-in-asks-proxy = The proxy { $asker } asks for a user name and password.
+browser-page-sign-in-realm = In its own words: “{ $realm }”.
+browser-page-sign-in-clear = This connection is not private: the password can be read on its way.
+browser-page-sign-in-retry = That user name or password was not accepted.
+browser-page-sign-in-too-long = That user name or password is too long.
+browser-page-sign-in-submit = Sign in
+
 ## An address or page that did not open
 browser-address-failed = Couldn’t open this address
 browser-address-empty = Enter a web address or search words

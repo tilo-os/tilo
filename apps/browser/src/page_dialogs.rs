@@ -303,7 +303,7 @@ fn site(origin: &str) -> Option<String> {
 
 /// `text` as a row's preview: within its bound, cut where a character
 /// starts, without the characters a preview may not hold.
-fn preview(text: &str) -> String {
+pub(crate) fn preview(text: &str) -> String {
     let mut preview: String = text
         .chars()
         .filter(|character| !matches!(character, '\r' | '\0'))

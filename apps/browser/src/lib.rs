@@ -80,6 +80,7 @@ pub mod page_menu;
 pub mod page_popups;
 pub mod page_record;
 mod page_review;
+pub mod page_sign_in;
 mod personal_bookmark_view;
 pub mod personal_bookmarks;
 pub mod private_window;

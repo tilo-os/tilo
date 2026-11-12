@@ -64,6 +64,8 @@ struct Inner {
     accepts_page_dialogs: bool,
     /// Whether it was asked for the page's file choosers.
     accepts_file_choosers: bool,
+    /// Whether it was asked for the sign-ins servers ask for.
+    accepts_http_auth: bool,
     adopted: std::collections::HashMap<u32, Arc<TestEngine>>,
     /// The tabs it was asked to create, oldest first.
     created: Vec<Arc<TestEngine>>,
@@ -171,6 +173,11 @@ impl TestEngine {
     /// Whether it was asked for the file choosers a person opens.
     pub fn accepts_file_choosers(&self) -> bool {
         self.lock_inner().accepts_file_choosers
+    }
+
+    /// Whether it was asked for the sign-ins servers ask for.
+    pub fn accepts_http_auth(&self) -> bool {
+        self.lock_inner().accepts_http_auth
     }
 
     /// The tabs it created, oldest first.
@@ -634,6 +641,10 @@ impl WebViewEngine for TestEngine {
         self.lock_inner().accepts_file_choosers = true;
     }
 
+    fn accept_http_auth(&self) {
+        self.lock_inner().accepts_http_auth = true;
+    }
+
     fn take_popups(&self) -> Vec<super::Popup> {
         std::mem::take(&mut self.lock_inner().popups)
     }
@@ -816,6 +827,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ContextMenuAction { .. }
             | WebViewCommand::AnswerPageDialog { .. }
             | WebViewCommand::AnswerFileChooser { .. }
+            | WebViewCommand::AnswerHttpAuth { .. }
             | WebViewCommand::AnswerHeldRequest { .. }
             | WebViewCommand::StopFinding
             | WebViewCommand::SetZoomLevel(_)

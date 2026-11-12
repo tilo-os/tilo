@@ -11,6 +11,7 @@ mod extension_permissions;
 mod extension_sign_in;
 mod file_chooser;
 mod frame_memory;
+mod http_auth;
 mod menus;
 mod page_clipboard;
 mod protocol;
@@ -84,6 +85,11 @@ struct Shared {
     choosers_can: AtomicBool,
     choosers_asked: AtomicBool,
     choosers_told: AtomicBool,
+    /// Whether the host holds a server's sign-in for its embedder, whether
+    /// this tab asked for them, and whether the host was told.
+    auth_can: AtomicBool,
+    auth_asked: AtomicBool,
+    auth_told: AtomicBool,
     /// Whether this tab holds what its page sends, and whether the host was
     /// told: a window an agent operates holds every departure.
     holds_asked: AtomicBool,
@@ -649,6 +655,9 @@ impl UnavailableEngine {
                 choosers_can: AtomicBool::default(),
                 choosers_asked: AtomicBool::default(),
                 choosers_told: AtomicBool::default(),
+                auth_can: AtomicBool::default(),
+                auth_asked: AtomicBool::default(),
+                auth_told: AtomicBool::default(),
                 holds_asked: AtomicBool::default(),
                 holds_told: AtomicBool::default(),
                 clipboard: page_clipboard::Sharing::default(),
@@ -1681,6 +1690,11 @@ impl WebViewEngine for ChromiumEngine {
         self.tell_file_choosers();
     }
 
+    fn accept_http_auth(&self) {
+        self.shared.auth_asked.store(true, Ordering::Release);
+        self.tell_http_auth();
+    }
+
     fn hold_departures(&self) {
         self.shared.holds_asked.store(true, Ordering::Release);
         self.tell_holds();
@@ -1856,6 +1870,7 @@ impl WebViewEngine for ChromiumEngine {
         self.tell_popups();
         self.tell_dialogs();
         self.tell_file_choosers();
+        self.tell_http_auth();
         self.tell_clipboard();
         self.shared
             .events
@@ -1985,6 +2000,10 @@ fn route_native_event(
             );
             shared.choosers_can.store(
                 value["file_choosers"].as_bool() == Some(true),
+                Ordering::Release,
+            );
+            shared.auth_can.store(
+                value["http_auth"].as_bool() == Some(true),
                 Ordering::Release,
             );
             shared.selection_text.store(
@@ -2225,6 +2244,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         WebViewCommand::AnswerFileChooser { id, paths } => {
             *id > 0 && i32::try_from(*id).is_ok() && super::file_chooser::answers(paths)
         }
+        WebViewCommand::AnswerHttpAuth { .. } => http_auth::within_limits(command),
         WebViewCommand::SetZoomLevel(level) => level.is_finite() && (-5.0..=9.0).contains(level),
         // A cancel names the page request it stops, by the id that request
         // was sent under.
@@ -2504,6 +2524,7 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "file_chooser_closed" => WebViewEvent::FileChooserClosed {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
         },
+        "http_auth" | "http_auth_closed" => http_auth::event(value)?,
         "held" => WebViewEvent::HeldRequest(super::hold::HeldRequest {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
             kind: super::hold::HeldKind::parse(value["kind"].as_str()?)?,
@@ -2896,6 +2917,7 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::AnswerFileChooser { id, paths } => {
             json!({"op":"file_chooser_reply","id":id,"paths":paths})
         }
+        command @ WebViewCommand::AnswerHttpAuth { .. } => http_auth::encode(&command)?,
         WebViewCommand::AnswerHeldRequest { id, allow, by } => {
             answered_by(json!({"op":"hold_answer","id":id,"allow":allow}), &by)
         }
@@ -2955,6 +2977,8 @@ mod extension_tests;
 mod file_chooser_tests;
 #[cfg(test)]
 mod frame_tests;
+#[cfg(test)]
+mod http_auth_tests;
 #[cfg(test)]
 mod popup_tests;
 #[cfg(test)]

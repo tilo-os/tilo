@@ -17,6 +17,8 @@ impl BrowserWidget {
             Some("error") => self.debug_show_load_error(),
             Some("permission") => self.debug_request_permission(),
             Some("page-dialog") => self.debug_page_dialog(),
+            Some("page-sign-in") => self.debug_page_sign_in(false),
+            Some("page-sign-in-again") => self.debug_page_sign_in(true),
             Some("review") => self.stage_page_review(),
             Some("site-forms") => self.review_stage = Some(ReviewStage::SiteForms),
             Some("suggestions") => {
@@ -250,6 +252,30 @@ impl BrowserWidget {
                 message: "Remove all 3 items from your basket?".into(),
                 default_text: String::new(),
             }));
+        self.structure_dirty = true;
+    }
+
+    /// Headless visual-review hook: a site asking for a user name and a
+    /// password; `again` over a plain connection, after credentials it did
+    /// not accept.
+    pub fn debug_page_sign_in(&mut self, again: bool) {
+        // Asked of this engine already, so the next sync keeps the prompt.
+        self.page_sign_in.sync(&self.engine);
+        let (asker, realm) = if again {
+            ("http://intranet.example.org:8080", "Staff wiki")
+        } else {
+            ("https://staging.example.org", "Staging")
+        };
+        let challenge = ui::webview::HttpAuthChallenge {
+            id: 1,
+            asker: asker.into(),
+            proxy: false,
+            realm: realm.into(),
+            scheme: "basic".into(),
+            retry: again,
+        };
+        self.page_sign_in
+            .apply(&WebViewEvent::HttpAuth(challenge), &self.engine);
         self.structure_dirty = true;
     }
 

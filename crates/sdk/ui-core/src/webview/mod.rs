@@ -29,6 +29,7 @@ pub use credentials::{
 pub use service_sessions::{ServiceSessionReply, ServiceSessionRequest};
 pub mod file_chooser;
 pub mod hold;
+pub mod http_auth;
 pub mod page;
 pub mod paint;
 pub mod text_input;
@@ -36,6 +37,7 @@ pub use file_chooser::{FileChooser, FileChooserMode};
 pub use hold::{
     AnsweredBy, HeldKind, HeldRequest, MAX_HELD_CAPTURE, MAX_HELD_METHOD, MAX_HELD_ORIGIN,
 };
+pub use http_auth::{HttpAuthChallenge, HttpAuthCredentials};
 pub use page::{
     FormSubmit, FrameId, MAX_POINTER_STEPS, PageActor, PageChange, PageFailure, PageFieldChange,
     PageFormChange, PageKey, PageNavigation, PageRecordNote, PageReply, PageRequest, PointerButton,
@@ -611,6 +613,16 @@ pub enum WebViewCommand {
         id: u32,
         paths: Vec<String>,
     },
+    /// Answer the sign-in `id` a server asked for ([`WebViewEvent::HttpAuth`])
+    /// with the person's credentials, or with none to cancel it, which shows
+    /// the server's own page. `asker` is who the person was shown asking: an
+    /// answer naming another asker than the challenge's, or a challenge the
+    /// request no longer waits on, sends nothing.
+    AnswerHttpAuth {
+        id: u32,
+        asker: String,
+        credentials: Option<HttpAuthCredentials>,
+    },
     /// Answer the request `id` an agent's window held
     /// ([`WebViewEvent::HeldRequest`]): let it leave exactly once, or keep
     /// the page as it is and drop it. Answered once: a second answer for the
@@ -1080,6 +1092,15 @@ pub enum WebViewEvent {
     FileChooserClosed {
         id: u32,
     },
+    /// A server (or a proxy) asks for a user name and a password, and the
+    /// request waits for them ([`WebViewCommand::AnswerHttpAuth`]).
+    HttpAuth(HttpAuthChallenge),
+    /// The request no longer waits on the sign-in `id`: it was answered, the
+    /// page went elsewhere or its tab closed, another took its place, or
+    /// nobody answered in the engine's time.
+    HttpAuthClosed {
+        id: u32,
+    },
     /// A page an agent operates was about to send something, and holds it
     /// for the person's answer ([`WebViewCommand::AnswerHeldRequest`]): the
     /// page stays as it was filled and nothing leaves until then.
@@ -1369,6 +1390,17 @@ pub trait WebViewEngine: Send + Sync {
     fn accept_file_choosers(&self) {
         if let Some(engine) = self.wrapped() {
             engine.accept_file_choosers();
+        }
+    }
+
+    /// Have a server's sign-in (HTTP authentication) sent as
+    /// [`WebViewEvent::HttpAuth`], for the embedder to ask the person and
+    /// answer. Until then, and in an engine that cannot, each challenge is
+    /// cancelled at once and the page shows the server's own answer (see
+    /// [`http_auth`]).
+    fn accept_http_auth(&self) {
+        if let Some(engine) = self.wrapped() {
+            engine.accept_http_auth();
         }
     }
 
