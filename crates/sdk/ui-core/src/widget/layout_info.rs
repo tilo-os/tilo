@@ -190,6 +190,21 @@ pub struct TextLayout {
     pub document: bool,
 }
 
+/// A list as its last layout left it: whether its first row names a group, and the room the
+/// list keeps over that row.
+///
+/// An audit reads this to hold a list to the rule its groups lay it out by: a list whose rows
+/// name groups starts them one heading band in from its edge — under the heading over the first
+/// run, or under the room that heading takes where the list leaves it out, saying what the title
+/// above already says. A list whose rows name no group is one block and leads with its rows.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+pub struct ListLayout {
+    /// Whether the list's first row names a group, so a heading or the room of one leads it.
+    pub heads_rows: bool,
+    /// The room the list keeps over its first row, in logical pixels.
+    pub lead: f32,
+}
+
 /// Concrete layout policies. Manual layout information can extend this enum.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub enum LayoutInfo {
@@ -200,6 +215,7 @@ pub enum LayoutInfo {
     Manual(ManualLayout),
     Scroll(ScrollLayout),
     Row(RowLayout),
+    List(ListLayout),
     Shell(ShellLayout),
     Text(TextLayout),
 }

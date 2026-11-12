@@ -22,7 +22,7 @@ use super::{ListModel, VirtualList};
 use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::section::{SectionHeaderFace, band_height};
+use crate::widget::section::{SectionHeaderFace, band_height, heading_count};
 use crate::widget::{Interaction, Tone};
 
 /// What an accessibility target naming a heading starts with: the rest is the heading, as
@@ -383,17 +383,42 @@ impl<M: ListModel> VirtualList<M> {
     /// The height the row `index` takes in the layout: its own, with the band of the heading
     /// over it when it starts a group; only that band while its group is closed.
     pub(super) fn grouped_height(&self, index: usize, height: f64) -> f64 {
-        let band = self.groups.height;
-        let starts = self.row_starts(index);
+        let room = self.room_over(index);
         if !self.row_open(index) {
-            return if starts { band } else { 0.0 };
+            return room;
         }
-        if starts { height + band } else { height }
+        height + room
     }
 
-    /// The room the band over the row `index` takes, when it starts a group.
+    /// The room the list takes over the row `index` before the row itself: the band of the
+    /// heading it starts a group with, or the room the list keeps above its first row when the
+    /// first band is a row ([`Self::lead_room`]).
     pub(super) fn band_room(&self, index: usize) -> f64 {
+        self.room_over(index)
+    }
+
+    /// The room the row `index` takes before itself: a heading's band where it starts a group,
+    /// and the list's lead over its first row where no heading leads the list.
+    fn room_over(&self, index: usize) -> f64 {
         if self.row_starts(index) {
+            self.groups.height
+        } else {
+            self.lead_room(index)
+        }
+    }
+
+    /// The room the list keeps above its first row when that row starts no group, though its
+    /// group stands in the list: the band a heading would have taken. A list that heads its
+    /// rows starts them one band in from its edge, so the rows stand where they would under a
+    /// heading, and a heading the list leaves out — a lone group naming the title over it
+    /// ([`Self::heads_nothing`]) — moves nothing. A list whose rows name no groups at all
+    /// leads with them as its own block.
+    fn lead_room(&self, index: usize) -> f64 {
+        if index != 0 {
+            return 0.0;
+        }
+        let heads_a_group = group_of(&self.model, 0, self.tail_title.as_deref()).is_some();
+        if heads_a_group {
             self.groups.height
         } else {
             0.0
@@ -553,8 +578,9 @@ impl<M: ListModel> VirtualList<M> {
             let held = self.groups.held() == Some(band.heading.as_str());
             let has_keyboard = focused.as_deref() == Some(band.heading.as_str());
             // The heading reads in the column its rows stand in, its chevron in the gutter
-            // left of it, and how many rows it holds on the edge their facts end on.
-            let count = self.heading_rows(band);
+            // left of it, and how many rows it holds on the edge their facts end on, where
+            // that number says something the rows do not.
+            let count = self.shown_heading_count(band);
             SectionHeaderFace::group(&band.heading)
                 .tone(band.tone)
                 .disclosure(!band.closed)
@@ -570,6 +596,13 @@ impl<M: ListModel> VirtualList<M> {
                     },
                 );
         }
+    }
+
+    /// The number the heading of `band` shows over its rows, where the number says something
+    /// the rows do not ([`heading_count`]): a group of one row draws no count, since the row
+    /// under it says the one thing there is to count.
+    pub(super) fn shown_heading_count(&self, band: &Band) -> Option<usize> {
+        heading_count(self.heading_rows(band), None)
     }
 
     /// A press at `point` (the list's own coordinates) on a heading's band, held until it is

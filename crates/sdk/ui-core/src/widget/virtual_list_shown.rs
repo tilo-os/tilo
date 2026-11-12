@@ -36,9 +36,10 @@ pub(super) struct ListShown {
     /// moved because one above it did, stands elsewhere against the others:
     /// the rows still showing are not where the frame on screen drew them.
     pub(super) places: Vec<(u64, f64, f64)>,
-    /// The headings drawn, each with how many rows it counts and whether its
-    /// group is folded: a heading whose count changed is drawn anew.
-    pub(super) headings: Vec<(String, usize, bool)>,
+    /// The headings drawn, each with the number it shows over its rows where it
+    /// shows one, and whether its group is folded: a heading whose count
+    /// changed is drawn anew.
+    pub(super) headings: Vec<(String, Option<usize>, bool)>,
 }
 
 impl ListShown {

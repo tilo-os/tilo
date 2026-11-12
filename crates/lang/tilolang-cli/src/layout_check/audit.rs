@@ -637,6 +637,9 @@ pub fn inspect(
 /// finger's target where the window is held in the hand, and nothing else. A heading names the
 /// rows under it, so no empty slot, padding or hidden row may stand between its band and the
 /// first of them, and a finger's taller band keeps the heading's line where the width does.
+/// A list that heads its rows keeps that band's room over the first of them all the same, under
+/// a heading or under the room a heading the list leaves out would take: a first row standing on
+/// the list's own edge hugs the box over it.
 pub fn heading_rooms(
     root: &InspectionNode,
     theme: &ui::Theme,
@@ -705,6 +708,24 @@ fn heading_rooms_in(
                 ),
             });
         }
+    }
+    // A list whose rows name groups starts them one band in from its edge, and a heading it
+    // leaves out keeps that room: a lead thinner than a band leaves the first row hugging the
+    // box over it, reading as that block's last line rather than as a row of the list's own.
+    if let Some(ui::widget::LayoutInfo::List(list)) = node.layout
+        && list.heads_rows
+        && f64::from(list.lead) < band - 0.5
+    {
+        out.push(Problem {
+            kind: Kind::HuggingRow,
+            keys: keys.iter().rev().cloned().collect(),
+            widget: node.widget.clone(),
+            id: node.test_id.clone(),
+            detail: format!(
+                "the list keeps {:.0} px over its first row, where a heading takes {band:.0}",
+                list.lead
+            ),
+        });
     }
     for child in &node.children {
         heading_rooms_in(child, keys, band, out);

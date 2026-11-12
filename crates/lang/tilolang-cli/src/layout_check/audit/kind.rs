@@ -194,6 +194,12 @@ pub enum Kind {
     /// the person did not know nor one they can act on. A row keeps the time of day it is due,
     /// and says nothing where it names no time.
     RepeatedDayFact,
+    /// A list's first row standing on the list's own edge, with none of the room a heading takes
+    /// over the rows it heads: a list that heads its rows starts them one band in from its edge,
+    /// and a heading the list leaves out — a lone group naming the title above it — keeps that
+    /// room, so the rows stand where they would under it. A row that hugs the edge reads as part
+    /// of the block over it.
+    HuggingRow,
 }
 
 impl Kind {
@@ -255,6 +261,7 @@ impl Kind {
             Self::IndentedBody => "indented-body",
             Self::RepeatedGroupTitle => "repeated-group-title",
             Self::RepeatedDayFact => "repeated-day-fact",
+            Self::HuggingRow => "hugging-row",
         }
     }
 }

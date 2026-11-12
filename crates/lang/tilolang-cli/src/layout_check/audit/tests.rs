@@ -2421,6 +2421,51 @@ fn a_group_heading_takes_one_band_and_stands_on_the_row_it_heads() {
     );
 }
 
+/// A list that heads its rows keeps a heading's room over the first of them, under a heading or
+/// under the room a heading the list leaves out would take: a lead thinner than that leaves the
+/// first row hugging the box over it. A list whose rows name no group is one block and leads
+/// with its rows.
+#[test]
+fn a_list_that_heads_its_rows_keeps_a_heading_s_room_over_them() {
+    let theme = ui::Theme::dark();
+    let band = band_height(&theme);
+    let list = |heads_rows: bool, lead: f64| {
+        let mut list = node_of("VirtualList", "list", [100.0, 40.0, 400.0, 600.0]);
+        list.layout = Some(ui::widget::LayoutInfo::List(ui::widget::ListLayout {
+            heads_rows,
+            lead: ui::num::f32_of_f64(lead),
+        }));
+        let mut access = AccessNode::new(Role::List);
+        access.children = vec![
+            AccessNode::new(Role::ListItem)
+                .with_name("Water the plants")
+                .with_bounds(Rect::new(100.0, 40.0 + lead, 500.0, 88.0 + lead)),
+            AccessNode::new(Role::ListItem)
+                .with_name("Call the plumber")
+                .with_bounds(Rect::new(100.0, 88.0 + lead, 500.0, 136.0 + lead)),
+        ];
+        list.semantics = Some(access);
+        list
+    };
+    assert!(
+        heading_rooms(&list(true, band), &theme, None).is_empty(),
+        "a band of room over the first row"
+    );
+    let hugging = heading_rooms(&list(true, 0.0), &theme, None);
+    assert!(
+        hugging.iter().any(|p| p.kind == Kind::HuggingRow),
+        "a list that heads its rows with none of a heading's room over them: {hugging:?}"
+    );
+    assert!(
+        heading_rooms(&list(false, 0.0), &theme, None).is_empty(),
+        "a list whose rows name no group leads with them"
+    );
+    assert!(
+        heading_rooms(&list(true, 48.0), &theme, Some(48.0)).is_empty(),
+        "a finger's target is the room the band grows by"
+    );
+}
+
 /// A page's body stands under the text a control beside its heading leads to only where the
 /// column has the room: on a phone's screen it starts on the gutter, and a section standing a
 /// control's width in is what a person sees the page lose on every line.

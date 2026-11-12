@@ -2043,8 +2043,8 @@ pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
 pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, HeaderRowLayout, HeaderRows, LabelPlacement,
-    LayoutInfo, LayoutOrigin, ManualConflict, ManualLayout, PageLayout, RowLayout, ScrollDirection,
-    ScrollLayout, SectionLayout, ShellLayout, SidebarStanding, TextLayout,
+    LayoutInfo, LayoutOrigin, ListLayout, ManualConflict, ManualLayout, PageLayout, RowLayout,
+    ScrollDirection, ScrollLayout, SectionLayout, ShellLayout, SidebarStanding, TextLayout,
 };
 mod embedded;
 pub use embedded::Embedded;
@@ -2688,7 +2688,7 @@ pub use tone::Tone;
 mod section;
 pub use section::{
     ObjectHeader, ObjectHeaderProps, Section, SectionHeader, SectionHeaderFace, SectionProps,
-    StatusLine, StatusLineProps, band_height,
+    StatusLine, StatusLineProps, band_height, heading_count,
 };
 pub mod capture_studio;
 pub use capture_studio::{

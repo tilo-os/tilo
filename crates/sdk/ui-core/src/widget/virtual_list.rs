@@ -1331,13 +1331,20 @@ impl<M: ListModel> VirtualList<M> {
             .collect()
     }
 
-    /// The headings the list draws, each with the rows it counts and whether
-    /// its group is folded, as [`ListShown::headings`] holds them.
-    fn headings_drawn(&self) -> Vec<(String, usize, bool)> {
+    /// The headings the list draws, each with the number it shows over its rows
+    /// and whether its group is folded, as [`ListShown::headings`] holds
+    /// them.
+    fn headings_drawn(&self) -> Vec<(String, Option<usize>, bool)> {
         self.groups
             .bands
             .iter()
-            .map(|band| (band.heading.clone(), self.heading_rows(band), band.closed))
+            .map(|band| {
+                (
+                    band.heading.clone(),
+                    self.shown_heading_count(band),
+                    band.closed,
+                )
+            })
             .collect()
     }
 
@@ -1426,6 +1433,13 @@ impl<M: ListModel> VirtualList<M> {
         let index = self
             .viewport
             .hit_test(cursor.y - self.rect.y0 - self.end_slack())?;
+        // The room a band takes over its row is the list's and the heading's: the row stands
+        // below it, and a press up there is no press on the row, as one on the room the list
+        // keeps over its first row is none either.
+        let row = self.row_box(index)?;
+        if cursor.y < row.y0 || cursor.y >= row.y1 {
+            return None;
+        }
         matches!(self.model.row_state(index), Arrival::Ready(()))
             .then(|| self.model.key_at(index).map(|key| (index, key)))
             .flatten()
@@ -2778,6 +2792,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 .mounted
                 .iter()
                 .any(|row| row.widget.layout_needs_measure())
+    }
+
+    /// Whether the list's first row names a group, and the room the list keeps over it: what
+    /// holds a list that heads its rows to starting them one band in from its edge.
+    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
+        Some(crate::widget::LayoutInfo::List(crate::widget::ListLayout {
+            heads_rows: groups::group_of(&self.model, 0, self.tail_title.as_deref()).is_some(),
+            lead: crate::num::f32_of_f64(self.band_room(0)),
+        }))
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

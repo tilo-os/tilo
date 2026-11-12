@@ -157,6 +157,8 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::IndentedBody
             // Its lists group no rows under headings of their own.
             | Kind::RepeatedGroupTitle
+            // No list of this fixture stands a row as its first thing.
+            | Kind::HuggingRow
             // The fixture's rows state no day of their own.
             | Kind::RepeatedDayFact => "(no view)",
         };
