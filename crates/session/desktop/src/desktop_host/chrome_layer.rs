@@ -1388,12 +1388,14 @@ impl DesktopChrome {
             };
             if let Some(held) = tree.workspaces.iter().find(|held| held.id() == joined) {
                 // Already held, here or from another device: go there rather than make a second
-                // workspace of one workspace. In the background there is nothing left to do.
+                // workspace of one workspace. In the background the person stays where they are,
+                // and the desk is replaced all the same, as it always was here: a replaced desk is
+                // one the session reads and writes its workspaces' records for again, and this
+                // workspace has just taken this device in.
                 if !background {
-                    let held = held.slot;
-                    tree.active = held;
-                    self.handle.replace_tree(tree);
+                    tree.active = held.slot;
                 }
+                self.handle.replace_tree(tree);
                 return;
             }
             Workspace::in_workspace(
