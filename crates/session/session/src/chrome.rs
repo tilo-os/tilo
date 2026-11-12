@@ -827,6 +827,8 @@ pub(crate) fn host(
     };
     let mut host = WidgetHost::new(Box::new(chrome), placement, false).named("Top bar");
     host.set_theme((options.presentation)().theme);
+    // The chrome draws the overview, so the overview's flight asks frames of the chrome alone.
+    overview.drawn_on(host.host().motion_surface());
     // What the compositor draws over the chrome: the overview's flying windows,
     // and the ones the switcher's panel shows in its cards.
     let pictures = overview.clone();

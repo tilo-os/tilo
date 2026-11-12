@@ -233,6 +233,19 @@ impl LayerPose {
     pub fn settled(&self) -> bool {
         self.scale >= 1.0 && self.opacity >= 1.0 && self.offset == (0.0, 0.0)
     }
+
+    /// Where the rectangle `(x, y, width, height)` is drawn in this pose: scaled about its anchor
+    /// and moved by its offset.
+    #[must_use]
+    pub fn rect(&self, (x, y, width, height): (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+        let grown = 1.0 - self.scale;
+        (
+            x + width * self.anchor.0 * grown + self.offset.0,
+            y + height * self.anchor.1 * grown + self.offset.1,
+            width * self.scale,
+            height * self.scale,
+        )
+    }
 }
 
 impl Default for LayerPose {

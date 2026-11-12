@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
-use tilo_session_core::surface::{HostFrame, HostLayer, Region, SurfaceHost};
+use tilo_session_core::surface::{HostFrame, HostLayer, LayerPose, Region, SurfaceHost};
 
 /// A hosted surface whose host fills its frame row by row, the way a toolkit app draws into one:
 /// red above the middle, blue below.
@@ -53,6 +53,7 @@ impl Rows {
 impl SurfaceHost for Rows {
     fn layers(&self) -> Vec<HostLayer> {
         vec![HostLayer {
+            pose: LayerPose::SETTLED,
             location: (0, 0),
             size: self.size,
             frame: self.frame.clone(),
@@ -95,6 +96,7 @@ struct Bar {
     frame: HostFrame,
     location: (i32, i32),
     size: (i32, i32),
+    pose: LayerPose,
 }
 
 impl Bar {
@@ -122,6 +124,7 @@ impl Bar {
             frame,
             location,
             size: layer,
+            pose: LayerPose::SETTLED,
         }
     }
 }
@@ -129,6 +132,7 @@ impl Bar {
 impl SurfaceHost for Bar {
     fn layers(&self) -> Vec<HostLayer> {
         vec![HostLayer {
+            pose: self.pose,
             location: self.location,
             size: self.size,
             frame: self.frame.clone(),
@@ -153,6 +157,7 @@ struct Blank {
 impl SurfaceHost for Blank {
     fn layers(&self) -> Vec<HostLayer> {
         vec![HostLayer {
+            pose: LayerPose::SETTLED,
             location: (0, 0),
             size: self.size,
             frame: self.frame.clone(),
@@ -252,6 +257,7 @@ impl Vanishes {
 impl SurfaceHost for Vanishes {
     fn layers(&self) -> Vec<HostLayer> {
         vec![HostLayer {
+            pose: LayerPose::SETTLED,
             location: (0, 0),
             size: self.size,
             frame: self.frame.clone(),
@@ -343,6 +349,35 @@ fn a_layer_that_is_not_at_the_outputs_corner_draws_where_it_says() {
             outside[1] < 128,
             "nothing at ({x}, {y}), where it drew none: {outside:?}"
         );
+    }
+}
+
+#[test]
+fn a_posed_layer_is_drawn_faded_scaled_and_moved_from_the_same_pixels() {
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+        .expect("output");
+    // Its bar rests at (40, 20)..(240, 80); half its size about its top left corner, moved 300
+    // to the right and half faded, it is drawn at (340, 10)..(440, 40).
+    let mut bar = Bar::new((640, 480), (640, 480), 1);
+    bar.pose = LayerPose {
+        scale: 0.5,
+        opacity: 0.5,
+        anchor: (0.0, 0.0),
+        offset: (300.0, 0.0),
+    };
+    compositor.add_host(Rc::new(RefCell::new(bar)));
+    compositor.draw_frame().expect("a frame");
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let posed = frame.pixel(390, 25).unwrap();
+    assert!(
+        posed[1] > 100 && posed[1] < 180,
+        "the bar, half faded over the desktop: {posed:?}"
+    );
+    for (x, y) in [(120, 40), (390, 60), (460, 25)] {
+        let outside = frame.pixel(x, y).unwrap();
+        assert!(outside[1] < 60, "nothing at ({x}, {y}): {outside:?}");
     }
 }
 

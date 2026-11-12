@@ -245,9 +245,9 @@ where
 }
 
 /// A hosted surface's layer, drawn at `scale` with the layer's top left corner at `location`
-/// (physical): the part of the frame it shows, at the pixel of the output the layer covers, so a
-/// layer the size of a display that paints a bar costs its bar rather than the display. `None` when
-/// the layer shows nothing there is to draw.
+/// (physical), in the pose the layer asks for: the part of the frame it shows, at the pixel of the
+/// output the layer covers, so a layer the size of a display that paints a bar costs its bar rather
+/// than the display. `None` when the layer shows nothing there is to draw.
 fn hosted_layer<R>(
     renderer: &mut R,
     uploads: &Uploads,
@@ -259,6 +259,10 @@ where
     R: Renderer + ImportAll + ImportMem + ImportDma,
     R::TextureId: Send + Clone + 'static,
 {
+    let pose = layer.pose;
+    if pose.opacity <= 0.0 || pose.scale <= 0.0 {
+        return Ok(None);
+    }
     let (width, height) = layer.frame.size();
     let Some(shown) = layer
         .frame
@@ -268,10 +272,14 @@ where
         return Ok(None);
     };
     let (width, height) = (f64::from(width), f64::from(height));
+    let size = (f64::from(layer.size.0), f64::from(layer.size.1));
+    // Where the pose draws the layer, from its own top left corner: scaled about its anchor and
+    // moved.
+    let (dx, dy, posed_width, posed_height) = pose.rect((0.0, 0.0, size.0, size.1));
     // The frame scaled to the rectangle the layer covers, so a layer drawn at the output's scale is
     // shown at the pixels it was drawn for.
-    let across = f64::from(layer.size.0) / width;
-    let down = f64::from(layer.size.1) / height;
+    let across = posed_width / width;
+    let down = posed_height / height;
     let src = Rectangle::new(
         Point::from((f64::from(shown.x), f64::from(shown.y))),
         Size::from((f64::from(shown.width), f64::from(shown.height))),
@@ -283,7 +291,11 @@ where
     .to_i32_round::<i32>();
     let dst = Size::from((drawn.w.max(1), drawn.h.max(1)));
     let at = location
-        + Point::from((f64::from(shown.x) * across, f64::from(shown.y) * down)).to_physical(scale);
+        + Point::<f64, Logical>::from((
+            dx + f64::from(shown.x) * across,
+            dy + f64::from(shown.y) * down,
+        ))
+        .to_physical(scale);
     uploads.element(
         renderer,
         &layer.frame,
@@ -291,6 +303,7 @@ where
             at,
             src: Some(src),
             size: Some(dst),
+            alpha: (pose.opacity < 1.0).then_some(pose.opacity),
         },
     )
 }

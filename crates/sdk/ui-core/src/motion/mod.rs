@@ -70,12 +70,13 @@ pub(crate) use clock::forget_frames_for_tests;
 pub(crate) use clock::laying_out_frame;
 #[cfg(feature = "native")]
 pub(crate) use clock::own;
+pub(crate) use clock::owning;
 pub(crate) use clock::pin_frame;
 #[cfg(test)]
 pub(crate) use clock::pin_frame_at;
 pub use clock::{
-    frame_drawn, frame_laying_out, frame_now, frames_until, frames_wanted, frames_wanted_by,
-    testing, want_frames_until,
+    MotionSurface, frame_drawn, frame_laying_out, frame_now, frames_until, frames_wanted,
+    frames_wanted_by, on_surface, testing, want_frames_until,
 };
 pub use curve::blend_across;
 pub use disclosure::Disclosure;

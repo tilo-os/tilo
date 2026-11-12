@@ -430,6 +430,7 @@ impl State {
                     at: origin,
                     src: None,
                     size: None,
+                    alpha: None,
                 };
                 match self.uploads.element(renderer, frame, placed) {
                     Ok(element) => element.into_iter().collect(),

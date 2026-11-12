@@ -567,6 +567,7 @@ impl Square {
 impl SurfaceHost for Square {
     fn layers(&self) -> Vec<HostLayer> {
         vec![HostLayer {
+            pose: tilo_session_core::surface::LayerPose::SETTLED,
             location: (self.rect.0, self.rect.1),
             size: (self.rect.2, self.rect.3),
             frame: HostFrame::from_pixels(

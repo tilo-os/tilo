@@ -101,6 +101,8 @@ pub(crate) struct Placed {
     pub at: Point<f64, Physical>,
     pub src: Option<Rectangle<f64, Logical>>,
     pub size: Option<Size<i32, Logical>>,
+    /// Its opacity where it is drawn faded.
+    pub alpha: Option<f32>,
 }
 
 impl Uploads {
@@ -128,7 +130,7 @@ impl Uploads {
                 renderer,
                 placed.at,
                 buffer,
-                None,
+                placed.alpha,
                 placed.src,
                 placed.size,
                 Kind::Unspecified,
@@ -142,7 +144,7 @@ impl Uploads {
                     TextureRenderElement::from_texture_render_buffer(
                         placed.at,
                         texture,
-                        None,
+                        placed.alpha,
                         placed.src,
                         placed.size,
                         Kind::Unspecified,

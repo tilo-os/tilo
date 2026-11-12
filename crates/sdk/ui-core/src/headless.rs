@@ -505,6 +505,13 @@ pub struct FrameHarness {
     /// ([`Self::track_scene_parts`]), and the parts the last one drew.
     track_scene_parts: bool,
     scene_parts: Option<crate::scene_parts::SectionParts>,
+    /// Whether the draw pass lifts out the parts its host composites ([`Self::lift_parts`]), and
+    /// the parts the last one lifted.
+    lift_parts: bool,
+    lifted: Vec<crate::lift::Lifted>,
+    /// Which surface this tree is on the thread's motion clock: the frames its motions ask for
+    /// are its own, so another surface drawing on the same thread does not draw for them.
+    motions: crate::motion::MotionSurface,
     /// Protection of the prepared scene; unknown/failed paints stay protected.
     scene_capture_protected: bool,
     /// The backdrops the scene's floating surfaces were drawn over, which
@@ -1541,6 +1548,9 @@ impl FrameHarness {
             scene: Scene::new(),
             track_scene_parts: false,
             scene_parts: None,
+            lift_parts: false,
+            lifted: Vec::new(),
+            motions: crate::motion::MotionSurface::new(),
             scene_capture_protected: true,
             backdrop: std::sync::Arc::default(),
             records: None,
@@ -2610,6 +2620,7 @@ impl FrameHarness {
 
     /// Read wake demand without materializing document text or semantic nodes.
     pub fn frame_schedule(&self) -> FrameSchedule {
+        let _motions = crate::motion::owning(self.motions.0);
         let _running = self.running();
         self.drain_component_wakes();
         let queued_work = self.layout_requested
@@ -2819,6 +2830,23 @@ impl FrameHarness {
     /// before.
     pub fn track_scene_parts(&mut self, track: bool) {
         self.track_scene_parts = track;
+    }
+
+    /// Which surface this tree is on the thread's motion clock: what moves for what it draws runs
+    /// on its behalf ([`crate::motion::on_surface`]).
+    pub const fn motion_surface(&self) -> crate::motion::MotionSurface {
+        self.motions
+    }
+
+    /// Lift the parts that move as a whole out of every scene the draw pass produces from now on
+    /// ([`crate::lift`]), for a host whose compositor poses them.
+    pub fn lift_parts(&mut self, lift: bool) {
+        self.lift_parts = lift;
+    }
+
+    /// The parts lifted out of the last scene drawn, bottom first: they stand below it.
+    pub fn lifted(&self) -> &[crate::lift::Lifted] {
+        &self.lifted
     }
 
     /// The damage parts of the last scene drawn, when they were recorded
@@ -3121,6 +3149,7 @@ impl FrameHarness {
     }
 
     fn try_relayout(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        let _motions = crate::motion::owning(self.motions.0);
         /// Marks the frame's body, restoring the enclosing frame's answer on
         /// the way out: a frame a frame asks for is still the same frame.
         struct Running {
@@ -3256,6 +3285,7 @@ impl FrameHarness {
                         self.presence.pop_viewport(previous_viewport);
                         self.scene.reset();
                         self.scene_parts = None;
+                        self.lifted.clear();
                         self.owner_service_layout_retired = true;
                         self.layout_requested = true;
                     }
@@ -3278,6 +3308,7 @@ impl FrameHarness {
                 self.presence.pop_viewport(previous_viewport);
                 self.scene.reset();
                 self.scene_parts = None;
+                self.lifted.clear();
                 self.owner_service_layout_retired = true;
                 self.layout_requested = true;
             }
@@ -4055,6 +4086,9 @@ impl FrameHarness {
         if parts_recording.is_some() {
             crate::scene_parts::track(&self.scene);
         }
+        let lift_recording = self
+            .lift_parts
+            .then(|| crate::lift::Recording::begin(&self.scene));
         // Floating chrome records what lies below it, so a capture blurs it
         // under the material exactly as the live window's renderer does.
         let backdrop_recording = crate::backdrop::BackdropRecording::begin();
@@ -4259,8 +4293,15 @@ impl FrameHarness {
         // active-instance filter a second unfiltered pass would undo.
         self.search_pending = self.advance_search();
         self.draw_caller_palette();
+        self.lifted = lift_recording
+            .map(crate::lift::Recording::finish)
+            .unwrap_or_default();
         if let Some(recording) = parts_recording {
-            self.scene_parts = recording.finish().of(&self.scene);
+            let recorded = recording.finish();
+            self.scene_parts = recorded.of(&self.scene);
+            for lifted in &mut self.lifted {
+                lifted.parts = recorded.of(&lifted.scene);
+            }
         }
         self.backdrop = std::sync::Arc::new(crate::backdrop::BackdropFrame::from_single_scene(
             backdrop_recording.finish(),
@@ -5125,6 +5166,7 @@ impl FrameHarness {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
+        let _motions = crate::motion::owning(self.motions.0);
         self.invalidate_local();
         // An action performed for someone lands at once (`motion`).
         crate::motion::note_source(crate::tokens::MotionSource::Action);
@@ -5492,6 +5534,7 @@ impl FrameHarness {
         name: &str,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
+        let _motions = crate::motion::owning(self.motions.0);
         self.invalidate_local();
         self.pump_component_wakes_checked()
             .map_err(|error| format!("owner layout readmission refused: {error:?}"))?;
@@ -6356,6 +6399,7 @@ impl FrameHarness {
 
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
+        let _motions = crate::motion::owning(self.motions.0);
         crate::motion::note_input(event);
         // A host that runs a widget tree of its own (the desktop) sends its
         // input here: what its controls name of themselves is revealed on the
@@ -7079,6 +7123,7 @@ impl FrameHarness {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let _motions = crate::motion::owning(self.motions.0);
         self.invalidate_local();
         self.invoke_action(
             &tilo_actions::ActionAddress::new(resource, action),

@@ -73,6 +73,7 @@ mod nested {
     impl SurfaceHost for Marker {
         fn layers(&self) -> Vec<HostLayer> {
             vec![HostLayer {
+                pose: tilo_session_core::surface::LayerPose::SETTLED,
                 location: (0, 0),
                 size: (WIDTH, HEIGHT),
                 frame: HostFrame::from_pixels((WIDTH as u32, HEIGHT as u32), self.pixels.clone()),

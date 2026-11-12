@@ -834,9 +834,15 @@ where
     }
     for host in state.hosts.iter().filter(|host| host.withholds_captures()) {
         for layer in host.layers() {
-            let at = (Point::<i32, Logical>::from(layer.location) - geometry.loc).to_f64();
-            let size = Size::<i32, Logical>::from((layer.size.0, layer.size.1))
-                .to_physical_precise_round(scale);
+            // Where the layer's pose draws it.
+            let (x, y, width, height) = layer.pose.rect((
+                f64::from(layer.location.0),
+                f64::from(layer.location.1),
+                f64::from(layer.size.0),
+                f64::from(layer.size.1),
+            ));
+            let at = Point::<f64, Logical>::from((x, y)) - geometry.loc.to_f64();
+            let size = Size::<f64, Logical>::from((width, height)).to_physical_precise_round(scale);
             if size.w > 0 && size.h > 0 {
                 placeholders.push(placeholder::<R>(
                     at.to_physical_precise_round(scale),
