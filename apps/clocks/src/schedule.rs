@@ -61,7 +61,6 @@ impl ClocksOnDevices {
 
 #[resource(
     kind = "clocks.on-devices",
-    label = "Clocks on each device",
     read_content = ClocksOnDevices::read_document
 )]
 impl ClocksOnDevices {

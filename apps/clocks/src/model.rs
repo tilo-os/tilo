@@ -331,7 +331,6 @@ impl Clocks {
 
 #[resource(
     kind = "clocks.collection",
-    label = "Clocks",
     read_content = Clocks::read_document
 )]
 impl Clocks {

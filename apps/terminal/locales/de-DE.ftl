@@ -67,3 +67,40 @@ terminal-session-read-failed = Sitzung beendet. Das Terminal kann nichts mehr vo
 
 ## Das Schließen der eigenen Bereiche des Terminals
 terminal-a11y-close = Schließen
+
+## Actions
+
+terminal-history = Befehlsverlauf
+terminal-history-remember = Befehl merken
+terminal-effects-inspect-session = Sitzung prüfen
+terminal-effects-read-screen = Ausgabe lesen
+terminal-effects-inspect-editor = Feld prüfen
+terminal-effects-replace-editor-selection = Auswahl ersetzen
+terminal-effects-send = Text senden
+terminal-effects-interrupt = Prozess unterbrechen
+terminal-effects-clear = Bildschirm leeren
+terminal-effects-restart = Shell neu starten
+terminal-effects-paste = Einfügen
+terminal-effects-paste-primary = Auswahl einfügen
+terminal-effects-open-in = Öffnen in…
+terminal-effects-create-environment = Neue Umgebung
+terminal-effects-grant-folder = Ordner für sie freigeben
+terminal-effects-rename-environment = Umgebung umbenennen
+terminal-effects-copy-visible = Sichtbare Ausgabe kopieren
+terminal-effects-copy-selection = Ausgewählte Ausgabe kopieren
+terminal-effects-select-all = Gesamte Ausgabe auswählen
+terminal-effects-history-top = Älteste Ausgabe anzeigen
+terminal-effects-history-live = Zurück zur laufenden Ausgabe
+terminal-effects-open-item = Eintrag anzeigen
+terminal-effects-open-link = Link öffnen
+terminal-session = Terminal
+terminal-session-run = Befehl ausführen
+terminal-session-rerun = Erneut ausführen
+terminal-session-rerun-test = Test erneut ausführen
+terminal-session-stop = Befehl stoppen
+terminal-session-record-run = Lauf erfassen
+terminal-session-record-target = Ausführungsort erfassen
+terminal-session-record-relay-session = Wieder verbundene Sitzung erfassen
+terminal-session-claim-pane = Bereich übernehmen
+terminal-recent-environments = Zuletzt verwendete Umgebungen
+terminal-recent-environments-used = Verwendete Umgebung erfassen

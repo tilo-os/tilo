@@ -316,7 +316,6 @@ impl Terminal {
 
 #[resource(
     kind = "terminal.session",
-    label = "Terminal",
     params = session,
     effects = TerminalEffect,
     read_content = Terminal::read_document

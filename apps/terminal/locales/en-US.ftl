@@ -67,3 +67,40 @@ terminal-session-read-failed = Session ended. The terminal can no longer read fr
 
 ## The close control of the terminal's own panels
 terminal-a11y-close = Close
+
+## Actions
+
+terminal-history = Command history
+terminal-history-remember = Remember a command
+terminal-effects-inspect-session = Inspect session
+terminal-effects-read-screen = Read output
+terminal-effects-inspect-editor = Inspect field
+terminal-effects-replace-editor-selection = Replace selection
+terminal-effects-send = Send text
+terminal-effects-interrupt = Interrupt process
+terminal-effects-clear = Clear screen
+terminal-effects-restart = Restart shell
+terminal-effects-paste = Paste
+terminal-effects-paste-primary = Paste selection
+terminal-effects-open-in = Open in…
+terminal-effects-create-environment = New environment
+terminal-effects-grant-folder = Share a folder with it
+terminal-effects-rename-environment = Rename environment
+terminal-effects-copy-visible = Copy visible output
+terminal-effects-copy-selection = Copy selected output
+terminal-effects-select-all = Select all output
+terminal-effects-history-top = Show oldest output
+terminal-effects-history-live = Return to live output
+terminal-effects-open-item = Show item
+terminal-effects-open-link = Open link
+terminal-session = Terminal
+terminal-session-run = Run command
+terminal-session-rerun = Run again
+terminal-session-rerun-test = Run test again
+terminal-session-stop = Stop command
+terminal-session-record-run = Record a run
+terminal-session-record-target = Record where the session runs
+terminal-session-record-relay-session = Record the reattached session
+terminal-session-claim-pane = Claim a pane
+terminal-recent-environments = Recent environments
+terminal-recent-environments-used = Record a used environment

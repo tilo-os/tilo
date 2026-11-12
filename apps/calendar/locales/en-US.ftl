@@ -261,3 +261,43 @@ calendar-notes-placeholder = Add notes
 
 ## A new event's empty fields
 calendar-title-placeholder = New event
+
+## Actions
+
+calendar-effects-sync = Sync calendars
+calendar-effects-export-ics = Export ICS
+calendar-effects-export-ics-content = Export ICS content
+calendar-effects-import-ics = Import ICS
+calendar-effects-contact-attendees = Invite from Contacts
+calendar-effects-prepare-in-mail = Prepare invitation in Mail
+calendar-effects-set-color = Set calendar colour
+calendar-effects-read-calendar = Read calendar
+calendar-effects-set-visibility = Show or hide a calendar
+calendar-effects-show-view = Show calendar view
+calendar-effects-show-all-calendars = Show all calendars
+calendar-effects-show-month = Show month
+calendar-effects-show-week = Show week
+calendar-effects-show-day = Show day
+calendar-effects-show-agenda = Show agenda
+calendar-effects-show-tasks = Show tasks
+calendar-effects-start-event = New event
+calendar-effects-start-task = New task
+calendar-effects-open = Open
+calendar-calendar = Calendar
+calendar-calendar-new-event = New event
+calendar-calendar-new-task = New task
+calendar-calendar-new-project = New task project
+calendar-calendar-delete-event = Delete event
+calendar-calendar-reschedule = Reschedule
+calendar-calendar-set-start = Set start
+calendar-calendar-move-to-calendar = Move to calendar
+calendar-calendar-invite = Invite
+calendar-calendar-delete-task = Delete task
+calendar-calendar-delete-project = Delete project
+calendar-calendar-import-items = Import calendar items
+calendar-calendar-adopt-remote-event = Adopt the server's event
+calendar-calendar-adopt-remote-task = Adopt the server's task
+calendar-calendar-drop-remote-item = Remove what the server removed
+calendar-calendar-server-applied = Record uploaded changes
+calendar-calendar-server-removed = Record a deletion on the server
+calendar-calendar-pulled = Record fetched changes

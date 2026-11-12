@@ -91,7 +91,6 @@ pub(crate) fn fingerprint(event: &Event) -> String {
 
 #[resource(
     kind = "calendar.calendar",
-    label = "Calendar",
     params = calendar,
     search = Calendar::search_entries,
     read_content = Calendar::read_items,
@@ -985,7 +984,7 @@ pub enum CalendarEffect {
     /// shown, its colour and how many events it holds. It is the calendar
     /// row's read: what discloses the row, so showing, hiding and
     /// recolouring it are offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read calendar")]
+    #[effect(view, row, returns, idempotent)]
     ReadCalendar {
         #[param("Calendar id")]
         id: String,
@@ -1034,7 +1033,6 @@ pub enum CalendarEffect {
     #[effect(
         view,
         idempotent,
-        label = "New event",
         icon = "plus",
         keywords = "create, add, schedule, start"
     )]
@@ -1042,13 +1040,7 @@ pub enum CalendarEffect {
     /// New task
     ///
     /// Opens the task list's entry, ready for the new task's name.
-    #[effect(
-        view,
-        idempotent,
-        label = "New task",
-        icon = "plus",
-        keywords = "create, add, todo, start"
-    )]
+    #[effect(view, idempotent, icon = "plus", keywords = "create, add, todo, start")]
     StartTask,
     /// Open
     ///

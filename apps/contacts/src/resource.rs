@@ -57,7 +57,6 @@ impl Contacts {
 
 #[resource(
     kind = "contacts.book",
-    label = "Contacts",
     children = Contacts::places,
     search = Contacts::search,
     read_content = Contacts::read_document

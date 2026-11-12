@@ -72,7 +72,6 @@ impl CommandHistory {
 
 #[resource(
     kind = "terminal.history",
-    label = "Command history",
     read_content = CommandHistory::read_document
 )]
 impl CommandHistory {

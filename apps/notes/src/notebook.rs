@@ -207,7 +207,6 @@ pub fn page_of(id: &Id) -> Option<PageId> {
 
 #[resource(
     kind = "notes.notebook",
-    label = "Notebook",
     version = 2,
     migrate = crate::legacy::migrate,
     search = crate::search::entries,
