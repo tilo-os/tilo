@@ -47,6 +47,8 @@
 //             the agent's device key, the throwaway HOMEs (default:
 //             $CARGO_TARGET_DIR/agent-shell-work, which is not fetched)
 //   --build   cargo build the relay and the CLI, and build the bundle
+//   --record-scale  the device scale the follow is recorded at (default 1; 2, the shots' own,
+//             on a machine with a GPU)
 // Needs Chrome (CHROME, or Playwright's cache), node, and openssl. The
 // recording is Chrome's screencast, encoded by ffmpeg where it is installed
 // and otherwise by the browser itself, so no video tool has to be installed.
@@ -99,6 +101,11 @@ for (const dir of [shotsDir, videoDir, browserDir]) mkdirSync(dir, {recursive: t
 const widths = option('--widths', '1280,390').split(',').map(Number).filter(Boolean);
 const themes = option('--themes', 'light,dark').split(',').filter(Boolean);
 const withVideo = !flag('--no-video');
+// The scale the follow is recorded at: 1 by default, for a machine that draws in software; a
+// machine with a GPU records at the shots' own 2 (`--record-scale 2`), with no change of scale.
+// A change of the emulated scale alone (2 to 1, the CSS size kept) left the page laid out at its
+// old pixel width read as CSS pixels: a phone's recording came out in a laptop's layout.
+const recordScale = Number(option('--record-scale', '1'));
 
 const t0 = Date.now();
 const logLines = [];
@@ -1831,11 +1838,15 @@ try {
         await pacing(0, recordFrom);
         const scaled = scale => tab.send('Emulation.setDeviceMetricsOverride',
           {width, height, deviceScaleFactor: scale, mobile});
-        await scaled(1);
-        await sleep(1500);
+        if (recordScale !== 2) {
+          await scaled(recordScale);
+          await sleep(1500);
+        }
         const video = await record(browser, tab, combo, {width, height}, () => pacing(recordFrom, steps.length));
-        await scaled(2);
-        await sleep(1500);
+        if (recordScale !== 2) {
+          await scaled(2);
+          await sleep(1500);
+        }
         // The shots are of the agent working: an action it could not do is
         // the run's failure, not a note about the product.
         for (const step of steps) {
