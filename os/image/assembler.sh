@@ -10,7 +10,7 @@
 # architecture, or, where no release tag has published it, this run's image-rpms-ARCH, loaded
 # unsigned. A build outside t (tools/ci/build-os.sh) passes none and resolves it here.
 set -euo pipefail
-. "$(dirname -- "${BASH_SOURCE[0]}")/../publish/lib.sh"
+. "$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/lib.sh"
 cd "$repo_root"
 arch=${1:?usage: assembler.sh ARCH OUT [SNAPSHOT]}
 out=${2:?}
