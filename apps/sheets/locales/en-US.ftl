@@ -105,3 +105,6 @@ sheets-no-replies = No replies
 
 sheets-comment-you = You
 sheets-comment-someone = Someone
+
+## The document settings sheet
+sheets-done = Done

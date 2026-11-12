@@ -1216,6 +1216,7 @@ toast-reply-placeholder = Antworten…
 ## Window furniture and widget chrome, named where a screen reader reads it
 floating-window-move-hint = Bewegliches Fenster. Alt halten und mit den Pfeiltasten verschieben; mit Umschalt in größeren Schritten.
 widget-dialog-close = Schließen
+widget-dialog-cancel = Abbrechen
 widget-dismiss = Ausblenden
 widget-hand-to-agent = An Agenten übergeben
 widget-more = Mehr

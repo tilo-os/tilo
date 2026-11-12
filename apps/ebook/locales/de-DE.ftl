@@ -229,3 +229,6 @@ ebook-empty-comment = Leerer Kommentar
 ebook-settings-default-font = Standardschrift
 ebook-write-comment = Kommentar schreiben
 ebook-write-note = Notiz schreiben
+
+## Die Schaltflächen der Einstellungsblätter
+ebook-done = Fertig

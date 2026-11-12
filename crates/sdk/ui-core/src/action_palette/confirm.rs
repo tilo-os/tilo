@@ -428,10 +428,11 @@ impl ActionPalette {
         } else {
             ModalAction::primary(&state.button_label)
         };
+        let cancel_label = crate::i18n::widget_text("widget-dialog-cancel");
         // In `SUBMIT`, `CANCEL` order: the sheet answers `Action(SUBMIT)`.
         let actions = [
             submit.enabled(enabled).focused(submit_focused),
-            ModalAction::secondary("Cancel").focused(cancel_focused),
+            ModalAction::secondary(&cancel_label).focused(cancel_focused),
         ];
         // Beside the control that asked, a popover as wide as a question
         // needs; asked with no control, a sheet over the window.

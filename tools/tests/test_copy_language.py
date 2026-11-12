@@ -327,6 +327,38 @@ class CopyLanguageTests(unittest.TestCase):
                 "conversion, and the default of an `unwrap_or` is the words the "
                 "constructor gets; a word only fed to a call is still not painted")
 
+    def test_a_modal_sheets_buttons_are_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn actions(&self) -> Vec<ModalAction<'static>> {",
+                "    if self.export_running() {",
+                '        return vec![ModalAction::secondary("Cancel")];',
+                "    }",
+                "    vec![",
+                '        ModalAction::secondary("Close"),',
+                '        ModalAction::primary("Export").enabled(self.export_is_offered()),',
+                '        ModalAction::alternate_danger("Overwrite"),',
+                "    ]",
+                "}",
+                "fn done(&self) -> Vec<ModalAction<'_>> {",
+                '    let label = crate::i18n::t("demo-name");',
+                "    vec![ModalAction::primary(&label)]",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Cancel", "Close", "Export", "Overwrite"],
+                "a sheet's buttons are the words a person presses: every answer "
+                "it offers paints its label, whichever way the others are "
+                "emphasised, and one resolved through the catalogue is not copy")
+
     def test_a_plain_local_and_an_action_label_are_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

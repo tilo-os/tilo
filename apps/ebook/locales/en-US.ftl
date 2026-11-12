@@ -229,3 +229,6 @@ ebook-empty-comment = Empty comment
 ebook-settings-default-font = Default font
 ebook-write-comment = Write a comment
 ebook-write-note = Write a note
+
+## The buttons of the settings sheets
+ebook-done = Done

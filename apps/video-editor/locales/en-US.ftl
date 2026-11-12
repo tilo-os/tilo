@@ -290,3 +290,8 @@ video-editor-link-state-linked = Linked audio and video
 video-editor-link-state-unlinked = Not linked
 video-editor-link-state-no-audio = No linked audio clip
 video-clip-missing-media = Missing media
+
+## The export dialog's buttons
+video-editor-start-export = Export
+video-editor-close-export = Close
+video-editor-cancel-export = Cancel

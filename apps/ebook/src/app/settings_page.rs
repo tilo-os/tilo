@@ -1043,7 +1043,8 @@ impl BooksApp {
             + sub
             + f64::from(rhythm.related)
             + preview_h;
-        let mut done = ModalAction::primary("Done");
+        let done_label = crate::resource::CATALOG.t("ebook-done");
+        let mut done = ModalAction::primary(&done_label);
         done.hovered = self
             .modal_actions
             .first()

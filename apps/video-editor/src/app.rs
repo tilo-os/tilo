@@ -5538,7 +5538,8 @@ impl VideoEditorApp {
         let groups_h = 3.0 * (line_xs + s1 + seg_target + s3);
         let footer_h = s1 + line_sm + s2 + status_h + notice_h;
         let body_h = header_h + groups_h + footer_h;
-        let actions = self.export_actions();
+        let labels = ExportLabels::new();
+        let actions = self.export_actions(&labels);
         let spec = ModalSpec::new("Export project")
             .actions(&actions)
             .max_width(EXPORT_CARD_W);
@@ -8276,7 +8277,8 @@ impl VideoEditorApp {
     ) {
         let l = self.export_layout(tr, theme);
         let hit = l.modal.hit(self.last_mouse);
-        let mut actions = self.export_actions();
+        let labels = ExportLabels::new();
+        let mut actions = self.export_actions(&labels);
         for (i, action) in actions.iter_mut().enumerate() {
             action.hovered = hit == Some(ModalHit::Action(i));
         }
@@ -8626,19 +8628,37 @@ impl VideoEditorApp {
     }
 }
 
+/// What the export dialog's buttons say, in the window's language.
+struct ExportLabels {
+    cancel: String,
+    close: String,
+    export: String,
+}
+
+impl ExportLabels {
+    fn new() -> Self {
+        let catalog = &crate::resource::CATALOG;
+        Self {
+            cancel: catalog.t("video-editor-cancel-export"),
+            close: catalog.t("video-editor-close-export"),
+            export: catalog.t("video-editor-start-export"),
+        }
+    }
+}
+
 impl VideoEditorApp {
-    fn export_actions(&self) -> Vec<ModalAction<'static>> {
+    fn export_actions<'a>(&self, labels: &'a ExportLabels) -> Vec<ModalAction<'a>> {
         if self.export_running() {
             // A render in flight: Cancel, the only way to stop it, and
             // nothing else. The progress bar above says how far it has got.
-            return vec![ModalAction::secondary("Cancel")];
+            return vec![ModalAction::secondary(&labels.cancel)];
         }
         vec![
-            ModalAction::secondary("Close"),
+            ModalAction::secondary(&labels.close),
             // Export is offered only when it can actually happen. The dialog
             // used to say "Export needs the GStreamer build" and put a
             // bright, enabled Export button directly underneath it.
-            ModalAction::primary("Export").enabled(self.export_is_offered()),
+            ModalAction::primary(&labels.export).enabled(self.export_is_offered()),
         ]
     }
 }

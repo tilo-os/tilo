@@ -1253,6 +1253,7 @@ toast-reply-placeholder = Reply…
 ## Window furniture and widget chrome, named where a screen reader reads it
 floating-window-move-hint = Movable window. Hold Alt and use the arrow keys to move; hold Shift for larger steps.
 widget-dialog-close = Close
+widget-dialog-cancel = Cancel
 widget-dismiss = Dismiss
 widget-hand-to-agent = Hand to an agent
 widget-more = More
