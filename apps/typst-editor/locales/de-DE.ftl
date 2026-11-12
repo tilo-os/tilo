@@ -4,7 +4,7 @@ typst-editor-typst-file-name = { $old } in { $new } umbenannt
 typst-editor-typst-file-source = { $item } bearbeitet
 typst-editor-new-file = { $name } angelegt
 typst-editor-saved-at = { $item } als { $path } gespeichert
-typst-editor-load = { $path } in { $item } geöffnet
+typst-editor-load = { $path } geöffnet
 typst-editor-close-file = { $item } geschlossen
 
 ## Die Fensterleiste: wo das Fenster ist, was es hält und was es kann

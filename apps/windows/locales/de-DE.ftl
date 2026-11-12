@@ -18,7 +18,7 @@ windows-shared-session-trust = Apps in der Windows-Umgebung teilen sich einen Wi
 windows-appliance = Windows-Umgebung
 windows-shared-access = Geteilter Zugriff
 windows-shared-with = Verwendet von
-windows-no-redirects = Gerade nichts
+windows-no-redirects = Keine
 windows-route-wine = Wine
 windows-route-proton = Proton
 windows-route-vm = Windows-VM
@@ -115,7 +115,6 @@ windows-temporary-connection-starting = Windows wird zeitweilig verbunden und de
 ## Die Windows-Umgebung: wie sie steht, was sie sagt und was sie ablehnt.
 ## Jede Zeile ist ein Satz, den eine Person liest, nie ein Literal im Code.
 
-windows-appliance-checking-status = Die Windows-Umgebung wird geprüft…
 
 windows-power-running = Läuft
 windows-power-suspended = Im Ruhezustand

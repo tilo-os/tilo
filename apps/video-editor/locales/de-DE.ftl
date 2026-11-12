@@ -117,7 +117,7 @@ video-editor-mask-rotation = Die Maske eines Clips gedreht
 video-editor-mask-feather = Die Maske eines Clips weichgezeichnet
 video-editor-mask-invert = { $new ->
     [true] Die Maske eines Clips invertiert
-   *[false] Die Invertierung der Maske eines Clips aufgehoben
+   *[false] Die Maske eines Clips wiederhergestellt
 }
 
 video-editor-marker-t = Die Marke { $item } verschoben
@@ -147,7 +147,7 @@ video-editor-add-track = Eine { $kind ->
    *[other] Bild-
 }spur hinzugefügt
 video-editor-reset-mix = Pegel und Panorama einer Spur zurückgesetzt
-video-editor-trim-lanes = Die Spuren ausgeglichen
+video-editor-trim-lanes = Den Pegel der Spuren gesenkt
 video-editor-delete-track = Eine Spur gelöscht
 video-editor-place-clip = Einen Clip auf die Zeitleiste gelegt
 video-editor-delete-media = Eine Quelle gelöscht

@@ -1,5 +1,10 @@
 # Mail — deutsche Übersetzung (de-DE).
 
+## Erster Start
+mail-first-run-title = Noch kein E-Mail-Konto
+mail-first-run-hint = Füge in den Einstellungen unter Externe Konten ein E-Mail-Konto hinzu.
+mail-first-run-action = Externe Konten öffnen
+
 ## Fenster zum Schreiben
 mail-compose-label-to = An
 mail-compose-label-cc = Cc

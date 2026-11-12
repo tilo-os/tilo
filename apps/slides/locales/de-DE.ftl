@@ -60,10 +60,6 @@ slides-colour-amber = Bernstein
 slides-colour-red = Rot
 slides-colour-violet = Violett
 
-## Versionsverlauf
-slides-history-no-slides = Diese Fassung hat keine Folien.
-slides-history-no-deck = Diese Fassung hat keine Präsentation zum Wiederherstellen.
-
 ## Platzhalter auf Folien
 slides-prompt-title = Titel hinzufügen
 slides-prompt-text = Text hinzufügen
@@ -124,7 +120,6 @@ slides-a11y-send-back = Nach hinten
 slides-a11y-duplicate-element = Objekt duplizieren
 slides-a11y-delete-element = Objekt löschen
 slides-a11y-layout = Layout { $name }
-slides-a11y-layout-menu = Folienlayout, { $name }
 slides-a11y-background = Hintergrund { $name }
 slides-a11y-deck-theme = Design { $name }
 slides-a11y-deck-look = Erscheinungsbild { $name }

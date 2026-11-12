@@ -1,7 +1,5 @@
 # PDF-Viewer — deutsche Übersetzung (de-DE).
 
-pdf-viewer-history-scope = PDF und seine Markierungen
-
 ## Verlauf: was jede Änderung getan hat, nach Feld und nach Aktion
 
 pdf-viewer-page-occurrence-rotation = Eine Seite auf { $new } Grad gedreht

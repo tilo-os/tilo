@@ -63,7 +63,7 @@ console-workspace-made-by-you = Von dir angelegt
 console-workspace-made-by = Von { $agent } angelegt
 console-workspace-open = In Tilo öffnen
 
-console-connect-lead = Führe eine dieser Zeilen dort aus, wo dein Agent läuft. Er bittet dich einmal um Anmeldung und arbeitet dann als er selbst in deinen Arbeitsbereichen: Alles, was er tut, erscheint unter Agenten, und du kannst ihn stoppen oder rückgängig machen.
+console-connect-lead = Führe einen dieser Befehle dort aus, wo dein Agent läuft. Er bittet dich einmal um Anmeldung und arbeitet dann als er selbst in deinen Arbeitsbereichen. Alles, was er tut, erscheint unter Agenten, wo du es stoppen oder rückgängig machen kannst.
 console-connect-heading = Einen Agenten verbinden
 console-client-claude-code = Claude Code
 console-client-codex = Codex

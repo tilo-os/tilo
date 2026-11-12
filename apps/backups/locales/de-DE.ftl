@@ -20,10 +20,6 @@ backups-size-in-files = { $count ->
     [one] { $size } in einer Datei
    *[other] { $size } in { $files } Dateien
 }
-backups-progress-files = { $count ->
-    [one] Eine Datei kopiert, { $size }
-   *[other] { $files } Dateien kopiert, { $size }
-}
 
 ## Übersichtskacheln: die Einheit hinter einer Zahl
 backups-unit-minutes = { $count ->

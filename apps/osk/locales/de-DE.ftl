@@ -58,7 +58,7 @@ osk-key-alt-latched = Alt, für die nächste Taste gehalten
 osk-key-alt-locked = Alt, festgestellt
 osk-toolbar-dismiss = Tastatur ausblenden
 
-osk-context-unavailable = Die Aktion des fokussierten Felds ist nicht verfügbar.
+osk-context-unavailable = Diese Taste funktioniert in diesem Feld nicht.
 osk-context-stale = Das Feld hat sich geändert. Wähle die Aktion erneut.
 
 ## Verlauf: was jede Änderung am gelernten Eintrag getan hat

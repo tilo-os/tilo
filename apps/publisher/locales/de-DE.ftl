@@ -4,7 +4,6 @@ publisher-create-key = Schlüssel anlegen
 publisher-public-key-label = Öffentlicher Schlüssel
 publisher-proof-label = Nachweiszeile
 publisher-proof-help = Veröffentliche diese Zeile dort, wo nur du schreiben kannst, um einen Namensraum zu belegen.
-publisher-verbatim = { $text }
 publisher-copy-proof = Nachweiszeile kopieren
 publisher-copy-secret = Schlüssel für CI kopieren
 publisher-check-status = Antrag prüfen

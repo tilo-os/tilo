@@ -2,7 +2,7 @@
 
 ## Verlauf: was jede Änderung am Eintrag der Kamera getan hat
 
-camera-register-capture = Eine neue Aufnahme weitergegeben
+camera-register-capture = Ein Foto oder Video aufgenommen
 camera-record-scan = { $raw } eingelesen
 
 camera-title = Kamera

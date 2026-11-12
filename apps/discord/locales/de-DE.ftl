@@ -1,5 +1,5 @@
 discord-empty-title = Einen Discord-Server in diesen Arbeitsbereich holen
-discord-empty-body = Verbinde einen Server mit dem Discord-Bridge-Bot, dann erscheinen seine Kanäle und Nachrichten in beiderseitigem Gleichschritt im Chat dieses Arbeitsbereichs. Danach kann jeder hier sein Discord-Konto verknüpfen.
+discord-empty-body = Verbinde einen Server mit dem Discord-Bridge-Bot. Seine Kanäle und Nachrichten erscheinen dann im Chat dieses Arbeitsbereichs und bleiben in beide Richtungen abgeglichen. Jeder hier kann sein Discord-Konto verknüpfen.
 discord-bridge-server = Einen Server verbinden
 discord-status-importing = Die Kanäle des Servers werden geholt. In Discord ändert sich nichts.
 discord-status-bridged = Nachrichten gehen in beide Richtungen zwischen dem Chat dieses Arbeitsbereichs und dem Server.
