@@ -1091,6 +1091,7 @@ fn written_interaction(start: u64, end: u64) -> tilo_actions::SemanticInteractio
             id: "insert".into(),
             label: "Write".into(),
             app: None,
+            step: None,
         },
         resource: tilo_actions::ActionResource {
             id: "so.tilo.notes/note".into(),

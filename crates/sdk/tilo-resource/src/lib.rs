@@ -229,7 +229,7 @@ pub mod __private {
     pub use tilo_actions::{
         ActionArgs, ActionKind, ActionParam, ActionRegistry, ActionSpec, Audience, ChangeKind,
         HOST_RENDER_TAG, OperationKind, PROMPTED_PARAM, ParamType, ResourceSpec, ResourceViewSpec,
-        RiskLevel, picked_resource_schema,
+        RiskLevel, StepKind, picked_resource_schema,
     };
 
     pub use crate::apply_cache::forget_all;
@@ -358,6 +358,11 @@ pub mod __private {
         pub content: Option<&'static str>,
         pub item_field: Option<&'static str>,
         pub writes: &'static [&'static str],
+        /// The kind of step it takes (`#[action(step = "create")]`): what
+        /// presence and the activity card say of it
+        /// ([`tilo_actions::StepKind`]). `None` for a verb whose declaration
+        /// names none, whose step reads as the part of the record it acts on.
+        pub step: Option<tilo_actions::StepKind>,
         pub shape: crate::Shape,
         pub params: &'static [ParamDecl],
     }
@@ -512,6 +517,9 @@ pub mod __private {
         }
         decl.field = verb.field;
         decl.destructive = verb.destructive;
+        decl.step = verb
+            .step
+            .or_else(|| verb.destructive.then_some(tilo_actions::StepKind::Delete));
         if verb.irreversible {
             decl.tags.push(tilo_actions::IRREVERSIBLE_TAG.to_owned());
         }

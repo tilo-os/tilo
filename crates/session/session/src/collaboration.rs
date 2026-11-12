@@ -104,11 +104,12 @@ impl Session {
                             let window = doing.app.as_deref().and_then(|app| {
                                 app_window(tree, &self.shared.notes, &seated.workspace, app)
                             });
-                            let line = lines::acting(
-                                &doing.action,
+                            let step = tilo_actions::Step::new(
+                                doing.step.unwrap_or(tilo_actions::StepKind::Work),
                                 window.as_ref().map(|(_, title)| title.as_str()),
-                            );
-                            (line, window.map(|(record, _)| record))
+                            )
+                            .in_app(doing.app.as_deref());
+                            (lines::step(&step), window.map(|(record, _)| record))
                         }
                         None => (lines::waiting(), None),
                     };

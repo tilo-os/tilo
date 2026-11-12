@@ -1275,3 +1275,18 @@ media-playback-settings = Wiedergabeeinstellungen
 media-toggle-on = Ein
 media-toggle-off = Aus
 floating-window-title = Schwebendes Fenster
+# Was ein Arbeitsschritt ist, wie eine Person ihn neben dem Gesicht der
+# handelnden Person, in der Personenliste und auf der Karte am Ort der
+# Handlung liest: die Art Arbeit, die die Handlung selbst angibt, an dem
+# Datensatz oder Eintrag, an dem sie geschieht; der Eintrag wird mit seinem
+# Titel benannt, wo der Schritt einen nennt.
+step-creating = Erstellt in { $record }
+step-writing = Schreibt in { $record }
+step-editing = Bearbeitet { $record }
+step-deleting = Löscht { $record }
+step-moving = Verschiebt { $record }
+step-reading = Liest { $record }
+step-running = Führt { $command } aus
+step-running-in = Führt in { $record } aus
+step-working = Arbeitet in { $record }
+step-working-alone = Arbeitet

@@ -224,7 +224,8 @@ impl Notebook {
     #[action(
         keywords = "new page, create note, add note, memo",
         answers,
-        icon = "file-plus"
+        icon = "file-plus",
+        step = "create"
     )]
     pub fn new_note(
         &mut self,

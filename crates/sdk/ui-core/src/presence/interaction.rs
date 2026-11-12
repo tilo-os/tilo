@@ -649,7 +649,7 @@ impl PresenceCtx {
     /// An exact-locus label keeps the lifecycle visible when the generic rail
     /// is suppressed. Failure must not look like a successful pointer action.
     pub fn interaction_status_label(&self, interaction: &SemanticInteraction) -> String {
-        self.interaction_status_label_doing(interaction, &doing_phrase(&interaction.action.label))
+        self.interaction_status_label_doing(interaction, &step_line(interaction))
     }
 
     /// [`Self::interaction_status_label_doing`] for the characters a write put
@@ -663,7 +663,7 @@ impl PresenceCtx {
         let doing = match interaction.phase {
             InteractionPhase::Waiting { .. }
             | InteractionPhase::Failed { .. }
-            | InteractionPhase::Cancelled { .. } => doing_phrase(&interaction.action.label),
+            | InteractionPhase::Cancelled { .. } => step_line(interaction),
             _ => crate::i18n::widget_format("interaction-added-text", &[]),
         };
         self.interaction_status_label_doing(interaction, &doing)
@@ -894,10 +894,9 @@ impl PresenceCtx {
             &style.clone().with_weight(TextWeight::Medium),
         );
 
-        // What it is doing, in the words presence says beside its face: the
-        // record is the window this card stands in, never named twice. The
-        // phase is the mark's fade, not words.
-        let detail = card_detail(&interaction.action.label, placement.additional);
+        // What it is doing, in the words presence says beside its face, in the
+        // language this window speaks. The phase is the mark's fade, not words.
+        let detail = card_detail(interaction, placement.additional);
         let detail = tr.elide_to_width_style(&detail, (rect.width() - 24.0) as f32, &style);
         tr.draw_style(
             scene,
@@ -1093,16 +1092,12 @@ const fn phase_priority(phase: &InteractionPhase) -> u8 {
     }
 }
 
-/// What an actor is doing, in the app's own words: its action's label as a
-/// present-tense verb — "checking off", "writing" — because a mark reads as
-/// something happening now, not as a state printed beside a name. The words
-/// are [`tilo_actions::wording`]'s, the same line presence says beside the
-/// actor's face.
-fn doing_phrase(label: &str) -> String {
-    tilo_actions::wording::doing_phrase(
-        label,
-        &crate::i18n::widget_format("interaction-working", &[]),
-    )
+/// What an actor is doing, in the window's language: the kind of step its
+/// action declares, on the record or item it acts in — "Writing in Trip plan",
+/// "Schreibt in Trip plan". One line for every surface, so a mark reads as
+/// something happening now rather than as a state printed beside a name.
+fn step_line(interaction: &SemanticInteraction) -> String {
+    crate::step::line(&tilo_actions::Step::of_interaction(interaction))
 }
 
 fn phase_label(phase: &InteractionPhase) -> String {
@@ -1133,13 +1128,11 @@ fn phase_label(phase: &InteractionPhase) -> String {
     }
 }
 
-/// What the card says under its actor's name: the action in
-/// [`tilo_actions::wording`]'s words, the same line presence says beside the
-/// actor's face, and how many other steps of it the one card stands for. The
-/// card already stands in the record's own window, so the record is never
-/// named twice.
-fn card_detail(label: &str, additional: usize) -> String {
-    let mut detail = tilo_actions::wording::step_line(label, None);
+/// What the card says under its actor's name: the step in the same words
+/// presence says beside the actor's face, and how many other steps of it the
+/// one card stands for.
+fn card_detail(interaction: &SemanticInteraction, additional: usize) -> String {
+    let mut detail = step_line(interaction);
     if additional > 0 {
         use std::fmt::Write as _;
         let _ = write!(detail, " · +{additional} more");
@@ -1183,7 +1176,8 @@ mod tests {
     use super::*;
     use crate::text_render::TextRenderer;
     use tilo_actions::{
-        ActionResource, ActorKind, INTERACTION_VERSION, InteractionAction, InteractionActor,
+        ActionApp, ActionResource, ActorKind, INTERACTION_VERSION, InteractionAction,
+        InteractionActor, InteractionAnchor, StepKind,
     };
     use uuid::Uuid;
 
@@ -1206,6 +1200,7 @@ mod tests {
                 id: "rename".into(),
                 label: "Rename".into(),
                 app: None,
+                step: None,
             },
             resource: ActionResource {
                 id: "file:draft".into(),
@@ -1921,35 +1916,43 @@ mod tests {
         ] {
             assert_eq!(phase_color(&phase, &theme, actor), actor, "{phase:?}");
         }
-        assert_eq!(
-            card_detail("Create note from Markdown", 0),
-            "Creating note from Markdown"
-        );
-        assert_eq!(
-            card_detail("Create note from Markdown", 2),
-            "Creating note from Markdown · +2 more"
-        );
+        let mut made = interaction(90, 1, InteractionPhase::Committed);
+        made.action = InteractionAction {
+            id: "create".into(),
+            label: "Create an issue".into(),
+            app: Some(ActionApp {
+                id: "so.tilo.tasks".into(),
+                label: "Tasks".into(),
+            }),
+            step: Some(StepKind::Create),
+        };
+        made.resource.label = "Issues".into();
+        assert_eq!(card_detail(&made, 0), "Creating in Issues");
+        assert_eq!(card_detail(&made, 2), "Creating in Issues · +2 more");
     }
 
+    /// A step says the kind of work its action declares, else the part of the
+    /// record it acts on: never an English verb read out of the label.
     #[test]
-    fn an_action_reads_as_what_its_actor_is_doing() {
-        for (label, doing) in [
-            ("Edit", "editing"),
-            ("Insert", "inserting"),
-            ("Write", "writing"),
-            ("Check off", "checking off"),
-            ("Open", "opening"),
-            ("Set status", "setting status"),
-            ("Stop", "stopping"),
-            ("Apply", "applying"),
-            ("Tag", "tagging"),
-            ("Rename the note", "renaming the note"),
-            ("New note", "creating note"),
-            ("New sub-note", "creating sub-note"),
-        ] {
-            assert_eq!(doing_phrase(label), doing, "{label}");
-        }
-        assert_eq!(doing_phrase("  "), "working");
+    fn a_step_reads_as_the_kind_of_work_it_declares() {
+        let mut writing = interaction(91, 1, InteractionPhase::Applying);
+        writing.resource.label = "Trip plan".into();
+        writing.anchor = InteractionAnchor::Text {
+            region: "text".into(),
+            ranges: Vec::new(),
+        };
+        assert_eq!(step_line(&writing), "Writing in Trip plan");
+
+        let mut deleting = interaction(92, 1, InteractionPhase::Applying);
+        deleting.action.step = Some(StepKind::Delete);
+        assert_eq!(step_line(&deleting), "Deleting Draft.md");
+
+        let unclassified = interaction(93, 1, InteractionPhase::Applying);
+        assert_eq!(
+            step_line(&unclassified),
+            "Working in Draft.md",
+            "a step whose declaration names no kind says where it works"
+        );
     }
 
     /// On a page that draws a frame every few seconds, a write that arrived between two frames is
@@ -2087,12 +2090,12 @@ mod tests {
                 .insert(UserId("quill".into()), "Release Notes Agent".into());
             assert_eq!(
                 presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
-                "Release Notes Agent: renaming"
+                "Release Notes Agent: Working in Draft.md"
             );
             presence.names.clear();
             assert_eq!(
                 presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
-                "Agent: renaming"
+                "Agent: Working in Draft.md"
             );
         }
         // phase: agent_identity_is_textual_and_does_not_fall_back_to_a_raw_id
@@ -2117,7 +2120,7 @@ mod tests {
             keyed.actor = InteractionActor::new(key, ActorKind::Person);
             assert_eq!(
                 presence.interaction_status_label(&keyed),
-                "Collaborator: renaming"
+                "Collaborator: Working in Draft.md"
             );
             let agent = UserId("quill".into());
             presence.set_display_name(agent.clone(), "Claude");
@@ -2218,10 +2221,10 @@ mod tests {
     }
 
     /// The chip on the characters a write put in a note says what the person
-    /// sees happen there, not the gerund of the action's menu label: "Helper:
-    /// added text", where "replacing text at a place" named the menu and said
-    /// replacement even for an insertion. A write that failed keeps the
-    /// action's own words, since none of its text stands.
+    /// sees happen there, not the name of the place the menu acts on: "Helper:
+    /// added text", where "replace text at a place" named replacement even for
+    /// an insertion. A write that failed says the step itself, since none of
+    /// its text stands.
     #[test]
     fn a_text_write_says_it_added_text() {
         let mut presence = PresenceCtx::empty();
@@ -2234,6 +2237,7 @@ mod tests {
             id: "replace-range".into(),
             label: "Replace text at a place".into(),
             app: None,
+            step: None,
         };
         write.anchor = tilo_actions::InteractionAnchor::Text {
             region: "body".into(),
@@ -2255,8 +2259,8 @@ mod tests {
         };
         let name = presence.interaction_status_label_written(&failed);
         assert!(
-            name.starts_with("Helper: replacing text at a place. Failed"),
-            "a failed write names the action, not text that never landed: {name}"
+            name.starts_with("Helper: Writing in Draft.md. Failed"),
+            "a failed write says the step, not text that never landed: {name}"
         );
     }
 }

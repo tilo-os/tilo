@@ -48,6 +48,7 @@ pub fn frame(narrated: &Narrated<'_>, seq: u64, sent_at_ms: u64) -> Option<Seman
             id: narrated.action.action.clone(),
             label: action_label(&narrated.action.action),
             app: Some(app.clone()),
+            step: None,
         },
         resource: ActionResource {
             id: narrated.action.resource.clone(),
@@ -109,6 +110,8 @@ const SHOWN_CHARS: usize = 64;
 pub mod lines {
     use collab_types::presence::MAX_ACTIVITY_BYTES;
     use serde_json::Value;
+    use tilo_actions::StepKind;
+    use tilo_actions::step::{COMMAND_PARAMS, Step};
 
     /// An app as a person reads it: the last part of its id, capitalised
     /// (`Sheets`).
@@ -139,7 +142,8 @@ pub mod lines {
     /// Reading what `app` shows.
     #[must_use]
     pub fn reading(app: &str) -> String {
-        clip(&verb_line("Reading", &short(app)))
+        let record = short(app);
+        clip(&ui::step::line(&Step::new(StepKind::Read, Some(&record))))
     }
 
     /// Searching for `needle`.
@@ -148,26 +152,28 @@ pub mod lines {
         clip(&verb_line("Searching for", needle))
     }
 
-    /// Taking the action `action` in `app` with `args`: the action's verb on
-    /// the app, a shell command as the command line itself.
+    /// Taking the action `action` in `app` with `args`: what kind of step its
+    /// own declaration names, on the app's record, a shell command as the
+    /// command line itself. Said in the window's language by the one function
+    /// every surface asks ([`ui::step`]).
     #[must_use]
     pub fn doing(app: &str, action: &str, args: Option<&Value>) -> String {
-        let line = match tilo_actions::wording::verb_of(action).unwrap_or("Working in") {
-            "Running" => {
-                let command = ["command", "command_line", "cmd"]
-                    .iter()
-                    .find_map(|key| args.and_then(|args| args.get(*key)))
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|command| !command.is_empty());
-                match command {
-                    Some(command) => verb_line("Running", command),
-                    None => format!("Running a command in {}", short(app)),
-                }
-            }
-            verb => verb_line(verb, &short(app)),
+        let command = COMMAND_PARAMS
+            .iter()
+            .find_map(|key| args.and_then(|args| args.get(*key)))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|command| !command.is_empty());
+        let kind = if action == tilo_actions::CREATE_ACTION {
+            StepKind::Create
+        } else if command.is_some() {
+            StepKind::Run
+        } else {
+            StepKind::Work
         };
-        clip(&line)
+        let record = short(app);
+        let step = Step::new(kind, Some(&record)).running(command);
+        clip(&ui::step::line(&step))
     }
 
     /// `line`, for an action that failed: never said as one that worked.
@@ -176,14 +182,12 @@ pub mod lines {
         clip(&format!("{line} (failed)"))
     }
 
-    /// Taking `action` — the catalogue's own name for it — on the record it
-    /// acts in ("Editing Trip plan"), and in the action's own words where no
-    /// record is named ("Creating note from Markdown"). The one line every
-    /// surface says of a step ([`tilo_actions::wording`]), so the words beside
-    /// a run's face and the card in its window never disagree.
+    /// `step` as a person reads it beside a run's face: the one line every
+    /// surface says of a step ([`ui::step`]), cut where a person stops
+    /// reading.
     #[must_use]
-    pub fn acting(action: &str, record: Option<&str>) -> String {
-        clip(&tilo_actions::wording::step_line(action, record))
+    pub fn step(step: &Step<'_>) -> String {
+        clip(&ui::step::line(step))
     }
 
     /// `<verb> <what>` as one line, the what left out when there is none.
@@ -223,10 +227,13 @@ pub mod lines {
             assert_eq!(looking(Some("so.tilo.terminal")), "Looking at Terminal");
             assert_eq!(reading("so.tilo.notes"), "Reading Notes");
             assert_eq!(searching(" invoices "), "Searching for invoices");
-            assert_eq!(doing("so.tilo.sheets", "new-sheet", None), "Adding Sheets");
+            assert_eq!(
+                doing("so.tilo.sheets", tilo_actions::CREATE_ACTION, None),
+                "Creating in Sheets"
+            );
             assert_eq!(
                 doing("so.tilo.word-processor", "append-paragraph", None),
-                "Writing in Word-processor"
+                "Working in Word-processor"
             );
             let command = serde_json::json!({"command": "cargo build"});
             assert_eq!(
@@ -235,27 +242,24 @@ pub mod lines {
             );
             assert_eq!(
                 doing("so.tilo.terminal", "run", None),
-                "Running a command in Terminal"
+                "Working in Terminal"
             );
-            assert_eq!(failed("Adding Sheets"), "Adding Sheets (failed)");
+            assert_eq!(failed("Working in Sheets"), "Working in Sheets (failed)");
         }
 
-        /// What a run is at on the record it acts in is said in the catalogue's own words for
-        /// the action, on the record: "Writing in Trip plan" where it writes text there, never
-        /// the app's name as if the app were being added, and the action's own words where no
-        /// record is named.
+        /// A step is said in the catalogue's words for its kind, on the record it acts in:
+        /// "Writing in Trip plan", never words assembled from the action's English label.
         #[test]
         fn a_step_is_said_on_the_record_it_acts_in() {
             assert_eq!(
-                acting("Replace text at a place", Some("Trip plan")),
+                step(&Step::new(StepKind::Write, Some("Trip plan"))),
                 "Writing in Trip plan"
             );
-            assert_eq!(acting("New note", Some("Trip plan")), "Adding Trip plan");
             assert_eq!(
-                acting("Create note from Markdown", None),
-                "Creating note from Markdown"
+                step(&Step::new(StepKind::Delete, Some("Trip plan"))),
+                "Deleting Trip plan"
             );
-            let long = acting("Replace text at a place", Some(&"x".repeat(200)));
+            let long = step(&Step::new(StepKind::Write, Some(&"x".repeat(200))));
             assert!(long.ends_with('…') && long.chars().count() <= SHOWN_CHARS);
         }
 

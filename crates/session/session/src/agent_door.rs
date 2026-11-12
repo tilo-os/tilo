@@ -1701,6 +1701,10 @@ pub(crate) struct Host {
     seat: Option<Arc<SeatAt>>,
 }
 
+/// What the catalogue says of one action a seat was offered: the words the person reads the step
+/// by ("Replace text at a place"), and the kind of step its own declaration names.
+type NamedStep = (String, Option<tilo_actions::StepKind>);
+
 /// The seat one admitted agent's connection sits at, and the apps of what it was offered.
 struct SeatAt {
     seats: Arc<Seats>,
@@ -1710,9 +1714,8 @@ struct SeatAt {
     /// The app each provider it was offered is of, by provider: what names the app a step of its
     /// is in.
     apps: std::sync::Mutex<HashMap<String, String>>,
-    /// What the catalogue calls each action it was offered, by provider and action: the words
-    /// the person reads the step by ("Replace text at a place").
-    named: std::sync::Mutex<HashMap<(String, String), String>>,
+    /// What the catalogue calls each action it was offered, by provider and action.
+    named: std::sync::Mutex<HashMap<(String, String), NamedStep>>,
 }
 
 impl SeatAt {
@@ -1749,7 +1752,7 @@ impl SeatAt {
                 if let Some(words) = words {
                     named.insert(
                         (row.provider.clone(), action.address.action.clone()),
-                        words.to_owned(),
+                        (words.to_owned(), action.contract.step),
                     );
                 }
             }
@@ -1761,18 +1764,21 @@ impl SeatAt {
     fn acting(&self, request: &InvokeRequest) {
         let provider = &request.target.provider;
         let app = self.apps.lock_recover().get(provider).cloned();
-        let action = self
+        let (action, step) = self
             .named
             .lock_recover()
             .get(&(provider.clone(), request.target.address.action.clone()))
             .cloned()
             .unwrap_or_else(|| {
-                tilo_session_client::narration::action_label(&request.target.address.action)
+                (
+                    tilo_session_client::narration::action_label(&request.target.address.action),
+                    None,
+                )
             });
-        if self
-            .seats
-            .acting(self.seat, crate::agent_door::seats::Doing { action, app })
-        {
+        if self.seats.acting(
+            self.seat,
+            crate::agent_door::seats::Doing { action, step, app },
+        ) {
             (self.wake)();
         }
     }
@@ -2803,6 +2809,7 @@ mod tests {
         // What its step is, as the catalogue names it and the app it acts in: said once.
         let doing = super::seats::Doing {
             action: "Replace text at a place".into(),
+            step: Some(tilo_actions::StepKind::Write),
             app: Some("so.tilo.notes".into()),
         };
         assert!(seats.acting(asked, doing.clone()), "its step is news");

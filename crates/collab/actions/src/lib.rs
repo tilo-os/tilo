@@ -151,10 +151,10 @@ pub mod resource;
 pub mod schema;
 pub mod selection;
 pub mod selectors;
+pub mod step;
 pub mod surface;
 pub mod task_step;
 pub mod terminal_text;
-pub mod wording;
 
 pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind, asks_first,
@@ -236,6 +236,7 @@ pub use selection::{
     BOUND_RESOURCE_PREFIX, MAX_EXCERPT_BYTES, MAX_EXCERPT_CHARS, MAX_SELECTED_ITEMS,
     SelectionAnchor, SelectionPlace, SelectionSubject, excerpt_of, logical_resource_id,
 };
+pub use step::{Step, StepKind};
 /// Grants and the decisions over them, as apps read and show them.
 pub use tilo_action_policy as policy;
 /// The field a resource's comments live in: an action that only comments

@@ -349,6 +349,7 @@ pub mod shell_tabs;
 mod slot_row;
 pub mod snap;
 pub mod state;
+pub mod step;
 pub mod strip_layers;
 pub mod surface;
 /// The actions socket a session hands a surface app is a descriptor of a

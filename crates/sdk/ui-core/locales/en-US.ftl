@@ -1312,3 +1312,17 @@ media-playback-settings = Playback settings
 media-toggle-on = On
 media-toggle-off = Off
 floating-window-title = Floating window
+# What one step of work is, as a person reads it beside the actor's face, in
+# the people list and on the card drawn where the step happens: the kind of
+# work the action's own declaration names, on the record or item it acts in.
+# The record is the item's title where the step names one.
+step-creating = Creating in { $record }
+step-writing = Writing in { $record }
+step-editing = Editing { $record }
+step-deleting = Deleting { $record }
+step-moving = Moving { $record }
+step-reading = Reading { $record }
+step-running = Running { $command }
+step-running-in = Running in { $record }
+step-working = Working in { $record }
+step-working-alone = Working

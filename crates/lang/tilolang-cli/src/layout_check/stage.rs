@@ -1044,6 +1044,7 @@ mod tests {
                 id: descriptor.address.action.clone(),
                 label: descriptor.action_label.clone(),
                 app: None,
+                step: None,
             },
             resource: tilo_actions::ActionResource {
                 id: descriptor.address.resource.clone(),

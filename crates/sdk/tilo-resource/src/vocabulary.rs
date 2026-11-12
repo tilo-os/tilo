@@ -184,6 +184,9 @@ pub struct Declaration {
     /// places its invoker (the caret an append leaves its writer at).
     /// See [`bind_declaration`](crate::bind_declaration).
     pub refines: bool,
+    /// The kind of step it takes, as it declares it
+    /// ([`tilo_actions::StepKind`]), published with its contract.
+    pub step: Option<tilo_actions::StepKind>,
     /// The units the action writes ([`crate::footprint`]): `record`, an
     /// item's unit, declared fields'.
     pub writes: Vec<String>,
@@ -253,6 +256,7 @@ impl Declaration {
             tags: Vec::new(),
             content: None,
             refines: false,
+            step: None,
             writes: vec![crate::footprint::RECORD_UNIT.to_owned()],
             resource: vocabulary.kind,
             action_type: vocabulary.action_type,

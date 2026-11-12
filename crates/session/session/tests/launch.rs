@@ -686,6 +686,7 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
             id: "rename".to_owned(),
             label: "Rename".to_owned(),
             app: None,
+            step: None,
         },
         resource: tilo_actions::ActionResource {
             id: "documents".to_owned(),
