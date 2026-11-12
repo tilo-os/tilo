@@ -40,8 +40,6 @@ pub const TRANSFER_LIFETIME_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 pub const CHECKPOINT_BYTES: u64 = 8 * 1024 * 1024;
 /// Verified media-handoff objects kept for players, apart from the spool quota.
 pub const MAX_MEDIA_CACHE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
-/// Free space every staged or incoming object must leave on the spool's filesystem.
-pub const MIN_FREE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// How long a player that resolved a cached media object keeps it alive.
 pub const MEDIA_LEASE: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
 /// Completed media handoffs a receiver remembers before evicting the oldest.
@@ -1254,15 +1252,14 @@ impl NearbyTransferStore {
         Ok(())
     }
 
-    /// Refuse an object whose bytes, with every unfinished receive, would
-    /// leave less than [`MIN_FREE_BYTES`] on the spool's filesystem.
+    /// Refuse an object whose bytes, with every unfinished receive, do not fit
+    /// in the space the spool's filesystem leaves its user; the blocks a
+    /// filesystem keeps back for the system are not counted as available.
     fn ensure_free_space(&self, candidate_bytes: u64) -> Result<(), String> {
         let pending = self.index.inbox.iter().fold(0_u64, |total, entry| {
             total.saturating_add(entry.total_bytes.saturating_sub(entry.committed_offset))
         });
-        let required = pending
-            .saturating_add(candidate_bytes)
-            .saturating_add(MIN_FREE_BYTES);
+        let required = pending.saturating_add(candidate_bytes);
         if available_bytes(&self.root).is_none_or(|available| available < required) {
             return Err(i18n::t("nearby-error-disk-full"));
         }
