@@ -99,7 +99,14 @@ impl PlayerState {
             EmptyState::paint_focused(&mut ctx, self.rect, &content, cursor, self.status_focused)
         } else {
             self.file_open
-                .paint(&mut ctx, self.rect, &content, cursor, self.status_focused)
+                .paint(
+                    &mut ctx,
+                    self.rect,
+                    &content,
+                    cursor,
+                    self.status_focused,
+                    self.interaction,
+                )
                 .action
         };
         self.status_action_rect = status_action.unwrap_or(Rect::ZERO);

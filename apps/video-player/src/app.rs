@@ -288,8 +288,12 @@ pub(crate) struct PlayerState {
     rect: Rect,
     /// The action of the idle or error state over the picture.
     status_action_rect: Rect,
-    /// A video dropped anywhere on the window opens like one chosen.
+    /// A video dropped anywhere on the window opens like one chosen. Only a
+    /// device with a pointer can drag one in, so a phone is never told to.
     file_open: ui::widget::FileOpenSurface,
+    /// How the person reaches the window, as the host reports it: what the
+    /// drop hint reads.
+    pub(crate) interaction: ui::interaction::InteractionEnvironment,
     /// How far the docked library pushes the picture in from the leading
     /// edge, as the last layout laid the player out.
     content_inset: f64,
@@ -612,6 +616,7 @@ impl PlayerState {
             rect: Rect::ZERO,
             status_action_rect: Rect::ZERO,
             file_open: ui::widget::FileOpenSurface::default(),
+            interaction: ui::interaction::InteractionEnvironment::default(),
             drawer: SidebarDrawer::new()
                 .left()
                 .closed()
