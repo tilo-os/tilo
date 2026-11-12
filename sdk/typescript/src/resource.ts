@@ -276,7 +276,10 @@ class ResourceImpl {
 }
 
 /** A resource as a typed object: fields, actions and field edits. */
-export function resourceProxy(workspace: Workspace, path: string): Resource {
+export function resourceProxy(workspace: Workspace, path: string, surface?: string): Resource {
+  // `surface`: the version of the app's surface generated types were made from. The REST
+  // transport sends it with their actions, so a workspace whose app changed refuses them.
+  void surface;
   const impl = new ResourceImpl(workspace, path);
   const proxy = new Proxy(impl, {
     get(target, property, receiver) {

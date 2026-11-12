@@ -84,6 +84,7 @@ class Variable(TypedDict):
 
 class Workspace(Resource):
     """API workspace — `api-tester.workspace`."""
+    __surface__ = "so.tilo.api-tester@2dc7adfdb370ac66"
     collections: list[SavedCollection]
     environments: list[Environment]
     active_environment: str | None

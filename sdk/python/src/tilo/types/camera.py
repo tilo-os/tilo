@@ -23,6 +23,7 @@ __all__ = [
 
 class Camera(Resource):
     """Camera — `camera`."""
+    __surface__ = "so.tilo.camera@18dea311f732a035"
     @property
     def scans(self) -> Any:
         """Read only."""

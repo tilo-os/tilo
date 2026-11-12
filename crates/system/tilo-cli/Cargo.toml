@@ -61,6 +61,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 # asked of the workspace's host through this device's session, as the person
 # their workspaces name.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
+# The API: its description (`tilo sdk gen --lang openapi`) and surface versions.
+tilo-api = { path = "../../hosting/tilo-api" }
 collab-types = { path = "../../collab/collab-types" }
 # `tilo mcp` asks the host to open the record its agent acts in as a window,
 # and narrates what its actions are doing on the live plane.

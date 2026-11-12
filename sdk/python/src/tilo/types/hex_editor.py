@@ -23,6 +23,7 @@ __all__ = [
 
 class Document(Resource):
     """Hex document — `hex-editor.document`."""
+    __surface__ = "so.tilo.hex-editor@7d5dcf386447ee8e"
     @property
     def name(self) -> Any:
         """Read only."""

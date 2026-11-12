@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.clocks@d3069d6f03debbee";
+
 /** Clocks — `clocks.collection`. */
 export interface Collection extends tilo.Resource {
   world_clocks: unknown;
@@ -74,7 +79,7 @@ export interface Collection extends tilo.Resource {
 
 /** The `clocks.collection` kind at `path`. */
 export function collection(ws: tilo.Workspace, path: string): Collection {
-  return resourceProxy(ws, path) as unknown as Collection;
+  return resourceProxy(ws, path, SURFACE) as unknown as Collection;
 }
 
 /** Clocks on each device — `clocks.on-devices`. */
@@ -88,6 +93,6 @@ export interface OnDevices extends tilo.Resource {
 
 /** The `clocks.on-devices` kind at `path`. */
 export function onDevices(ws: tilo.Workspace, path: string): OnDevices {
-  return resourceProxy(ws, path) as unknown as OnDevices;
+  return resourceProxy(ws, path, SURFACE) as unknown as OnDevices;
 }
 

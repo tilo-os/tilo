@@ -72,6 +72,7 @@ class Remembered(TypedDict):
 
 class Session(Resource):
     """Terminal — `terminal.session`."""
+    __surface__ = "so.tilo.terminal@ffb84614df228207"
     @property
     def target(self) -> str | None:
         """Read only."""
@@ -223,6 +224,7 @@ class Session(Resource):
 
 class History(Resource):
     """Command history — `terminal.history`."""
+    __surface__ = "so.tilo.terminal@ffb84614df228207"
     @property
     def runs(self) -> list[Remembered]:
         """Read only."""
@@ -255,6 +257,7 @@ class History(Resource):
 
 class RecentEnvironments(Resource):
     """Recent environments — `terminal.recent-environments`."""
+    __surface__ = "so.tilo.terminal@ffb84614df228207"
     devices: dict[str, str]
 
     def used(self,

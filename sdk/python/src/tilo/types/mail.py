@@ -180,6 +180,7 @@ class NewCopy(TypedDict):
 
 class Mailbox(Resource):
     """Mail — `mail.mailbox`."""
+    __surface__ = "so.tilo.mail@c0f0bb93ba1205e5"
     messages: list[MessageState]
     folders: list[LocalFolder]
     draft: DraftState
@@ -429,6 +430,7 @@ class Mailbox(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
+    __surface__ = "so.tilo.mail@c0f0bb93ba1205e5"
     accounts: list[PersonAccount]
     active: dict[str, str]
 
@@ -464,6 +466,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
+    __surface__ = "so.tilo.mail@c0f0bb93ba1205e5"
     people: list[Person]
 
     def project_contact(self,
@@ -559,6 +562,7 @@ class Identities(Resource):
 
 class TrustedSenders(Resource):
     """Trusted senders — `mail.trusted-senders`."""
+    __surface__ = "so.tilo.mail@c0f0bb93ba1205e5"
     senders: list[str]
 
     def trust(self, *, sender: str) -> Run | None:
@@ -572,6 +576,7 @@ class TrustedSenders(Resource):
 
 class Copies(Resource):
     """Mail on your devices — `mail.copies`."""
+    __surface__ = "so.tilo.mail@c0f0bb93ba1205e5"
     @property
     def copies(self) -> list[KeptCopy]:
         """Read only."""

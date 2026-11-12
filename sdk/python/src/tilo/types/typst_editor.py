@@ -23,6 +23,7 @@ __all__ = [
 
 class Workspace(Resource):
     """Typst workspace — `typst-editor.workspace`."""
+    __surface__ = "so.tilo.typst-editor@44e128454ed53c59"
     files: Any
 
     def new_file(self,

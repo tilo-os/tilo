@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.model-providers@40f36b4f0f767d0f";
+
 /** Model providers — `model-providers.root`. */
 export interface Root extends tilo.Resource {
   listPresets(): Promise<void>;
@@ -24,6 +29,6 @@ export interface Root extends tilo.Resource {
 
 /** The `model-providers.root` kind at `path`. */
 export function root(ws: tilo.Workspace, path: string): Root {
-  return resourceProxy(ws, path) as unknown as Root;
+  return resourceProxy(ws, path, SURFACE) as unknown as Root;
 }
 

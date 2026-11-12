@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.chat@4d5b813b3ee16427";
+
 export interface Category {
   name: string;
 }
@@ -540,7 +545,7 @@ export interface Workspace extends tilo.Resource {
 
 /** The `chat.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {
-  return resourceProxy(ws, path) as unknown as Workspace;
+  return resourceProxy(ws, path, SURFACE) as unknown as Workspace;
 }
 
 /** Messages — `chat.messages`. */
@@ -632,7 +637,7 @@ export interface Messages extends tilo.Resource {
 
 /** The `chat.messages` kind at `path`. */
 export function messages(ws: tilo.Workspace, path: string): Messages {
-  return resourceProxy(ws, path) as unknown as Messages;
+  return resourceProxy(ws, path, SURFACE) as unknown as Messages;
 }
 
 /** Chat drafts — `chat.drafts`. */
@@ -645,7 +650,7 @@ export interface Drafts extends tilo.Resource {
 
 /** The `chat.drafts` kind at `path`. */
 export function drafts(ws: tilo.Workspace, path: string): Drafts {
-  return resourceProxy(ws, path) as unknown as Drafts;
+  return resourceProxy(ws, path, SURFACE) as unknown as Drafts;
 }
 
 /** Workspace emoji — `tilo.workspace.emoji`. */
@@ -665,7 +670,7 @@ export interface WorkspaceEmoji extends tilo.Resource {
 
 /** The `tilo.workspace.emoji` kind at `path`. */
 export function workspaceEmoji(ws: tilo.Workspace, path: string): WorkspaceEmoji {
-  return resourceProxy(ws, path) as unknown as WorkspaceEmoji;
+  return resourceProxy(ws, path, SURFACE) as unknown as WorkspaceEmoji;
 }
 
 /** Agents — `chat.agent`. */
@@ -710,6 +715,6 @@ export interface ChatAgent extends tilo.Resource {
 
 /** The `chat.agent` kind at `path`. */
 export function chatAgent(ws: tilo.Workspace, path: string): ChatAgent {
-  return resourceProxy(ws, path) as unknown as ChatAgent;
+  return resourceProxy(ws, path, SURFACE) as unknown as ChatAgent;
 }
 

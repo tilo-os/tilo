@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.remote@b0d002f1b14979cb";
+
 /** Remote connections — `remote.connection-list`. */
 export interface ConnectionList extends tilo.Resource {
   connections: unknown;
@@ -38,6 +43,6 @@ export interface ConnectionList extends tilo.Resource {
 
 /** The `remote.connection-list` kind at `path`. */
 export function connectionList(ws: tilo.Workspace, path: string): ConnectionList {
-  return resourceProxy(ws, path) as unknown as ConnectionList;
+  return resourceProxy(ws, path, SURFACE) as unknown as ConnectionList;
 }
 

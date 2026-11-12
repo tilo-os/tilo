@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.disks@172626c1bedc29c8";
+
 /** Storage devices — `disks.system`. */
 export interface System extends tilo.Resource {
   names: Record<string, string>;
@@ -35,6 +40,6 @@ export interface System extends tilo.Resource {
 
 /** The `disks.system` kind at `path`. */
 export function system(ws: tilo.Workspace, path: string): System {
-  return resourceProxy(ws, path) as unknown as System;
+  return resourceProxy(ws, path, SURFACE) as unknown as System;
 }
 

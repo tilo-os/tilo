@@ -29,6 +29,7 @@ class Report(TypedDict):
 
 class Catalog(Resource):
     """App Store — `store.catalog`."""
+    __surface__ = "so.tilo.store@e40586bf33717a0d"
     reports: dict[str, Report]
 
     def draft_report(self, *, app_id: str) -> Run | None:

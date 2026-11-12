@@ -106,6 +106,7 @@ class TrackerArea(TypedDict):
 
 class Tracker(Resource):
     """Tasks — `tasks.tracker`."""
+    __surface__ = "so.tilo.tasks@092d27174044c60d"
     issues: list[Issue]
     areas: list[TrackerArea]
     @property

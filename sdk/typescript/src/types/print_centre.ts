@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.print-centre@67d355f33bdecced";
+
 /** Print Centre — `print-centre.defaults`. */
 export interface Defaults extends tilo.Resource {
   two_sided: boolean;
@@ -29,6 +34,6 @@ export interface Defaults extends tilo.Resource {
 
 /** The `print-centre.defaults` kind at `path`. */
 export function defaults(ws: tilo.Workspace, path: string): Defaults {
-  return resourceProxy(ws, path) as unknown as Defaults;
+  return resourceProxy(ws, path, SURFACE) as unknown as Defaults;
 }
 

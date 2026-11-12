@@ -29,6 +29,7 @@ class Reply(TypedDict):
 
 class Library(Resource):
     """Tube — `tube.library`."""
+    __surface__ = "so.tilo.tube@fdb44416bbb8c189"
     likes: list[str]
     queue: list[str]
     subscriptions: list[str]
@@ -114,6 +115,7 @@ class Library(Resource):
 
 class WatchHistory(Resource):
     """Watch history — `tube.watch-history`."""
+    __surface__ = "so.tilo.tube@fdb44416bbb8c189"
     watched: dict[str, int]
     positions: dict[str, int]
 

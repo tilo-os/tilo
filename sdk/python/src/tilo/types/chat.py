@@ -433,6 +433,7 @@ class Spent(TypedDict):
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
+    __surface__ = "so.tilo.chat@4d5b813b3ee16427"
     @property
     def categories(self) -> list[Category]:
         """Read only."""
@@ -685,6 +686,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
+    __surface__ = "so.tilo.chat@4d5b813b3ee16427"
     @property
     def messages(self) -> list[Message]:
         """Read only."""
@@ -893,6 +895,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
+    __surface__ = "so.tilo.chat@4d5b813b3ee16427"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> Run | None:
@@ -902,6 +905,7 @@ class Drafts(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
+    __surface__ = "so.tilo.chat@4d5b813b3ee16427"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -923,6 +927,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
+    __surface__ = "so.tilo.chat@4d5b813b3ee16427"
     agents: list[Agent]
 
     def create_agent(self,

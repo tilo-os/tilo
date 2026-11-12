@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.browser@60987c5bdbbdea2d";
+
 export interface Bookmark {
   url: string;
   title: string;
@@ -80,7 +85,7 @@ export interface Application extends tilo.Resource {
 
 /** The `browser.application` kind at `path`. */
 export function application(ws: tilo.Workspace, path: string): Application {
-  return resourceProxy(ws, path) as unknown as Application;
+  return resourceProxy(ws, path, SURFACE) as unknown as Application;
 }
 
 /** Personal bookmarks — `browser.personal-bookmarks`. */
@@ -109,7 +114,7 @@ export interface PersonalBookmarks extends tilo.Resource {
 
 /** The `browser.personal-bookmarks` kind at `path`. */
 export function personalBookmarks(ws: tilo.Workspace, path: string): PersonalBookmarks {
-  return resourceProxy(ws, path) as unknown as PersonalBookmarks;
+  return resourceProxy(ws, path, SURFACE) as unknown as PersonalBookmarks;
 }
 
 /** Browsing history — `browser.browsing-history`. */
@@ -138,7 +143,7 @@ export interface BrowsingHistory extends tilo.Resource {
 
 /** The `browser.browsing-history` kind at `path`. */
 export function browsingHistory(ws: tilo.Workspace, path: string): BrowsingHistory {
-  return resourceProxy(ws, path) as unknown as BrowsingHistory;
+  return resourceProxy(ws, path, SURFACE) as unknown as BrowsingHistory;
 }
 
 /** Address book — `browser.address-book`. */
@@ -149,6 +154,6 @@ export interface AddressBook extends tilo.Resource {
 
 /** The `browser.address-book` kind at `path`. */
 export function addressBook(ws: tilo.Workspace, path: string): AddressBook {
-  return resourceProxy(ws, path) as unknown as AddressBook;
+  return resourceProxy(ws, path, SURFACE) as unknown as AddressBook;
 }
 

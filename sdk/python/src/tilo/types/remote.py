@@ -23,6 +23,7 @@ __all__ = [
 
 class ConnectionList(Resource):
     """Remote connections — `remote.connection-list`."""
+    __surface__ = "so.tilo.remote@b0d002f1b14979cb"
     connections: Any
 
     def add_connection(self,

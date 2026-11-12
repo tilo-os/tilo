@@ -23,6 +23,7 @@ __all__ = [
 
 class System(Resource):
     """Storage devices — `disks.system`."""
+    __surface__ = "so.tilo.disks@172626c1bedc29c8"
     names: dict[str, str]
 
     def name_drive(self,

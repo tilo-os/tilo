@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.speed-test@3fb52e93b9c21f28";
+
 /** Internet speed test — `speed-test.results`. */
 export interface Results extends tilo.Resource {
   readonly results: unknown;
@@ -33,6 +38,6 @@ export interface Results extends tilo.Resource {
 
 /** The `speed-test.results` kind at `path`. */
 export function results(ws: tilo.Workspace, path: string): Results {
-  return resourceProxy(ws, path) as unknown as Results;
+  return resourceProxy(ws, path, SURFACE) as unknown as Results;
 }
 

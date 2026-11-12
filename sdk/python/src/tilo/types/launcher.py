@@ -23,5 +23,5 @@ __all__ = [
 
 class Search(Resource):
     """Search — `launcher.search`."""
-    pass
+    __surface__ = "so.tilo.launcher@64cbcf91c72584e0"
 

@@ -90,6 +90,7 @@ class Projected(TypedDict):
 
 class Book(Resource):
     """Contacts — `contacts.book`."""
+    __surface__ = "so.tilo.contacts@5c664e5f9acae0fb"
     contacts: list[Contact]
     @property
     def removed(self) -> list[str]:
@@ -133,6 +134,7 @@ class Book(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
+    __surface__ = "so.tilo.contacts@5c664e5f9acae0fb"
     people: list[Person]
 
     def project_contact(self,

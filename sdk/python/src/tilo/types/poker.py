@@ -23,6 +23,7 @@ __all__ = [
 
 class Table(Resource):
     """Poker table — `so.tilo.poker.table`."""
+    __surface__ = "so.tilo.poker@dd294257cf5033a9"
     players: Any
     hand: Any
     button_seat: Any

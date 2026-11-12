@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.db-client@2ed1a840d562110d";
+
 /** Database — `db-client.workspace`. */
 export interface Workspace extends tilo.Resource {
   connections: unknown;
@@ -43,6 +48,6 @@ export interface Workspace extends tilo.Resource {
 
 /** The `db-client.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {
-  return resourceProxy(ws, path) as unknown as Workspace;
+  return resourceProxy(ws, path, SURFACE) as unknown as Workspace;
 }
 

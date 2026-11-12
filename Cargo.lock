@@ -18066,6 +18066,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-advisory-lock",
+ "tilo-api",
  "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-control",

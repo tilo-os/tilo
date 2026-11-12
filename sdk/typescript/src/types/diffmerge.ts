@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.diffmerge@ddf89499bfa36ad7";
+
 /** Diff & Merge — `diffmerge.session`. */
 export interface Session extends tilo.Resource {
   readonly comparison: unknown;
@@ -55,6 +60,6 @@ export interface Session extends tilo.Resource {
 
 /** The `diffmerge.session` kind at `path`. */
 export function session(ws: tilo.Workspace, path: string): Session {
-  return resourceProxy(ws, path) as unknown as Session;
+  return resourceProxy(ws, path, SURFACE) as unknown as Session;
 }
 

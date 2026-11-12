@@ -101,6 +101,7 @@ class Tag(TypedDict):
 
 class Repo(Resource):
     """Repository — `git_client.repo`."""
+    __surface__ = "so.tilo.git-client@121e389b3a55b55c"
     repository: str
     @property
     def shared(self) -> Any:

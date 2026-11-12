@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.activity@e0b48ca6887742be";
+
 /** Workspace activity — `activity.filter`. */
 export interface Filter extends tilo.Resource {
   period: string;
@@ -28,6 +33,6 @@ export interface Filter extends tilo.Resource {
 
 /** The `activity.filter` kind at `path`. */
 export function filter(ws: tilo.Workspace, path: string): Filter {
-  return resourceProxy(ws, path) as unknown as Filter;
+  return resourceProxy(ws, path, SURFACE) as unknown as Filter;
 }
 

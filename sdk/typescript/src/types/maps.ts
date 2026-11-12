@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.maps@f2f3ecd3c968866a";
+
 /** One of "landmark", "cafe", "restaurant", "bar", "museum", "park", "transit", "hotel", "shop", "hospital", "other". */
 export type Category = "landmark" | "cafe" | "restaurant" | "bar" | "museum" | "park" | "transit" | "hotel" | "shop" | "hospital" | "other";
 
@@ -151,7 +156,7 @@ export interface Workspace extends tilo.Resource {
 
 /** The `maps.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {
-  return resourceProxy(ws, path) as unknown as Workspace;
+  return resourceProxy(ws, path, SURFACE) as unknown as Workspace;
 }
 
 /** Offline areas — `maps.offline-areas`. */
@@ -172,6 +177,6 @@ export interface OfflineAreas extends tilo.Resource {
 
 /** The `maps.offline-areas` kind at `path`. */
 export function offlineAreas(ws: tilo.Workspace, path: string): OfflineAreas {
-  return resourceProxy(ws, path) as unknown as OfflineAreas;
+  return resourceProxy(ws, path, SURFACE) as unknown as OfflineAreas;
 }
 

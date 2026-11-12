@@ -95,6 +95,7 @@ class Rect01(TypedDict):
 
 class Library(Resource):
     """Library — `photos.library`."""
+    __surface__ = "so.tilo.photos@4d328ebfb7cb08dc"
     photos: list[LibraryPhoto]
     albums: list[Album]
 

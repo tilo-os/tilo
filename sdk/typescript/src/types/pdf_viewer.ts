@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.pdf-viewer@df5c8c476ed389e7";
+
 export interface AdoptedAnnotation {
   id: string;
   page_id: string;
@@ -339,7 +344,7 @@ export interface Document extends tilo.Resource {
 
 /** The `pdf.document` kind at `path`. */
 export function pdfDocument(ws: tilo.Workspace, path: string): Document {
-  return resourceProxy(ws, path) as unknown as Document;
+  return resourceProxy(ws, path, SURFACE) as unknown as Document;
 }
 
 /** Signature — `pdf.signature-profile`. */
@@ -356,6 +361,6 @@ export interface SignatureProfile extends tilo.Resource {
 
 /** The `pdf.signature-profile` kind at `path`. */
 export function signatureProfile(ws: tilo.Workspace, path: string): SignatureProfile {
-  return resourceProxy(ws, path) as unknown as SignatureProfile;
+  return resourceProxy(ws, path, SURFACE) as unknown as SignatureProfile;
 }
 
