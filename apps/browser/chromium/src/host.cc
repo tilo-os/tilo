@@ -1181,23 +1181,34 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
           if(!self->browser_ || !self->visible_ || !self->stale_paint_recovery_pending_)return;
           TraceGeometry("stale-geometry-reassert",self->id_);
           auto host=self->browser_->GetHost();
-          host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
+          self->whole_next_=true;host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
         },CefRefPtr<Client>(this)));
       }
       return;
     }
     if(type==PET_VIEW) {
       stale_paint_recovery_pending_=false;
-      // The paint's one copy: straight into the packet the output sends, which
-      // the tab keeps to composite a popup over and to send again.
-      auto packet=tilo::FramePacket(static_cast<uint32_t>(id_),width,height,static_cast<const char*>(buffer),size);if(packet.empty()) return;
-      frame_=std::make_shared<const std::string>(std::move(packet));pixel_width_=width;pixel_height_=height;if(document_size_)document_size_->Painted();
       // What Chromium repainted, in the frame's pixels.
       std::vector<tilo::DamageRect> damage;
       for(const auto& rect:dirty) {
         const int64_t x0=std::max(0,rect.x),y0=std::max(0,rect.y),x1=int64_t(rect.x)+rect.width,y1=int64_t(rect.y)+rect.height;
         if(x1>x0 && y1>y0) damage.push_back({uint32_t(x0),uint32_t(y0),uint32_t(x1-x0),uint32_t(y1-y0)});
       }
+      // The engine draws an unchanged page again at times and calls it a
+      // repaint of the whole view: four seconds after a document loaded into
+      // the frame its tab began with, as a tab's first page does, when it
+      // stops holding what was painted before. A paint that would go whole
+      // and is the frame the tab has, pixel for pixel, is not sent again,
+      // unless the app is owed a frame. Only such a paint is compared, and a
+      // page that did change differs early.
+      if(frame_ && !whole_next_ && pixel_width_==width && pixel_height_==height && !(popup_visible_ && !popup_.empty()) && tilo::ClipDamage(damage,width,height).empty()) {
+        const size_t offset=tilo::FramePixelOffset(static_cast<uint32_t>(id_));
+        if(frame_->size()==offset+size && std::memcmp(frame_->data()+offset,buffer,size)==0) return;
+      }
+      // The paint's one copy: straight into the packet the output sends, which
+      // the tab keeps to composite a popup over and to send again.
+      auto packet=tilo::FramePacket(static_cast<uint32_t>(id_),width,height,static_cast<const char*>(buffer),size);if(packet.empty()) return;
+      frame_=std::make_shared<const std::string>(std::move(packet));pixel_width_=width;pixel_height_=height;if(document_size_)document_size_->Painted();
       EmitFrame(&damage);return;
     }
     popup_.assign(static_cast<const char*>(buffer),size);popup_width_=width;popup_height_=height;
@@ -1427,7 +1438,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(!visible_) CancelMenu();
       host->WasHidden(!visible_);host->SetFocus(visible_);page_focused_=visible_;
       if(visible_) {
-        host->Invalidate(PET_VIEW);
+        // Shown, or said to be shown again: the app is sent the frame.
+        whole_next_=true;host->Invalidate(PET_VIEW);
         // A background load may have completed without an eligible handshake.
         if(!was_visible && !credential_identity_) OfferCredentialContext(browser_->GetMainFrame());
       } else {frame_.reset();popup_.clear();whole_next_=true;}
@@ -1584,7 +1596,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       const auto effect=geometry_.ResizePhysical(w,h,scale);
       TraceGeometry("resize-applied",id_,w,h,scale);
       stale_paint_recovery_pending_=false;
-      if(effect==tilo::ResizeEffect::Repaint) { host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);return; }
+      // The same size again: the app is sent the frame again, changed or not.
+      if(effect==tilo::ResizeEffect::Repaint) { whole_next_=true;host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);return; }
       popup_.clear();frame_.reset();whole_next_=true;host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);ProbeTextFieldSoon();
     } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
       CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/geometry_.scale());event.y=static_cast<int>(Number(d,"y")/geometry_.scale());event.modifiers=mouse_modifiers_|key_modifiers_;

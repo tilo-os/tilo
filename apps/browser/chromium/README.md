@@ -331,6 +331,12 @@ when it is the tab's first, its size changed, a popup is composited onto it,
 the rects cover half of it, or the app asks (`resend_frame`, when it lacks the
 frame they change). The toolkit applies the rects to the frame it keeps whole,
 converts only their pixels, and repaints and uploads only them.
+The engine draws an unchanged page again at times and reports the whole view
+repainted: four seconds after a document loaded into the frame its tab began
+with (a tab's first page), when it stops holding what was painted before. A
+paint that would go whole and is, pixel for pixel, the frame the tab has is
+not sent again, unless the app is owed a frame (`resend_frame`, a `resize`,
+the tab shown again). Only such a paint is compared.
 `tests/frame_damage.py` checks that a blinking caret arrives as small rects
 inside its field, that the frame rebuilt from them is the frame the host sends
 whole, and prints the bytes per blink each way.
