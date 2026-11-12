@@ -103,6 +103,7 @@ impl Task {
         self.placing.remove(&workspace_id);
         self.fail(WORKSPACE_DELETED.0, WORKSPACE_DELETED.1);
         let nothing_left = self.workspaces.is_empty();
+        self.emptied = nothing_left;
         self.reports.change(|status| {
             status.workspaces.remove(&workspace_id);
             if nothing_left {
@@ -114,6 +115,7 @@ impl Task {
     /// The host admitted this session to `workspace_id` and sent its replay;
     /// it sends records `when_opened` in a public workspace.
     fn ready(&mut self, workspace_id: u64, when_opened: bool) {
+        self.emptied = false;
         self.reports.change(|status| {
             status.workspaces.insert(workspace_id, true);
         });
