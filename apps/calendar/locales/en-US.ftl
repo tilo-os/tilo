@@ -301,3 +301,20 @@ calendar-calendar-drop-remote-item = Remove what the server removed
 calendar-calendar-server-applied = Record uploaded changes
 calendar-calendar-server-removed = Record a deletion on the server
 calendar-calendar-pulled = Record fetched changes
+
+## The event and task forms' row labels
+calendar-field-starts = Starts
+calendar-field-ends = Ends
+calendar-field-all-day = All day
+calendar-field-location = Location
+calendar-field-calendar = Calendar
+calendar-field-repeat = Repeat
+calendar-field-alert = Alert
+calendar-field-time-zone = Time zone
+calendar-field-colour = Colour
+calendar-field-guests = Guests
+calendar-field-due = Due
+calendar-field-priority = Priority
+calendar-field-project = Project
+calendar-field-subtasks = Subtasks
+calendar-field-no-due-date = Add a due date

@@ -198,10 +198,16 @@ const ADD_MARKER_LABEL: &str = "video-editor-marker-add";
 const ADD_MARKER_KEY: &str = "add marker";
 
 /// The three controls a marker row carries, in painted order (see
-/// [`marker_row_parts`]). They are painted only under the pointer but are
-/// hit-tested whether painted or not, so for a reader -- which has no pointer
-/// -- they are the only route to a marker's note, its name, or its removal.
-const MARKER_VERBS: [&str; 3] = ["Edit note on", "Rename", "Delete"];
+/// [`marker_row_parts`]): the catalogue message a reader hears them by, and
+/// the name the router addresses them by. They are painted only under the
+/// pointer but are hit-tested whether painted or not, so for a reader --
+/// which has no pointer -- they are the only route to a marker's note, its
+/// name, or its removal.
+const MARKER_VERBS: [(&str, &str); 3] = [
+    ("video-editor-a11y-marker-edit-note", "marker-edit-note"),
+    ("video-editor-a11y-marker-rename", "marker-rename"),
+    ("video-editor-a11y-marker-delete", "marker-delete"),
+];
 
 /// The key the master mix node is addressed by, before hashing. A constant
 /// rather than a literal at each site so the node and the router cannot drift

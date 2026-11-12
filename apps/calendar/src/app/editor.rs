@@ -152,7 +152,7 @@ impl Choices {
 #[derive(Clone, Debug, Default)]
 pub(super) struct FormRects {
     /// Leading labels of the form rows, by the row they label.
-    pub(super) labels: Vec<(&'static str, Rect)>,
+    pub(super) labels: Vec<FormLabel>,
     pub(super) title: Rect,
     pub(super) start_date: Rect,
     pub(super) start_time: Rect,
@@ -371,20 +371,36 @@ fn priority_options() -> Vec<(String, String)> {
     .collect()
 }
 
-/// The labels of the event form's rows, measured once for the label column.
-const EVENT_LABELS: [&str; 10] = [
-    "Starts",
-    "Ends",
-    "All day",
-    "Location",
-    "Calendar",
-    "Repeat",
-    "Alert",
-    "Time zone",
-    "Colour",
-    "Guests",
+/// The catalogue message of each row of the event form's label column, in the
+/// order the form shows them: the column is as wide as the widest of them in
+/// the window's language.
+const EVENT_FIELDS: [&str; 10] = [
+    "calendar-field-starts",
+    "calendar-field-ends",
+    "calendar-field-all-day",
+    "calendar-field-location",
+    "calendar-field-calendar",
+    "calendar-field-repeat",
+    "calendar-field-alert",
+    "calendar-field-time-zone",
+    "calendar-field-colour",
+    "calendar-field-guests",
 ];
-const TASK_LABELS: [&str; 3] = ["Due", "Priority", "Project"];
+/// The catalogue message of each row of the task form's label column.
+const TASK_FIELDS: [&str; 3] = [
+    "calendar-field-due",
+    "calendar-field-priority",
+    "calendar-field-project",
+];
+/// The message heading the rows of a task's subtasks.
+const SUBTASKS_FIELD: &str = "calendar-field-subtasks";
+/// What an unscheduled task's due field says.
+const NO_DUE_DATE: &str = "calendar-field-no-due-date";
+
+/// The words of a form row, in the window's language.
+fn field_label(key: &str) -> String {
+    crate::resource::t(key)
+}
 
 /// Running geometry of one form layout pass.
 struct Flow<'a> {
@@ -397,7 +413,16 @@ struct Flow<'a> {
     /// `label_h` is the line a label takes then.
     stacked: bool,
     label_h: f64,
-    labels: Vec<(&'static str, Rect)>,
+    labels: Vec<FormLabel>,
+}
+
+/// One line of a form's label column: the words it says, the band it sits in,
+/// and whether it heads a group of rows rather than naming one row.
+#[derive(Clone, Debug)]
+pub(super) struct FormLabel {
+    pub(super) text: String,
+    pub(super) band: Rect,
+    pub(super) section: bool,
 }
 
 impl<'a> Flow<'a> {
@@ -432,19 +457,25 @@ impl<'a> Flow<'a> {
         }
     }
 
-    /// A labelled row of `height`: the label's band and the field's span.
-    fn row(&mut self, label: &'static str, height: f64) -> Rect {
+    /// A row of `height` labelled `label`: the label's band and the field's
+    /// span.
+    fn row(&mut self, label: String, height: f64) -> Rect {
         if self.stacked {
             let band = Rect::new(self.body.x0, self.y, self.body.x1, self.y + self.label_h);
-            self.labels.push((label, band));
+            self.labels.push(FormLabel {
+                text: label.clone(),
+                band,
+                section: false,
+            });
             self.y = band.y1 + f64::from(self.theme.tokens.spacing.rhythm.tight);
         }
         let band = Rect::new(self.body.x0, self.y, self.body.x1, self.y + height);
         if !self.stacked {
-            self.labels.push((
-                label,
-                Rect::new(band.x0, band.y0, self.field_x, band.y0 + self.row_h),
-            ));
+            self.labels.push(FormLabel {
+                text: label,
+                band: Rect::new(band.x0, band.y0, self.field_x, band.y0 + self.row_h),
+                section: false,
+            });
         }
         self.y = band.y1 + f64::from(self.theme.tokens.spacing.rhythm.related);
         Rect::new(self.field_x, band.y0, band.x1, band.y1)
@@ -710,7 +741,7 @@ impl CalendarApp {
     }
 
     /// The widest leading label of `labels` plus the gap before its field.
-    fn label_column(labels: &[&str], text: &mut TextRenderer, theme: &Theme) -> f64 {
+    fn label_column(labels: &[String], text: &mut TextRenderer, theme: &Theme) -> f64 {
         let style = theme.text(TextRole::Body);
         labels
             .iter()
@@ -782,16 +813,17 @@ impl CalendarApp {
         let widest = date_w(text, event.start.date()).max(date_w(text, event.end.date()))
             + gap
             + time_w(text);
-        let label_column = Self::label_column(&EVENT_LABELS, text, theme);
+        let fields: Vec<String> = EVENT_FIELDS.iter().map(|key| field_label(key)).collect();
+        let label_column = Self::label_column(&fields, text, theme);
         let mut flow = Flow::new(theme, body, label_column, widest, text);
         let title_h = ControlSize::Large.height(theme);
         f.title = Rect::new(body.x0, flow.y, body.x1, flow.y + title_h);
         flow.y = f.title.y1 + f64::from(sp.rhythm.section);
 
-        for (label, day, timed) in [
-            ("Starts", event.start.date(), true),
+        for (key, day, timed) in [
+            ("calendar-field-starts", event.start.date(), true),
             (
-                "Ends",
+                "calendar-field-ends",
                 if event.all_day {
                     event.all_day_last_date()
                 } else {
@@ -800,14 +832,14 @@ impl CalendarApp {
                 true,
             ),
         ] {
-            let field = flow.row(label, row_h);
+            let field = flow.row(field_label(key), row_h);
             let date_rect = flow.control(field.x0, field.y0, date_w(text, day));
             let time_rect = if timed && !event.all_day {
                 flow.control(date_rect.x1 + gap, field.y0, time_w(text))
             } else {
                 Rect::ZERO
             };
-            if label == "Starts" {
+            if key == "calendar-field-starts" {
                 f.start_date = date_rect;
                 f.start_time = time_rect;
             } else {
@@ -815,12 +847,12 @@ impl CalendarApp {
                 f.end_time = time_rect;
             }
         }
-        let field = flow.row("All day", row_h);
+        let all_day = flow.row(field_label("calendar-field-all-day"), row_h);
         f.all_day = Rect::new(
-            field.x0,
-            field.y0,
-            field.x0 + 2.0 * f64::from(theme.tokens.metrics.icon_lg),
-            field.y1,
+            all_day.x0,
+            all_day.y0,
+            all_day.x0 + 2.0 * f64::from(theme.tokens.metrics.icon_lg),
+            all_day.y1,
         );
         if !self.local_schedule_conflicts(event).is_empty() {
             let line = flow.label_h.max(f64::from(theme.tokens.metrics.icon_md));
@@ -833,15 +865,15 @@ impl CalendarApp {
             flow.y = f.conflict.y1 + gap;
         }
         flow.gap();
-        f.location = flow.row("Location", row_h);
-        f.calendar = flow.row("Calendar", row_h);
-        f.repeat = flow.row("Repeat", row_h);
-        f.alert = flow.row("Alert", row_h);
-        f.timezone = flow.row("Time zone", row_h);
-        f.colour = flow.row("Colour", row_h);
+        f.location = flow.row(field_label("calendar-field-location"), row_h);
+        f.calendar = flow.row(field_label("calendar-field-calendar"), row_h);
+        f.repeat = flow.row(field_label("calendar-field-repeat"), row_h);
+        f.alert = flow.row(field_label("calendar-field-alert"), row_h);
+        f.timezone = flow.row(field_label("calendar-field-time-zone"), row_h);
+        f.colour = flow.row(field_label("calendar-field-colour"), row_h);
         f.swatches = Self::swatch_layout(f.colour, theme);
         flow.gap();
-        f.invite = flow.row("Guests", row_h);
+        f.invite = flow.row(field_label("calendar-field-guests"), row_h);
         // A guest row's avatar lines up with the Guests field above it: the
         // row reaches left past the field by the row's own inset. It ends
         // at the body's edge, where the sheet clips, so its status reads
@@ -872,9 +904,10 @@ impl CalendarApp {
         let mut f = FormRects::default();
         let due_label = task
             .due
-            .map_or_else(|| "Add a due date".to_string(), date::fmt_day_long);
+            .map_or_else(|| field_label(NO_DUE_DATE), date::fmt_day_long);
         let due_w = ButtonFace::new(Rect::ZERO, &due_label).intrinsic_width(text, theme);
-        let label_column = Self::label_column(&TASK_LABELS, text, theme);
+        let fields: Vec<String> = TASK_FIELDS.iter().map(|key| field_label(key)).collect();
+        let label_column = Self::label_column(&fields, text, theme);
         let mut flow = Flow::new(theme, body, label_column, due_w, text);
         // The checkbox and the title share the first line.
         let side = f64::from(theme.tokens.metrics.icon_md);
@@ -895,10 +928,10 @@ impl CalendarApp {
         f.task_title = Rect::new(check_x1, flow.y, body.x1, flow.y + f64::from(title_h));
         flow.y = f.task_title.y1 + f64::from(sp.rhythm.section);
 
-        let due = flow.row("Due", row_h);
+        let due = flow.row(field_label("calendar-field-due"), row_h);
         f.due = flow.control(due.x0, due.y0, due_w);
-        f.priority = flow.row("Priority", row_h);
-        f.project = flow.row("Project", row_h);
+        f.priority = flow.row(field_label("calendar-field-priority"), row_h);
+        f.project = flow.row(field_label("calendar-field-project"), row_h);
         let subtasks = self.model.subtasks_of(task.id);
         if subtasks.is_empty() {
             f.labels = std::mem::take(&mut flow.labels);
@@ -907,10 +940,11 @@ impl CalendarApp {
             let heading = theme.text(TextRole::Subheading);
             let heading_h = f64::from(heading.line_height_px());
             f.labels = std::mem::take(&mut flow.labels);
-            f.labels.push((
-                "Subtasks",
-                Rect::new(body.x0, flow.y, body.x1, flow.y + heading_h),
-            ));
+            f.labels.push(FormLabel {
+                text: field_label(SUBTASKS_FIELD),
+                band: Rect::new(body.x0, flow.y, body.x1, flow.y + heading_h),
+                section: true,
+            });
             flow.y += heading_h + f64::from(sp.rhythm.related);
             for _ in subtasks {
                 let rect = Rect::new(body.x0, flow.y, body.x1, flow.y + row_h);
@@ -1267,13 +1301,21 @@ impl CalendarApp {
         let theme = ctx.theme;
         let body = theme.text(TextRole::Body);
         let subheading = theme.text(TextRole::Subheading);
-        for (label, band) in &f.labels {
-            let (style, ink) = if *label == "Subtasks" {
+        for label in &f.labels {
+            let (style, ink) = if label.section {
                 (&subheading, theme.text_primary)
             } else {
                 (&body, theme.text_dim)
             };
-            text_in_band(ctx, label, style, ink, band.x0, *band, band.width());
+            text_in_band(
+                ctx,
+                &label.text,
+                style,
+                ink,
+                label.band.x0,
+                label.band,
+                label.band.width(),
+            );
         }
     }
 

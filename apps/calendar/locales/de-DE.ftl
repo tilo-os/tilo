@@ -259,7 +259,7 @@ calendar-open-settings = Einstellungen öffnen
 ## Der Hinweis im leeren Notizfeld eines Termins
 calendar-notes-placeholder = Notizen hinzufügen
 
-## A new event's empty fields
+## Die leeren Felder eines neuen Termins
 calendar-title-placeholder = Neuer Termin
 
 ## Actions
@@ -301,3 +301,20 @@ calendar-calendar-drop-remote-item = Vom Server Gelöschtes entfernen
 calendar-calendar-server-applied = Hochgeladene Änderungen erfassen
 calendar-calendar-server-removed = Löschung auf dem Server erfassen
 calendar-calendar-pulled = Abgerufene Änderungen erfassen
+
+## Die Zeilenbeschriftungen der Termin- und Aufgabenformulare
+calendar-field-starts = Beginn
+calendar-field-ends = Ende
+calendar-field-all-day = Ganztägig
+calendar-field-location = Ort
+calendar-field-calendar = Kalender
+calendar-field-repeat = Wiederholung
+calendar-field-alert = Erinnerung
+calendar-field-time-zone = Zeitzone
+calendar-field-colour = Farbe
+calendar-field-guests = Gäste
+calendar-field-due = Fälligkeit
+calendar-field-priority = Priorität
+calendar-field-project = Projekt
+calendar-field-subtasks = Teilaufgaben
+calendar-field-no-due-date = Fälligkeit hinzufügen

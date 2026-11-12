@@ -188,6 +188,9 @@ video-editor-a11y-start-export = Export starten
 video-editor-a11y-close-export = Export schließen
 video-editor-a11y-export-details = Details zum Exportfehler
 video-editor-a11y-export-blocked = Warum der Export nicht laufen kann
+video-editor-a11y-marker-edit-note = Notiz zu { $marker } bearbeiten
+video-editor-a11y-marker-rename = { $marker } umbenennen
+video-editor-a11y-marker-delete = { $marker } löschen
 video-editor-a11y-close-shortcuts = Kürzel schließen
 video-editor-a11y-chroma-key = { $on ->
     [true] Chroma-Key ausschalten
