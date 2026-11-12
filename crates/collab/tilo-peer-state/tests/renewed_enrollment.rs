@@ -281,10 +281,10 @@ async fn a_lapsed_certificate_is_answered_by_the_renewal(process: tilo_clock::te
     let lapsing = lapsing.unwrap();
     // The device is away for longer than the certificate lasts.
     drop(held);
-    let _lapsed = tilo_clock::testing::hold_wall_everywhere(
-        process,
-        started + Duration::from_nanos(lifetime + SECOND),
-    );
+    let lapsed_at = started
+        .checked_add(Duration::from_nanos(lifetime.saturating_add(SECOND)))
+        .expect("a wall time past the certificate's expiry");
+    let _lapsed = tilo_clock::testing::hold_wall_everywhere(process, lapsed_at);
     let bob = SigningKey::from_bytes(&[2; 32]);
     let now = tilo_clock::unix_now_ns();
     let renewed = certificate(
