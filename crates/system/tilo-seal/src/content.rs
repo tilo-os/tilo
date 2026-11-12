@@ -328,7 +328,10 @@ mod tests {
                 .read_to_end(&mut resealed)
                 .unwrap();
             assert_eq!(resealed, sealed, "{len}, sealed in small steps");
-            if len > 0 {
+            // Where the window is the whole plaintext, a short one is found by chance: one
+            // byte of a chunk matches it about once in every 256 positions. Only a plaintext
+            // at least as long as the window is evidence of the ciphertext not carrying it.
+            if len >= 32 {
                 assert!(
                     !sealed
                         .windows(len.min(32))
