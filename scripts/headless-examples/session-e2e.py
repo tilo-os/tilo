@@ -489,9 +489,7 @@ def check_audio(session: Session) -> dict:
 
 
 def check_open(session: Session) -> dict:
-    """The four apps opened at once, onto the canvas, each with a first frame, first try."""
-    session.invoke("actions", "workspace.show-canvas")
-    wait_for("canvas shown", lambda: session.state_dump()["chrome"].get("canvas", {}).get("shown"))
+    """The four apps opened at once, onto the desktop, each with a first frame, first try."""
     answers: dict[str, Any] = {}
 
     def open_app(name: str) -> None:

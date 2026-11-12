@@ -404,7 +404,7 @@ impl Session {
         // built.
         tilo_startup_metrics::mark("render-worker-start");
         let measured = tilo_frame_metrics::run_seconds_from_env()
-            .map(|seconds| std::time::Instant::now() + seconds);
+            .and_then(|seconds| std::time::Instant::now().checked_add(seconds));
         let measured_over = || measured.is_some_and(|over| std::time::Instant::now() >= over);
         while !self.ended
             && !self.compositor.closed()
