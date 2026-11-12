@@ -3216,7 +3216,7 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         #[cfg(unix)]
         let cmd = hermetic_shell_command("/bin/sh", home.path());
         #[cfg(windows)]
-        let cmd = crate::inner::login_shell_command();
+        let cmd = crate::CommandBuilder::new(tilo_process::login_shell::login_shell());
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn default shell");
         let mut doc = AutoCommit::new();
         // Let the shell reach a prompt before typing.
@@ -3267,6 +3267,17 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
             !screen.contains("old-session-output"),
             "a new PTY must not inherit the previous process' screen: {screen:?}"
         );
+    }
+
+    // Case `the_default_login_shell_spawns_whatever_the_person_chose`.
+    {
+        // The terminal opens on the shell this account starts, also when the
+        // shell the person chose is gone: its order is `tilo_process`'s own
+        // test, this is the spawn a person gets.
+        let shell = tilo_process::login_shell::login_shell();
+        let cmd = crate::CommandBuilder::new(shell.clone());
+        TerminalWidget::spawn_command(cmd)
+            .unwrap_or_else(|error| panic!("a terminal opens on {shell}: {error}"));
     }
 
     // Case `with_command_forces_xterm_256color_term`.
@@ -4121,47 +4132,11 @@ fn real_pty_query_replies_and_fish_startup() {
     fish_starts_without_the_device_attribute_warning();
 }
 
-// ---------------------------------------------------------------
-// The default shell: the one this account starts, in a real PTY.
-// ---------------------------------------------------------------
-
-/// The terminal opens on the shell this account starts, whatever their shell
-/// was: the resolution's order is [`tilo_process::login_shell`]'s own test,
-/// this is the spawn a person gets when their chosen shell is gone.
-#[test]
-#[cfg(unix)]
-fn the_default_terminal_spawns_the_shell_this_account_starts() {
-    let resolved = tilo_process::login_shell::login_shell();
-    assert!(
-        resolved.starts_with('/'),
-        "the login shell names a program, got {resolved:?}"
-    );
-    let command = crate::inner::login_shell_command();
-    assert_eq!(
-        command
-            .get_argv()
-            .first()
-            .map(|arg| arg.to_string_lossy().into_owned()),
-        Some(resolved),
-        "the terminal starts the shell the resolution names"
-    );
-    TerminalWidget::spawn_command(command).expect("a terminal opens on the login shell");
-}
-
 /// Locate a `fish` binary for the live-fish test. Returns `None` if fish is
 /// not installed (the test then skips — it exercises an external program).
 #[cfg(unix)]
 fn locate_fish() -> Option<std::path::PathBuf> {
-    for p in ["/usr/bin/fish", "/bin/fish", "/usr/local/bin/fish"] {
-        let path = std::path::PathBuf::from(p);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|d| d.join("fish"))
-        .find(|c| c.exists())
+    tilo_process::tools::ToolDirs::current().find("fish")
 }
 
 // ---------------------------------------------------------------

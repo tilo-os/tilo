@@ -57,6 +57,16 @@ impl ToolDirs {
     }
 }
 
+/// Whether this account can run `program`: a path that is an executable file,
+/// or a name [`ToolDirs`] finds one for.
+#[must_use]
+pub fn runs(program: &str) -> bool {
+    if program.contains('/') {
+        return backend::program(Path::new(program)).is_some();
+    }
+    ToolDirs::current().find(program).is_some()
+}
+
 /// Whether the login shell's PATH has been read, or found unreadable.
 #[must_use]
 pub fn login_path_read() -> bool {

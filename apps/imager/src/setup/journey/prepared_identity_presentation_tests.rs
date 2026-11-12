@@ -1,9 +1,8 @@
 use std::sync::Arc;
 use tilo_identity_host::provisioning::IdentityStorage;
 
-/// The workspace this device has open: the one in its desktop, whose owner is
-/// the person it signs as. An app asking the identity service here is asking
-/// in the workspace its window shows.
+/// The workspace this device has open, owned by the person it signs as: what an
+/// app asking its identity service asks in.
 struct OpenWorkspace(tilo_desktop_model::Workspace);
 impl tilo_identity_host::broker::WorkspaceMembership for OpenWorkspace {
     fn with_workspace(

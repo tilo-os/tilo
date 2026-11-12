@@ -59,24 +59,12 @@ pub fn chain(path: &Path, create: bool) -> io::Result<Vec<File>> {
 pub fn public_certificate_chain(path: &Path) -> io::Result<Vec<File>> {
     chain_with_privacy(path, false, Privacy::Inherit)
 }
-/// The filesystem a directory handle is on.
-fn device(file: &File) -> io::Result<u64> {
-    Ok(file.metadata()?.dev())
-}
-
-/// The filesystem a directory at `path` is on: the one its deepest existing
-/// ancestor is on, since a created child stays on its parent's.
+/// The filesystem a directory at `path` is on: its deepest existing ancestor's,
+/// since a created child stays on its parent's.
 fn destination_device(path: &Path) -> io::Result<u64> {
-    let mut existing = path;
-    loop {
-        match std::fs::symlink_metadata(existing) {
-            Ok(metadata) => return Ok(metadata.dev()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                existing = existing.parent().ok_or_else(invalid)?;
-            }
-            Err(error) => return Err(error),
-        }
-    }
+    path.ancestors()
+        .find_map(|ancestor| Some(std::fs::symlink_metadata(ancestor).ok()?.dev()))
+        .ok_or_else(invalid)
 }
 
 fn chain_with_privacy(path: &Path, create: bool, privacy: Privacy) -> io::Result<Vec<File>> {
@@ -84,12 +72,10 @@ fn chain_with_privacy(path: &Path, create: bool, privacy: Privacy) -> io::Result
     if !path.is_absolute() {
         return Err(invalid());
     }
-    // Only directories on the destination's own filesystem can change what
-    // the path means: above a mount, the mount point cannot be renamed or
-    // unlinked, so an ancestor there decides nothing about the directory this
-    // publishes into. Its permission profile is that of the machine the
-    // process runs on (a container's FUSE root, a host's tmpfs) and never the
-    // destination's.
+    // Only directories on the destination's own filesystem can change what the
+    // path means: above a mount the mount point cannot be renamed or unlinked,
+    // so an ancestor there (a container's FUSE root, a host's tmpfs) says
+    // nothing about the directory this publishes into.
     let destination = destination_device(path)?;
     let mut result = vec![
         File::options()
@@ -105,7 +91,7 @@ fn chain_with_privacy(path: &Path, create: bool, privacy: Privacy) -> io::Result
             return Err(invalid());
         };
         let parent = result.last().ok_or_else(invalid)?;
-        if device(parent)? == destination {
+        if parent.metadata()?.dev() == destination {
             controlled(parent)?;
         }
         let next = match open(parent, name) {
@@ -121,7 +107,7 @@ fn chain_with_privacy(path: &Path, create: bool, privacy: Privacy) -> io::Result
             }
             other => other?,
         };
-        if device(&next)? == destination {
+        if next.metadata()?.dev() == destination {
             controlled(&next)?;
         }
         result.push(next);

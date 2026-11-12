@@ -5656,13 +5656,6 @@ pub(crate) fn snap_to_device_pixels(transform: Affine, rect: Rect) -> Rect {
     )
 }
 
-/// The command the Host target runs off Tilo: the login shell this account
-/// starts ([`tilo_process::login_shell`]), with the process environment
-/// inherited.
-pub(crate) fn login_shell_command() -> CommandBuilder {
-    CommandBuilder::new(tilo_process::login_shell::login_shell())
-}
-
 /// A PTY master with no process behind it.
 struct NullMaster;
 impl MasterPty for NullMaster {
@@ -5834,7 +5827,9 @@ impl TerminalBackend {
                     cmd.args(rest);
                     cmd
                 } else {
-                    login_shell_command()
+                    // The login shell this account starts, with the process
+                    // environment inherited.
+                    CommandBuilder::new(tilo_process::login_shell::login_shell())
                 };
                 Self::with_command(cmd).map_err(|error| OpenError::Failed(error.to_string()))
             }
