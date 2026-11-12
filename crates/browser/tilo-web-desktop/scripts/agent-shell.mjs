@@ -298,6 +298,29 @@ async function afterFrames(tab, frames = 1, ms = 30000) {
   if (first === null) { await sleep(400); return; }
   await until(async () => ((await presentedFrames(tab)) ?? first) - first >= frames || undefined, ms, 150);
 }
+/** Shoot `name` once two screenshots in a row are the same while `up()` still holds: what moves
+ * on the clock is at rest then. The last screenshot taken while it held otherwise, said so. */
+async function restingShot(tab, combo, name, up, ms = 15000) {
+  const began = Date.now();
+  let previous = null;
+  let kept = null;
+  while (Date.now() - began < ms) {
+    const png = await tab.screenshot();
+    if (!(await up())) break;
+    if (png) {
+      if (previous && png.equals(previous)) {
+        writeFileSync(join(shotsDir, `${combo}-${name}.png`), png);
+        log(`${combo}: shot ${name} at rest, ${Date.now() - began} ms in`);
+        return;
+      }
+      kept = png;
+      previous = png;
+    }
+    await sleep(300);
+  }
+  if (kept) writeFileSync(join(shotsDir, `${combo}-${name}.png`), kept);
+  log(`${combo}: shot ${name} never at rest while it stood; kept the last screenshot it stood in`);
+}
 /** A port nothing holds, and no other of this run's: a port is free again the
  * moment it is closed, so asking twice can answer with the same one. */
 const ports = new Set();
@@ -2004,16 +2027,15 @@ try {
           finalLeft ? 'gone' : `still listed 30 s after, by ${await stillSays()}: ${names(await semantics(tab))}`);
         const finishedNotice = node => /claude code finished/i.test(`${node.name} ${node.description ?? ''}`);
         const finished = await until(async () => (await semantics(tab))
-          .find(node => /claude code finished: \d+ changes?/i.test(`${node.name} ${node.description ?? ''}`)), 150000, 1000);
+          .find(node => /claude code finished: \d+ changes?/i.test(`${node.name} ${node.description ?? ''}`)), 150000, 250);
         if (!finished) log(`${combo}: the finished notice`, (await semantics(tab)).filter(finishedNotice).map(node => node.name).join(' | ') || 'none');
         check(`${combo}: the person is told what the agent changed once it stops`, Boolean(finished),
           finished ? finished.name : names(await semantics(tab)));
-        // The notice comes in with a fade timed by the clock: shot from a frame drawn after the
-        // fade's length has passed, which shows it whole, not part way in. A page drawing a frame
-        // every few seconds would look at rest between two frames of the same fade.
-        await sleep(800);
-        await afterFrames(tab, 1, 15000);
-        await shot(tab, combo, 'agent-finished');
+        // The notice slides in on the clock and stands a few seconds before it fades out, and the
+        // builder draws a frame in seconds: it is shot once two screenshots in a row are the same
+        // while it is still up, which is the notice at rest, neither part way in nor on its way out.
+        // Taken as it is: closing what covers the desk first would close the notice too.
+        await restingShot(tab, combo, 'agent-finished', async () => (await semantics(tab)).some(finishedNotice));
 
         const exceptions = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
         check(`${combo}: no exceptions in the page`, exceptions.length === 0, exceptions.join(' | '));
