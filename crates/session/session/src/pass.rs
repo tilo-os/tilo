@@ -711,6 +711,7 @@ fn desk<'a>(shared: &'a crate::Shared, compositor: &Compositor) -> crate::test_c
         overview: shared.overview.open_cell(),
         engine: shared.engine.as_deref(),
         seats: &shared.seats,
+        sync: shared.sync.as_deref(),
         locked: compositor.locked(),
         lock_screen_drawn: compositor.lock_drawn(),
         lock: &shared.lock,

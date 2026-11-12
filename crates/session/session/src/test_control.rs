@@ -46,7 +46,7 @@ mod gesture_input;
 mod state;
 
 use gesture_input::asked_of_gestures;
-use state::{shown, state_dump, window_rows, within};
+use state::{presence_stamp, shown, state_dump, window_rows, within};
 
 /// The variable `tilo-control` reads the test-control socket's path from: what a development
 /// session binds the socket at when its command line names none and the default is not wanted,
@@ -201,6 +201,9 @@ pub(crate) struct Desk<'a> {
     pub(crate) engine: Option<&'a Engine>,
     /// The agents the person admitted at its door, as the desk's bar shows them.
     pub(crate) seats: &'a std::sync::Arc<agent_door::Seats>,
+    /// Who is here, as the collaboration plane says it: this session's membership of each
+    /// workspace, when it takes part in one.
+    pub(crate) sync: Option<&'a crate::sync::Client>,
     pub(crate) locked: bool,
     pub(crate) lock_screen_drawn: bool,
     /// The lock's own state: what unlocking it is, the same one an accepted password sets, so a
@@ -684,6 +687,7 @@ impl Control {
             desk.overlays.is_open(slot).hash(&mut hasher);
         }
         desk.overview.get().hash(&mut hasher);
+        presence_stamp(desk, &mut hasher);
         let stamp = hasher.finish();
         let moved = self.published.get() != Some(stamp);
         if moved {

@@ -3,6 +3,7 @@
 //! to nothing of the desk while the screen is locked.
 
 use std::collections::BTreeSet;
+use std::hash::Hash as _;
 
 use serde_json::{Value as Json, json};
 use tilo_desktop_model::DesktopTree;
@@ -23,6 +24,8 @@ pub(super) fn owner_shown(gate: Gate, dump: Json) -> Json {
     };
     state.insert("workspace_tree".into(), Json::Null);
     state.insert("held_workspaces".into(), json!([]));
+    // Who is here is desk state like the rest: a locked desk names nobody.
+    state.insert("peers".into(), Json::Null);
     if let Some(open) = state
         .get_mut("chrome")
         .and_then(|chrome| chrome.get_mut("overlays"))
@@ -59,6 +62,12 @@ fn only_workspace(mut dump: Json, scope: &Scope) -> Json {
         .and_then(Json::as_array_mut)
     {
         held.retain(|workspace| in_scope(workspace, scope));
+    }
+    // Who is here is said per workspace: an app is shown the one it acts in.
+    if let Some(peers) = state.get_mut("peers").and_then(Json::as_object_mut)
+        && let Some(rows) = peers.get_mut("workspaces").and_then(Json::as_array_mut)
+    {
+        rows.retain(|workspace| in_scope(workspace, scope));
     }
     dump
 }
@@ -167,9 +176,61 @@ pub(super) fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
                 "trims": tilo_compositor::heap_trim::trims_completed(),
             },
         },
-        "peers": Json::Null,
+        "peers": presence(desk),
         "sharing": Json::Null,
     }})
+}
+
+/// Who is here, as every surface here draws them: this device's own row, and each workspace this
+/// session takes part in with everyone present in it, as the collaboration plane says. `Null` when
+/// this session takes part in no plane.
+fn presence(desk: &Desk<'_>) -> Json {
+    let Some(sync) = desk.sync else {
+        return Json::Null;
+    };
+    json!({
+        "own": row(&sync.own_here()),
+        "workspaces": sync
+            .live_workspaces()
+            .into_iter()
+            .map(|workspace| json!({
+                "room": workspace,
+                "members": sync.members(&workspace).iter().map(row).collect::<Vec<Json>>(),
+            }))
+            .collect::<Vec<Json>>(),
+    })
+}
+
+/// One member as a surface here draws them: the row every surface's roster and pointer are drawn
+/// from.
+fn row(member: &collab_types::presence::Shown) -> Json {
+    serde_json::to_value(member).unwrap_or(Json::Null)
+}
+
+/// The row of `member` as a watcher is told about it: without where their pointer is, which moves
+/// every frame of its own and moves nothing of the desk.
+fn settled(member: &collab_types::presence::Shown) -> String {
+    let mut row = row(member);
+    if let Some(row) = row.as_object_mut() {
+        row.remove("pointer");
+    }
+    row.to_string()
+}
+
+/// What a watcher of the state dump is told changed about who is here: the rows [`presence`]
+/// publishes, as one hash. A watcher that asks who is here while nothing moved is answered from
+/// the dump it already has.
+pub(super) fn presence_stamp(desk: &Desk<'_>, hash: &mut impl std::hash::Hasher) {
+    let Some(sync) = desk.sync else {
+        return;
+    };
+    settled(&sync.own_here()).hash(hash);
+    for workspace in sync.live_workspaces() {
+        workspace.hash(hash);
+        for member in sync.members(&workspace) {
+            settled(&member).hash(hash);
+        }
+    }
 }
 
 /// One row per tab of `tree` — where it is, which app shows it, whether it is the tab in

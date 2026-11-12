@@ -1462,6 +1462,69 @@ impl Device {
             .and_then(|workspace| workspace["room"].as_str().map(str::to_owned))
     }
 
+    /// The publisher this device's session goes by at its own seat: what every other device in a
+    /// workspace it is in knows it as.
+    pub fn publisher(&self) -> Option<String> {
+        let own = &self.state()["state"]["peers"]["own"];
+        own["publisher"].as_str().map(str::to_owned)
+    }
+
+    /// Who this device's session says is present in `workspace` now: each member's publisher, which
+    /// is the device, and the name their own word gives them — the rows every surface here draws
+    /// its roster from.
+    pub fn present(&self, workspace: &str) -> Vec<(String, String)> {
+        let peers = &self.state()["state"]["peers"];
+        let Some(members) = peers["workspaces"]
+            .as_array()
+            .and_then(|held| held.iter().find(|held| held["room"] == json!(workspace)))
+            .and_then(|held| held["members"].as_array())
+        else {
+            return Vec::new();
+        };
+        members
+            .iter()
+            .filter_map(|member| {
+                Some((
+                    member["publisher"].as_str()?.to_owned(),
+                    member["label"].as_str()?.to_owned(),
+                ))
+            })
+            .collect()
+    }
+
+    /// Wait until this device says the device `publisher` is present in `workspace` , failing with
+    /// who it does say is there if it never does: presence reaches a device by itself, on the
+    /// workspace's own plane.
+    pub fn wait_present(&self, workspace: &str, publisher: &str) {
+        struct Present<'a> {
+            device: &'a Device,
+            workspace: &'a str,
+            publisher: &'a str,
+        }
+        impl std::fmt::Display for Present<'_> {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    formatter,
+                    "{} says {} is in {}; it says {:?}",
+                    self.device.label,
+                    self.publisher,
+                    self.workspace,
+                    self.device.present(self.workspace)
+                )
+            }
+        }
+        let watched = Present {
+            device: self,
+            workspace,
+            publisher,
+        };
+        tilo_test_env::wait_until(watched, || {
+            self.present(workspace)
+                .iter()
+                .any(|(present, _)| present == publisher)
+        });
+    }
+
     /// Wait until the desk shows the workspace `workspace` in front: a person who joins a workspace
     /// lands in it, so the door opens apps into it rather than into the desk they were on.
     pub fn wait_showing(&self, workspace: &str) {

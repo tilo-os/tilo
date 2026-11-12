@@ -106,6 +106,47 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
             device.label
         );
     }
+
+    // Every session says who is here, both ways: each of the other devices in the workspace, by
+    // the publisher it goes by, and no row for the seat it is at — a roster lists the others, and
+    // the person at this seat is not one of them.
+    let everyone = [&ada_laptop, &ada_phone, &bob_laptop, &bob_phone];
+    let seats: Vec<String> = everyone
+        .iter()
+        .filter_map(|device| device.publisher())
+        .collect();
+    assert_eq!(
+        seats.len(),
+        everyone.len(),
+        "every device says which seat it is: {seats:?}"
+    );
+    for device in everyone {
+        let mine = device.publisher().expect("the seat this device is at");
+        for other in seats.iter().filter(|seat| **seat != mine) {
+            device.wait_present(&site.workspace, other);
+        }
+        let present = device.present(&site.workspace);
+        let mut here: Vec<String> = present.iter().map(|(seat, _)| seat.clone()).collect();
+        here.sort();
+        let mut wanted: Vec<String> = seats
+            .iter()
+            .filter(|seat| **seat != mine)
+            .cloned()
+            .collect();
+        wanted.sort();
+        assert_eq!(
+            here, wanted,
+            "{} says exactly the other devices are here, once each: {present:?}",
+            device.label
+        );
+        for (seat, label) in &present {
+            assert!(
+                !label.trim().is_empty(),
+                "{} says what the workspace calls {seat}: {present:?}",
+                device.label
+            );
+        }
+    }
 }
 
 #[test]
