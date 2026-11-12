@@ -369,19 +369,6 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
     if host_pids(session_pid) != hosts:
         raise Failed(f"{tasks}'s second window's instance runs elsewhere: hosts {hosts} became "
                      f"{host_pids(session_pid)}")
-    # Each tab is named by the page its window shows, so the strip reads which window is which
-    # without either being opened: the window that opened first stands on Today, and the second
-    # is taken to Inbox, as a person switches places in it.
-    names = window_controls(session, windows[1])
-    inbox = next((name for name in names if name.split(",")[0].strip() == "Inbox"), None)
-    if inbox is None:
-        raise Failed(f"{tasks}'s second window offers no Inbox to go to: {names}")
-    session.click_named(inbox)
-    def named_by_page() -> dict | None:
-        shown = {w["tab"]: w.get("title") for w in session.windows() if w.get("app_id") == tasks}
-        return shown if (shown.get(windows[0]["tab"]) == "Today"
-                         and shown.get(windows[1]["tab"]) == "Inbox") else None
-    titles = until("each tab named by the page its window shows", named_by_page, 30)
     def shot(name: str | None) -> list[bytes]:
         """Each window in front in turn, as it shows then: the strip shows one at a time. Without a
         `name` nothing is captured: the pass only brings each window forward."""
@@ -430,6 +417,22 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
         if missing:
             raise Failed(f"{tasks}'s window {window['tab']} names no control of its own: "
                          f"{missing} not among the controls it lists: {names}")
+    # Each tab is named by the page its window shows, so the strip reads which window is which
+    # without either being opened: the window that opened first stands on Today, and the second
+    # is taken to Inbox, as a person switches places in it.
+    names = window_controls(session, windows[1])
+    inbox = next((name for name in names
+                  if re.split(r"[\s,(]", name.strip())[0] == "Inbox"), None)
+    if inbox is None:
+        raise Failed(f"{tasks}'s second window offers no Inbox to go to: {names}")
+    session.click_named(inbox)
+    def named_by_page() -> dict | None:
+        shown = {w["tab"]: w.get("title") for w in session.windows() if w.get("app_id") == tasks}
+        return shown if (shown.get(windows[0]["tab"]) == "Today"
+                         and shown.get(windows[1]["tab"]) == "Inbox") else None
+    titles = until("each tab named by the page its window shows", named_by_page, 30)
+    # Both tabs as the strip shows them: one window on Today, the other on Inbox (named-*.png).
+    shot("named")
     return {"windows": [{"group": w["group"], "tab": w["tab"]} for w in windows],
             "titles": {str(tab): title for tab, title in titles.items()},
             "controls": listed,
