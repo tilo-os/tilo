@@ -36,3 +36,94 @@ source = "docs/tilo-sh/quickstart.md"
 section = "Get started"
 nav = "Quickstart"
 description = "Sign up, make your first workspace and connect your agent to it."
+
+[[page]]
+slug = "hosts"
+source = "docs/tilo-sh/hosts.md"
+section = "Concepts"
+nav = "Hosts"
+description = "The computers that keep workspaces, ours at tilo.sh and ones you run, and how a workspace is made on one."
+
+[[page]]
+slug = "workspaces"
+source = "docs/tilo-sh/workspaces.md"
+section = "Concepts"
+nav = "Workspaces"
+description = "What a workspace holds, how to name one, your role in it, inviting people, and deleting it for good."
+
+[[page]]
+slug = "resources-and-actions"
+source = "docs/tilo-sh/resources-and-actions.md"
+section = "Concepts"
+nav = "Resources and actions"
+description = "Paths, fields, the three kinds of action, field edits, the catalogue and the typed SDK classes generated from it."
+
+[[page]]
+slug = "identities"
+source = "docs/tilo-sh/identities.md"
+section = "Concepts"
+nav = "Identities and keys"
+description = "People, devices and agents, what a key reaches, its expiry, minting narrower keys and revoking them."
+
+[[page]]
+slug = "runs-and-history"
+source = "docs/tilo-sh/runs-and-history.md"
+section = "Concepts"
+nav = "Runs and history"
+description = "Runs, attribution, each record's history, undo by step or by run, and the links a person opens."
+
+[[page]]
+slug = "approvals"
+source = "docs/tilo-sh/approvals.md"
+section = "Concepts"
+nav = "Approvals"
+description = "Actions that ask a person first: AskPending, what a person is asked, and how their answer releases one request."
+
+[[page]]
+slug = "one-workspace-per-customer"
+source = "docs/developers/one-workspace-per-customer.md"
+section = "Guides"
+nav = "One workspace per customer"
+description = "A workspace and a key per customer, from one backend key: the visa application, built end to end."
+
+[[page]]
+slug = "hosted-browser"
+source = "docs/tilo-sh/hosted-browser.md"
+section = "Guides"
+nav = "The hosted Browser"
+description = "An agent fills a web form in a workspace's own Browser, and a person approves the submission."
+
+[[page]]
+slug = "files"
+source = "docs/tilo-sh/files.md"
+section = "Guides"
+nav = "Files"
+description = "Bytes up once by content reference, the actions that take one, exports that answer one, and getting them out."
+
+[[page]]
+slug = "search"
+source = "docs/tilo-sh/search.md"
+section = "Guides"
+nav = "Search"
+description = "Walking a workspace by listing, and the desktop's search by words where a host runs it."
+
+[[page]]
+slug = "events"
+source = "docs/tilo-sh/events.md"
+section = "Guides"
+nav = "Webhooks and events"
+description = "The watch stream: changes, run events and presence, from a cursor, and why there are no webhooks yet."
+
+[[page]]
+slug = "errors"
+source = "docs/tilo-sh/errors.md"
+section = "Reference"
+nav = "Errors"
+description = "Refused, RateLimited, AskPending and ProtocolError, the codes a host answers with, and keys that are turned away."
+
+[[page]]
+slug = "own-host"
+source = "docs/tilo-sh/own-host.md"
+section = "Your own host"
+nav = "Your own host"
+description = "Running the same product on a machine you control, and pointing the SDKs, the command and an agent at it."
