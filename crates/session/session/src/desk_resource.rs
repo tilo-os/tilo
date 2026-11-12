@@ -288,7 +288,16 @@ impl Surfaces {
     pub(crate) fn beside_up(&self) -> bool {
         tilo_desktop::overlays::Slot::ALL
             .into_iter()
+            .filter(|slot| !self.drawn_by_the_shell(*slot))
             .any(|slot| slot.stands_beside() && self.panel.is_open(slot))
+    }
+
+    /// Whether the shell's own view draws `slot` instead of the desk, so what the desk keeps in
+    /// that slot stands over nothing: the shell's launcher is the search under the shell's screen,
+    /// as the quick settings are the shell's view of them. A popover nobody draws is not a surface
+    /// the person is looking at, so it neither takes the shell's surface down nor keeps its keys.
+    fn drawn_by_the_shell(&self, slot: tilo_desktop::overlays::Slot) -> bool {
+        self.shell && slot == tilo_desktop::overlays::Slot::Search
     }
 
     /// Close `surface` (`close-surface`), when it is the one up.
