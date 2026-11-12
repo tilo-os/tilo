@@ -885,48 +885,32 @@ impl Session {
     }
 
     /// Wait, at most `most`, until the catalogue the broker republishes holds what `published`
-    /// asks of it: on its republications, never on a timer. Events other than catalogue
-    /// republications are kept for the session loop. Whether it came.
+    /// asks of it: on its republications, never on a timer. The wait sleeps until the link's
+    /// next republication; events other than catalogue republications keep their place for
+    /// the session loop. Whether it came.
     pub(super) fn await_catalogue(
         &mut self,
         most: Duration,
         mut published: impl FnMut(&mut Self) -> bool,
     ) -> bool {
         let deadline = ui::time::now() + most;
-        let mut kept = Vec::new();
-        let came = loop {
+        loop {
             self.absorb_catalogue_updates();
             if published(self) {
-                break true;
+                return true;
             }
-            let now = ui::time::now();
-            if now >= deadline {
-                break false;
+            match self.link.next_catalogue(deadline) {
+                Some(change) => self.apply_broker_catalogue(&change),
+                None => return false,
             }
-            match self.link.recv(deadline - now) {
-                Ok(Some(CollabEvent::ActionCatalogue { change })) => {
-                    self.apply_broker_catalogue(&change);
-                }
-                Ok(Some(other)) => kept.push(other),
-                Ok(None) => {}
-                // A closed link brings no catalogue: waiting on spins.
-                Err(_) => break false,
-            }
-        };
-        self.link.defer(kept);
-        came
+        }
     }
 
     /// Apply catalogue republications already queued on the link, without
     /// waiting: while the model thinks nothing else reads the link.
     fn absorb_catalogue_updates(&mut self) {
-        let queued = self
-            .link
-            .take_queued(|event| matches!(event, CollabEvent::ActionCatalogue { .. }));
-        for event in queued {
-            if let CollabEvent::ActionCatalogue { change } = event {
-                self.apply_broker_catalogue(&change);
-            }
+        while let Some(change) = self.link.take_catalogue() {
+            self.apply_broker_catalogue(&change);
         }
     }
 

@@ -27,6 +27,42 @@ fn a_turn_waits_for_its_message_to_be_published() {
     assert_eq!(records.last().unwrap()["say"], "Wrote it.");
 }
 
+/// A workspace whose Chat is closed keeps the offers Chat last published, and
+/// none of them is a message published now: the reply this run would record on
+/// cannot appear, so the run asks once, records what it can, and takes its
+/// steps instead of waiting out the bound for it.
+#[test]
+fn a_run_whose_chat_is_closed_does_not_wait_for_a_reply_that_cannot_come() {
+    let mut f = fixture(
+        "write a paragraph",
+        World {
+            chat: Some("earlier".into()),
+            chat_closed: true,
+            ..World::default()
+        },
+        vec![turn(&[finish("Wrote it.", true)], 24)],
+    );
+    let started = ui::time::now();
+    f.session.run_task(&f.run).unwrap();
+    let waited = started.elapsed();
+    let sent = f.sent.borrow();
+    assert!(
+        recorded(&sent, "record-work").is_empty(),
+        "no reply is published, so nothing is recorded on one"
+    );
+    assert!(
+        waited < Duration::from_secs(5),
+        "the run waited {waited:?} for a reply a closed Chat cannot publish"
+    );
+    assert!(
+        matches!(
+            terminal(&sent),
+            runtime_collab::TaskRunUpdate::Succeeded { .. }
+        ),
+        "the run still answers its turn"
+    );
+}
+
 /// The turn a run answers is recorded in its conversation: the reply is
 /// told it was taken at once, of every step, and — once, at the end — what
 /// the run said.

@@ -347,12 +347,12 @@ impl Session {
     }
 
     /// Whether this run still waits for its reply's `record-work` to be
-    /// published, at most [`RECORD_WAIT`]: once per run, and only while the
-    /// workspace publishes `record-work` at all. What the wait covers is Chat
+    /// published, at most [`RECORD_WAIT`]: once per run, and only while a
+    /// running application publishes `record-work`. What the wait covers is Chat
     /// republishing the message the run answers moments after the run
-    /// started; a workspace whose Chat is not in the catalogue publishes none
-    /// and never will, and one that waited the bound out on every step would
-    /// spend it again on each of them.
+    /// started. A closed Chat keeps the offers it last published — a
+    /// workspace whose Chat is closed, or that publishes none at all, has
+    /// nothing coming and would spend the bound on every step.
     fn waits_for_record_work(&mut self) -> bool {
         let Some(record) = self
             .record
@@ -362,10 +362,13 @@ impl Session {
             return false;
         };
         record.looked_for_work = true;
-        self.task_catalogue()
-            .offers
-            .iter()
-            .any(|offer| offer.descriptor.address.action == RECORD_WORK)
+        self.broker_catalogue.surfaces().iter().any(|surface| {
+            surface.live
+                && surface
+                    .actions
+                    .iter()
+                    .any(|action| action.action == RECORD_WORK)
+        })
     }
 }
 
