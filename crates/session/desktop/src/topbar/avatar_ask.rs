@@ -12,10 +12,12 @@
 //!
 //! It never leaves the band, so it can never cover a window's bar or content,
 //! and it can never be covered by the cards the bar opens: those hang below
-//! the band, from the control that opened them. Where the band has no room for
-//! it at all — while this view follows someone, the middle lane is the
-//! banner's that says whose view it is and offers Stop — it waits as the
-//! avatar's dot until the band can hold it again.
+//! the band, from the control that opened them. Its question stands whole,
+//! never cut with an ellipsis: a bar with no room for the whole question —
+//! a phone's band, where the question and its answer do not both fit, or the
+//! band whose middle lane is the banner's that says whose view this is and
+//! offers Stop — leaves the ask waiting as the avatar's dot, which says what
+//! it asks to a reader and whose card offers it.
 //!
 //! A press anywhere else folds it into a dot on the avatar and still reaches
 //! what it was pressed on. Escape folds it too. A click on the avatar opens
@@ -26,13 +28,11 @@ use super::{
     TopBarChrome, t,
 };
 use crate::chrome::AvatarAsk;
-use ui::text_render::TextWeight;
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
-/// Below this the question elides to a word or two and stops asking anything: the ask then waits as
-/// the avatar's dot.
-const MIN_QUESTION_PX: f64 = 96.0;
+/// Below this the detail line is left out rather than cut to a stub.
+const MIN_DETAIL_PX: f64 = 96.0;
 
 /// Widest the detail line grows before it elides.
 const MAX_DETAIL_PX: f64 = 320.0;
@@ -119,30 +119,26 @@ impl TopBarChrome {
             rooms.push(Room::band(self.rect.x0 + seat, band_right));
         }
         // The question stands whole wherever a room holds it. Its decline gives way first — a press
-        // anywhere else folds the ask — so the question is never cut where its own words fit beside
-        // the answer alone. Only where no room holds it whole do its words shorten, in the first
-        // room that held them at all: taking the first room that held any words cut "Keep your name
-        // and work?" short beside a clock with room to spare.
+        // anywhere else folds the ask — so the question is never dropped where its own words fit
+        // beside the answer alone. A room too narrow for the whole question is no room for it, and
+        // where none in the band holds it, the ask waits as the avatar's dot: a question cut with
+        // an ellipsis ("Keep your name an…") is not asked, and the person's own card, which the
+        // face opens, offers what it asks.
         let mut words = None;
-        let mut shortened = None;
         for with_later in [true, false] {
             for room in &rooms {
-                let Some(fit) = AskWords::fit(&ask, room.width(), with_later, theme, text_renderer)
-                else {
-                    continue;
-                };
-                if fit.question == ask.question {
+                if let Some(fit) =
+                    AskWords::fit(&ask, room.width(), with_later, theme, text_renderer)
+                {
                     words = Some((fit, room));
                     break;
                 }
-                shortened.get_or_insert((fit, room));
             }
             if words.is_some() {
                 break;
             }
         }
-        // Nowhere in the band for its words: it waits as the avatar's dot.
-        let Some((words, room)) = words.or(shortened) else {
+        let Some((words, room)) = words else {
             return;
         };
         let pad = f64::from(theme.tokens.spacing.s2);
@@ -353,9 +349,11 @@ struct AskWords {
 }
 
 impl AskWords {
-    /// Fit `ask` into `room` px of bar, or `None` where its question would not read: the chips
-    /// stand beside the question on the pill's one line, `with_later` naming whether the decline
-    /// stands beside the answer.
+    /// Fit `ask` into `room` px of bar, or `None` where the question cannot stand there whole: the
+    /// chips stand beside the question on the pill's one line, `with_later` naming whether the
+    /// decline stands beside the answer. What answering brings is laid out beside the question
+    /// where the room left holds it, and left out below [`MIN_DETAIL_PX`] rather than cut to a
+    /// stub; the question itself is never cut.
     fn fit(
         ask: &AvatarAsk,
         room: f64,
@@ -374,36 +372,31 @@ impl AskWords {
         });
         let answer_w =
             ChipFace::intrinsic_width(&ask.answer, ChipLead::None, false, text_renderer, theme);
-        let (question_style, detail_style) = Self::styles(theme);
+        let style = Self::style(theme);
         let beside = if with_later {
             later_w + gap + answer_w + gap
         } else {
             answer_w + gap
         };
         let room = room - 2.0 * pad - beside;
-        if room < MIN_QUESTION_PX {
+        let (question_w, _) = text_renderer.measure_style(&ask.question, None, &style);
+        let question_w = f64::from(question_w);
+        if question_w > room {
             return None;
         }
-        let (question_w, _) = text_renderer.measure_style(&ask.question, None, &question_style);
-        let question_w = f64::from(question_w).min(room);
-        let question = text_renderer.elide_to_width_style(
-            &ask.question,
-            ui::num::f32_of_f64(question_w),
-            &question_style,
-        );
         let detail_room = (room - question_w - pad).min(MAX_DETAIL_PX);
-        let detail = (detail_room >= MIN_QUESTION_PX && !ask.detail.is_empty()).then(|| {
+        let detail = (detail_room >= MIN_DETAIL_PX && !ask.detail.is_empty()).then(|| {
             text_renderer.elide_to_width_style(
                 &ask.detail,
                 ui::num::f32_of_f64(detail_room),
-                &detail_style,
+                &style,
             )
         });
         let detail_w = detail.as_ref().map_or(0.0, |detail| {
-            f64::from(text_renderer.measure_style(detail, None, &detail_style).0) + pad
+            f64::from(text_renderer.measure_style(detail, None, &style).0) + pad
         });
         Some(Self {
-            question,
+            question: ask.question.clone(),
             question_w,
             detail,
             detail_w,
@@ -413,14 +406,11 @@ impl AskWords {
         })
     }
 
-    fn styles(theme: &Theme) -> (ui::text_render::TextStyle, ui::text_render::TextStyle) {
-        let typography = &theme.tokens.typography;
-        (
-            typography
-                .style(TextRole::Caption)
-                .with_weight(TextWeight::Semibold),
-            typography.style(TextRole::Caption),
-        )
+    /// The one style the pill's words are measured and painted in: the bar's caption, as
+    /// [`ui::widget::FactsFace`] paints them. Measuring a heavier weight here cut questions the
+    /// regular weight there had room for.
+    fn style(theme: &Theme) -> ui::text_render::TextStyle {
+        theme.text(TextRole::Caption)
     }
 
     /// The whole pill's width with `pad` at its ends and `gap` between.
@@ -655,7 +645,9 @@ mod tests {
     /// With others here, the ask stands clear of their faces, the people button, the invite button
     /// and the person's own avatar wherever the band has room beside them, and keeps the workspace's
     /// own chip. The clock in turn keeps clear of the faces and the buttons beside them. A bar too
-    /// narrow for all of that gives the ask the band itself, which the band's own test holds.
+    /// narrow for all of that gives the ask the band itself, which the band's own test holds; one
+    /// too narrow even for the whole question, a phone's, leaves the ask waiting as the dot on the
+    /// person's own face.
     #[test]
     fn the_open_ask_never_stands_over_the_faces_or_the_people_button() {
         let mut crowded = tree();
@@ -667,7 +659,13 @@ mod tests {
             let (frame, _) = asking_desktop_over(viewport, &crowded);
             let bar = frame.bar();
             let ask = [bar.ask.pill, bar.ask.answer, bar.ask.later];
-            assert!(!ask[0].is_zero_area(), "{viewport:?}: the ask is open");
+            if ask[0].is_zero_area() {
+                assert!(
+                    !bar.own_avatar_rect.is_zero_area(),
+                    "{viewport:?}: with no room for the question, the ask waits on the face"
+                );
+                continue;
+            }
             let others = [
                 ("faces", bar.avatar_stack_rect),
                 ("people button", bar.people_button_rect),
@@ -756,8 +754,10 @@ mod tests {
         }
     }
 
-    /// The ask stands in the bar's band at every width, with faces on the bar and on a phone: it is
-    /// the band's or the avatar's dot, never a card under the band, where the windows' own bars are.
+    /// The ask stands in the bar's band wherever it stands open, with faces on the bar and on a
+    /// phone: it is the band's or the avatar's dot, never a card under the band, where the
+    /// windows' own bars are. A bar too narrow for its whole question, a phone's, leaves it the
+    /// dot.
     #[test]
     fn the_open_ask_stays_in_the_bar_band() {
         let mut crowded = tree();
@@ -779,7 +779,13 @@ mod tests {
             for tree in [&tree(), &crowded] {
                 let (frame, _) = asking_desktop_over(viewport, tree);
                 let ask = ask_rect(&frame);
-                assert!(!ask.is_zero_area(), "{viewport:?}: the ask is open");
+                if ask.is_zero_area() {
+                    assert!(
+                        !frame.bar().own_avatar_rect.is_zero_area(),
+                        "{viewport:?}: with no room for the question, the ask waits on the face"
+                    );
+                    continue;
+                }
                 let bar = bar_rect(&frame);
                 assert!(
                     ask.y0 >= bar.y0 && ask.y1 <= bar.y1,
@@ -848,27 +854,44 @@ mod tests {
         }
     }
 
-    /// Where the bar has room for the whole question beside the clock, the question stands whole:
-    /// it is not cut short in the lane's first room when a wider room beside it holds all of it.
+    /// The question is asked whole or not at all: wherever the ask stands open, its pill sets every
+    /// glyph of "Keep your name and work?", never the fewer of "Keep your name an…", and where the
+    /// bar is too narrow for it the ask waits as the avatar's dot instead. A laptop's bar has the
+    /// room; a phone's does not, beside the answer's own chip.
     #[test]
-    fn the_whole_question_stands_where_the_bar_has_room() {
+    fn the_question_stands_whole_or_waits_as_the_dots() {
+        const QUESTION: &str = "Keep your name and work?";
+        let theme = Theme::dark();
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let whole = super::super::shot_tests::whole_question_glyphs(&theme, QUESTION);
         for viewport in [
             (1024, 768),
             (1100, 800),
             (1180, 800),
             (1280, 800),
             (1440, 900),
+            (420, 800),
+            (390, 844),
+            (360, 780),
         ] {
             let (frame, _) = asking_desktop(viewport);
-            let bar = frame.bar();
-            let theme = Theme::dark();
-            let (style, _) = AskWords::styles(&theme);
-            let mut text = TextRenderer::new();
-            let (whole, _) = text.measure_style("Keep your name and work?", None, &style);
-            let room = bar.ask.later.x0 - bar.ask.pill.x0;
-            assert!(
-                room >= f64::from(whole),
-                "{viewport:?}: the question needs {whole} px but stands in {room} px"
+            let pill = ask_rect(&frame);
+            if pill.is_zero_area() {
+                // No room for the question: it waits as the dot on the person's own face.
+                assert!(
+                    !frame.bar().own_avatar_rect().is_zero_area(),
+                    "{viewport:?}: with no room for the question, the ask waits on the face"
+                );
+                continue;
+            }
+            // The glyphs painted where the question starts, in the caption the ask is set in: a
+            // question cut with an ellipsis sets fewer than the whole one.
+            let scene = Framed::harness(&frame).frame_render_input().scene;
+            let caption = theme.tokens.typography.size(TextRole::Caption);
+            let shown = super::super::shot_tests::glyphs_from(scene, pill, pill.x0 + pad, caption);
+            assert_eq!(
+                shown, whole,
+                "{viewport:?}: the question stands whole in its pill {pill:?}, not cut short"
             );
         }
     }
