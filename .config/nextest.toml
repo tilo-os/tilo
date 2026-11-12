@@ -168,12 +168,12 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(device_branch)"
+filter = "package(tilo-session) and binary(it) and test(device_branch::)"
 setup = "vault-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(device_branch)"
+filter = "package(tilo-session) and binary(it) and test(device_branch::)"
 setup = "vault-siblings"
 
 [[profile.default.scripts]]
