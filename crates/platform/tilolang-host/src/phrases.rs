@@ -103,7 +103,7 @@ impl Phrases {
         let preference = language
             .map(str::trim)
             .filter(|language| !language.is_empty())
-            .unwrap_or_else(|| self.preference.as_str());
+            .unwrap_or(self.preference.as_str());
         Self {
             preference: preference.to_owned(),
             ..Self::new(&tilo_history::window_language(Some(preference), shipped))
