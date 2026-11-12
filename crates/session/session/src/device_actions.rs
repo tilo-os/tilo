@@ -455,7 +455,9 @@ mod tests {
 
     tilo_automerge_isolate::test_worker!();
 
+    use std::future::Future;
     use std::net::{Ipv4Addr, SocketAddr};
+    use std::pin::Pin;
     use std::time::Duration;
 
     use ed25519_dalek::SigningKey;
@@ -524,60 +526,65 @@ mod tests {
 
     /// The session of the device `key` that answers requests, holding the workspace the person's
     /// device `asking` is in too, and answering through `host` .
-    async fn answering(
-        key: &SigningKey,
-        cert: &DeviceCert,
-        asking: Option<&(SigningKey, DeviceCert)>,
+    ///
+    /// Boxed: setting one up holds an engine, a workspace and another device's admission of it,
+    /// so the future is larger than a test's stack frame should carry.
+    fn answering<'a>(
+        key: &'a SigningKey,
+        cert: &'a DeviceCert,
+        asking: Option<&'a (SigningKey, DeviceCert)>,
         host: Arc<TestHost>,
-    ) -> (Endpoint, Router, DeviceActions) {
-        let directory = tempfile::TempDir::new().expect("a state directory");
-        let id = identity(cert.clone(), key);
-        let engine = Arc::new(
-            Engine::open(
-                id.clone(),
-                Some(directory.path()),
-                std::iter::empty(),
-                crate::platform::custody::of_this_desk(),
-            )
-            .expect("this device's engine opens"),
-        );
-        // This device makes the workspace, and the other device of the person joins it: the device
-        // certified in the workspace is the one that acts.
-        let governor = TestGovernor::empty_interactive(cert.clone(), key.clone(), WORKSPACE)
-            .expect("this device governs its workspace");
-        let governor = testing::enroll_into(governor, engine.owner(), key, cert)
-            .expect("this device's workspace is its own");
-        if let Some(asking) = asking {
-            let joining = tempfile::TempDir::new().expect("the other device's directory");
-            let other = tilo_peer_state::owner::open_file(&joining.path().join("owner.json"))
-                .expect("the other device's owner opens");
-            let governor = testing::enroll_into(governor, &other, &asking.0, &asking.1)
-                .expect("the workspace admits the other device");
-            // What the workspace's admission of the other device changed reaches this device's own
-            // copy of the workspace, as it would over the person's devices.
-            let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace");
-            let now = std::time::SystemTime::now();
-            for (bytes, _) in governor.outgoing() {
-                engine
-                    .owner()
-                    .receive(
-                        workspace_id,
-                        tilo_peer_state::TransportOrigin::RetainedRelayDelta(
-                            cert.device_public_key,
-                        ),
-                        postcard::from_bytes(bytes).expect("a workspace change"),
-                        now,
-                    )
-                    .expect("this device takes the workspace as its governor has it");
+    ) -> Pin<Box<dyn Future<Output = (Endpoint, Router, DeviceActions)> + 'a>> {
+        Box::pin(async move {
+            let directory = tempfile::TempDir::new().expect("a state directory");
+            let id = identity(cert.clone(), key);
+            let engine = Arc::new(
+                Engine::open(
+                    id.clone(),
+                    Some(directory.path()),
+                    std::iter::empty(),
+                    crate::platform::custody::of_this_desk(),
+                )
+                .expect("this device's engine opens"),
+            );
+            // This device makes the workspace, and the other device of the person joins it: the device
+            // certified in the workspace is the one that acts.
+            let governor = TestGovernor::empty_interactive(cert.clone(), key.clone(), WORKSPACE)
+                .expect("this device governs its workspace");
+            let governor = testing::enroll_into(governor, engine.owner(), key, cert)
+                .expect("this device's workspace is its own");
+            if let Some(asking) = asking {
+                let joining = tempfile::TempDir::new().expect("the other device's directory");
+                let other = tilo_peer_state::owner::open_file(&joining.path().join("owner.json"))
+                    .expect("the other device's owner opens");
+                let governor = testing::enroll_into(governor, &other, &asking.0, &asking.1)
+                    .expect("the workspace admits the other device");
+                // What the workspace's admission of the other device changed reaches this device's own
+                // copy of the workspace, as it would over the person's devices.
+                let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace");
+                let now = std::time::SystemTime::now();
+                for (bytes, _) in governor.outgoing() {
+                    engine
+                        .owner()
+                        .receive(
+                            workspace_id,
+                            tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                                cert.device_public_key,
+                            ),
+                            postcard::from_bytes(bytes).expect("a workspace change"),
+                            now,
+                        )
+                        .expect("this device takes the workspace as its governor has it");
+                }
             }
-        }
-        let endpoint = endpoint(key).await;
-        let actions = DeviceActions::start(&id, endpoint.clone(), Some(engine));
-        actions.install(host);
-        let router = Router::builder(endpoint.clone())
-            .accept(tilo_peer_state::actions::ACTIONS_ALPN, actions.plane())
-            .spawn();
-        (endpoint, router, actions)
+            let endpoint = endpoint(key).await;
+            let actions = DeviceActions::start(&id, endpoint.clone(), Some(engine));
+            actions.install(host);
+            let router = Router::builder(endpoint.clone())
+                .accept(tilo_peer_state::actions::ACTIONS_ALPN, actions.plane())
+                .spawn();
+            (endpoint, router, actions)
+        })
     }
 
     /// The session of the device `key` that asks: its own plane, nothing to answer, and where the
