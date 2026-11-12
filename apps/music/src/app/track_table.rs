@@ -586,7 +586,11 @@ fn action_buttons(
             button(
                 "like",
                 Icon::Heart,
-                if row.liked { "Unlike" } else { "Like" },
+                &crate::i18n::CATALOG.t(if row.liked {
+                    "music-unlike"
+                } else {
+                    "music-like"
+                }),
                 RowEvent::Like(index),
             )
             .toggled(row.liked)
@@ -597,7 +601,7 @@ fn action_buttons(
         return Box::new(cluster.push(Box::new(button(
             "more",
             Icon::MoreHorizontal,
-            "Track actions",
+            &crate::i18n::CATALOG.t("music-track-actions"),
             RowEvent::More(index),
         ))));
     }

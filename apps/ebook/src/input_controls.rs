@@ -571,7 +571,7 @@ impl NoteComposer {
         let pad = f64::from(rhythm.section);
         let inner_width = ui::num::f32_of_f64((width - pad * 2.0).max(1.0));
         let excerpt = if annotation.excerpt.trim().is_empty() {
-            "Selected passage".to_string()
+            crate::resource::CATALOG.t("ebook-selected-passage")
         } else {
             format!("\u{201C}{}\u{201D}", annotation.excerpt)
         };

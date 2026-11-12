@@ -46,8 +46,13 @@ impl SchemeControls {
     pub(super) fn measure(ctx: &mut PaintCtx<'_>) -> Self {
         let small = ControlSize::Small;
         Self {
-            duplicate_w: button_width(ctx, "Duplicate", None, small),
-            edit_w: button_width(ctx, "Edit", None, small),
+            duplicate_w: button_width(
+                ctx,
+                &crate::resource::CATALOG.t("ebook-duplicate"),
+                None,
+                small,
+            ),
+            edit_w: button_width(ctx, &crate::resource::CATALOG.t("ebook-edit"), None, small),
             switch_w: switch_size(ctx.theme).0,
             small_h: small.height(ctx.theme),
             gap: f64::from(ctx.theme.tokens.spacing.rhythm.related),
@@ -773,7 +778,7 @@ impl BooksApp {
         y: f64,
     ) -> f64 {
         let theme = ctx.theme;
-        let label = "Add a system font";
+        let label = &crate::resource::CATALOG.t("ebook-add-system-font");
         let size = ControlSize::Regular;
         let width = button_width(ctx, label, Some(Icon::Plus), size);
         let x = col.x;
@@ -805,7 +810,7 @@ impl BooksApp {
             y = self.draw_scheme_row(ctx, col, y, s, i + 1 < schemes.len());
         }
         y += f64::from(theme.tokens.spacing.rhythm.section);
-        let label = "New scheme";
+        let label = &crate::resource::CATALOG.t("ebook-new-scheme");
         let size = ControlSize::Regular;
         let width = button_width(ctx, label, Some(Icon::Plus), size);
         let x = col.x;

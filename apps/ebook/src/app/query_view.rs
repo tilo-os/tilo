@@ -35,6 +35,7 @@ use vello::peniko::{BlendMode, Fill};
 use super::{Action, BooksApp, ShelfCard, ShelfGrid, View, button_width, paint_scroll_thumb};
 use crate::library_index::{BookUnreachable, LibraryIndex, Read};
 use crate::model::Book;
+use crate::resource::CATALOG;
 use crate::search_provider::{
     ANNOTATION_KIND, AUTHOR_FACET, BOOK_FACET, BOOK_KIND, BookSearch, CHAPTER_KIND, LOCATION_KIND,
 };
@@ -1028,9 +1029,24 @@ impl BooksApp {
         let (action, label) = match &store {
             Some(book) => (
                 Action::GetBook(book.id),
-                format!("Get {} from {}", book.title, crate::store::STORE_LABEL),
+                CATALOG.t_args(
+                    "ebook-query-get",
+                    &[
+                        ("book", ui::i18n::ArgValue::Text(book.title.clone())),
+                        (
+                            "store",
+                            ui::i18n::ArgValue::Text(crate::store::STORE_LABEL.to_owned()),
+                        ),
+                    ],
+                ),
             ),
-            None => (Action::OpenHit(item.id.clone()), format!("Open {title}")),
+            None => (
+                Action::OpenHit(item.id.clone()),
+                CATALOG.t_args(
+                    "ebook-query-open",
+                    &[("title", ui::i18n::ArgValue::Text(title.to_owned()))],
+                ),
+            ),
         };
         let id = item.id.clone();
         let row_index = self.query.rows.len();

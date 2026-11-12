@@ -5097,13 +5097,22 @@ impl Widget for BooksApp {
         }
 
         let (name, description) = match self.view {
-            View::Library => ("Books library", "Browse and open books"),
-            View::Reader => ("Book reader", "Read and annotate the current book"),
-            View::Settings => (
-                "Book settings",
-                "Manage reading fonts, colours, and library folders",
+            View::Library => (
+                CATALOG.t("ebook-view-library"),
+                CATALOG.t("ebook-view-library-detail"),
             ),
-            View::Search => ("Search books", "Results in your books and the store"),
+            View::Reader => (
+                CATALOG.t("ebook-view-reader"),
+                CATALOG.t("ebook-view-reader-detail"),
+            ),
+            View::Settings => (
+                CATALOG.t("ebook-view-settings"),
+                CATALOG.t("ebook-view-settings-detail"),
+            ),
+            View::Search => (
+                CATALOG.t("ebook-view-search"),
+                CATALOG.t("ebook-view-search-detail"),
+            ),
         };
         let mut children = Vec::new();
         if !has_modal && let Some(document) = self.reading_document_node() {
@@ -8568,11 +8577,16 @@ impl BooksApp {
         let has_sel = self.sel.is_some_and(|s| !s.is_empty());
         if has_sel {
             let height = ControlSize::Small.height(theme);
-            let width = button_width(ctx, "Add note", Some(Icon::Plus), ControlSize::Small);
+            let width = button_width(
+                ctx,
+                &CATALOG.t("ebook-add-note-button"),
+                Some(Icon::Plus),
+                ControlSize::Small,
+            );
             let rect = Rect::new(x0, y, x0 + width, y + height);
             self.button(
                 ctx,
-                ButtonFace::new(rect, "Add note")
+                ButtonFace::new(rect, &CATALOG.t("ebook-add-note-button"))
                     .icon(Icon::Plus)
                     .control_size(ControlSize::Small),
                 Action::AddNote,
@@ -8745,7 +8759,7 @@ impl NoteCard {
     fn new(a: &Annotation, composing: Option<Uuid>) -> Self {
         let composing = composing == Some(a.id);
         let excerpt = if a.excerpt.is_empty() {
-            "No passage".to_string()
+            CATALOG.t("ebook-no-passage")
         } else {
             format!("\u{201C}{}\u{201D}", a.excerpt)
         };

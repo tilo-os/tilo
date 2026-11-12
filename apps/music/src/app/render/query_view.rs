@@ -900,14 +900,17 @@ impl Music {
             let keep_action: Option<Button> = match keep {
                 Keep::Nothing => None,
                 Keep::Offer => Some(press(
-                    Button::new("music.keep-view", "Keep search")
-                        .with_icon(Icon::Bookmark)
-                        .role(ButtonRole::Secondary)
-                        .tooltip("Keep this search beside your library"),
+                    Button::new(
+                        "music.keep-view",
+                        &crate::i18n::CATALOG.t("music-keep-search"),
+                    )
+                    .with_icon(Icon::Bookmark)
+                    .role(ButtonRole::Secondary)
+                    .tooltip("Keep this search beside your library"),
                     Action::KeepQuery,
                 )),
                 Keep::Kept => Some(
-                    Button::new("music.keep-view", "Kept")
+                    Button::new("music.keep-view", &crate::i18n::CATALOG.t("music-kept"))
                         .with_icon(Icon::Bookmark)
                         .role(ButtonRole::Secondary)
                         .toggled(true)
@@ -915,8 +918,11 @@ impl Music {
                         .with_enabled(false),
                 ),
                 Keep::Forget(id) => Some(press(
-                    Button::new("music.forget-view", "Remove from your views")
-                        .role(ButtonRole::Secondary),
+                    Button::new(
+                        "music.forget-view",
+                        &crate::i18n::CATALOG.t("music-forget-view"),
+                    )
+                    .role(ButtonRole::Secondary),
                     Action::ForgetKept(id),
                 )),
             };

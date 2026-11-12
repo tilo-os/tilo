@@ -372,7 +372,7 @@ impl BookSearch {
                 continue;
             }
             let title = if entry.title.trim().is_empty() {
-                "Untitled".to_string()
+                CATALOG.t("ebook-untitled")
             } else {
                 entry.title.clone()
             };

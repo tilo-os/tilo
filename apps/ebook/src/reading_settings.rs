@@ -8,6 +8,7 @@ use automerge::ObjId;
 use vello::kurbo::{Point, Rect};
 
 use ui::TextRole;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
@@ -18,6 +19,7 @@ use ui::widget::{
 
 use crate::input_controls::{InputEventCtx, NumberControls, NumberField};
 use crate::model::{ColorScheme, CompositionStyle, FontEntry, ReadMode, ReadTheme, Settings};
+use crate::resource::CATALOG;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ReadingSettingsAction {
@@ -119,13 +121,13 @@ impl ReadingSettings {
                 let (target, name, role, checked) = match &hit.action {
                     ReadingSettingsAction::OpenManager => (
                         "books.reader.settings.manage".into(),
-                        "Manage fonts and colour themes".into(),
+                        CATALOG.t("ebook-manage-fonts"),
                         Role::Button,
                         None,
                     ),
                     ReadingSettingsAction::Dismiss => (
                         "books.reader.settings.close".into(),
-                        "Close reading appearance".into(),
+                        CATALOG.t("ebook-close-appearance"),
                         Role::Button,
                         None,
                     ),
@@ -143,19 +145,25 @@ impl ReadingSettings {
                     ),
                     ReadingSettingsAction::SetFont(id) => (
                         format!("books.reader.settings.font:{id}"),
-                        format!("Use {id} font"),
+                        CATALOG.t_args("ebook-use-font", &[("font", ArgValue::Text(id.clone()))]),
                         Role::RadioButton,
                         Some(settings.font_id == *id),
                     ),
                     ReadingSettingsAction::SetReadTheme(theme) => (
                         format!("books.reader.settings.theme:{}", theme.as_str()),
-                        format!("{} reading theme", theme.label()),
+                        CATALOG.t_args(
+                            "ebook-reading-theme",
+                            &[("theme", ArgValue::Text(theme.label().to_owned()))],
+                        ),
                         Role::RadioButton,
                         Some(settings.theme == *theme && settings.scheme_id.is_empty()),
                     ),
                     ReadingSettingsAction::SetScheme(id) => (
                         format!("books.reader.settings.scheme:{id}"),
-                        format!("Use {id} colour theme"),
+                        CATALOG.t_args(
+                            "ebook-use-scheme",
+                            &[("scheme", ArgValue::Text(id.clone()))],
+                        ),
                         Role::RadioButton,
                         Some(settings.scheme_id == *id),
                     ),
