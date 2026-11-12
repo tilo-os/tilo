@@ -220,18 +220,9 @@ pub struct Map {
     /// pin's pose is taken about.
     laid: Rc<std::cell::RefCell<HashMap<String, Rect>>>,
 
-    /// The place that arrived on the map and is to be shown: the camera pans to it once a layout
-    /// places it, so a window a person just opened stands where they can see it.
+    /// The place that arrived on the map and is to be shown: the camera pans to it before the
+    /// places are laid out, so a window a person just opened stands where they can see it.
     reveal: Option<String>,
-    /// The camera on its way to where a reveal put it: a pan of the person's own hand moves the
-    /// camera itself ([`Self::set_camera`]), and a reveal glides as a scroll to what it shows
-    /// does ([`crate::motion::ScrollTo`]).
-    glide: Option<crate::motion::ScrollTo>,
-    /// Where the camera stands this frame: the glide's way to where it is going, else the camera.
-    shown: MapCamera,
-    /// The motion the person allows, as the theme they last laid the map out under says it: what
-    /// a reveal's pan follows.
-    motion: crate::tokens::EffectiveMotion,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
@@ -264,9 +255,6 @@ impl Map {
             placed: HashMap::new(),
             laid: Rc::default(),
             reveal: None,
-            glide: None,
-            shown: MapCamera::default(),
-            motion: crate::tokens::EffectiveMotion::default(),
         }
     }
 
@@ -286,10 +274,6 @@ impl Map {
     /// Look with `camera`: where the person left the canvas on this device.
     pub fn set_camera(&mut self, camera: MapCamera) {
         self.dirty = true;
-        // The person's own hand is on the canvas: it stands where they put it, whether or not a
-        // reveal was on its way there.
-        self.glide = None;
-        self.shown = camera;
         if !self.camera.same(camera) {
             self.camera = camera;
             self.invalidation.invalidate();
@@ -303,8 +287,9 @@ impl Map {
     /// where they can see it.
     pub fn carry_from(&mut self, old: &Map) {
         self.camera = old.camera;
-        self.shown = old.shown;
-        self.glide = old.glide;
+        // The room the places stand in was laid out last frame: a place that arrived is shown in
+        // it before this layout places it.
+        self.rect = old.rect;
         for (key, placed) in &old.placed {
             self.placed.insert(key.clone(), placed.clone());
         }
@@ -365,20 +350,34 @@ impl Map {
         self.reveal = Some(key.into());
     }
 
-    /// Show the place that arrived, if any: what [`Self::carry_from`] left to be shown, once a
-    /// layout places it.
+    /// Show the place that arrived, if any: what [`Self::carry_from`] left to be shown. The
+    /// camera pans there before the places are laid out, so the places, and the windows in their
+    /// wells, stand where it carried them on the frame the arrival is shown.
     fn show_asked(&mut self) {
         let Some(key) = self.reveal.clone() else {
             return;
         };
-        let view = self.rect;
+        self.reveal = None;
+        // The region places the places about its own origin, so the viewport is read there: the
+        // map's own room, where its content starts.
+        let view = Rect::from_origin_size(Point::ORIGIN, self.rect.size());
         if view.width() <= 0.0 || view.height() <= 0.0 {
             return;
         }
-        let Some(rect) = self.laid.borrow().get(&key).copied() else {
+        let Some((_, place, _)) = self.pins.iter().find(|(held, _, _)| *held == key) else {
             return;
         };
-        self.reveal = None;
+        let place = *place;
+        let camera = self.camera;
+        let (x0, y0) = (
+            (place.x - camera.origin.x) * camera.zoom,
+            (place.y - camera.origin.y) * camera.zoom,
+        );
+        let width = place.width * camera.zoom;
+        // A place whose height its view says is as tall as a window is wide over tall.
+        let height = place
+            .height
+            .map_or(width / 1.6, |height| height * camera.zoom);
         // What it takes for the place to stand whole inside the viewport, with the least move: a
         // place that pokes out an edge is brought in with a gap, and one already in view stays
         // where it is. A place wider than the viewport keeps its leading edge in view.
@@ -395,8 +394,8 @@ impl Map {
             }
         };
         let (dx, dy) = (
-            along(rect.x0, rect.x1, view.x0, view.x1),
-            along(rect.y0, rect.y1, view.y0, view.y1),
+            along(x0, x0 + width, view.x0, view.x1),
+            along(y0, y0 + height, view.y0, view.y1),
         );
         if dx.abs() < 0.5 && dy.abs() < 0.5 {
             return;
@@ -405,63 +404,7 @@ impl Map {
         // canvas: the places keep their points, and the lens moves over them.
         let mut camera = self.camera;
         camera.origin += Vec2::new(dx, dy) / camera.zoom.max(f64::EPSILON);
-        self.pan_to(camera);
-    }
-
-    /// Take the camera to `camera` the way a scroll takes its content to what it shows: it glides
-    /// when the person's own hand just asked for it and the move is short, and lands otherwise, so
-    /// the frames and the windows in them arrive in view together. Where it shows at `now` is
-    /// [`Self::shown`]; nothing in the arrangement moves.
-    fn pan_to(&mut self, camera: MapCamera) {
-        let now = crate::motion::frame_now();
-        let view = Vec2::new(self.rect.width().max(1.0), self.rect.height().max(1.0));
-        self.camera = camera;
-        // The camera's origin is a canvas point; a scroll's offset is a distance along it.
-        let along = |at: Point| Vec2::new(at.x, at.y);
-        self.glide
-            .get_or_insert_with(crate::motion::ScrollTo::new)
-            .go(
-                along(self.shown.origin),
-                along(camera.origin),
-                view,
-                self.motion,
-                now,
-            );
-        self.dirty = true;
-        self.invalidation.invalidate();
-    }
-
-    /// Where the camera stands this frame, its glide advanced to `now`: the point the region lays
-    /// the places out about. One still on its way asks for the next frame.
-    fn camera_now(&mut self, now: crate::time::Instant) -> MapCamera {
-        let Some(glide) = &mut self.glide else {
-            return self.camera;
-        };
-        let arrived = glide.arrived(now);
-        let origin = arrived.or_else(|| glide.offset(now));
-        let moving = glide.is_gliding(now);
-        match origin {
-            Some(origin) if moving => {
-                self.shown = MapCamera {
-                    origin: Point::new(origin.x, origin.y),
-                    zoom: self.camera.zoom,
-                };
-                self.shown
-            }
-            _ => {
-                // It has reached where it was going, or it never glided: the camera is there.
-                self.glide = None;
-                self.shown = self.camera;
-                self.camera
-            }
-        }
-    }
-
-    /// Whether the camera is still on its way to where a reveal put it at `now`.
-    fn gliding(&self, now: crate::time::Instant) -> bool {
-        self.glide
-            .as_ref()
-            .is_some_and(|glide| glide.is_gliding(now))
+        self.set_camera(camera);
     }
 
     /// The region that lays the pins out, when built.
@@ -475,7 +418,7 @@ impl Map {
 
     /// Build the region that places the pins on the camera: from the views it holds now (taken
     /// back out of the region built last), at the places and zoom the map is at.
-    fn rebuild_region(&mut self, _theme: &Theme, shown: MapCamera) {
+    fn rebuild_region(&mut self, _theme: &Theme) {
         // After a build the views live in the region; take them back to build the next one.
         let mut views: Vec<Element> = match self.region_mut() {
             Some(region) => region.take_children(),
@@ -493,7 +436,7 @@ impl Map {
         views.truncate(self.pins.len());
         let places: Vec<PinPlace> = self.pins.iter().map(|(_, place, _)| *place).collect();
         let keys: Vec<String> = self.pins.iter().map(|(key, _, _)| key.clone()).collect();
-        let camera = shown;
+        let camera = self.camera;
         // Where the region lays each pin out, by its key: what `Map` poses the pin about this
         // frame, written by the region's own solve.
         let laid: Rc<std::cell::RefCell<HashMap<String, Rect>>> = Rc::clone(&self.laid);
@@ -715,10 +658,7 @@ impl Map {
             .map(|(key, _, _)| key.clone())
             .filter(|key| laid.contains_key(key))
             .collect();
-        // Bring every pin's motion up to this frame. A camera on its way moves the ground the
-        // places stand on, not the places: they stand where it has carried them, with the windows
-        // in their wells, so the frames do not trail it.
-        let carried = self.gliding(now);
+        // Bring every pin's motion up to this frame.
         for key in &keys {
             let Some(rect) = laid.get(key).copied() else {
                 continue;
@@ -727,11 +667,7 @@ impl Map {
                 .placed
                 .entry(key.clone())
                 .or_insert_with(crate::motion::Placed::closed);
-            if carried {
-                placed.snap(rect, true);
-            } else {
-                placed.follow(rect, true, motion, source, now);
-            }
+            placed.follow(rect, true, motion, source, now);
         }
         // A pin that left the map leaves from where it last stood, then is forgotten.
         let leaving: Vec<String> = self
@@ -907,8 +843,7 @@ impl Widget for Map {
     /// Whether a pin is arriving, leaving or gliding: what asks for frames while it does,
     /// and what its own pins ask for. Nothing once every pin rests at its place.
     fn needs_animation_frame(&self) -> bool {
-        self.gliding(crate::motion::frame_now())
-            || self.pins_moving(crate::motion::frame_now())
+        self.pins_moving(crate::motion::frame_now())
             || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
     }
 
@@ -924,12 +859,10 @@ impl Widget for Map {
     ) -> NodeId {
         self.slop = f64::from(theme.tokens.metrics.click_slop);
         self.key_pan = f64::from(theme.tokens.metrics.wheel_line);
-        self.motion = theme.motion();
-        // A reveal still on its way has reached its next point: the region lays the places out
-        // about where the camera stands this frame, so a pan moves them, and the windows in their
-        // wells with them, together.
-        let shown = self.camera_now(crate::motion::frame_now());
-        self.rebuild_region(theme, shown);
+        // What arrived is shown before the places are laid out, so this layout stands them, and
+        // the windows in their wells, where the camera carried them.
+        self.show_asked();
+        self.rebuild_region(theme);
         let node = self.parts.build(
             Style {
                 size: Size {
@@ -950,15 +883,10 @@ impl Widget for Map {
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.parts.apply_layout(tree, node, origin);
         self.rect = crate::widget::layout_rect(tree, node, origin);
-        // A place that just arrived is shown now, the layout having said where it stands.
-        self.show_asked();
     }
 
     fn layout_needs_measure(&self) -> bool {
-        // A pan on its way lays the places out afresh each frame, so the frames and the windows in
-        // their wells move together.
-        self.gliding(crate::motion::frame_now())
-            || self.invalidation.is_pending()
+        self.invalidation.is_pending()
             || self
                 .parts
                 .children
