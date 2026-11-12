@@ -30,7 +30,7 @@ use super::*;
 use crate::sync::{Client, Entry, OwnPresence};
 use crate::{ActionPlane, Options, Session};
 use tilo_live::plane::Join;
-use tilo_live::relay::{Denied, Peer, Relay, RelayAuthority, SessionAuthorization};
+use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
 use tilo_live::roster::Roster as LiveRoster;
 use tilo_live::scope::Scope;
 
@@ -424,12 +424,8 @@ async fn bound(client: &Client) {
 fn relay() -> Arc<Relay> {
     struct Nobody;
     impl RelayAuthority for Nobody {
-        fn admit(
-            &self,
-            _peer: Peer,
-            _proof: &[u8],
-        ) -> Result<Arc<dyn SessionAuthorization>, Denied> {
-            Err(Denied)
+        fn admit<'a>(&'a self, _peer: Peer, _proof: &'a [u8]) -> Admission<'a> {
+            Box::pin(std::future::ready(Err(Denied)))
         }
     }
     Arc::new(Relay::new(Arc::new(Nobody)))

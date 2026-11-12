@@ -19,7 +19,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tilo_live::live::Namespace;
-use tilo_live::relay::{Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization};
+use tilo_live::relay::{
+    Admission, Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization,
+};
 use tilo_live::scope::Scope;
 use tilo_lock::MutexRecover as _;
 use tokio::sync::watch;
@@ -204,26 +206,9 @@ impl Authority {
         workspace_access::decide(&runtime, &self.relay.trust(), peer, op).admitted()
     }
 
-    /// [`Self::admits_as`] for the carrier's own admission, which the relay
-    /// runs on a task that cannot wait for the workspace: a busy lock admits
-    /// nobody, and the device redials once the workspace has answered.
-    fn admits_now(&self, peer: &AuthenticatedPeer, workspace: u64, op: WorkspaceOperation) -> bool {
-        let Ok(workspaces) = self.relay.workspaces.try_lock() else {
-            return false;
-        };
-        let Some(workspace) = workspaces.get(&workspace).cloned() else {
-            return false;
-        };
-        drop(workspaces);
-        let Ok(runtime) = workspace.try_lock() else {
-            return false;
-        };
-        workspace_access::decide(&runtime, &self.relay.trust(), peer, op).admitted()
-    }
-
     /// Admit the device that reached an iroh connection, which proves itself
     /// with the certificate its grant carries.
-    fn admit_member(
+    async fn admit_member(
         &self,
         endpoint: [u8; 32],
         proof: &[u8],
@@ -260,7 +245,10 @@ impl Authority {
             device_public_key: device,
             cert: certificate,
         };
-        if !self.admits_now(&peer, id, WorkspaceOperation::Publish) {
+        // A device dials the plane as it enters, while the workspace is still
+        // taking it in: the admission waits for the workspace and decides on
+        // it, so a newcomer is not refused for arriving at a busy moment.
+        if !self.admits_as(&peer, id, WorkspaceOperation::Publish).await {
             return Err(Denied);
         }
         let key = DeviceKey {
@@ -283,11 +271,11 @@ impl Authority {
 }
 
 impl RelayAuthority for Authority {
-    fn admit(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit<'a>(&'a self, peer: Peer, proof: &'a [u8]) -> Admission<'a> {
         // Every participant reaches this plane over iroh, a page included: it
         // proves itself with the certificate its grant carries.
         let Peer(device) = peer;
-        self.admit_member(device, proof)
+        Box::pin(self.admit_member(device, proof))
     }
 }
 

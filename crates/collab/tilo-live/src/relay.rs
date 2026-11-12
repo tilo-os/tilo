@@ -149,10 +149,22 @@ pub trait SessionAuthorization: Send + Sync {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Peer(pub [u8; 32]);
 
+/// What an authority answers a session's admission with, once it has read
+/// what it decides on.
+pub type Admission<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<Arc<dyn SessionAuthorization>, Denied>> + Send + 'a,
+    >,
+>;
+
 /// Admission runs before any origin is attached. The opaque proof is passed
 /// only here and is never included in errors, URLs, tracing or counters.
+///
+/// An authority may wait for what it decides on (a workspace's governance
+/// another task is changing): the session waits with it, and is admitted or
+/// refused on that state, never refused because it was busy.
 pub trait RelayAuthority: Send + Sync {
-    fn admit(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied>;
+    fn admit<'a>(&'a self, peer: Peer, proof: &'a [u8]) -> Admission<'a>;
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -358,7 +370,7 @@ impl Relay {
             return;
         };
         let accepted = carrier::accept(transport, |proof| async move {
-            let mut scopes = self.scopes(peer, &proof)?;
+            let mut scopes = self.scopes(peer, &proof).await?;
             let mut server = moq_net::Server::new();
             if let Some(ingress) = &scopes.ingress {
                 let name = scopes.authorization.publication()?;
@@ -386,11 +398,11 @@ impl Relay {
         self.run_session(accepted, scopes).await;
     }
 
-    fn scopes(&self, peer: Peer, proof: &[u8]) -> Option<RelayScopes> {
+    async fn scopes(&self, peer: Peer, proof: &[u8]) -> Option<RelayScopes> {
         if proof.is_empty() || proof.len() > MAX_AUTHORIZATION_BYTES {
             return None;
         }
-        let authorization = self.authority.admit(peer, proof).ok()?;
+        let authorization = self.authority.admit(peer, proof).await.ok()?;
         if !scopes_well_formed(authorization.as_ref()) {
             return None;
         }
