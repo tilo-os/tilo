@@ -2974,6 +2974,22 @@ impl Frame<'_> {
 }
 
 impl Widget for NavShell {
+    /// Its bar, sidebar and page, each where it lays them out, the sidebar
+    /// and the inspector on their surfaces.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        let g = &self.geometry;
+        if matches!(
+            g.sidebar,
+            SidebarPlacement::Docked | SidebarPlacement::Screen
+        ) {
+            cx.surface(g.sidebar_column, "sidebar");
+        }
+        if g.inspector == InspectorPlacement::Docked {
+            cx.surface(g.inspector_column, "inspector");
+        }
+        cx.children();
+    }
+
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,

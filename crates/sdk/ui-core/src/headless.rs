@@ -284,6 +284,7 @@ pub struct FrameOutput<'a> {
 
 mod caller_palette;
 mod capture;
+mod composition;
 mod inspection;
 
 /// What `widget` shows, as the frame harness's inspection reads it: a

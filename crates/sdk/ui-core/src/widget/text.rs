@@ -954,6 +954,22 @@ impl Widget for Text {
         dyn crate::presence::capability::PublishesPresence
     );
 
+    /// Its words, as a heading where it is one and a paragraph's run of
+    /// text otherwise, set the way it sets them.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element(match self.accessible_heading_level() {
+            Some(1) => "h1",
+            Some(2) => "h2",
+            Some(3) => "h3",
+            Some(_) => "h4",
+            None => "p",
+        });
+        cx.text(
+            crate::composition::TextLook::new(self.resolved_label(), &self.style, self.drawn_color)
+                .with_max_lines(self.max_lines.or(self.truncate.then_some(1))),
+        );
+    }
+
     fn own_page_title(&self) -> Option<String> {
         (self.accessible_heading_level() == Some(1))
             .then(|| self.resolved_label().trim().to_owned())

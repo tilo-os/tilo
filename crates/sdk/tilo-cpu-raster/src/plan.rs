@@ -131,10 +131,7 @@ impl Plan {
                     self.open.push((mark, stamp));
                     i += 1;
                 }
-                Op::Draw { bbox, .. }
-                | Op::Glyphs { bbox, .. }
-                | Op::Text { bbox, .. }
-                | Op::Blur { bbox, .. } => {
+                Op::Draw { bbox, .. } | Op::Glyphs { bbox, .. } | Op::Blur { bbox, .. } => {
                     self.hits(*bbox);
                     self.reaches();
                     for slot in 0..self.hits.len() {

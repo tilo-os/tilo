@@ -86,20 +86,6 @@ pub(crate) enum Op {
         brush: Brush,
         bbox: Rect,
     },
-    /// A glyph run that carries its characters, listed as text when the
-    /// display list is decoded for a page's DOM ([`DisplayList::dom`]).
-    Text {
-        text: Arc<str>,
-        /// Where the first glyph's origin (on the baseline) lands.
-        origin: Point,
-        /// The pen position of every glyph after the first, relative to `origin`.
-        advances_to_last: f64,
-        font_size: f32,
-        font: vello_cpu::peniko::FontData,
-        coords: SmallVec<[i16; 8]>,
-        brush: Brush,
-        bbox: Rect,
-    },
     Blur {
         path: usize,
         transform: Affine,
@@ -132,13 +118,6 @@ pub(crate) struct DisplayList {
     paths_used: usize,
     pub glyphs: Vec<GlyphInstance>,
     open: Vec<usize>,
-    /// Decode for a page's DOM: glyph runs that carry their characters are
-    /// listed as [`Op::Text`] rather than as outlines, and the encoding's
-    /// keyed marks are kept in [`Self::marks`].
-    pub dom: bool,
-    /// Each keyed boundary ([`vello_encoding::Mark`]) and the index of the
-    /// op it stands before, in order. Only kept for a page's DOM.
-    pub marks: Vec<(usize, vello_encoding::MarkKind)>,
 }
 
 impl DisplayList {
@@ -171,7 +150,6 @@ impl DisplayList {
         self.ops.clear();
         self.glyphs.clear();
         self.open.clear();
-        self.marks.clear();
         self.paths_used = 0;
         let mut walker = Walker {
             encoding,
@@ -188,7 +166,6 @@ impl DisplayList {
             path: PathState::default(),
             bounds: None,
             complete: true,
-            next_mark: 0,
         };
         walker.run();
     }
@@ -210,7 +187,6 @@ impl DisplayList {
         self.ops.clear();
         self.glyphs.clear();
         self.open.clear();
-        self.marks.clear();
         self.paths_used = 0;
         let mut walker = Walker {
             encoding,
@@ -227,7 +203,6 @@ impl DisplayList {
             path: PathState::default(),
             bounds: Some(Vec::new()),
             complete: true,
-            next_mark: 0,
         };
         walker.run();
         let complete = walker.complete;
@@ -270,8 +245,6 @@ struct Walker<'a> {
     bounds: Option<Vec<Rect>>,
     /// Every draw so far was walked in full.
     complete: bool,
-    /// The first of the encoding's marks not yet listed.
-    next_mark: usize,
 }
 
 const IDENTITY: Transform = Transform::IDENTITY;
@@ -511,7 +484,6 @@ impl Walker<'_> {
             while let Some(&run) = runs.get(next_run) {
                 match resources.glyph_runs.get(run) {
                     Some(r) if r.stream_offsets.path_tags == tag_ix => {
-                        self.marks_before(r.stream_offsets.draw_tags, Some(run));
                         self.glyph_run(r);
                         next_run += 1;
                     }
@@ -534,35 +506,13 @@ impl Walker<'_> {
         }
         while let Some(&run) = runs.get(next_run) {
             if let Some(r) = resources.glyph_runs.get(run) {
-                self.marks_before(r.stream_offsets.draw_tags, Some(run));
                 self.glyph_run(r);
             }
             next_run += 1;
         }
-        self.marks_before(usize::MAX, None);
         // Layers left open are closed at the end of the scene.
         while !self.list.open.is_empty() {
             self.end_clip();
-        }
-    }
-
-    /// List the marks that stand before the draw at `draw` (a draw tag
-    /// index), or before glyph run `run` drawing there: a mark at the same
-    /// draw tag offset as a run stands before it only when the run was
-    /// recorded after it.
-    fn marks_before(&mut self, draw: usize, run: Option<usize>) {
-        if !self.list.dom || self.bounds.is_some() {
-            return;
-        }
-        let marks = &self.encoding.resources.marks;
-        while let Some(mark) = marks.get(self.next_mark) {
-            let before = mark.draw_tags < draw
-                || (mark.draw_tags == draw && run.is_none_or(|run| mark.glyph_runs <= run));
-            if !before {
-                break;
-            }
-            self.list.marks.push((self.list.ops.len(), mark.kind));
-            self.next_mark += 1;
         }
     }
 
@@ -672,7 +622,6 @@ impl Walker<'_> {
 
     fn end_path(&mut self) {
         let path = std::mem::take(&mut self.path);
-        self.marks_before(self.draw_ix, None);
         let Some((tag, offset)) = self.next_draw() else {
             return;
         };
@@ -968,49 +917,6 @@ impl Walker<'_> {
             return;
         };
         let paint_transform = run.transform * run.brush_transform.unwrap_or(IDENTITY);
-        if self.list.dom
-            && self.bounds.is_none()
-            && let Some(text) = run.text.clone()
-            && !run_glyphs.is_empty()
-        {
-            let Some((tag, offset)) = self.next_draw() else {
-                return;
-            };
-            let Some(brush) = self.brush(tag, offset, to_affine(&paint_transform)) else {
-                return;
-            };
-            let affine = to_affine(&run.transform);
-            let scale = affine.determinant().abs().sqrt();
-            let font_size = run.font_size * scale as f32;
-            let size = f64::from(font_size);
-            let coords: SmallVec<[i16; 8]> = coords.iter().copied().collect();
-            // A line set wider than its words (justified) is one run whose
-            // spaces were stretched: each word goes on its own, at its own
-            // place, since the page sets spaces at their natural width.
-            for (words, glyphs) in words_of(&text, run_glyphs, &run.font, run.font_size, &coords) {
-                let (Some(first), Some(last)) = (glyphs.first(), glyphs.last()) else {
-                    continue;
-                };
-                let origin = affine * Point::new(f64::from(first.x), f64::from(first.y));
-                let end = affine * Point::new(f64::from(last.x), f64::from(last.y));
-                self.list.ops.push(Op::Text {
-                    text: words,
-                    origin,
-                    advances_to_last: end.x - origin.x,
-                    font_size,
-                    font: run.font.clone(),
-                    coords: coords.clone(),
-                    brush: brush.clone(),
-                    bbox: Rect::new(
-                        origin.x,
-                        origin.y - size,
-                        end.x + size,
-                        origin.y + size * 0.3,
-                    ),
-                });
-            }
-            return;
-        }
         let mut hint = run.hint;
         let mut font_size = run.font_size;
         let mut transform = run.transform;
@@ -1107,72 +1013,6 @@ impl Walker<'_> {
             bbox,
         });
     }
-}
-
-/// `text`, set by `glyphs`, as the stretches the page can set as they are:
-/// the whole run, unless its spaces were set wider or narrower than the
-/// font's own (a justified line), then each word with the space after it,
-/// with its own glyphs. A run whose spaces cannot be matched to its glyphs
-/// one for one stays whole.
-fn words_of<'g>(
-    text: &Arc<str>,
-    glyphs: &'g [vello_encoding::Glyph],
-    font: &vello_cpu::peniko::FontData,
-    size: f32,
-    coords: &[i16],
-) -> Vec<(Arc<str>, &'g [vello_encoding::Glyph])> {
-    use skrifa::MetadataProvider as _;
-    let whole = || vec![(text.clone(), glyphs)];
-    if !text.contains(' ') {
-        return whole();
-    }
-    let Ok(face) = skrifa::FontRef::from_index(font.data.data(), font.index) else {
-        return whole();
-    };
-    let Some(space) = face.charmap().map(' ') else {
-        return whole();
-    };
-    let space = space.to_u32();
-    if text.matches(' ').count() != glyphs.iter().filter(|glyph| glyph.id == space).count() {
-        return whole();
-    }
-    let location: Vec<skrifa::instance::NormalizedCoord> = coords
-        .iter()
-        .map(|&c| skrifa::instance::NormalizedCoord::from_bits(c))
-        .collect();
-    let metrics = face.glyph_metrics(
-        skrifa::instance::Size::new(size),
-        skrifa::instance::LocationRef::new(&location),
-    );
-    let natural = metrics
-        .advance_width(skrifa::GlyphId::new(space))
-        .unwrap_or(0.0);
-    let stretched = glyphs
-        .windows(2)
-        .any(|pair| pair[0].id == space && (pair[1].x - pair[0].x - natural).abs() > 0.25);
-    if !stretched {
-        return whole();
-    }
-    let mut out = Vec::new();
-    let mut from_glyph = 0;
-    for words in text.split_inclusive(' ') {
-        let to_glyph = if words.ends_with(' ') {
-            let Some(offset) = glyphs[from_glyph..]
-                .iter()
-                .position(|glyph| glyph.id == space)
-            else {
-                return whole();
-            };
-            from_glyph + offset + 1
-        } else {
-            glyphs.len()
-        };
-        if from_glyph < to_glyph {
-            out.push((Arc::from(words), &glyphs[from_glyph..to_glyph]));
-        }
-        from_glyph = to_glyph;
-    }
-    out
 }
 
 #[cfg(test)]

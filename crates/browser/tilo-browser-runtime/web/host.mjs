@@ -16,7 +16,7 @@ import {createHere} from './here.mjs';
 import {fetchPersonProfile,followPhotos,photoPixels} from './profile-photos.mjs';
 import {createPresentedSource} from './panorama.mjs';
 import {createSemanticPresentation} from './semantic-presentation.mjs';
-import {createDomPresenter} from './dom-present.mjs';
+import {createViewPresenter,VIEW_CSS} from './view-present.mjs';
 import {createDomInput} from './dom-input.mjs';
 export {createPanorama} from './panorama.mjs';
 import {createNativeCatalogueBridge, invokeMembershipAction} from './native-catalogue.mjs';
@@ -224,6 +224,25 @@ export function prefetchOfferedApplications({fetch=globalThis.fetch,load=()=>imp
   return offeredPrefetch;
 }
 export async function openProfileStorage(profile,device,options={}){await ready();return durableHost.open(profile,device,options);}
+// The startup fonts the runtime sets text in, as the page's own faces, for
+// the text an HTML mount shows itself: the interface face as "Tilo Sans",
+// each other one by the stem of its file's name, after it in every stack.
+const pageFaces=new Set();
+function registerPageFonts(assets){
+  if(!globalThis.FontFace||!document.fonts)return;
+  const fallbacks=[];
+  for(const [name,bytes] of Object.entries(assets)){
+    const stem=name.replace(/^.*\//,'').replace(/[[\-.].*$/,'');
+    const family=stem==='TiloSans'?'Tilo Sans':stem;
+    if(family!=='Tilo Sans')fallbacks.push(`"${family}"`);
+    if(pageFaces.has(name))continue;
+    pageFaces.add(name);
+    const face=new FontFace(family,bytes,family==='Tilo Sans'?{weight:'100 900',stretch:'75% 100%'}:{weight:'100 900'});
+    document.fonts.add(face);
+    face.load().catch(error=>console.warn('page font',name,error));
+  }
+  document.documentElement.style.setProperty('--tilo-faces',['"Tilo Sans"',...fallbacks,'system-ui','sans-serif'].join(','));
+}
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
   const canvas=document.createElement('canvas');canvas.className='tilo-canvas';canvas.tabIndex=0;
@@ -243,25 +262,33 @@ export async function mountDesktop(target,options={}) {
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
   const status=createHostStatus(commandStatus);
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
-  // Shown as HTML (`dom: true`): the frames are built as elements in a layer
-  // over the canvas, which shows nothing and stays where winit listens. The
-  // layer is the hit target: the browser scrolls, pans and selects what it
-  // can natively, and the rest goes on to the canvas (dom-input.mjs).
-  // `selectText(true)` keeps every pointer on the page, for native text
-  // selection alone.
+  // Shown as HTML (`dom: true`): each frame's composition is built as
+  // elements in a layer over the canvas (view-present.mjs), which shows
+  // nothing and stays where winit listens. The layer is the hit target: the
+  // browser scrolls, selects and edits fields natively, and the rest goes on
+  // to the canvas (dom-input.mjs). `selectText(true)` keeps every pointer on
+  // the page, for native text selection alone.
   let domPresenter,domInput,selectOnly=false;
   if(options.dom){
     const domLayer=document.createElement('div');domLayer.className='tilo-dom';
     domLayer.style.cssText='position:absolute;inset:0;overflow:hidden;contain:strict;user-select:text;-webkit-user-select:text;touch-action:none;';
     canvas.style.cssText+='position:absolute;inset:0;opacity:0;pointer-events:none;';
     canvas.after(domLayer);
-    domPresenter=createDomPresenter(domLayer,{onFrame:options.onDomFrame,onScroll:(key,offset)=>{
-      if(id===undefined||closed)return;
-      try{runtime.dom_scrolled(id,key,offset);}catch(error){report({domScroll:String(error)});}
-    }});
+    if(!document.getElementById('tilo-view-css')){const style=document.createElement('style');style.id='tilo-view-css';style.textContent=VIEW_CSS;document.head.append(style);}
+    domPresenter=createViewPresenter(domLayer,{onFrame:options.onDomFrame,
+      onScroll:(path,offset)=>{
+        if(id===undefined||closed)return;
+        try{runtime.dom_scrolled(id,path,offset);}catch(error){report({domScroll:String(error)});}
+      },
+      picture:(path,scale)=>{
+        if(id===undefined||closed)return null;
+        try{return runtime.dom_picture(id,path,scale);}catch(error){report({domPicture:String(error)});return null;}
+      },
+      semantic:(path,target,action,value,anchor,focus)=>{
+        if(id===undefined||closed)return;
+        try{runtime.semantic(id,path,target,action,value,anchor,focus);}catch(error){report({domSemantic:String(error)});}
+      }});
     domInput=createDomInput({layer:domLayer,canvas,scrollerAt:domPresenter.scrollerAt,native:()=>selectOnly||!active()});
-    // The semantic mirror leaves the focus alone while the person selects.
-    domPresenter.host.holdsSelection=domInput.holdsSelection;
     globalThis.__tiloDom={stats:domPresenter.stats,layer:domLayer,selectText:on=>{selectOnly=on;}};
   }
   const fillScreen=createScreenFill(surface,{canvas,observe:globalThis.ResizeObserver});
@@ -338,7 +365,7 @@ export async function mountDesktop(target,options={}) {
     keydown:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keydown(...args);},
     keyup:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keyup(...args);},
     blur:owner=>{inputScope.capture();if(active())semanticKeys?.blur(owner);},
-  },inputScope,domPresenter?.host);
+  },inputScope,domInput?{holdsSelection:domInput.holdsSelection}:undefined);
   const listeners=new AbortController();const on=(node,type,fn,opts={})=>node.addEventListener(type,fn,{...opts,signal:listeners.signal});
   // A person holding a selection of the HTML layer's text keeps it: the
   // copy shortcut is the browser's, which copies it.
@@ -633,6 +660,8 @@ export async function mountDesktop(target,options={}) {
     // Each startup font goes in with the digest the loader computed natively,
     // which the runtime checks against its build instead of hashing again.
     for(const [name,bytes] of Object.entries(assets))runtime.provide_startup_font(name,bytes,fontLoader.digestOf(bytes)??'');
+    // The page sets the composition's text itself, in the same faces.
+    if(domPresenter)registerPageFonts(assets);
     if(domPresenter)runtime.present_as_dom(domPresenter.present);
     id=runtime.mount(canvas,JSON.stringify(config),entries,raw=>{
       // Pin pixels and geometry while this presentation is still current,

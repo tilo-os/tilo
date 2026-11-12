@@ -8924,6 +8924,12 @@ impl Widget for BlockEditor {
         dyn crate::widget::TextFits
     );
 
+    /// The document's blocks as what they are: paragraphs, headings, list
+    /// items, with their marks and the caret.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.blocks(self.composed_blocks());
+    }
+
     /// The described component's instance, for the generic adapter to take new props in place
     /// and for a harness to read it by type.
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -12027,6 +12033,9 @@ pub use callout::CalloutKind;
 
 #[path = "block_editor_list_marker.rs"]
 mod list_marker;
+
+#[path = "block_editor_composition.rs"]
+mod composition;
 
 #[cfg(test)]
 #[path = "block_editor_list_callout_tests.rs"]

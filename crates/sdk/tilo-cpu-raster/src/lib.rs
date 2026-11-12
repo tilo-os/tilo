@@ -33,7 +33,6 @@ pub mod capture;
 pub mod compare;
 mod decode;
 mod diff;
-pub mod dom;
 mod glyph;
 mod image;
 mod plan;

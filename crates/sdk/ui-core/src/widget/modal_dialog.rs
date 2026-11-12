@@ -1929,6 +1929,12 @@ impl<C: Widget + 'static> ModalDialog<C> {
 /// The dialog's behaviour, compiled once for every content type: a
 /// `ModalDialog<C>` forwards each method to its type-erased form.
 impl Widget for ModalDialog<dyn Widget> {
+    /// Its content, as a dialog over the window.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("section");
+        cx.children();
+    }
+
     fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
         if self.environment != environment {
             self.environment = environment;

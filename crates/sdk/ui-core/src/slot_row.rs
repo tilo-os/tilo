@@ -1056,7 +1056,3 @@ mod tests {
         );
     }
 }
-
-#[cfg(test)]
-#[path = "slot_row_dom_tests.rs"]
-mod dom_tests;

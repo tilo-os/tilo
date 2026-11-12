@@ -394,6 +394,12 @@ impl AppWidget for WindowView {
 }
 
 impl Widget for WindowView {
+    /// Another device's window, as the pictures it sends: drawn, so a page
+    /// shows it as a picture.
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.picture();
+    }
+
     fn name(&self) -> &'static str {
         "WindowView"
     }

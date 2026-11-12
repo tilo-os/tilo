@@ -1833,6 +1833,12 @@ impl<M: ListModel> crate::widget::PaintedRowLifts for VirtualList<M> {
 }
 
 impl<M: ListModel + 'static> Widget for VirtualList<M> {
+    /// The rows it shows now, in a native scroller as tall as all of them.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("ul");
+        cx.children();
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,

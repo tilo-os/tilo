@@ -2613,6 +2613,21 @@ impl CardBody for ListRow {
 }
 
 impl Widget for ListRow {
+    /// An item of its list, saying its title; the page's list styles it
+    /// as chosen or not from what the row says it is.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("li");
+        cx.selected(self.selected);
+        let theme = cx.theme();
+        let look = crate::composition::TextLook::new(
+            self.title.clone(),
+            &theme.text(TextRole::Body),
+            Some(theme.tokens.colors.text_primary),
+        )
+        .with_max_lines(Some(1));
+        cx.text(look);
+    }
+
     crate::provides!(
         dyn crate::widget::CardBody,
         dyn crate::widget::controls::ActionControls,

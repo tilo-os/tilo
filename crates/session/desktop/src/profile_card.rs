@@ -494,6 +494,12 @@ impl PictureButton {
 }
 
 impl Widget for PictureButton {
+    /// A button whose face is the person's picture.
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.element("button");
+        cx.picture();
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
