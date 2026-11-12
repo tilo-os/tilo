@@ -101,7 +101,6 @@ impl Workspace {
 
 #[resource(
     kind = "maps.workspace",
-    label = "Maps",
     scopes = Workspace::saved_scope,
     read_content = Workspace::read_document
 )]

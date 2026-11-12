@@ -258,3 +258,27 @@ maps-what-nearby = loading nearby places
 maps-route-estimate = { $reason } The offline estimate is shown.
 
 maps-addresses-places = Addresses and places
+
+## Actions
+
+maps-offline-areas = Offline areas
+maps-offline-areas-record = Record a downloaded area
+maps-offline-areas-forget = Forget a deleted area
+maps-offline-areas-clear = Record deleted offline maps
+maps-effect-search = Search places
+maps-effect-locate = Use my location
+maps-effect-toggle-traffic = Show traffic
+maps-effect-open-place = Open place
+maps-effect-directions = Get directions
+maps-effect-open-poi = Open place of interest
+maps-effect-poi-directions = Directions to place of interest
+maps-effect-delete-offline-area = Delete offline area
+maps-effect-clear-offline-areas = Clear offline areas
+maps-workspace = Maps
+maps-workspace-accept-places = Accept places
+maps-workspace-commit-search = Search places
+maps-workspace-clear-recents = Clear recent searches
+maps-workspace-accept-route = Accept a route
+maps-workspace-clear-route = Clear route
+maps-workspace-accept-transit = Accept transit routes
+maps-workspace-clear-transit = Clear transit routes

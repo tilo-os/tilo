@@ -44,7 +44,6 @@ impl Library {
 
 #[resource(
     kind = "feeds.library",
-    label = "Feeds",
     children = Library::places,
     search = crate::search::entries,
     version = 2,

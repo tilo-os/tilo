@@ -125,3 +125,25 @@ passwords-empty-content-message = Anmeldungen, sichere Notizen, WLAN-Passwörter
 
 ## What the review compares against
 passwords-checked-against-vault = Nur die Passwörter in diesem Tresor
+
+## Actions
+
+passwords-effect-add = Neues Element
+passwords-effect-save = Speichern
+passwords-effect-save-login = Anmeldung speichern
+passwords-effect-list-logins = Anmeldungen auflisten
+passwords-effect-cancel = Bearbeiten abbrechen
+passwords-effect-generate = Starkes Passwort erzeugen
+passwords-effect-edit = Bearbeiten
+passwords-effect-copy = Geheimnis kopieren
+passwords-effect-copy-identity = Benutzername kopieren
+passwords-effect-copy-origins = Adressen kopieren
+passwords-effect-reveal = Geheimnis zeigen
+passwords-effect-hide = Geheimnis verbergen
+passwords-effect-delete = Element löschen
+passwords-effect-favorite = Zu Favoriten
+passwords-effect-import = Passwörter importieren
+passwords-effect-export = CSV exportieren…
+passwords-effect-filter = Tresor filtern
+passwords-effect-open = Öffnen
+passwords-vault = Passwort-Tresor

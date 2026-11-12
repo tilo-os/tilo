@@ -39,7 +39,6 @@ impl Containers {
 
 #[resource(
     kind = "containers.engine",
-    label = "Containers",
     read_content = Containers::read_document
 )]
 impl Containers {
@@ -87,7 +86,7 @@ pub enum ContainersEffect {
     /// its labels and its latest resource use. It is the container row's
     /// read: what discloses the row, so starting, stopping and its other
     /// verbs are offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read container")]
+    #[effect(view, row, returns, idempotent)]
     ReadContainer {
         #[param("Container id")]
         container: String,

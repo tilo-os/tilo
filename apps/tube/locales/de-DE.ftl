@@ -245,3 +245,28 @@ tube-skip-off = Aus
 tube-type-video = Video
 tube-type-playlist = Wiedergabeliste
 tube-type-creator = Kanal
+
+## Actions
+
+tube-effect-show-screen = Ansicht anzeigen
+tube-effect-toggle-sidebar = Navigation ein- oder ausblenden
+tube-effect-filter-search = Suchergebnisse filtern
+tube-effect-open-video = Video öffnen
+tube-effect-open-creator = Creator öffnen
+tube-effect-open-playlist = Playlist öffnen
+tube-effect-search = Videos suchen
+tube-effect-toggle-playback = Wiedergeben oder pausieren
+tube-effect-seek = Springen
+tube-effect-skip-segment = Abschnitt überspringen
+tube-effect-share = Freigabelink kopieren
+tube-effect-download = Video herunterladen
+tube-effect-mark-watched = Als gesehen markieren
+tube-effect-forget-watched = Aus dem Verlauf entfernen
+tube-effect-clear-history = Verlauf löschen
+tube-effect-pair-device = Mit Einladung koppeln
+tube-effect-sync-devices = Geräte abgleichen
+tube-effect-approve-device = Gerät zulassen
+tube-effect-revoke-device = Gerätezugriff entziehen
+tube-effect-set-preference = Wiedergabeeinstellung ändern
+tube-effect-set-preferred-quality = Bevorzugte Qualität festlegen
+tube-effect-set-segment-handling = Umgang mit Abschnitten festlegen
