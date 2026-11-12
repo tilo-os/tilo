@@ -1326,11 +1326,7 @@ pub fn sync_locale_catalogs(request: &LocaleSyncRequest) -> Result<LocaleSyncOut
             });
         }
     }
-    writes.extend(locale_key_writes(
-        &app_dir,
-        &source_contract,
-        request.dry_run,
-    )?);
+    writes.extend(locale_key_writes(&app_dir, &source_contract)?);
     if !request.dry_run {
         write_batch(&writes)?;
     }
@@ -1347,11 +1343,7 @@ pub fn sync_locale_catalogs(request: &LocaleSyncRequest) -> Result<LocaleSyncOut
 /// `locales/en-US.ftl`), when the app's registry is generated and its label
 /// keys no longer match the catalog: one `Key` per message, so a label the
 /// catalog does not have is a compile error.
-fn locale_key_writes(
-    app_dir: &Path,
-    source: &FluentCatalogContract,
-    dry_run: bool,
-) -> Result<Vec<PendingWrite>> {
+fn locale_key_writes(app_dir: &Path, source: &FluentCatalogContract) -> Result<Vec<PendingWrite>> {
     let path = app_dir.join("src/locales.rs");
     let Ok(registry) = std::fs::read_to_string(&path) else {
         return Ok(Vec::new());
@@ -1366,9 +1358,6 @@ fn locale_key_writes(
         &path,
     )?;
     if refreshed == registry {
-        return Ok(Vec::new());
-    }
-    if dry_run {
         return Ok(Vec::new());
     }
     Ok(vec![PendingWrite {
@@ -1593,7 +1582,7 @@ fn locale_registry_with_keys(locales: &[String], messages: &[String]) -> String 
     source.push_str(
         "// `Key` is a Fluent message of locales/en-US.ftl, so a mistyped label is a\n\
          // compile error: `cx.button(crate::locales::keys::ADD, App::ADD.invoke())`.\n\
-         // `tilo-app locale` rewrites the keys after a catalog edit.\n",
+         // `tilo-app locale sync` rewrites the keys after a catalog edit.\n",
     );
     for locale in locales {
         let _ = writeln!(source, "{LOCALE_ENTRY_PREFIX}{locale}");
@@ -2152,7 +2141,7 @@ fn artifact_locale_writes(
     }
     // The registry names every message the catalog holds, so the keys a
     // screen's labels are named by follow the messages it just added.
-    writes.extend(locale_key_writes(app_dir, &updated, false)?);
+    writes.extend(locale_key_writes(app_dir, &updated)?);
     Ok(writes)
 }
 
@@ -8554,10 +8543,10 @@ fn check_locale_registry(
             let declared = declared_key_names(&registry).unwrap_or_default();
             let expected: Vec<String> = messages.iter().map(|id| label_key_name(id)).collect();
             if declared != expected {
-                bail!("the generated label keys are stale; run `tilo-app locale --refresh`");
+                bail!("the generated label keys are stale; run `tilo-app locale sync`");
             }
         } else if !messages.is_empty() {
-            bail!("label keys are not generated; run `tilo-app locale --refresh`");
+            bail!("label keys are not generated; run `tilo-app locale sync`");
         }
         for locale in &registered {
             if !catalog_ids.iter().any(|catalog| catalog == locale) {
