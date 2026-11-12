@@ -10,6 +10,8 @@ use ui::widget::{Edits, ExternalDatePickerHit};
 mod accessibility;
 #[path = "tests/caldav_sync.rs"]
 mod caldav_sync;
+#[path = "tests/dropdown_rows.rs"]
+mod dropdown_rows;
 #[path = "tests/platform_history.rs"]
 mod platform_history;
 #[path = "tests/sidebar.rs"]
@@ -2719,7 +2721,7 @@ fn every_offered_alert_reaches_the_document() {
     let Some(Sel::Event(id)) = app.selection else {
         panic!("event selected");
     };
-    for (minutes, _) in editor::ALERTS {
+    for minutes in crate::model::REMINDERS {
         pick(
             &mut app,
             &mut state,

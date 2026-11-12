@@ -249,6 +249,47 @@ calendar-editor-alert = Erinnerung
 calendar-editor-time-zone = Zeitzone
 calendar-editor-priority = Priorität
 
+## Die Zeilen der Auswahlfelder im Editor
+calendar-no-project = Kein Projekt
+calendar-time-zone-floating = Keine Zeitzone
+calendar-alert-none = Keine Erinnerung
+calendar-alert-at-start = Zum Beginn
+calendar-alert-minutes-before = { $count ->
+    [one] 1 Minute vorher
+   *[other] { $count } Minuten vorher
+}
+calendar-alert-hours-before = { $count ->
+    [one] 1 Stunde vorher
+   *[other] { $count } Stunden vorher
+}
+calendar-alert-days-before = { $count ->
+    [one] 1 Tag vorher
+   *[other] { $count } Tage vorher
+}
+calendar-repeat-none = Wiederholt sich nicht
+calendar-repeat-weekdays = Jeden Wochentag
+calendar-repeat-every-days = { $count ->
+    [one] Jeden Tag
+   *[other] Alle { $count } Tage
+}
+calendar-repeat-every-weeks = { $count ->
+    [one] Jede Woche
+   *[other] Alle { $count } Wochen
+}
+calendar-repeat-every-months = { $count ->
+    [one] Jeden Monat
+   *[other] Alle { $count } Monate
+}
+calendar-repeat-every-years = { $count ->
+    [one] Jedes Jahr
+   *[other] Alle { $count } Jahre
+}
+calendar-repeat-times = { $count ->
+    [one] { $recurrence }, einmal
+   *[other] { $recurrence }, { $count } Mal
+}
+calendar-repeat-until = { $recurrence } bis { $day }
+
 ## Die Plätze der Fensterleiste
 calendar-views = Ansicht
 calendar-previous-month = Voriger Monat

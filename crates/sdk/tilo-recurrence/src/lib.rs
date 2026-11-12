@@ -693,32 +693,6 @@ pub enum Repeat {
 }
 
 impl Repeat {
-    /// The full phrase a menu or row shows.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::None => "Does not repeat",
-            Self::Daily => "Every day",
-            Self::Weekdays => "Every weekday",
-            Self::Weekly => "Every week",
-            Self::Monthly => "Every month",
-            Self::Yearly => "Every year",
-        }
-    }
-
-    /// The compact fact shown beside a row's date.
-    #[must_use]
-    pub fn short(self) -> &'static str {
-        match self {
-            Self::None => "",
-            Self::Daily => "Daily",
-            Self::Weekdays => "Weekdays",
-            Self::Weekly => "Weekly",
-            Self::Monthly => "Monthly",
-            Self::Yearly => "Yearly",
-        }
-    }
-
     /// RFC 5545 rule text (no `RRULE:` prefix), or empty for a single
     /// occurrence.
     #[must_use]

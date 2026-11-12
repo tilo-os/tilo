@@ -169,7 +169,8 @@ impl AgendaView {
                     y = row.y1;
                 }
                 Item::Task(task) => {
-                    let face = task_face(task, source, theme);
+                    let meta = task_meta(task);
+                    let face = task_face(task, source, theme, meta.as_deref());
                     let h = face.height(ctx.text, theme);
                     let row = Rect::new(x0, y, x1, y + h);
                     if row.y1 > area.y0 && row.y0 < area.y1 {
@@ -260,9 +261,26 @@ fn event_face<'a>(
     }
 }
 
+/// The word at a task row's trailing edge: that it is done, else how urgent
+/// it is, in the window's language.
+fn task_meta(task: &Task) -> Option<String> {
+    if task.done {
+        Some(crate::resource::t("calendar-done"))
+    } else if task.priority == Priority::None {
+        None
+    } else {
+        Some(task.priority.display_label())
+    }
+}
+
 /// A task row: its checkbox leads and completes it; its project's colour
 /// follows the title as a swatch mark.
-fn task_face<'a>(task: &'a Task, source: &AgendaSource<'_>, theme: &Theme) -> ListRowFace<'a> {
+fn task_face<'a>(
+    task: &'a Task,
+    source: &AgendaSource<'_>,
+    theme: &Theme,
+    meta: Option<&'a str>,
+) -> ListRowFace<'a> {
     let mut face = ListRowFace::new(&task.title).leading(RowLeading::Checkbox {
         checked: task.done,
         icon: None,
@@ -270,12 +288,9 @@ fn task_face<'a>(task: &'a Task, source: &AgendaSource<'_>, theme: &Theme) -> Li
     if let Some(project) = task.project.and_then(|id| source.model.project(id)) {
         face = face.swatch_mark(project.color.color(theme));
     }
-    if task.done {
-        face.meta("Done")
-    } else if task.priority == Priority::None {
-        face
-    } else {
-        face.meta(task.priority.label())
+    match meta {
+        Some(meta) => face.meta(meta),
+        None => face,
     }
 }
 
@@ -422,7 +437,10 @@ fn content_height(source: &AgendaSource<'_>, text: &mut TextRenderer, theme: &Th
                 let title = shown.event.display_title();
                 event_face(shown.event, &title, &time, theme).height(text, theme)
             }
-            Item::Task(task) => task_face(task, source, theme).height(text, theme),
+            Item::Task(task) => {
+                let meta = task_meta(task);
+                task_face(task, source, theme, meta.as_deref()).height(text, theme)
+            }
         };
     }
     height

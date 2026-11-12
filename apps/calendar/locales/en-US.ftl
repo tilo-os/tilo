@@ -249,6 +249,47 @@ calendar-editor-alert = Alert
 calendar-editor-time-zone = Time zone
 calendar-editor-priority = Priority
 
+## The rows of the editor's dropdowns
+calendar-no-project = No project
+calendar-time-zone-floating = No time zone
+calendar-alert-none = No alert
+calendar-alert-at-start = When it starts
+calendar-alert-minutes-before = { $count ->
+    [one] 1 minute before
+   *[other] { $count } minutes before
+}
+calendar-alert-hours-before = { $count ->
+    [one] 1 hour before
+   *[other] { $count } hours before
+}
+calendar-alert-days-before = { $count ->
+    [one] 1 day before
+   *[other] { $count } days before
+}
+calendar-repeat-none = Does not repeat
+calendar-repeat-weekdays = Every weekday
+calendar-repeat-every-days = { $count ->
+    [one] Every day
+   *[other] Every { $count } days
+}
+calendar-repeat-every-weeks = { $count ->
+    [one] Every week
+   *[other] Every { $count } weeks
+}
+calendar-repeat-every-months = { $count ->
+    [one] Every month
+   *[other] Every { $count } months
+}
+calendar-repeat-every-years = { $count ->
+    [one] Every year
+   *[other] Every { $count } years
+}
+calendar-repeat-times = { $count ->
+    [one] { $recurrence }, once
+   *[other] { $recurrence }, { $count } times
+}
+calendar-repeat-until = { $recurrence } until { $day }
+
 ## The window bar's slots
 calendar-views = View
 calendar-previous-month = Previous month
