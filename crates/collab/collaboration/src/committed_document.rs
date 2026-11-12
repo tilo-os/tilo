@@ -457,6 +457,10 @@ impl Reads {
             _ => Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         rows.insert(key.into(), Gate::Required(ready.clone(), instance));
+        drop(rows);
+        // Whatever waits on the generation this one replaces hears that the
+        // read it waited for is no longer this route's.
+        self.progressed();
         Ok(ready)
     }
 }
@@ -717,6 +721,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_owner_s_merge_ends_the_reader_s_wait_at_once() {
         let budget = ByteBudget::new();
+        let reads = Reads::default();
         let read = one_chunk_capture(&budget).await;
         let started = tokio::time::Instant::now();
         let owner = {
@@ -726,36 +731,47 @@ mod tests {
                 read.applied();
             })
         };
-        until_merged(&read, || true).await;
+        until_merged(&read, &reads, || true).await;
         owner.await.unwrap();
-        // The clock is paused: a wait that slept until its re-check would
-        // have advanced it by a whole interval.
-        assert!(started.elapsed() < MERGE_RECHECK);
+        // The clock is paused: a wait that slept on a clock instead of on
+        // the owner's answer would have advanced it.
+        assert_eq!(started.elapsed(), Duration::ZERO);
     }
     #[tokio::test(start_paused = true)]
     async fn a_merge_before_the_reader_waits_is_not_missed() {
         let budget = ByteBudget::new();
+        let reads = Reads::default();
         let read = one_chunk_capture(&budget).await;
         read.applied();
         let started = tokio::time::Instant::now();
-        until_merged(&read, || true).await;
-        assert!(started.elapsed() < MERGE_RECHECK);
+        until_merged(&read, &reads, || true).await;
+        assert_eq!(started.elapsed(), Duration::ZERO);
     }
+    /// A capture the app never takes is waited for, not asked about: the
+    /// reader sleeps until something here changes, and hears a route
+    /// replaced under it without any clock.
     #[tokio::test(start_paused = true)]
-    async fn an_unmerged_capture_keeps_the_reader_waiting_until_its_route_goes() {
+    async fn an_unmerged_capture_waits_for_its_route_to_go_without_a_clock() {
         let budget = ByteBudget::new();
+        let reads = Reads::default();
         let read = one_chunk_capture(&budget).await;
-        let checks = std::cell::Cell::new(0);
+        let ready = reads.pending("route").unwrap();
         let started = tokio::time::Instant::now();
-        until_merged(&read, || {
-            checks.set(checks.get() + 1);
-            checks.get() < 3
-        })
-        .await;
+        let route_goes = {
+            let reads = reads.clone();
+            tokio::spawn(async move {
+                tokio::task::yield_now().await;
+                // A new generation: the capture is no longer this route's.
+                reads.pending("route").unwrap();
+            })
+        };
+        until_merged(&read, &reads, || reads.current("route", &ready)).await;
+        route_goes.await.unwrap();
         assert!(!read.merged.load(Ordering::Acquire));
-        // Two re-checks passed while the route stayed live.
-        assert!(started.elapsed() >= MERGE_RECHECK * 2);
-        assert_eq!(checks.get(), 3);
+        assert!(!reads.current("route", &ready));
+        // The pause makes a timer wait show as elapsed time; this wait had
+        // none to spend.
+        assert_eq!(started.elapsed(), Duration::ZERO);
     }
     #[test]
     fn staging_a_capture_ends_the_owner_s_bounded_wait() {
@@ -1556,10 +1572,6 @@ impl NativeReadJoin {
     }
 }
 
-/// How often a reader waiting for the owner's merge re-checks that its route
-/// is still healthy and current. The merge itself wakes it at once.
-const MERGE_RECHECK: Duration = Duration::from_millis(100);
-
 /// The shortest gap between two Opens of one route that something on this
 /// side asked for (the owner wanting a fresh read, a route replaced), however
 /// often that happens. A change the broker hands over is read at once.
@@ -1622,12 +1634,26 @@ async fn until_changed(
 }
 
 /// Wait until the owner merged `read` ([`CommittedDocument::applied`]) or
-/// refused its changes ([`CommittedDocument::refuse`]), or `live` says the
-/// route is gone. The owner's component factory waits for
+/// refused its changes ([`CommittedDocument::refuse`]), or something here
+/// changed instead: `live` says the route is gone, or `reads` says the read
+/// is no longer this reader's. The owner's component factory waits for
 /// the confirming read that follows, so the merge ends this wait at once.
-async fn until_merged(read: &CommittedDocument, live: impl Fn() -> bool) {
-    while !read.merged.load(Ordering::Acquire) && !read.refused.load(Ordering::Acquire) && live() {
-        let _ = tokio::time::timeout(MERGE_RECHECK, read.merge_wake.notified()).await;
+///
+/// Both are waits on a source, never a timer: an app that takes its time
+/// over a capture costs the shovel no wake at all while it does.
+async fn until_merged(read: &CommittedDocument, reads: &Reads, live: impl Fn() -> bool) {
+    loop {
+        // Enabled before the checks, so a change here in between is kept.
+        let local = reads.reader_wake();
+        tokio::pin!(local);
+        local.as_mut().enable();
+        if read.merged.load(Ordering::Acquire) || read.refused.load(Ordering::Acquire) || !live() {
+            return;
+        }
+        tokio::select! {
+            () = read.merge_wake.notified() => {}
+            () = &mut local => {}
+        }
     }
 }
 
@@ -1773,7 +1799,7 @@ pub(super) async fn install(
                 {
                     break;
                 }
-                until_merged(&staged, || {
+                until_merged(&staged, &inbound.state.document_reads, || {
                     inbound.state.is_healthy() && inbound.state.document_reads.current(&key, &ready)
                 })
                 .await;

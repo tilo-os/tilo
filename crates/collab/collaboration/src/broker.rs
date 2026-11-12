@@ -445,6 +445,13 @@ pub struct NativeHistoryInvocationFixture {
 }
 
 impl BrokerTransport {
+    /// The tid of the thread serving this connection's broker, once it runs:
+    /// what a test holding the connection idle counts the wakes of.
+    #[cfg(all(test, unix))]
+    pub(super) fn shovel_tid(&self) -> Option<i32> {
+        self.state.shovel_tid()
+    }
+
     /// Hand a command to the shovel. A full bounded queue is backpressure,
     /// never a reason to disable collaboration: a durable command that does
     /// not fit waits in [`Self::spill`] (in order, with a newer action
@@ -1133,6 +1140,10 @@ pub(crate) struct BridgeState {
     /// publishable and waited again.
     #[cfg(test)]
     publication_gate_waits: Arc<std::sync::atomic::AtomicUsize>,
+    /// The shovel thread's tid, which a test holds the connection idle
+    /// against and counts its wakes on; -1 before the thread starts.
+    #[cfg(all(test, unix))]
+    shovel_tid: Arc<std::sync::atomic::AtomicI32>,
 }
 
 /// Progress of the shovel's connection setup.
@@ -1325,7 +1336,16 @@ impl BridgeState {
             join_hold: Arc::default(),
             #[cfg(test)]
             publication_gate_waits: Arc::default(),
+            #[cfg(all(test, unix))]
+            shovel_tid: Arc::new(std::sync::atomic::AtomicI32::new(-1)),
         }
+    }
+
+    /// The tid of the thread serving this connection's broker, once it runs.
+    #[cfg(all(test, unix))]
+    fn shovel_tid(&self) -> Option<i32> {
+        let tid = self.shovel_tid.load(Ordering::Acquire);
+        (tid > 0).then_some(tid)
     }
 
     fn is_healthy(&self) -> bool {
@@ -3418,6 +3438,17 @@ fn report_init(state: &BridgeState, init_tx: &mpsc::SyncSender<InitStatus>, stat
     let _ = init_tx.send(status);
 }
 
+/// This thread's tid: `/proc/thread-self` names the calling thread's own
+/// directory, which ends in it.
+#[cfg(all(test, unix))]
+fn current_tid() -> std::io::Result<i32> {
+    let path = std::fs::read_link("/proc/thread-self")?;
+    path.file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .and_then(|tid| tid.parse().ok())
+        .ok_or_else(|| std::io::Error::other("no tid in /proc/thread-self"))
+}
+
 /// The shovel thread's body: owns a `current_thread` runtime + `LocalSet`
 /// (where every route's state stays), stands up the SDK client, subscribes
 /// its three streams, and forwards outbound requests. Exits when
@@ -3431,6 +3462,10 @@ fn run_shovel(
     init_tx: mpsc::SyncSender<InitStatus>,
 ) {
     let state = inbound_tx.state.clone();
+    #[cfg(all(test, unix))]
+    if let Ok(tid) = current_tid() {
+        state.shovel_tid.store(tid, Ordering::Release);
+    }
     // Loading an inherited identity is blocking IPC; this thread exists so
     // that the owner never waits for it.
     let identity = match identity.resolve() {
@@ -10625,6 +10660,9 @@ mod tests {
 
     #[cfg(test)]
     include!("native_media_tests.rs");
+
+    #[cfg(test)]
+    include!("idle_wake_tests.rs");
 
     #[tokio::test]
     async fn native_invocation_delivery_turn_waits_for_every_live_owner() {
