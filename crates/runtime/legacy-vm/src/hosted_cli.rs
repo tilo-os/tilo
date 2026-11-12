@@ -39,8 +39,8 @@ usage: tilo-legacy hosted <command>
                          --memory-mib is the node's memory its VMs are packed
                          into (the whole node by default): admission counts
                          what each VM really takes, as the kernel measures its
-                         Firecracker process, not the size it was configured
-                         at. --memory-reserve-mib (2048 by default) is what
+                         processes, not the size it was configured at.
+                         --memory-reserve-mib (2048 by default) is what
                          stays free for the host itself, and
                          --memory-headroom-mib (128) is added to what a VM is
                          counted at until it has been measured. A wake past

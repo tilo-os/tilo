@@ -92,14 +92,6 @@ impl Budget {
         CLONE_MIB.saturating_add(self.headroom_mib)
     }
 
-    /// What one more VM may take here now, `used_mib` being what the awake
-    /// ones are counted at.
-    #[must_use]
-    pub fn free_mib(&self, used_mib: u64) -> u64 {
-        self.for_vms_mib()
-            .map_or(u64::MAX, |most| most.saturating_sub(used_mib))
-    }
-
     /// Whether one more VM of `expected_mib` fits beside `used_mib`.
     #[must_use]
     pub fn admits(&self, used_mib: u64, expected_mib: u64) -> bool {
@@ -221,13 +213,11 @@ mod tests {
         }
         assert_eq!(admitted, 43, "a 16 GiB node holds 43 clones, not 3 VMs");
         assert!(used <= 14 * 1024, "{used}");
-        assert_eq!(budget.free_mib(used), 14 * 1024 - used);
         // phase: a VM that holds gigabytes is counted for them
         assert!(!budget.admits(14 * 1024, budget.expected_mib()));
         assert!(budget.admits(13 * 1024, budget.expected_mib()));
         // phase: a host with no node size is bounded by nothing here
         assert!(Budget::default().admits(1_000_000, 453));
-        assert_eq!(Budget::default().free_mib(1_000), u64::MAX);
     }
 
     #[test]

@@ -126,11 +126,13 @@ if [ -n "${TILO_VM_PLANS:-}" ]; then set -- "$@" --plans "$TILO_VM_PLANS"; fi
 if [ -n "${TILO_VM_EVICT_NOTICE:-}" ]; then set -- "$@" --evict-notice "$TILO_VM_EVICT_NOTICE"; fi
 # The node's memory its VMs are packed into, and what stays free for the node
 # itself. VMs are admitted by what they really use, which the service reads
-# from each Firecracker process, so the budget is the node's memory and not a
-# sum of the sizes its VMs were configured at: auto takes all of it
-# (TILO_VM_MEMORY_MIB), and the reserve (TILO_VM_MEMORY_RESERVE_MIB, 2 GiB) is
-# what the service keeps for this pod, its VMs' helper processes and the room
-# a balloon needs to give memory back.
+# from each VM's processes, so the budget is the node's memory and not a sum
+# of the sizes its VMs were configured at: auto takes all of it
+# (TILO_VM_MEMORY_MIB). The reserve (TILO_VM_MEMORY_RESERVE_MIB, 2 GiB) is what
+# the service keeps for this pod, its VMs' helper processes and the room a
+# balloon needs to give memory back, and the headroom
+# (TILO_VM_MEMORY_HEADROOM_MIB, 128 MiB) is added to what a VM is counted at
+# until the kernel has measured it.
 memory_mib=${TILO_VM_MEMORY_MIB:-}
 if [ "$memory_mib" = auto ]; then
   total_mib=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB/\1/p' /proc/meminfo) / 1024 ))
@@ -138,6 +140,7 @@ if [ "$memory_mib" = auto ]; then
   say "memory for VMs: all of the node's $memory_mib MiB"
 fi
 set -- "$@" --memory-reserve-mib "${TILO_VM_MEMORY_RESERVE_MIB:-2048}"
+set -- "$@" --memory-headroom-mib "${TILO_VM_MEMORY_HEADROOM_MIB:-128}"
 if [ -n "$memory_mib" ]; then set -- "$@" --memory-mib "$memory_mib"; fi
 if [ -n "${TILO_VM_STATUS_LISTEN:-}" ]; then set -- "$@" --status-listen "$TILO_VM_STATUS_LISTEN"; fi
 # The browser session in a workspace's VM joins its workspace through the
