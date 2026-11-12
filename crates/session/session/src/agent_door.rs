@@ -2854,6 +2854,7 @@ mod tests {
             state: None,
             session: Arc::new(SessionDoors::new(Arc::new(|| {}), "person")),
             run: None,
+            seat: None,
         };
         let started = std::time::Instant::now();
         let read = records.read(
