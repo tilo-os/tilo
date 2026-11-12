@@ -289,7 +289,16 @@ def mint_identity(session: Session, env: dict) -> None:
             text=True,
             timeout=120,
         )
-        if '"throwaway": true' not in answer.stdout + answer.stderr:
+        answered = False
+        for line in (answer.stdout + answer.stderr).splitlines():
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            answered = bool(parsed.get("answer", {}).get("throwaway"))
+            # A second session reads the identity the first one left.
+            answered |= parsed.get("err", {}).get("code") == "identity_exists"
+        if not answered:
             sys.exit(
                 "FAIL: the session minted no identity: "
                 f"{answer.stdout.strip()} {answer.stderr.strip()}"
