@@ -53,6 +53,7 @@ mod device_rejoin_tests;
 mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod hosts;
+pub use hosts::await_relay;
 mod link_follow;
 mod session_carry;
 pub(crate) use link_follow::carry_admitted;
@@ -995,6 +996,18 @@ struct WorkspacesInner {
     /// The devices the host's own person runs an agent on, and their open
     /// sessions ([`agent_door`]).
     agent_door: agent_door::AgentDoor,
+    /// The task following where this host answers ([`hosts::Workspaces::follow_own_address`]),
+    /// aborted with the host: it holds the endpoint's address watcher, which keeps the
+    /// endpoint's socket open until it goes.
+    own_address: std::sync::OnceLock<tokio::task::AbortHandle>,
+}
+
+impl Drop for WorkspacesInner {
+    fn drop(&mut self) {
+        if let Some(following) = self.own_address.get() {
+            following.abort();
+        }
+    }
 }
 
 /// One person's place in a governed workspace, as installed bots compare it
@@ -1197,6 +1210,7 @@ impl Workspaces {
                 memberships: memberships::Memberships::default(),
                 personal: personal::PersonalLists::new(&dir),
                 agent_door: agent_door::AgentDoor::default(),
+                own_address: std::sync::OnceLock::new(),
             }),
         };
         let (device, mut workspaces) = (this.device_keys(), BTreeMap::new());
@@ -1227,47 +1241,66 @@ impl Workspaces {
             .values()
             .cloned()
             .collect::<Vec<_>>();
+        // What each of them is about to name is this host's own address, which
+        // reaches nobody from outside this network until the endpoint has
+        // connected to its relay.
+        if !workspaces.is_empty() {
+            await_relay(&this.inner.host.endpoint).await;
+        }
+        this.serve_kept(workspaces).await?;
+        this.start_following().await;
+        Ok(this)
+    }
+
+    /// Serve each workspace this host kept from its last run: bring it up,
+    /// settle its governance, name this host's address in it, and recall what
+    /// it left running.
+    async fn serve_kept(
+        &self,
+        workspaces: Vec<Arc<AsyncMutex<GovernedWorkspace>>>,
+    ) -> Result<(), String> {
         for workspace in workspaces {
             let mut workspace = workspace.lock().await;
             workspace
-                .publish_brought_up(&this.inner.host.key, SystemTime::now())
+                .publish_brought_up(&self.inner.host.key, SystemTime::now())
                 .map_err(|e| format!("{}: brought up: {e}", workspace.workspace()))?;
-            this.bind(&workspace)
+            self.bind(&workspace)
                 .await
                 .map_err(|e| format!("bind: {e}"))?;
             tracing::info!("bound");
-            this.settle(&mut workspace)
+            self.settle(&mut workspace)
                 .await
                 .map_err(|e| format!("settle: {e}"))?;
             tracing::info!("settled");
             // Where members reach the host is advice: a workspace whose
             // governance does not take this host's new address keeps the one
             // it names, and is served all the same.
-            if let Err(error) = this.name_own_host(&mut workspace).await {
+            if let Err(error) = self.name_own_host(&mut workspace).await {
                 tracing::error!(workspace = %workspace.workspace(), %error, "the host's address is not named in the workspace's governance");
             }
-            this.keep_link_history(&workspace).await;
-            this.recall(&mut workspace)
+            self.keep_link_history(&workspace).await;
+            self.recall(&mut workspace)
                 .await
                 .map_err(|e| format!("recall: {e}"))?;
             tracing::info!("recalled");
-            this.prepare_desktop_record(&mut workspace)
+            self.prepare_desktop_record(&mut workspace)
                 .await
                 .map_err(|e| format!("desktop record: {e}"))?;
             tracing::info!("desktop record ready");
             // What the relay's log revoked while the workspace was closed.
-            this.carry_revocations(&mut workspace, &[]).await?;
+            self.carry_revocations(&mut workspace, &[]).await?;
         }
-        this.start_following().await;
-        Ok(this)
+        Ok(())
     }
 
     /// Follow what a host watches once its workspaces are open: their
-    /// activity, the app surfaces their writes wait for, and each record's
-    /// repair, then whatever its hosted workspaces left running.
+    /// activity, the app surfaces their writes wait for, each record's
+    /// repair, and the address it answers at, then whatever its hosted
+    /// workspaces left running.
     async fn start_following(&self) {
         self.follow_activity();
         self.follow_missing_surfaces();
+        self.follow_own_address();
         #[cfg(feature = "agents")]
         self.follow_repaired_records();
         self.inner.hosting.resume().await;

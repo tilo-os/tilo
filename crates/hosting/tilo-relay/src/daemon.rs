@@ -572,6 +572,12 @@ impl Relay {
         })
         .transpose()?
         .map(Arc::new);
+        // Where this host is dialled — what each workspace's governance names of
+        // it, and what a link it hands out carries — is the relay, which the
+        // endpoint knows only once it has connected to one. The workspaces opened
+        // below name it straight away, and a host that has none yet names it when
+        // it makes its first, so wait for the relay before serving either.
+        tilo_room_host::workspaces::await_relay(&endpoint).await;
         let (sessions, governed) = crate::host::HostSessions::open(
             crate::host::HostConfig {
                 state_root: cfg.state_root.clone(),

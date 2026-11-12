@@ -185,11 +185,6 @@ impl Running {
                         )
                         .await
                         .expect("the host starts");
-                        tilo_test_env::within(
-                            "the host's packet relay is up",
-                            relay.endpoint.online(),
-                        )
-                        .await;
                         let url = relay
                             .node_addr()
                             .relay_urls()
