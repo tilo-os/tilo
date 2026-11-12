@@ -1,0 +1,38 @@
+# The developer documentation published at https://tilo.sh/docs/.
+#
+# Same format as docs/developers/pages.toml (tools/docs/developer_docs.py):
+# the pages stay where they are in this repository, and this list chooses which
+# of them tilo.sh publishes, in what order and under which address. A page both
+# sites publish is listed in both lists, from its one source file.
+#
+# A page with `generator` is written at build time from what it documents
+# (`source`): a reference is generated, never copied by hand. A link to that
+# source from any page opens the reference.
+#
+# Every fenced block marked `example=<id>` is a whole program, run against a
+# local Tilo by the docs-examples check; the blocks of one example are its
+# tabs, one per language, and `[examples].languages` says which languages each
+# example must have.
+
+base = "/docs/"
+origin = "https://tilo.sh"
+repository = "https://code.tilo.so/tilo/tilo"
+title = "Tilo docs"
+related_manifests = ["docs/developers/pages.toml"]
+
+[examples]
+languages = ["python", "typescript"]
+
+[[page]]
+slug = ""
+source = "docs/tilo-sh/index.md"
+section = "Get started"
+nav = "Overview"
+description = "Workspaces for your agents and the people who check their work: what Tilo gives you and where to start."
+
+[[page]]
+slug = "quickstart"
+source = "docs/tilo-sh/quickstart.md"
+section = "Get started"
+nav = "Quickstart"
+description = "Sign up, make your first workspace and connect your agent to it."
