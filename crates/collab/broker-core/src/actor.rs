@@ -226,6 +226,15 @@ impl BrokerActor {
         self.is_agent
     }
 
+    /// Whether this is an application acting under its own identity
+    /// ([`Self::app`]): decided by what the workspace grants it, as an agent
+    /// is, but never an agent, whose actions a workspace may confine to its
+    /// runs.
+    #[must_use]
+    pub fn is_app(&self) -> bool {
+        self.id.starts_with("app:")
+    }
+
     /// The person this agent acts for, when one delegated it.
     #[must_use]
     pub fn acting_for(&self) -> Option<&str> {

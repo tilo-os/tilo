@@ -2802,9 +2802,11 @@ pub struct AppBrokerState {
     app_action_consent: RwLock<Option<Arc<dyn crate::app_actions::AppActionConsentPrompter>>>,
     /// The notices of runs' questions given, by handle, with their workspace.
     run_question_notices: Mutex<HashMap<String, String>>,
-    /// Applications with a grant question on screen, by workspace: one at a
-    /// time each, so an app cannot bury the person in sheets.
-    app_action_consent_pending: Mutex<std::collections::HashSet<(String, String)>>,
+    /// The grant questions on screen ([`app_consent::ConsentKey`]): one at a
+    /// time for each action an app asks for, so an app cannot bury the person
+    /// in sheets, while the two apps one action of it changes are asked about
+    /// in turn.
+    app_action_consent_pending: Mutex<std::collections::HashSet<app_consent::ConsentKey>>,
     /// Bumped whenever a pending or completed invocation changes, so hosts
     /// can refresh retained invocation projections exactly when needed and
     /// a waiter on a running invocation wakes when it may have moved.
@@ -5100,7 +5102,10 @@ impl AppBrokerState {
         // In native workspaces an agent's action authority comes only from the
         // authenticated task admission callback, never from ambient context
         // or a workspace grant alone (including after its run has stopped).
-        if actor.is_agent && self.confines_agents_to_tasks(&offered.0.route.cluster_id) {
+        if actor.is_agent
+            && !actor.is_app()
+            && self.confines_agents_to_tasks(&offered.0.route.cluster_id)
+        {
             match durable {
                 Some(DurableContext::Task { binding, .. })
                     if actor.id.strip_prefix("agent:").unwrap_or(&actor.id) == binding.agent_id => {
