@@ -311,7 +311,6 @@ impl WorkspaceAgents {
 
 #[resource(
     kind = "chat.agent",
-    label = "Agents",
     search = WorkspaceAgents::search,
     read_content = WorkspaceAgents::read_document
 )]

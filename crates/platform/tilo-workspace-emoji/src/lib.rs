@@ -162,7 +162,6 @@ impl WorkspaceEmoji {
 
 #[resource(
     kind = "tilo.workspace.emoji",
-    label = "Workspace emoji",
     read_content = WorkspaceEmoji::read_document
 )]
 impl WorkspaceEmoji {

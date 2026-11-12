@@ -284,7 +284,6 @@ impl FeedbackDraft {
 
 #[resource(
     kind = "tilo.feedback-draft",
-    label = "Feedback",
     read_content = FeedbackDraft::read_document
 )]
 impl FeedbackDraft {}

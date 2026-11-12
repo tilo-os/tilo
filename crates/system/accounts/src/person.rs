@@ -124,7 +124,6 @@ impl PersonAccounts {
 
 #[resource(
     kind = "tilo.accounts",
-    label = "Accounts",
     version = 2,
     migrate = upgrade,
     read_content = PersonAccounts::read_document

@@ -280,3 +280,20 @@ agent-provider-where = Wo er läuft
 agent-endpoint-fill-in = Setze { $what } ein und speichere dann die Angaben.
 agent-key-unencrypted = Dieser Schlüssel wird unverschlüsselt in deinem Netzwerk gesendet: der Endpunkt verwendet http, nicht https.
 agent-model-tools-in-use = { $agents } plant mit diesem Modell. Wähle zuerst ein anderes Modell dafür.
+
+## Actions
+
+model-providers-root = Modellanbieter
+settings-effect-list-presets = Hinzufügbare Anbieter auflisten
+settings-effect-add-provider = Anbieter hinzufügen
+settings-effect-set-provider-model = Modell verwenden
+settings-effect-set-provider-protocol = Protokoll festlegen
+settings-effect-set-provider-enabled = Anbieter aktivieren
+settings-effect-set-provider-details = Anbieter bearbeiten
+settings-effect-set-model-request-limits = Anfragelimits festlegen
+settings-effect-inspect-model-request-limits = Anfragelimits anzeigen
+settings-effect-set-model-capabilities = Modellfähigkeiten festlegen
+settings-effect-set-agent-model = Agentenmodell wählen
+settings-effect-set-interaction-model = Interaktionsmodell wählen
+settings-effect-save-provider-key = API-Schlüssel speichern
+settings-effect-remove-provider-key = API-Schlüssel entfernen

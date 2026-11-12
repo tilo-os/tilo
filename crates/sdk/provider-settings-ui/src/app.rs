@@ -31,7 +31,6 @@ impl Providers {
 
 #[resource(
     kind = "model-providers.root",
-    label = "Model providers",
     read_content = Providers::read_document
 )]
 impl Providers {}

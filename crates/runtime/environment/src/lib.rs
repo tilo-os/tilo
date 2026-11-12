@@ -178,7 +178,6 @@ impl Environment {
 
 #[resource(
     kind = "environment",
-    label = "Environment",
     version = 3,
     migrate = upgrade,
     read_content = Environment::read_document

@@ -75,3 +75,19 @@ feedback-report-hidden = { $kind ->
 }
 tilo-app-undo-description = Nimm deine letzte Änderung an deiner { $label } zurück.
 tilo-app-redo-description = Stelle die Änderung an deiner { $label } wieder her, die du zuletzt zurückgenommen hast.
+
+## Actions
+
+example-framework-scaling = Checkliste
+example-framework-scaling-seed = Aufgaben hinzufügen
+example-resource-journey = Checkliste
+example-resource-journey-add = Aufgabe hinzufügen
+example-resource-journey-remove = Aufgabe entfernen
+feedback-compose-review = Bericht prüfen
+feedback-compose-submit = Bericht senden
+feedback-compose-retry = Erneut senden
+feedback-compose-redact = Teil ausblenden
+feedback-compose-remove-screenshot = Screenshot entfernen
+feedback-compose-remove-recording = Aufnahme entfernen
+feedback-compose-toggle = Teil ein- oder ausblenden
+tilo-feedback-draft = Feedback

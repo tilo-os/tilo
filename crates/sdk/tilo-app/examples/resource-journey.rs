@@ -25,7 +25,7 @@ pub struct Checklist {
     pub tasks: Collection<Task>,
 }
 
-#[resource(kind = "example.resource-journey", label = "Checklist")]
+#[resource(kind = "example.resource-journey")]
 impl Checklist {
     /// Add the drafted task.
     ///

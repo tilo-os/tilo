@@ -158,7 +158,7 @@ pub struct Checklist {
     pub tasks: Collection<Task>,
 }
 
-#[resource(kind = "example.framework-scaling", label = "Checklist")]
+#[resource(kind = "example.framework-scaling")]
 impl Checklist {
     /// Add `count` tasks at once.
     #[action]

@@ -113,7 +113,6 @@ impl ContactDirectory {
 
 #[resource(
     kind = "tilo.contacts.identities",
-    label = "Contact identities",
     version = 2,
     migrate = upgrade,
     read_content = ContactDirectory::read_document
