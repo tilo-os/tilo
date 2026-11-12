@@ -156,11 +156,17 @@ const reload = async tab => { await forget(tab); await tab.reload(); await sleep
 // Back one entry in the tab's history, as the browser's Back button goes.
 const goBack = async tab => { await forget(tab); await tab.evaluate('history.back()').catch(() => {}); await sleep(300); };
 // A person's click: on the tab in front, as only that one may use the clipboard.
+// A person's click on the button `id`, once it is what stands at its centre:
+// a click on a layer still over it (the screen fading in) lands on that layer
+// and presses nothing.
 const click = async (tab, id) => {
   await tab.send('Page.bringToFront').catch(() => {});
   const box = JSON.parse(await until(tab, `(() => { const e = document.getElementById(${JSON.stringify(id)});
-    if (!e) return ''; const r = e.getBoundingClientRect(); if (!r.width) return '';
-    return JSON.stringify({x: r.x + r.width / 2, y: r.y + r.height / 2}); })()`) ?? 'null');
+    if (!e || e.disabled) return ''; const r = e.getBoundingClientRect(); if (!r.width) return '';
+    const x = r.x + r.width / 2, y = r.y + r.height / 2;
+    const top = document.elementFromPoint(x, y);
+    if (!top || !e.contains(top)) return '';
+    return JSON.stringify({x, y}); })()`) ?? 'null');
   if (!box) return false;
   for (const type of ['mousePressed', 'mouseReleased']) {
     await tab.send('Input.dispatchMouseEvent', {type, x: box.x, y: box.y, button: 'left', clickCount: 1});
@@ -274,8 +280,10 @@ frame = await firstFrame(second);
 check(frame.step === 'waiting' && frame.prompt === prompt, '2. a second tab: the same step and prompt, no competing setup', JSON.stringify(frame));
 await shot(second, 'resume-2-second-tab');
 // Back in the second tab: the first follows it back to the start.
-await click(second, 'first-run-back');
-check(await until(tab, `document.documentElement.dataset.firstRun === ''`, stepLimit(1)), '2. back in the second tab: the first tab is back at the start too');
+check(await click(second, 'first-run-back') && await until(second, `document.documentElement.dataset.firstRun === ''`, stepLimit(1)),
+  '2. back in the second tab: it is back at the start', await pageText(second));
+check(await until(tab, `document.documentElement.dataset.firstRun === ''`, stepLimit(1)), '2. back in the second tab: the first tab is back at the start too',
+  JSON.stringify({first: await tab.evaluate(`({screen: document.documentElement.dataset.firstRun ?? null, kept: localStorage.getItem('tilo-setup')})`).catch(() => null)}));
 await second.close();
 // Copy again in the first tab (a fresh code), then close it and reopen.
 await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready'`);
