@@ -1819,7 +1819,7 @@ impl State {
             .find(|window| {
                 window
                     .x11_surface()
-                    .and_then(|x11| x11.wl_surface())
+                    .and_then(smithay::xwayland::X11Surface::wl_surface)
                     .is_some_and(|surface| &surface == root)
             })
             .and_then(|window| describe(self, window).map(|info| info.id))
