@@ -748,6 +748,7 @@ inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/letters/"]
 readers = [
   "apps/tilolang/src/packages.rs",
   "apps/tilolang/tests/board.rs",
+  "apps/tilolang/tests/history.rs",
   "apps/tilolang/tests/history_undo.rs",
   "apps/tilolang/tests/opening.rs",
   "apps/tilolang/tests/support.rs",

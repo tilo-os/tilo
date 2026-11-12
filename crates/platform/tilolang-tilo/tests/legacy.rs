@@ -456,9 +456,8 @@ fn an_older_boards_cards_move_into_their_columns_by_its_migration_keeping_their_
         tilolang_tilo::authority::migration_principal(app, &meta.module_hash).0
     );
     assert!(
-        tilolang_tilo::names::unnamed(&authorship.invoker)
-            .starts_with("Board, updating to version "),
-        "{}",
+        tilolang_tilo::names::unnamed(&authorship.invoker) == "Board",
+        "history names Board, the app whose build made the change: {}",
         tilolang_tilo::names::unnamed(&authorship.invoker)
     );
     for done in &committed {

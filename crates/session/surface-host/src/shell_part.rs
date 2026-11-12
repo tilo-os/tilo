@@ -1436,8 +1436,12 @@ impl NameHost for Person {
     fn name(&self, who: &Principal) -> String {
         if who.0.is_empty() {
             self.0.clone()
+        } else if who.1.trim().is_empty() {
+            // Named by what the actor is: an app by its own name in the person's language, an
+            // agent by its name, a person by theirs. Never a principal id.
+            ui::history_source::participant_name(&who.0)
         } else {
-            who.shown()
+            who.1.clone()
         }
     }
 }

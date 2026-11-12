@@ -1583,7 +1583,12 @@ impl PresenceCtx {
                 .map(|(_, name)| name.trim().to_owned())
                 .filter(|name| !name.is_empty())
         });
-        let name = name.unwrap_or_else(|| user.0.clone());
+        let name = match name {
+            Some(name) => name,
+            // Software the roster has not named is named by what it is, never by its id:
+            // "Today · App". Someone presence knows only an id of keeps it until it knows a name.
+            None => crate::history_source::software_name(&user.0).unwrap_or_else(|| user.0.clone()),
+        };
         self.kind_label(user, &name)
     }
 

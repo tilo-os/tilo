@@ -3,6 +3,9 @@
 //! each moment reads as how long ago it was, the window sleeping until that reads differently
 //! and showing it anew when it does.
 //!
+//! Another app's change to the same note reads as that app, by its own name in the person's
+//! language: Today files a note in Notes and the note's history says "Today", or "Heute".
+//!
 //! With `TILO_HISTORY_SHOTS=<dir>` the test writes the note's window, light and dark, with the
 //! run's entry closed and open.
 
@@ -11,10 +14,61 @@ use tilolang_tilo::action::resource_ids;
 use ui::framework::testing::HostedApp;
 use ui::time::testing::with_wall;
 
-use crate::change_marks::{action_id, named, published_with, run, settle};
+use crate::change_marks::{action_id, named, published_with, run, settle, walk};
 use crate::history_window::{after, shoot, sleeps_for, times};
 
 const NOTES: &str = "so.tilo.lang.notes";
+/// The app whose action files a note in Notes' notebook (`morning_cleanup`).
+const TODAY: &str = "so.tilo.lang.today";
+
+/// The names the note's history opens its steps with, newest first: who made each change.
+fn said_by(app: &mut HostedApp) -> Vec<String> {
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    let heading = all
+        .iter()
+        .filter(|node| {
+            node.widget == "Text"
+                && node
+                    .semantics
+                    .as_ref()
+                    .is_some_and(|semantics| semantics.name.as_deref() == Some("History"))
+        })
+        .map(|node| node.rect[1])
+        .fold(None, |least: Option<f64>, y| {
+            Some(least.map_or(y, |held| held.min(y)))
+        });
+    all.into_iter()
+        .filter(|node| node.widget == "Text")
+        .filter(|node| heading.is_none_or(|heading| node.rect[1] >= heading))
+        .filter_map(|node| node.semantics.as_ref()?.name.clone())
+        .collect()
+}
+
+/// Today's call names a note in Notes' notebook, and the note's own history says so: the app
+/// that changed another app's record is named by its name in the reader's language, never by
+/// its principal id and never by part of one.
+fn today_files_a_note(app: &mut HostedApp) {
+    let root = app.read(|doc| resource_ids(doc, NOTES)).remove(0);
+    let notebook = format!("tl:{NOTES}:{root}");
+    let file = action_id(app, &notebook, "File a note");
+    let mut args = Map::new();
+    args.insert("title".to_owned(), "Morning: 2 done".into());
+    args.insert("t".to_owned(), "morning".into());
+    // The broker admits the app's invocation under the app's own principal: what Notes' record
+    // keeps of it.
+    let by_today = ui::tilo_actions::ActionInvoker::actor(format!("app:{TODAY}"))
+        .with_kind(ui::tilo_actions::ActorKind::App);
+    app.invoke(Some(by_today), None, &notebook, &file, &args, false)
+        .expect("Today files a note");
+    settle(app);
+    // The note it made, opened on its own page, which reads its history.
+    let row = named(app, "ListRow", "Morning: 2 done");
+    app.harness()
+        .click_at(row[0] + row[2] / 4.0, row[1] + row[3] / 2.0);
+    settle(app);
+}
 
 #[test]
 fn a_notes_history_shows_who_changed_it_and_when_and_reads_anew_as_time_passes() {
@@ -104,5 +158,48 @@ fn a_notes_history_shows_who_changed_it_and_when_and_reads_anew_as_time_passes()
     assert!(
         anew.iter().all(|now| !shown.contains(now)),
         "every moment reads anew: {shown:?} then {anew:?}"
+    );
+}
+
+#[test]
+fn a_note_another_app_filed_reads_as_that_app_in_the_person_s_language() {
+    let _settled = ui::motion::testing::settled();
+    let mut app = HostedApp::open(crate::support::installed("notes"), "ada").unwrap();
+    settle(&mut app);
+    today_files_a_note(&mut app);
+    let said = said_by(&mut app);
+    assert_eq!(
+        said.first().map(String::as_str),
+        Some("Today"),
+        "the change Today made reads as Today: {said:?}"
+    );
+    assert!(
+        !said
+            .iter()
+            .any(|who| who.contains("app:") || who.starts_with("so.tilo")),
+        "no principal id, whole or cut short, is shown: {said:?}"
+    );
+}
+
+#[test]
+fn the_same_note_reads_as_the_app_s_own_name_in_german() {
+    let _settled = ui::motion::testing::settled();
+    let mut app = HostedApp::open(crate::support::installed("notes"), "ada").unwrap();
+    settle(&mut app);
+    // The words of the apps this device has: Today's, as its package ships them. A session
+    // carries an installed app's catalogue beside its own (`tilo_ui_host::i18n`), which is what
+    // makes its name read in the person's language here.
+    tilo_ui_host::i18n::add_shared_catalogues(&[(
+        "de-DE".to_owned(),
+        include_str!("../../tl/today/locales/de-DE.ftl").to_owned(),
+    )]);
+    ui::i18n::I18nManager::set_locale("de-DE");
+    settle(&mut app);
+    today_files_a_note(&mut app);
+    let said = said_by(&mut app);
+    assert_eq!(
+        said.first().map(String::as_str),
+        Some("Heute"),
+        "the app's own name in German: {said:?}"
     );
 }
