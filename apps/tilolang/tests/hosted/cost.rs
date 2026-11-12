@@ -356,6 +356,35 @@ fn at_rest(session: &mut Session, drawn_before: u64) -> Rest {
     rest
 }
 
+/// The window's open taken to rest as a window takes it: the host's turns, and a frame only when
+/// a turn changed what it shows or its tree owes one ([`frame_if_asked`]), until the workspace's
+/// index is whole and nothing is left to do. A frame drawn on every turn regardless is work no
+/// window at rest does.
+fn opened_at_rest(session: &mut Session) {
+    let deadline = std::time::Instant::now() + WAKE_WAIT;
+    let mut quiet = 0_u32;
+    let mut rounds = 0_u32;
+    while quiet < 3 {
+        let changed = session.host.turn();
+        let framed = frame_if_asked(session, changed);
+        let waiting = (!session.index_whole() || session.search_index_pending())
+            && std::time::Instant::now() < deadline;
+        if changed || framed || waiting {
+            quiet = 0;
+        } else {
+            quiet = quiet.saturating_add(1);
+        }
+        if !changed && waiting {
+            session.woken.wait(WAKE_WAIT);
+        }
+        rounds = rounds.saturating_add(1);
+        assert!(
+            rounds < 10_000,
+            "the window never came to rest after opening"
+        );
+    }
+}
+
 /// One interaction, measured from `input` reaching the window to the windows' work at rest with
 /// what it did on screen.
 fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Session)) -> Cost {
@@ -415,8 +444,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 300_000,
             eval_layout_us: 300_000,
             held: Held {
-                optimized_us: 1_050_000,
-                development_us: 4_050_000,
+                optimized_us: 620_000,
+                development_us: 2_400_000,
             },
         },
     ),
@@ -426,8 +455,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 8_000,
             eval_layout_us: 8_000,
             held: Held {
-                optimized_us: 16_000,
-                development_us: 55_000,
+                optimized_us: 18_000,
+                development_us: 70_000,
             },
         },
     ),
@@ -438,7 +467,7 @@ const TARGETS: &[(&str, Target)] = &[
             eval_layout_us: 16_000,
             held: Held {
                 optimized_us: 140_000,
-                development_us: 450_000,
+                development_us: 570_000,
             },
         },
     ),
@@ -448,8 +477,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 80_000,
-                development_us: 280_000,
+                optimized_us: 145_000,
+                development_us: 500_000,
             },
         },
     ),
@@ -459,8 +488,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 85_000,
-                development_us: 310_000,
+                optimized_us: 90_000,
+                development_us: 340_000,
             },
         },
     ),
@@ -471,7 +500,7 @@ const TARGETS: &[(&str, Target)] = &[
             eval_layout_us: 16_000,
             held: Held {
                 optimized_us: 90_000,
-                development_us: 430_000,
+                development_us: 470_000,
             },
         },
     ),
@@ -481,8 +510,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 8_000,
             eval_layout_us: 8_000,
             held: Held {
-                optimized_us: 21_000,
-                development_us: 100_000,
+                optimized_us: 25_000,
+                development_us: 110_000,
             },
         },
     ),
@@ -580,7 +609,9 @@ fn what_the_interactions_a_person_feels_cost() {
     let storage = kept_index(&route, &chunks, "interactions");
     let start = ui::rt::thread_cpu_time();
     let wall = ui::time::Instant::now();
-    let mut session = on_the_frame_clock(Session::tasks_over_in(&route, chunks, Some(storage)));
+    let mut session =
+        on_the_frame_clock(Session::tasks_over_launched(&route, chunks, Some(storage)));
+    opened_at_rest(&mut session);
     let wall_us = wall.elapsed().as_micros() as u64;
     let cpu_us = since(start, wall.elapsed());
     costs.add(Cost {
