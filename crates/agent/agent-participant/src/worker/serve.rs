@@ -104,7 +104,9 @@ struct WorkerContent {
 
 impl WorkerContent {
     fn new() -> Self {
-        let local = ContentStore::memory();
+        // It holds only what the supervisor put from the one workspace the
+        // worker serves, so a reference an action names resolves in it.
+        let local = ContentStore::memory().for_one_workspace();
         let lane = Arc::new(ContentLane::default());
         let store = RecordContent::store(local.clone(), Arc::clone(&lane));
         Self { local, lane, store }

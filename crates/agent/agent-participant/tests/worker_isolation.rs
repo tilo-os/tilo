@@ -777,17 +777,16 @@ fn did(change: &DocumentMutation) -> Vec<String> {
         .collect()
 }
 
-/// Pin the PDF `hash` the workspace holds as `agent`'s PDF record's source, and
-/// let its view open it.
-fn pin_pdf(agent: &ConfinedReplica, workspace: &ContentStore, hash: &str, name: &str) {
+/// Pin the PDF `reference` the workspace holds as `agent`'s PDF record's
+/// source, and let its view open it.
+fn pin_pdf(agent: &ConfinedReplica, reference: &str, name: &str) {
     let pin = operation(agent, "pin-source");
     assert_eq!(pin.kind, OperationKind::Document);
     agent
         .invoke(
             &pin.address,
             &arguments(serde_json::json!({
-                "hash": hash,
-                "len": workspace.read(hash).unwrap().len(),
+                "source": tilo_actions::content_resource(reference),
                 "name": name,
             })),
             false,
@@ -815,8 +814,9 @@ fn pin_pdf(agent: &ConfinedReplica, workspace: &ContentStore, hash: &str, name: 
 /// the workspace lent it: no file, network or helper process.
 #[test]
 fn an_agent_reads_a_pdf_the_workspace_holds_in_its_worker() {
-    let workspace = ContentStore::memory();
-    let hash = workspace
+    // Sealed, as the host keeps what is put in a workspace.
+    let workspace = ContentStore::memory().sealing();
+    let reference = workspace
         .put(&pdf(&[
             "Lamps in the hall",
             "Lamps in the attic",
@@ -825,7 +825,7 @@ fn an_agent_reads_a_pdf_the_workspace_holds_in_its_worker() {
         .unwrap();
     let agent = agents_record(PDF, Some(&workspace));
     assert_ne!(agent.worker_id(), Some(std::process::id()));
-    pin_pdf(&agent, &workspace, &hash, "inventory.pdf");
+    pin_pdf(&agent, &reference, "inventory.pdf");
 
     let read = operation(&agent, "read-text");
     assert_eq!(read.kind, OperationKind::Effect);
@@ -888,12 +888,13 @@ fn an_agent_reads_a_pdf_the_workspace_holds_in_its_worker() {
 /// confined worker and kept as content the workspace keeps.
 #[test]
 fn an_agent_looks_at_a_pdf_page_in_its_worker() {
-    let workspace = ContentStore::memory();
-    let hash = workspace
+    // Sealed, as the host keeps what is put in a workspace.
+    let workspace = ContentStore::memory().sealing();
+    let reference = workspace
         .put(&pdf(&["Floor plan: hall", "Floor plan: attic"]))
         .unwrap();
     let agent = agents_record(PDF, Some(&workspace));
-    pin_pdf(&agent, &workspace, &hash, "plan.pdf");
+    pin_pdf(&agent, &reference, "plan.pdf");
 
     let look = operation(&agent, "look-page");
     assert!(tilo_agent_participant::apps::readable(&look), "{look:?}");
