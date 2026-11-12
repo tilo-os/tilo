@@ -334,7 +334,10 @@ class Session:
         return self.control_json("windows", "--json")
 
     def frames(self) -> list[dict]:
-        return self.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
+        """The open windows that show one, each with where it stands (`rect`) and how many frames
+        its client drew (`frames`): a window showing the same thing keeps its count, so a rise
+        between two reads is a frame it drew."""
+        return [w for w in self.windows() if w.get("window") is not None]
 
     def provision(self, model: TestOnlyFixedReplyModel) -> None:
         """Give the session's person the test-only model as their provider, as Settings' "Add
@@ -346,7 +349,8 @@ class Session:
 # --- what the checks share ---------------------------------------------------------------
 
 def presented(session: Session) -> set[str]:
-    return {f["app_id"] for f in session.frames() if f.get("presented") and f.get("pixels_ready")}
+    """The apps whose window is drawn: mapped on an output, with a frame its client drew."""
+    return {f["app_id"] for f in session.frames() if f.get("rect") and f.get("frames", 0) > 0}
 
 
 def windows_by_app(session: Session) -> dict[str, dict]:
@@ -379,8 +383,9 @@ def read_content(session: Session, name: str) -> str | None:
 
 
 def window_frame(session: Session, name: str) -> int | None:
-    """The last frame the window of tilolang `name` presented, by its sequence number."""
-    return next((f["frame_seq"] for f in session.frames() if f.get("app_id") == app_id(name)), None)
+    """The frames the window of tilolang `name` drew: its count rises as it draws again."""
+    return next((f.get("frames", 0) for f in session.frames() if f.get("app_id") == app_id(name)),
+                None)
 
 
 def holds(session: Session, name: str, text: str) -> bool | None:

@@ -9,8 +9,8 @@
 #                                       disk, boot it until the agent serves, and wrap the disk
 #                                       into OUT/image.oci.tar (as root in an x86_64 micro-VM
 #                                       step); legacy-guest-e2e.sh, beside this script, tests it
-#   legacy-guest.sh binaries OUT        the shell under test (debug, agent-control) and
-#                                       tilo-legacy (CI builder)
+#   legacy-guest.sh binaries OUT        the session under test (debug) and tilo-legacy
+#                                       (CI builder)
 #   legacy-guest.sh pins OUT            after publish-legacy-guest published OUT, write
 #                                       OUT/pins.env: its reference and the inputs it was built from
 #   legacy-guest.sh pin                 write os/legacy-guest-snapshot.env from stable's pins
@@ -77,10 +77,10 @@ case ${1:-} in
   binaries)
     out=${2:?usage: legacy-guest.sh binaries OUT}
     target=${CARGO_TARGET_DIR:-target}
-    # Debug: the shell's test-control socket exists only in debug builds.
-    CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked -p shell --bin shell --features agent-control \
+    # Debug: the session's test-control socket exists only in development builds.
+    CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked -p tilo-session --bin tilo-session \
       -p legacy-vm --bin tilo-legacy
-    install -D -m 0755 "$target/debug/shell" "$out/shell"
+    install -D -m 0755 "$target/debug/tilo-session" "$out/tilo-session"
     install -D -m 0755 "$target/debug/tilo-legacy" "$out/tilo-legacy"
     ;;
   pins)

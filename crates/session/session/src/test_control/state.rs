@@ -177,10 +177,13 @@ pub(super) fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
 /// that window and where the frame draws it. A workspace or strip without a name is named by
 /// its id; `kind` is the tile's variant and `app_id` the app it names, if any. `rect` is the
 /// window's rectangle in the layout, `[x, y, width, height]`, or null while no window of the
-/// tab is mapped: it is what a tool aims at to press something the row names.
+/// tab is mapped: it is what a tool aims at to press something the row names. `frames` is how
+/// many frames the window's client committed: a window showing the same thing keeps its count,
+/// so two reads that agree say it drew nothing between them.
 pub(super) fn window_rows(
     tree: &DesktopTree,
     rect_of: impl Fn(u64) -> Option<(i32, i32, i32, i32)>,
+    frames_of: impl Fn(u64) -> u64,
 ) -> Vec<Json> {
     fn named(name: &str, id: u64) -> Json {
         if name.is_empty() {
@@ -218,6 +221,7 @@ pub(super) fn window_rows(
                         "active": group_active && group.active_tab == tab.id,
                         "floating": workspace.arrangement.float_of(group.id).is_some(),
                         "rect": rect,
+                        "frames": window.map_or(0, &frames_of),
                     }));
                 }
             }

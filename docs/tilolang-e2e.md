@@ -60,9 +60,9 @@ Today. The session installs them (`--install-tapp`) beside native Notes
 - **idle**: each app left untouched for 10 s, native Notes among them, and the
   tilolang host that runs the apps' instances: every thread of them sleeps, and
   the check fails on one context switch, naming the threads that woke. Nothing
-  animates here (each app's workspace is one this device holds) and a session
-  reports no per-window frame count (`foreign_frames` went with the old shell),
-  so one that woke woke for work nobody asked for.
+  animates here (each app's workspace is one this device holds) and every
+  window's frame count (`windows` reports `frames`, what its client committed)
+  stands still, so one that woke woke for work nobody asked for.
 - **routes**: a second start of the same session installs the collaboration
   probe in place of Today (whose surface declares that it reads Notes' kinds)
   and Tasks (which declares no read). The probe runs as each app's own launched

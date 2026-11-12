@@ -131,3 +131,49 @@ fn a_key_for_a_client_owes_no_frame_of_its_own() {
         .unwrap();
     assert!(compositor.owes_frame(), "the pointer moving does");
 }
+
+/// Each window's client commits are counted against that window: a desk that draws nothing keeps
+/// every count, and an app that draws moves its own and no one else's. What a tool reads to prove a
+/// window is still, or to count an app's frames in a real session.
+#[test]
+fn a_window_counts_the_frames_its_client_draws() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut quiet = mapped_client(&mut compositor, "quiet", (200, 100), [0, 0, 255, 255]);
+    let mut drawing = mapped_client(&mut compositor, "drawing", (200, 100), [255, 0, 0, 255]);
+    settle(&mut compositor);
+    let id_of = |compositor: &Compositor, app_id: &str| {
+        compositor
+            .windows()
+            .into_iter()
+            .find(|(info, _)| info.app_id.as_deref() == Some(app_id))
+            .map(|(info, _)| info.id)
+            .expect("the window is mapped")
+    };
+    let quiet_frames = compositor.window_frames(id_of(&compositor, "quiet"));
+    let drawing_id = id_of(&compositor, "drawing");
+    let drawing_frames = compositor.window_frames(drawing_id);
+    assert!(quiet_frames > 0, "its first frame is counted");
+
+    // The desk draws again with neither client drawing: no window's count moves.
+    settle(&mut compositor);
+    assert_eq!(
+        compositor.window_frames(id_of(&compositor, "quiet")),
+        quiet_frames
+    );
+    assert_eq!(compositor.window_frames(drawing_id), drawing_frames);
+
+    // One client draws, and only its window's count follows.
+    drawing.show(200, 100, [0, 255, 0, 255]);
+    pump(&mut compositor, &mut [&mut drawing], |compositor, _| {
+        compositor.window_frames(drawing_id) > drawing_frames
+    });
+    assert_eq!(
+        compositor.window_frames(id_of(&compositor, "quiet")),
+        quiet_frames,
+        "the window that drew nothing keeps its count"
+    );
+    quiet.show(200, 100, [0, 0, 255, 255]);
+    pump(&mut compositor, &mut [&mut quiet], |compositor, _| {
+        compositor.window_frames(id_of(compositor, "quiet")) > quiet_frames
+    });
+}

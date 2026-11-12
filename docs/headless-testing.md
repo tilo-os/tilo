@@ -585,7 +585,7 @@ scripts/perf/frame-loop-bench.py --seconds 8 --load fullscreen --input-hz 20
 # The nested-Wayland backend, inside a headless `cage` so no window
 # appears on your desktop. This is the only local way to exercise the
 # render thread — the headless backend deliberately presents inline.
-scripts/perf/frame-loop-bench.py --seconds 8 --backend winit --nested
+scripts/perf/frame-loop-bench.py --seconds 8 --backend nested --nested
 
 # Force a non-60 Hz cadence when no such panel is attached.
 scripts/perf/frame-loop-bench.py --seconds 8 --refresh-hz 144
@@ -597,7 +597,7 @@ scripts/perf/frame-loop-bench.py --seconds 8 --refresh-hz 144
 # flags at an existing dev install; no RPM/image rebuild is involved.
 scripts/perf/frame-loop-bench.py --seconds 12 --refresh-hz 144 \
   --input-hz 30 --launch-app dev.tilo.chat --gate \
-  --shell-bin target/release/shell \
+  --session-bin target/release/tilo-session \
   --launcher-bin target/release/tilo-launcher \
   --apps-data-dir "$HOME/.local/share/tilo-apps" \
   --runtime-bundle-dir "$HOME/.local/share/tilo-runtime"

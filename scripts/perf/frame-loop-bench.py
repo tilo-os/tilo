@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Measure the compositor's presentation loop.
 
-Spawns `shell --mode native` with the frame-loop instrumentation enabled
-(`TILO_FRAME_TRACE` / `TILO_FRAME_SUMMARY`, see
+Spawns `tilo-session --backend headless` with the frame-loop instrumentation
+enabled (`TILO_FRAME_TRACE` / `TILO_FRAME_SUMMARY`, see
 `crates/session/frame-metrics/src/lib.rs`), optionally drives input through the
 `TILO_TEST_CONTROL` socket and/or runs a continuously-painting Wayland
-client against it, then reports the frame-time distribution.
+client against it, then reports the frame-time distribution. A window's frames
+come from the session's `windows` rows: `frames` is how many frames that
+window's client committed, so a still desk keeps every count.
+
+The session must be a development build (one with `dev-overrides`, or a debug
+one) for the test-control socket to open:
+`cargo build --release -p tilo-session --bin tilo-session --features dev-overrides`.
 
 The point is repeatability: every number this prints comes from the same
 committed instrumentation the live binary carries, so a before/after
@@ -32,7 +38,7 @@ Examples
 Backends
 --------
 `--backend headless` (default) needs no display and no TTY: it is the
-only one that runs anywhere. `--backend winit` needs a Wayland/X11
+only one that runs anywhere. `--backend nested` needs a Wayland/X11
 parent — use `--nested` to wrap it in a headless `cage` so no window
 appears on the operator's desktop. `--backend drm` needs a free TTY.
 """
@@ -57,11 +63,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 
 
-def required_load_client(shell_bin: Path, load: str) -> Path | None:
+def required_load_client(session_bin: Path, load: str) -> Path | None:
     """A requested workload must exist before starting a compositor."""
     if load == "none":
         return None
-    client = shell_bin.parent / "tilo-loadclient"
+    client = session_bin.parent / "tilo-loadclient"
     if not client.is_file():
         raise FileNotFoundError(f"Requested {load} load requires {client}")
     return client
@@ -332,14 +338,14 @@ def wait_for_socket(path: Path, timeout: float) -> bool:
 
 
 def wait_for_wayland_socket(name_file: Path, timeout: float) -> str | None:
-    """The compositor prints `tilo compositor listening on "wayland-N"`."""
+    """The session prints the display it bound as `WAYLAND_DISPLAY=wayland-N`."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if name_file.exists():
             text = name_file.read_text(errors="replace")
             for line in text.splitlines():
-                if "compositor listening on" in line:
-                    return line.rsplit('"', 2)[-2]
+                if line.startswith("WAYLAND_DISPLAY="):
+                    return line.split("=", 1)[1].strip()
         time.sleep(0.05)
     return None
 
@@ -434,12 +440,14 @@ def cpu_percent_between(pid: int, seconds: float) -> float:
     return (last - first) / os.sysconf("SC_CLK_TCK") / elapsed * 100.0 if elapsed else 0.0
 
 
-def foreign_frames(ctl: Control) -> list[dict]:
-    reply = ctl.send({"op": "foreign_frames"})
-    body = reply.get("foreign_frames", reply.get("ok", reply))
-    if isinstance(body, dict):
-        body = body.get("frames", body)
-    return body if isinstance(body, list) else []
+def window_frames(ctl: Control) -> list[dict]:
+    """The desk's open windows: `window` (its id), `app_id`, `rect` (null while no window of the
+    tab is mapped) and `frames`, how many frames its client committed. A window showing the same
+    thing keeps its count, so a rise between two reads is a frame it drew."""
+    reply = ctl.send({"op": "windows"})
+    body = reply.get("answer", reply.get("ok", reply))
+    rows = body.get("windows") if isinstance(body, dict) else body
+    return [row for row in rows if row.get("window") is not None] if isinstance(rows, list) else []
 
 
 def launch_and_wait_for_app(
@@ -452,7 +460,7 @@ def launch_and_wait_for_app(
     require_presented: bool = False,
 ) -> tuple[bool, float, str]:
     """Launch through the real palette keyboard path and require a first frame."""
-    before = {f.get("surface_id") for f in foreign_frames(ctl)}
+    before = {f.get("window") for f in window_frames(ctl)}
     started = time.monotonic()
     # This is intentionally the interaction a person performs: open Search,
     # type the package identity, then activate the selected retained result.
@@ -476,13 +484,13 @@ def launch_and_wait_for_app(
         return False, 0.0, f"palette activation refused: {reply}"
     deadline = started + timeout
     while time.monotonic() < deadline:
-        frames = foreign_frames(ctl)
+        frames = window_frames(ctl)
         for frame in frames:
             if (
-                frame.get("surface_id") not in before
+                frame.get("window") not in before
                 and frame.get("app_id") == app_id
-                and frame.get("frame_seq", 0) > 0
-                and (not require_presented or frame.get("presented") is True)
+                and frame.get("frames", 0) > 0
+                and (not require_presented or frame.get("rect") is not None)
             ):
                 if snapshot is not None:
                     reply = ctl.send({"op": "snapshot", "path": str(snapshot)})
@@ -594,13 +602,14 @@ def gate_failures(stats: dict, args: argparse.Namespace) -> list[str]:
 
 
 def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
-    shell_bin = Path(args.shell_bin) if args.shell_bin else REPO / "target/release/shell"
-    if not shell_bin.exists():
+    session_bin = default_session_bin(args)
+    if not session_bin.exists():
         sys.exit(
-            f"no shell binary at {shell_bin}\n"
-            f"build it first: .claude/tilo-tools/qbuild-wt build -p shell --bin shell --release"
+            f"no session binary at {session_bin}\n"
+            "build it first: cargo build --release -p tilo-session --bin tilo-session "
+            "--features dev-overrides"
         )
-    required_load_client(shell_bin, args.load)
+    required_load_client(session_bin, args.load)
     session_root = Path(tempfile.mkdtemp(prefix="tilo-frame-bench-"))
     try:
         return run_session(args, out_dir, session_root)
@@ -611,9 +620,13 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
             shutil.rmtree(session_root, ignore_errors=True)
 
 
+def default_session_bin(args: argparse.Namespace) -> Path:
+    return Path(args.session_bin) if args.session_bin else REPO / "target/release/tilo-session"
+
+
 def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> dict:
-    shell_bin = Path(args.shell_bin) if args.shell_bin else REPO / "target/release/shell"
-    load_client = required_load_client(shell_bin, args.load)
+    session_bin = default_session_bin(args)
+    load_client = required_load_client(session_bin, args.load)
     label = args.label or f"{args.backend}-{args.load}"
     trace = out_dir / f"{label}.csv"
     summary = out_dir / f"{label}.json"
@@ -639,7 +652,6 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> 
     env["TILO_RUN_SECONDS"] = str(process_seconds)
     env["TILO_TEST_CONTROL"] = str(ctl_path)
     wake_fd = None
-    env["TILO_HEADLESS_SIZE"] = f"{args.width}x{args.height}"
     env["HOME"] = str(session_root / "home")
     env["XDG_CONFIG_HOME"] = str(session_root / "config")
     env["XDG_DATA_HOME"] = str(session_root / "data")
@@ -653,7 +665,7 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> 
     # not a first-login test. Provision its throwaway identity up front so the
     # acceptance window measures the desktop and Chat rather than onboarding.
     provision = subprocess.run(
-        [str(shell_bin), "--provision-identity", "--disable-peer-sync"],
+        [str(session_bin), "--provision-identity"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -695,12 +707,11 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> 
         env.pop("DISPLAY", None)
 
     cmd = [
-        str(shell_bin),
-        "--mode",
-        "native",
+        str(session_bin),
         "--backend",
         args.backend,
-        "--disable-peer-sync",
+        "--size",
+        f"{args.width}x{args.height}",
     ]
     if args.nested:
         cage = shutil.which("cage")
@@ -909,7 +920,7 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--seconds", type=float, default=8.0, help="run length (default 8)")
-    p.add_argument("--backend", default="headless", choices=["headless", "winit", "drm"])
+    p.add_argument("--backend", default="headless", choices=["headless", "nested", "drm"])
     p.add_argument(
         "--load",
         default="none",
@@ -957,7 +968,10 @@ def main() -> None:
     )
     p.add_argument("--label", help="name for the output files")
     p.add_argument("--out", default="target/frame-bench", help="output directory")
-    p.add_argument("--shell-bin", help="path to the shell binary")
+    p.add_argument(
+        "--session-bin",
+        help="path to the tilo-session binary (default target/release/tilo-session)",
+    )
     p.add_argument("--startup-timeout", type=float, default=30.0)
     p.add_argument(
         "--gate", action="store_true", help="fail unless responsiveness thresholds pass"

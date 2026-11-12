@@ -9,9 +9,10 @@ executable stand-alone; the higher-level flow is described below.
   input-to-present instrumentation. Its `--gate` mode is the quick desktop
   acceptance test: use `--refresh-hz 144 --input-hz 30 --launch-app
   dev.tilo.chat` to reject low frame throughput, laggy input, missing samples,
-  or a native Chat launch that never presents a first frame. It consumes
-  already-built binaries and an existing app store, so it does not build an
-  RPM or image.
+  or a native Chat launch whose window never draws a first frame (`frames` in
+  the session's `windows` rows). It consumes an already-built `tilo-session`
+  (a development build, so its test-control socket opens) and an existing app
+  store, so it does not build an RPM or image.
 
 - `device_latency_bench.py` — the weekly, report-only latency run on a
   reference machine (kernel input event to KMS presentation, through

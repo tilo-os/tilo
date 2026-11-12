@@ -287,7 +287,7 @@ The [frame-loop driver](../scripts/perf/frame-loop-bench.py) exposes:
 | `--refresh-hz`                     | Unset; passes the pacing override above                                                          |
 | `--target-us`                      | `0` means derive from refresh override, otherwise 16,667 µs; scoring target, not rendering speed |
 | `--label`, `--out`                 | Optional run label; output directory defaults to `target/frame-bench`                            |
-| `--shell-bin`, `--startup-timeout` | Optional existing binary; startup timeout `30.0` seconds                                         |
+| `--session-bin`, `--startup-timeout` | Optional existing binary; startup timeout `30.0` seconds                                     |
 | `--nested`                         | Off; wraps winit in a headless `cage`                                                            |
 | `--compare BEFORE AFTER`           | Compare existing `.stats.json` files                                                             |
 | `--report STATS_JSON`              | Report existing results                                                                          |

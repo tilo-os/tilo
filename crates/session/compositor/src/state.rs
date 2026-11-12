@@ -297,6 +297,10 @@ pub struct State {
     /// Whether the switch in flight still owes frames: the person is watching the desk move. The
     /// session says, frame by frame.
     pub(crate) switch_holding: AtomicBool,
+    /// The frames each window's client committed, by window id: a window still shows the same count,
+    /// and one whose app is drawing moves. A tool reads it to prove a desk is quiet or to count an
+    /// app's frames in a real session. The entry goes with the window.
+    pub(crate) committed: std::collections::HashMap<u64, u64>,
     /// The serial of the next frame drawn. Frames are retired in order, so a presenter says how far
     /// the display got by its serial.
     frame_serial: std::sync::atomic::AtomicU64,
@@ -428,6 +432,7 @@ impl State {
             key_latency: tilo_frame_metrics::key_latency::KeyLatency::default(),
             switch_latency: tilo_frame_metrics::switch_latency::SwitchLatency::default(),
             switch_holding: AtomicBool::new(false),
+            committed: std::collections::HashMap::new(),
             frame_serial: std::sync::atomic::AtomicU64::new(1),
             frames_presented: std::sync::atomic::AtomicU64::new(0),
             retired: std::sync::Mutex::new(None),
@@ -646,6 +651,7 @@ impl State {
             self.closing.remove(0);
         }
         self.closing.retain(|closing| closing.info.id != info.id);
+        self.committed.remove(&info.id);
         let snapshot = self.snapshots.take(info.id);
         self.closing.push(Closing {
             info,
@@ -1795,6 +1801,30 @@ impl State {
         Some((rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
     }
 
+    /// The frames the window `id` 's client committed since it opened: a window that shows the same
+    /// thing keeps its count, so a desk that draws nothing between two reads has not moved.
+    pub(crate) fn committed_frames(&self, id: u64) -> u64 {
+        self.committed.get(&id).copied().unwrap_or(0)
+    }
+
+    /// The window whose client draws with `root` , the surface of its toplevel or the surface an X11
+    /// window paints into.
+    fn committed_window(&self, root: &WlSurface) -> Option<u64> {
+        if let Some(id) = window_id_of(root) {
+            return Some(id);
+        }
+        self.space
+            .elements()
+            .chain(self.unmapped.iter())
+            .find(|window| {
+                window
+                    .x11_surface()
+                    .and_then(|x11| x11.wl_surface())
+                    .is_some_and(|surface| &surface == root)
+            })
+            .and_then(|window| describe(self, window).map(|info| info.id))
+    }
+
     /// The keys that type `ch` on the active layout, as the keymap itself says: what a synthesised
     /// keystroke for that character must press.
     pub(crate) fn stroke_for(&mut self, ch: char) -> Option<crate::typing::Stroke> {
@@ -1949,6 +1979,11 @@ impl CompositorHandler for State {
         self.tell_share_color(surface);
         if !is_sync_subsurface(surface) {
             let root = root_surface(surface);
+            // A frame this client drew, counted against its window: a still window keeps one count
+            // and an app that draws moves it, which is what a tool reads to tell the two apart.
+            if let Some(id) = self.committed_window(&root) {
+                *self.committed.entry(id).or_default() += 1;
+            }
             // A key this client was given is answered by its next commit.
             self.commit_answered(&root);
             // The icon a client set takes effect on this commit, like any other double-buffered
