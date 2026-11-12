@@ -1477,7 +1477,7 @@ impl Session {
                 options.wake.clone(),
             ),
             notes,
-            membership_fed: Cell::new(None),
+            membership_fed: std::cell::RefCell::new(None),
             landings,
             _channels: channels,
             personal,

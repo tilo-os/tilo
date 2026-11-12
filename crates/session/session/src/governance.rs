@@ -2,7 +2,7 @@
 //! workspaces show, projected from the governance this device holds, and the desk the grants are
 //! written into.
 
-use tilo_desktop_model::Workspace;
+use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_session_client::membership::{self, Workspaces};
 
 /// The desk's own workspaces, as a workspace's governance writes into them.
@@ -30,16 +30,21 @@ impl crate::Shared {
     /// governance's people, bots and shortcuts as a projection, which is what the People, Agents and
     /// Shortcuts surfaces, the broker, the trigger host and every other reader of them read.
     /// Nothing of a workspace's state reaches this device without the engine admitting it, so a
-    /// revision that has not moved has nothing to show.
+    /// revision that has not moved has nothing to show. A workspace the desk shows that it did not
+    /// show before is projected all the same: what it holds was here before the desk showed it,
+    /// as a workspace a person kept or one they just joined is.
     pub(crate) fn project_governance(&self) {
         let Some(engine) = &self.engine else {
             return;
         };
-        let revision = engine.owner().revision();
-        if self.membership_fed.get() == Some(revision) {
+        let shown: Vec<WorkspaceId> = self
+            .handle
+            .read(|tree| tree.workspaces.iter().map(Workspace::id).collect());
+        let fed = (engine.owner().revision(), shown);
+        if self.membership_fed.borrow().as_ref() == Some(&fed) {
             return;
         }
-        self.membership_fed.set(Some(revision));
+        *self.membership_fed.borrow_mut() = Some(fed);
         let desk = Desk(&self.handle);
         let projected = desk.edit(&mut |workspaces| {
             let mut changed = false;

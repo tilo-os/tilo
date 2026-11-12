@@ -55,6 +55,8 @@ mod arrangement_record;
 mod ask;
 #[path = "atspi_bus.rs"]
 mod atspi_bus;
+#[path = "automation.rs"]
+mod automation;
 #[path = "canvas_ask.rs"]
 mod canvas_ask;
 #[path = "chat_2x2.rs"]
