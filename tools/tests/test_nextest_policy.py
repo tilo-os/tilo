@@ -14,6 +14,9 @@ NEXTEST = REPO / ".config" / "nextest.toml"
 FILTERS = REPO / ".config" / "nextest-filters.toml"
 T_NEXTEST = REPO / "tools" / "ci" / "nextest.sh"
 COST_TABLE = REPO / "apps" / "tilolang" / "tests" / "hosted" / "cost.rs"
+# The test binary and module path the file is compiled into: the crate's tests are modules of one
+# `tests/it.rs`, so a test's name carries every module from there down.
+COST_TABLE_MODULE = "hosted::cost::"
 
 
 def effective_overrides(config: dict, profile_name: str) -> list[dict]:
@@ -138,7 +141,7 @@ class NextestPolicyTests(unittest.TestCase):
             if override.get("success-output") == "final" and "cost::" in override["filter"]
         ]
         self.assertEqual(len(printing), 1, printing)
-        self.assertIn(f"test(=cost::{test.group(1)})", printing[0])
+        self.assertIn(f"test(={COST_TABLE_MODULE}{test.group(1)})", printing[0])
 
     def test_every_golden_selection_names_the_same_tests(self) -> None:
         # PR shards exclude the goldens, nightly verifies them on an idle

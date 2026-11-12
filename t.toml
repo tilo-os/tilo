@@ -788,15 +788,15 @@ heavy = true
 
 [[check]]
 name = "real-fuse-mounts-build"
-run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# Read every message before copying: cargo fails with a broken pipe if its output\n# is closed while it is still writing build messages.\ncargo test --locked -p tilo-fs --test integration_test --test cloud_mount --bin fs --no-run --message-format json | python3 -c '\nimport json, os, shutil, sys\nnames = {\"integration_test\": \"tilo-fs-integration-test\", \"cloud_mount\": \"tilo-fs-cloud-mount\"}\nout = os.path.join(os.environ[\"CARGO_TARGET_DIR\"], \"vm\")\nfor message in map(json.loads, sys.stdin):\n    if message.get(\"reason\") == \"compiler-artifact\" and message.get(\"executable\") and message[\"target\"][\"name\"] in names:\n        shutil.copy(message[\"executable\"], os.path.join(out, names[message[\"target\"][\"name\"]]))\n'\n"
+run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# Read every message before copying: cargo fails with a broken pipe if its output\n# is closed while it is still writing build messages.\ncargo test --locked -p tilo-fs --test it --bin fs --no-run --message-format json | python3 -c '\nimport json, os, shutil, sys\nnames = {\"it\": \"tilo-fs-it\"}\nout = os.path.join(os.environ[\"CARGO_TARGET_DIR\"], \"vm\")\nfor message in map(json.loads, sys.stdin):\n    if message.get(\"reason\") == \"compiler-artifact\" and message.get(\"executable\") and message[\"target\"][\"name\"] in names:\n        shutil.copy(message[\"executable\"], os.path.join(out, names[message[\"target\"][\"name\"]]))\n'\n"
 requires = ["arch=x86_64"]
-outputs = ["/target/vm/tilo-fs-integration-test", "/target/vm/tilo-fs-cloud-mount", "/target/debug/fs"]
+outputs = ["/target/vm/tilo-fs-it", "/target/debug/fs"]
 on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
 name = "real-fuse-mounts"
-run = "# The mount serves callers that switch to other uids, and the kernel only lets a namespace map\n# a uid range it holds a capability for; a nested check has no capability and maps its own uid\n# alone, so switching to another uid fails. The micro-VM runs the check as real root.\nset -eu\ncd crates/system/fs\n/target/vm/tilo-fs-integration-test --nocapture --test-threads=1\n/target/vm/tilo-fs-cloud-mount --nocapture --test-threads=1\n"
+run = "# The mount serves callers that switch to other uids, and the kernel only lets a namespace map\n# a uid range it holds a capability for; a nested check has no capability and maps its own uid\n# alone, so switching to another uid fails. The micro-VM runs the check as real root.\nset -eu\ncd crates/system/fs\n/target/vm/tilo-fs-it integration_test:: --nocapture --test-threads=1\n/target/vm/tilo-fs-it cloud_mount:: --nocapture --test-threads=1\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 needs = ["real-fuse-mounts-build"]
 requires = ["arch=x86_64"]
@@ -806,7 +806,7 @@ heavy = true
 
 [[check]]
 name = "real-fuse-shares"
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-fs --test collab_release_matrix -- --nocapture --test-threads=1\ncargo test --locked -p tilo-fs --test corruption_matrix -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-fs --test it collab_release_matrix:: -- --nocapture --test-threads=1\ncargo test --locked -p tilo-fs --test it corruption_matrix:: -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
@@ -1085,7 +1085,7 @@ on = ["dispatch"]
 
 [[check]]
 name = "security-isolation-{part}"
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_TEST_NTFS_FIXTURES=0\nany() { local e=\"\" t; for t; do e=\"${e:+$e | }test($t)\"; done; printf '%s' \"$e\"; }\nrun() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail \"$@\"; }\ncase {part} in\n  relay)\n    run -p tilo-relay --lib -E \"$(any room_access rooms:: compute_content host_authority)\"\n    run -p tilo-relay --test it -E \"$(any tenant_isolation:: governed_rooms:: governed_workspace_access:: room_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: compute_content:: remote_action_routing::)\"\n    ;;\n  relay-agents)\n    run -p tilo-relay --features agents --test it -E \"$(any tenant_isolation:: governed_rooms:: governed_workspace_access:: room_admission:: auth_reject:: compute_content:: persistent_room::)\"\n    run -p tilo-relay --features agents --bin tilo-relay -E \"test(persistent_room_cli::tests::a_fresh_workspace_seeds_its_apps_and_keeps_them)\"\n    ;;\n  agent-participant)\n    run -p tilo-agent-participant --test worker_isolation\n    run -p tilo-agent-participant --test room_actions -E \"$(any governed_agent::)\"\n    ;;\nesac\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_TEST_NTFS_FIXTURES=0\nany() { local e=\"\" t; for t; do e=\"${e:+$e | }test($t)\"; done; printf '%s' \"$e\"; }\nrun() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail \"$@\"; }\ncase {part} in\n  relay)\n    run -p tilo-relay --lib -E \"$(any room_access rooms:: compute_content host_authority)\"\n    run -p tilo-relay --test it -E \"$(any tenant_isolation:: governed_rooms:: governed_workspace_access:: room_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: compute_content:: remote_action_routing::)\"\n    ;;\n  relay-agents)\n    run -p tilo-relay --features agents --test it -E \"$(any tenant_isolation:: governed_rooms:: governed_workspace_access:: room_admission:: auth_reject:: compute_content:: persistent_room::)\"\n    run -p tilo-relay --features agents --bin tilo-relay -E \"test(persistent_room_cli::tests::a_fresh_workspace_seeds_its_apps_and_keeps_them)\"\n    ;;\n  agent-participant)\n    run -p tilo-agent-participant --test it -E \"$(any worker_isolation::)\"\n    run -p tilo-agent-participant --test it -E \"$(any workspace_actions::governed_agent::)\"\n    ;;\nesac\n"
 env = { RUST_BACKTRACE = "1" }
 timeout_secs = 5400
 on = ["dispatch"]
