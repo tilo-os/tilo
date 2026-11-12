@@ -734,13 +734,6 @@ export async function startEntryPage({mode}) {
   const notes = {open: opening, draw: drawing};
   const arrive = step => {
     if (root.arrival === 'done' && step !== 'stopped') return;
-    // The GPU is set up once the host let the page in, while the page
-    // opens the workspace. A page that is refused (or left before it got
-    // in) compiles nothing: the browser does not cancel a torn-down page's
-    // pipeline compiles, and the next page's queue behind them on the same
-    // compile threads. Under a software rasteriser that is a minute of CPU
-    // and held the next page's first frame past 45 s.
-    if (step === 'open' && root.arrival !== 'open') prepareGpu();
     // A page that cannot go on has no workspace to set an agent up in: the
     // first screen says so rather than wait.
     if (step === 'stopped') firstRun?.unavailable({code: 'refused'});
@@ -915,6 +908,16 @@ export async function startEntryPage({mode}) {
   // for the answer before it mounts anything, so a browser that cannot draw
   // still opens no window.
   const renderer = rendererUnavailable();
+  // The WebGPU device opens as the page starts too, while the host is asked
+  // to let it in: a busy GPU process (a software rasteriser on a loaded
+  // machine) took seconds to answer for the adapter and the device, and
+  // asked only once the page was let in, that was seconds of a page doing
+  // nothing before its desktop could draw. Opening a device compiles
+  // nothing. The renderer's pipelines compile only as the first desktop
+  // draws, once the host let the page in, because the browser does not
+  // cancel a torn-down page's pipeline compiles: a refused page's held the
+  // next page's first frame past 45 s under a software rasteriser.
+  prepareGpu();
   /** Said while one of the person's devices decides on this one. */
   const showPairingCode = code => {
     document.documentElement.dataset.pairingCode = code;

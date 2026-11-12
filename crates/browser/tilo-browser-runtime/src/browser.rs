@@ -1688,17 +1688,20 @@ enum PreparedGpu {
     Ready(Box<Result<ui::gpu::RenderContext, String>>),
 }
 
-/// Open the WebGPU device now, while the page opens the workspace, rather
-/// than once the first mount's canvas exists: the first surface then only
-/// configures its canvas on a device that is ready. Without a mount nothing
-/// else happens; the first mount takes what this opened, and one that comes
-/// before it is done waits for it. Does nothing once a device exists or is
-/// being opened.
+/// Open the WebGPU device now, while the page is let in and opens the
+/// workspace, rather than once the first mount's canvas exists: the first
+/// surface then only configures its canvas on a device that is ready.
+/// Without a mount nothing else happens; the first mount takes what this
+/// opened, and one that comes before it is done waits for it. Does nothing
+/// once a device exists or is being opened.
 ///
-/// The entry page calls this once a host let it in, never before: the
-/// browser does not cancel the compiles of a page torn down meanwhile, and
-/// the next page's pipelines queue behind them on its compile threads. The conservative GPU profile (Safari)
-/// does not call it; its renderer starts only once the page's load settled.
+/// It opens the device and compiles nothing, so the entry page calls it as
+/// it starts, whether or not a host lets it in: the renderer's pipelines
+/// compile as a mount first draws, because the browser does not cancel the
+/// compiles of a page torn down meanwhile and the next page's pipelines
+/// queue behind them on its compile threads. The conservative GPU profile
+/// (Safari) does not call it; its renderer starts only once the page's load
+/// settled.
 #[wasm_bindgen]
 pub fn prepare_gpu() {
     let busy = PREPARED_GPU.with_borrow(Option::is_some)
