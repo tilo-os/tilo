@@ -15,6 +15,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::thread::{self, JoinHandle};
+use tilo_lock::MutexRecover as _;
 
 #[cfg(all(target_os = "linux", not(test)))]
 use super::linux as platform;
@@ -201,7 +202,7 @@ impl Worker {
         self.submit(release, Some(target))
     }
     fn submit(&self, release: InternalRelease, target: Option<&Token>) -> Result<Token, String> {
-        let mut m = self.shared.mailbox.lock().unwrap();
+        let mut m = self.shared.mailbox.lock_recover();
         if m.shutdown {
             return Err("Worker is shut down".into());
         }
@@ -240,7 +241,7 @@ impl Worker {
         self.stop(token, true)
     }
     fn stop(&self, token: &Token, cancel: bool) -> Result<(), String> {
-        let m = self.shared.mailbox.lock().unwrap();
+        let m = self.shared.mailbox.lock_recover();
         if m.status.as_ref().is_none_or(|s| terminal(s.phase)) {
             return Err("Operation is already terminal".into());
         }
@@ -268,7 +269,7 @@ impl Worker {
         self.action(token, Action::Release)
     }
     fn action(&self, token: &Token, action: Action) -> Result<(), String> {
-        let mut m = self.shared.mailbox.lock().unwrap();
+        let mut m = self.shared.mailbox.lock_recover();
         if m.shutdown
             || m.active.as_ref().is_none_or(|(t, f)| {
                 t != token || f.cancel.load(Ordering::Acquire) || f.pause.load(Ordering::Acquire)
@@ -285,11 +286,11 @@ impl Worker {
         Ok(())
     }
     pub(in crate::setup) fn status(&self) -> Option<Status> {
-        self.shared.mailbox.lock().unwrap().status.clone()
+        self.shared.mailbox.lock_recover().status.clone()
     }
     pub(in crate::setup) fn shutdown(&mut self) {
         {
-            let mut m = self.shared.mailbox.lock().unwrap();
+            let mut m = self.shared.mailbox.lock_recover();
             m.shutdown = true;
             if let Some((_, flags)) = &m.active {
                 flags.cancel.store(true, Ordering::Release);
@@ -299,7 +300,7 @@ impl Worker {
         }
         if let Some(thread) = self.thread.take() {
             if thread.join().is_err() {
-                if let Some(status) = &mut self.shared.mailbox.lock().unwrap().status {
+                if let Some(status) = &mut self.shared.mailbox.lock_recover().status {
                     status.phase = Phase::Failed;
                     status.error = Some("Download worker panicked; cache may be retained".into());
                     status.residue = true;
@@ -307,7 +308,7 @@ impl Worker {
                 }
             }
         }
-        let mut m = self.shared.mailbox.lock().unwrap();
+        let mut m = self.shared.mailbox.lock_recover();
         if let Some(status) = &mut m.status {
             if !terminal(status.phase) {
                 status.phase = Phase::Cancelled;
@@ -333,7 +334,7 @@ fn terminal(phase: Phase) -> bool {
     )
 }
 fn report(shared: &Shared, status: &Status) {
-    let mut m = shared.mailbox.lock().unwrap();
+    let mut m = shared.mailbox.lock_recover();
     if m.active.as_ref().is_some_and(|(t, _)| *t == status.token) {
         m.status = Some(status.clone());
         shared.wake.notify_all();
@@ -360,7 +361,7 @@ fn worker_loop(
 ) {
     loop {
         let request = {
-            let mut m = shared.mailbox.lock().unwrap();
+            let mut m = shared.mailbox.lock_recover();
             while m.pending.is_none() && !m.shutdown {
                 m = shared.wake.wait(m).unwrap();
             }
@@ -402,7 +403,7 @@ fn worker_loop(
             status.error.get_or_insert(error);
         }
         // Scope has ended: no Session, component, Ready or root lease is live.
-        let mut m = shared.mailbox.lock().unwrap();
+        let mut m = shared.mailbox.lock_recover();
         if let Some((token, flags)) = &m.active {
             if *token == status.token {
                 // Same lock as stop admission: an accepted cancel wins even in
@@ -585,7 +586,7 @@ fn run_selected<'s>(
     status.residue = ready.finals.iter().any(|f| f.has_retained_residue());
     report(shared, status);
     let action = {
-        let mut m = shared.mailbox.lock().unwrap();
+        let mut m = shared.mailbox.lock_recover();
         loop {
             stop(flags)?;
             if m.shutdown || m.active.as_ref().is_none_or(|(t, _)| *t != request.token) {
