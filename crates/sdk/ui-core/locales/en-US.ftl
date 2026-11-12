@@ -603,6 +603,10 @@ interaction-agent = Agent
 interaction-collaborator = Collaborator
 # What an actor is doing: its name, then the action in the present tense.
 interaction-editing-field = editing { $field }
+# The text a write put in a note, a page or a field stands there: what the
+# person watching sees happen, where the action's own name only says which
+# place it acts on.
+interaction-added-text = added text
 interaction-working = working
 interaction-action-doing = { $name }: { $doing }
 # The same, with the phase said where only a person can settle it.
