@@ -18,7 +18,10 @@ use std::time::Duration;
 use iroh::{EndpointAddr, EndpointId};
 #[cfg(target_os = "linux")]
 use neighbour_wire::NeighbourMsg;
-use tilo_desktop::here::{Here, LiveMember, Person};
+#[cfg(target_os = "linux")]
+use tilo_desktop::here::Person;
+use tilo_desktop::here::{Here, LiveMember};
+#[cfg(target_os = "linux")]
 use tilo_desktop_model::DesktopTree;
 #[cfg(target_os = "linux")]
 use tilo_desktop_surface::DesktopHandle;
@@ -867,6 +870,7 @@ impl Roster {
         }
     }
 
+    #[cfg(target_os = "linux")]
     /// Who is here, as the desktop lists them: `tree` places them where their focused record is
     /// shown — `records` (what each window shows, by tab) names the window each person works in —
     /// and `app_name` names an app.
@@ -882,6 +886,7 @@ impl Roster {
             .people(tree, &crate::sync::layout::bindings(tree, notes), app_name)
     }
 
+    #[cfg(target_os = "linux")]
     /// Who is here, written into `tree`'s active workspace as its collaborators: the roster every
     /// surface that lists people reads.
     pub(crate) fn show(
@@ -1627,6 +1632,7 @@ impl Client {
         tilo_network_actor::behaviour::peer_liveness_handle(&self.publisher())
     }
 
+    #[cfg(target_os = "linux")]
     /// Who is here, as the desktop lists them.
     #[must_use]
     pub(crate) fn people(
@@ -1638,6 +1644,7 @@ impl Client {
         self.hosting.roster.people(tree, notes, app_name)
     }
 
+    #[cfg(target_os = "linux")]
     /// Who is here, written into `tree`'s active workspace as its collaborators.
     pub(crate) fn show(
         &self,

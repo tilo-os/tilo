@@ -818,7 +818,7 @@ impl Panel {
                 place: if row.is_agent {
                     row.working_app
                         .as_deref()
-                        .map(crate::app_names::app_name)
+                        .map(app_called)
                         .map(|app| tilo_desktop::collaborators::in_app(&app))
                 } else {
                     row.activity.clone()
@@ -1991,3 +1991,16 @@ fn roster_place(area: Rect, theme: &Theme) -> Rect {
 #[cfg(all(test, target_os = "linux"))]
 #[path = "people_scale_tests.rs"]
 mod scale_tests;
+
+/// What the app `app` is called to the person: the session's own naming where it reads the
+/// machine's app lists, else the name every desktop carries.
+fn app_called(app: &str) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        crate::app_names::app_name(app)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        tilo_desktop_search::names::app_name(app)
+    }
+}

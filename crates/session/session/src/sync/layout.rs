@@ -8,6 +8,7 @@ use ui::record::RecordId;
 /// Who each window of this desk is, by tab, as presence names records: the short digest of the app
 /// and the record its component bound. What places a person in the window they work in, and a
 /// follower's view bringing it forward.
+#[cfg(target_os = "linux")]
 #[must_use]
 pub(crate) fn bindings(
     tree: &tilo_desktop_model::DesktopTree,
