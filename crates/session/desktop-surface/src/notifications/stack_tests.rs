@@ -1227,3 +1227,23 @@ fn a_reply_can_be_given_up_and_is_only_offered_when_it_can_be_carried() {
         "Escape sends nothing"
     );
 }
+
+/// An agent's own notice ("Claude Code finished: 8 changes in Workspace", sent in its name) leads
+/// with its face and says nothing over its title repeating that name; an app's notice about a
+/// person keeps the app as its source line.
+#[test]
+fn a_notice_in_its_senders_own_name_has_no_source_line_repeating_it() {
+    let own = Notification::new(
+        "Claude Code finished: 8 changes in Workspace",
+        "Working in Notes",
+    )
+    .with_from("Claude Code", "agent-key")
+    .with_app_name("Claude Code");
+    assert_eq!(NotificationStack::source_line(&own), "");
+    let about = Notification::new("Ada sent a message", "Lunch?")
+        .with_from("Ada", "ada-key")
+        .with_app_name("Chat");
+    assert_eq!(NotificationStack::source_line(&about), "Chat");
+    let plain = Notification::new("Saved", "").with_app_name("Notes");
+    assert_eq!(NotificationStack::source_line(&plain), "Notes");
+}
