@@ -87,6 +87,9 @@ pub struct Options {
     /// Whose session this is, as the system knows them: the user a password unlocks the lock screen
     /// for.
     pub user: String,
+    /// The ids the person went by before this device had an identity — the login account among
+    /// them — under which a desk they kept, and the workspaces it holds, are still theirs.
+    pub earlier: Vec<String>,
     /// Whether a password unlocks the session; without one nothing does.
     pub verifier: std::sync::Arc<dyn unlock::PasswordVerifier>,
     /// The login's lock record, when a session wrapper started this session: the lock a crashed
@@ -388,6 +391,7 @@ impl Default for Options {
             hosted_browser: None,
             session_actions: no_session_actions,
             user: String::new(),
+            earlier: Vec::new(),
             verifier: std::sync::Arc::new(unlock::Unavailable),
             recovery: None,
             wake: tilo_service::LoopWake::default(),

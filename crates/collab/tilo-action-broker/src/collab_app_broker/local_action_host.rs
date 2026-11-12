@@ -59,6 +59,10 @@ impl AppBrokerState {
     /// reach it: an agent, or a person acting over one of them, invokes through
     /// [`Self::action_invoke`] as itself, so the broker's per-action and per-role permissions
     /// decide, and custody is refused to anything but a person at the native seat.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered door for the person at this desk: the act as themselves, then the seat's custody, then what behind it refuses and why"
+    )]
     pub fn action_invoke_local_person(
         self: &Arc<Self>,
         caller: &Caller,
@@ -81,21 +85,43 @@ impl AppBrokerState {
             return self.action_invoke(caller, None, None, request);
         }
         let origin = (|| {
+            // Every way the seat's own action is refused says which one it was: the person is
+            // shown a refusal, and what the session logged is what anyone can look at afterwards.
+            let refused = |why: &str| {
+                tracing::warn!(why, "a person's action at their desk was refused");
+                ActionHostError::NotPermitted
+            };
             if !self.is_accepting() || request.on_behalf_of.is_some() || caller.is_foreign_device()
             {
-                return Err(ActionHostError::NotPermitted);
+                return Err(refused(
+                    "this desk's broker is not serving the person at it",
+                ));
             }
             let CallerPrincipal::Person(person) = caller.principal() else {
-                return Err(ActionHostError::NotPermitted);
+                return Err(refused("the caller is not a person at this desk"));
             };
-            let workspace = caller.workspace().ok_or(ActionHostError::NotPermitted)?;
+            let workspace = caller
+                .workspace()
+                .ok_or_else(|| ActionHostError::Unavailable {
+                    reason: "no workspace is in front on this desk yet".into(),
+                })?;
+            // The identity this device signs in with in a workspace is read where it is kept, so a
+            // session that has not been told it yet answers `unavailable`, never "not allowed": the
+            // person's own authority is not in question, the session simply has nothing to act as
+            // until its identity is set up.
             let certificate = self
                 .services
                 .local_person
                 .as_ref()
-                .ok_or(ActionHostError::NotPermitted)?
+                .ok_or_else(|| refused("this desk has no native identity to act under"))?
                 .certificate(workspace, person)
-                .map_err(|_| ActionHostError::NotPermitted)?;
+                .map_err(|error| {
+                    tracing::warn!(%error, "this device's identity is not ready for an action yet");
+                    ActionHostError::Unavailable {
+                        reason: "this device's identity is not ready yet; try again in a moment"
+                            .into(),
+                    }
+                })?;
             if caller
                 .user_public_key()
                 .is_some_and(|key| key != &certificate.user_public_key)
@@ -103,17 +129,31 @@ impl AppBrokerState {
                     .device_public_key()
                     .is_some_and(|key| key != &certificate.device_public_key)
             {
-                return Err(ActionHostError::NotPermitted);
+                return Err(refused(
+                    "the caller's keys are not the desk's certificate's",
+                ));
             }
             self.current_native_person(workspace, &certificate)
-                .map_err(|_| ActionHostError::NotPermitted)?;
+                .map_err(|error| {
+                    tracing::warn!(
+                        %error,
+                        "a person's action at their desk was refused: the certificate is not current"
+                    );
+                    ActionHostError::NotPermitted
+                })?;
             if super::principal_id_for_root(certificate.user_public_key) != *person {
-                return Err(ActionHostError::NotPermitted);
+                return Err(refused("the certificate belongs to another person"));
             }
             let time = self
                 .registered_policy_time()
-                .map_err(|_| ActionHostError::NotPermitted)?
-                .ok_or(ActionHostError::NotPermitted)?;
+                .map_err(|error| {
+                    tracing::warn!(
+                        %error,
+                        "a person's action at their desk was refused: the policy clock"
+                    );
+                    ActionHostError::NotPermitted
+                })?
+                .ok_or_else(|| refused("this desk's policy clock has no time to decide at"))?;
             Ok(InvocationCaller::NativePerson {
                 invocation: request.invocation,
                 workspace: workspace.into(),

@@ -124,6 +124,7 @@ impl Session {
         // carries. Everything the person does here — the workspaces they
         // own, what the desk records, what the sheets change — is theirs.
         let seat = crate::identity::seat(&options);
+        options.earlier.clone_from(&seat.earlier);
         options.person = seat.person;
         // The ids this device mints are its own, as every workspace derives
         // them from its key: a computer with an identity mints under that
@@ -2455,6 +2456,17 @@ impl Session {
         {
             broker.host_steps_changed();
         }
+    }
+
+    /// Keep the broker's copy of the desk level with the desk as the pass leaves it: the workspaces
+    /// the pass opened, and whose each of them is, are decided here and a person's own action is
+    /// decided against that copy.
+    pub(crate) fn publish_desk(&mut self) {
+        let Some(plane) = &self.action_plane else {
+            return;
+        };
+        let desk = std::sync::Arc::clone(&plane.desk);
+        self.automation.publish_desk(Some(&desk));
     }
 
     /// Start the shortcuts whose triggers fired since the last pass, and keep

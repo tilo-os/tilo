@@ -968,6 +968,12 @@ impl crate::Shared {
             if let Some(owner) = self.owner_of(workspace.id(), &borrowed) {
                 workspace.set_owner(owner);
                 changed = true;
+            } else {
+                tracing::warn!(
+                    workspace = %workspace.id(),
+                    borrowed = borrowed.contains(&workspace.id()),
+                    "a workspace on the desk is nobody's this pass: nothing may be done in it"
+                );
             }
         }
         if changed {
@@ -984,12 +990,18 @@ impl crate::Shared {
 
     /// Who the governance of a workspace names as its owner: its own, when this device holds it,
     /// else the person at this device for a workspace of their own that no governance here has yet.
-    /// `None` for one joined through a door whose host has not said whose it is here.
+    /// A workspace founded before this device had an identity names the person by the id they went
+    /// by then; it is theirs as the person they are now, which is what their own actions in it are
+    /// decided as. `None` for one joined through a door whose host has not said whose it is here.
     fn owner_of(&self, workspace: WorkspaceId, borrowed: &BTreeSet<WorkspaceId>) -> Option<String> {
         if let Some(engine) = &self.engine
             && let Ok(owner) = engine.owner_of(&workspace.to_string())
         {
-            return Some(owner);
+            return Some(if self.earlier.contains(&owner) {
+                self.person.clone()
+            } else {
+                owner
+            });
         }
         (!borrowed.contains(&workspace)).then(|| self.person.clone())
     }

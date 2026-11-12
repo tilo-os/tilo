@@ -1019,6 +1019,7 @@ mod tests {
             },
             crate::engine::revocations_of(None),
             None,
+            crate::plane::Names::default(),
         )
     }
 

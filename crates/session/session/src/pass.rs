@@ -534,6 +534,10 @@ impl Session {
     /// Carry out everything asked since the last look: the desktop's asks,
     /// the gestures it took, the actions keys asked for, and what those
     /// asked in turn.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered pass: what was asked, in the order the desk, its panels and its hosted surfaces must see it"
+    )]
     pub(super) fn settle(&mut self) -> Result<(), Error> {
         // What the history wrote back reaches the desk before anything reads it, and what the
         // person opened from it starts from here.
@@ -554,9 +558,6 @@ impl Session {
         // The community this computer is configured for is joined on its own,
         // once, as the session starts.
         self.shared.follow_community();
-        // Who each workspace on the desk is whose, after the workspaces this pass brought: the
-        // person's own are theirs, and one joined keeps its host's owner.
-        self.shared.own_workspaces();
         self.follow_power()?;
         if let Some(comforts) = &mut self.comforts {
             comforts.observe();
@@ -616,6 +617,15 @@ impl Session {
         );
         self.place_sheets();
         self.settle_asks()?;
+        // Who each workspace on the desk is whose, once this pass has opened the ones it was asked
+        // for: the person's own are theirs, and one joined keeps its host's owner. A workspace the
+        // desk shows is claimed in the pass that shows it, never a pass later — a person's action in
+        // it is decided against that ownership.
+        self.shared.own_workspaces();
+        // The broker decides a person's own action against the copy of the desk taken here, which
+        // follows every change this pass made, so a workspace the person just came into is theirs
+        // there too when their first action in it arrives.
+        self.publish_desk();
         // What the asks opened or closed of the chrome's own surfaces stands in the stack now, and
         // the clipboard panel a key asked for goes up beside the caret: the desk this pass lays out
         // and publishes names them, not the one after.

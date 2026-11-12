@@ -45,6 +45,7 @@ mod hosted;
 mod launch_child;
 mod own_device;
 mod publishers;
+mod readiness;
 mod readmit;
 mod shortcut_run;
 mod workspace_nodes;
@@ -2437,10 +2438,16 @@ impl AppBrokerState {
         let result = self
             .current_framework_authority(caller, origin, workspace)
             .and_then(|(workspace, policy, now)| {
-                policy
-                    .may_in(&workspace, &app_node(&workspace, app_id), kind, now)
-                    .then_some(workspace)
-                    .ok_or(ActionHostError::NotPermitted)
+                if policy.may_in(&workspace, &app_node(&workspace, app_id), kind, now) {
+                    return Ok(workspace);
+                }
+                tracing::warn!(
+                    %app_id,
+                    caller = %policy.id,
+                    owner = workspace.owner().map_or("none", |owner| owner.as_str()),
+                    "an app's launch was refused: the workspace does not let the caller open it"
+                );
+                Err(ActionHostError::NotPermitted)
             });
         if result.is_err() {
             self.complete_host_action(
@@ -2904,10 +2911,6 @@ impl AppBrokerState {
         .map_err(refusal)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered door for a workspace action: the workspace's copied authority, then each host service's admission in turn"
-    )]
     fn start_workspace_action(
         self: &Arc<Self>,
         caller: &Caller,
@@ -2937,76 +2940,16 @@ impl AppBrokerState {
         ) {
             return result;
         }
-        if let Some(app_id) = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)
-            && address.action == APPLICATION_OPEN_ACTION
-        {
-            if caller.workspace().is_none() {
-                return Err(ActionHostError::UnknownAction);
-            }
-            // An app whose model this session runs has no window to open: answer its `open` at
-            // once, naming the resource the session places
-            // (`docs/designs/app-language/one-app-model.md` §3).
-            if let Some(reason) = self.served_open_refusal(app_id) {
-                return Err(ActionHostError::Unavailable { reason });
-            }
-            if !policy.may_in(
-                &workspace,
-                &app_node(&workspace, app_id),
-                tilo_action_policy::ActionKind::Undoable,
-                now,
-            ) {
-                return Err(ActionHostError::NotPermitted);
-            }
-            if !launch_content_hash(argument).is_empty() && launch.is_none() {
-                return Err(refusal(
-                    "launch content requires an application the launcher authenticated".into(),
-                ));
-            }
-            let author = match caller.principal() {
-                CallerPrincipal::Person(person)
-                    if policy.may_in(
-                        &workspace,
-                        &workspace.node(),
-                        tilo_action_policy::ActionKind::Undoable,
-                        now,
-                    ) =>
-                {
-                    Some(person.as_str())
-                }
-                _ => None,
-            };
-            let app = self
-                .services
-                .launcher
-                .as_ref()
-                .and_then(|launcher| {
-                    launcher
-                        .applications()
-                        .into_iter()
-                        .find(|app| app.package_id == app_id)
-                })
-                .ok_or(ActionHostError::UnknownAction)?;
-            let admitted = self.admit_host_action(
-                caller,
-                origin,
-                super::host_action_admission::HostActionAdmission {
-                    workspace: workspace_id,
-                    app_id,
-                    descriptor: &app_open_descriptor(&app),
-                    request,
-                },
-            )?;
-            return self.launch_application(
-                (caller, origin, workspace_id),
-                admitted,
-                app_id,
-                crate::services::LaunchContent {
-                    hash: launch_content_hash(argument),
-                    caller: launch,
-                    author,
-                },
-                &self.launch_place(caller, workspace_id, launch),
-            );
+        if let Some(result) = self.start_app_open(
+            caller,
+            workspace_id,
+            launch,
+            origin,
+            request,
+            argument,
+            (workspace.clone(), policy.clone(), now),
+        )? {
+            return Ok(result);
         }
         if let Some(app_id) = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)
             && address.action == APPLICATION_CLOSE_ACTION
@@ -3073,7 +3016,16 @@ impl AppBrokerState {
         );
         let confirmed = match answer {
             tilo_action_policy::Answer::Allow => true,
-            tilo_action_policy::Answer::Deny => return Err(ActionHostError::NotPermitted),
+            tilo_action_policy::Answer::Deny => {
+                tracing::warn!(
+                    app,
+                    caller = %policy.id,
+                    owner = workspace.owner().map_or("none", |owner| owner.as_str()),
+                    action = %descriptor.address.action,
+                    "an action was refused: the workspace does not grant it to the caller"
+                );
+                return Err(ActionHostError::NotPermitted);
+            }
             tilo_action_policy::Answer::Ask => match confirmation {
                 Some(Confirmation::Witnessed(_)) => witnessed,
                 Some(Confirmation::Confirmed) => policy.direct(),
