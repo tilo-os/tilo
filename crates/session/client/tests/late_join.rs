@@ -14,17 +14,13 @@
 
 #[path = "support/participant.rs"]
 mod participant;
-mod support;
-
-// Placing the workspace has the host build its governance in an automerge worker.
-tilo_automerge_isolate::test_worker!();
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use tilo_session_client::Outbox;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, ready, route, start_host, start_peer};
+use crate::support::{enrol, ready, route, start_host, start_peer};
 
 fn noise(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
@@ -61,7 +57,9 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
         host_device.cert.clone(),
         author.key,
     );
-    author.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    author
+        .join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
     ready(&[&author]).await;
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "checkpoint", noise(5 * 1024 * 1024 / 2, 1))
@@ -83,7 +81,7 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
             )
             .unwrap();
     }
-    support::durable(&author).await;
+    crate::support::durable(&author).await;
 
     let joined_at = std::time::Instant::now();
     let joiner = start_peer(
@@ -92,8 +90,10 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
         host_device.cert.clone(),
         joiner.key,
     );
-    joiner.join_placed(support::WORKSPACE, "Workspace").unwrap();
-    let held = support::holds(&joiner, &route(), &doc).await;
+    joiner
+        .join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
+    let held = crate::support::holds(&joiner, &route(), &doc).await;
     eprintln!(
         "late join: 2.5 MiB checkpoint + {TAIL} x 8 KiB tail in {} ms",
         joined_at.elapsed().as_millis()

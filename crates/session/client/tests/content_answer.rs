@@ -7,10 +7,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod support;
-
-tilo_automerge_isolate::test_worker!();
-
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Outbox};
 
@@ -18,7 +14,7 @@ use neighbour_wire::content::ContentWants;
 use tilo_session_client::Event;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, ready, start_host, start_peer, wait_for};
+use crate::support::{enrol, ready, start_host, start_peer, wait_for};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_asking_for_content_a_page_keeps_is_answered_by_its_session() {
@@ -34,8 +30,8 @@ async fn a_member_asking_for_content_a_page_keeps_is_answered_by_its_session() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    support::place(&host.relay, &asker.cert).await;
-    let start = |device: &support::Device| {
+    crate::support::place(&host.relay, &asker.cert).await;
+    let start = |device: &crate::support::Device| {
         start_peer(
             host.iroh(),
             device.cert.clone(),
@@ -46,7 +42,8 @@ async fn a_member_asking_for_content_a_page_keeps_is_answered_by_its_session() {
     let (keeper_peer, asker_peer) = (start(&keeper), start(&asker));
     let heard = asker_peer.events();
     for peer in [&keeper_peer, &asker_peer] {
-        peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
+        peer.join_placed(crate::support::WORKSPACE, "Workspace")
+            .unwrap();
     }
     ready(&[&keeper_peer, &asker_peer]).await;
 
@@ -54,10 +51,10 @@ async fn a_member_asking_for_content_a_page_keeps_is_answered_by_its_session() {
     let picture: Vec<u8> = (0..=u8::MAX).cycle().take(700_000).collect();
     let hash = blake3::hash(&picture).to_hex().to_string();
     let kept = picture.clone();
-    let workspace = support::WORKSPACE.to_owned();
+    let workspace = crate::support::WORKSPACE.to_owned();
     keeper_peer
         .send(Cmd::KeepContent(
-            support::workspace(),
+            crate::support::workspace(),
             Arc::new(move |_app: &str, cluster: &str, _hash: &str| {
                 (cluster == workspace).then(|| kept.clone())
             }),
@@ -67,10 +64,16 @@ async fn a_member_asking_for_content_a_page_keeps_is_answered_by_its_session() {
     let device = asker.cert.device_public_key;
     let mut wants = ContentWants::default();
     let request = wants
-        .ask(&device, (), ("so.tilo.notes", support::WORKSPACE), &hash, 1)
+        .ask(
+            &device,
+            (),
+            ("so.tilo.notes", crate::support::WORKSPACE),
+            &hash,
+            1,
+        )
         .unwrap();
     asker_peer
-        .send(Cmd::WantContent(support::workspace(), request))
+        .send(Cmd::WantContent(crate::support::workspace(), request))
         .unwrap();
     let arrived = wait_for("the page's pieces", || {
         let whole = heard.drain().into_iter().find_map(|event| match event {

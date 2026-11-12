@@ -15,15 +15,11 @@
 
 #[path = "support/participant.rs"]
 mod participant;
-mod support;
-
-// Placing the workspace has the host build its governance in an automerge worker.
-tilo_automerge_isolate::test_worker!();
 
 use tilo_session_client::{Cmd, Event, FailureSubject, LocalState, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{
+use crate::support::{
     enrol, holds, ready, restart_host, route, say, start_host, start_peer, wait_for, workspace,
 };
 
@@ -47,7 +43,8 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
         host_device.cert.clone(),
         browser.key.clone(),
     );
-    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    peer.join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
     ready(&[&peer]).await;
     let mut tree = automerge::AutoCommit::new();
     peer.write(route(), &say(&mut tree, "desktop tree"))
@@ -110,7 +107,8 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
         host_device.cert.clone(),
         browser.key.clone(),
     );
-    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    peer.join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
     // Wait for the join's own `Ready` event, not a ready phase: the join
     // is a command the session takes up later, so the phase can read
     // ready (connected, no workspace waiting) before the workspace is even asked

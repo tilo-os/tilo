@@ -20,10 +20,6 @@
 
 #[path = "support/call.rs"]
 mod call;
-mod support;
-
-// This binary re-execs as the automerge worker (support is shared with crates that lack the dep).
-tilo_automerge_isolate::test_worker!();
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -33,8 +29,8 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::CallOperation;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
+use crate::support::{Device, TestHost, enrol, start_workspace_host, wait_for};
 use call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
-use support::{Device, TestHost, enrol, start_workspace_host, wait_for};
 
 /// The kinds of workspace a person can be in on a host.
 #[derive(Clone, Copy, Debug)]

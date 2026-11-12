@@ -25,11 +25,6 @@
     reason = "in a test these are the assertion, not a hazard; the browser, node and pages live until the test ends"
 )]
 
-mod support;
-
-// This binary re-execs as the automerge worker (the node's workspaces use it).
-tilo_automerge_isolate::test_worker!();
-
 use std::path::Path;
 use std::sync::Arc;
 use tilo_automerge::ApplyIncoming as _;
@@ -61,8 +56,8 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Lines};
 use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
-use support::https::DevHttps;
-use support::{ready, start_peer, wait_for};
+use crate::support::https::DevHttps;
+use crate::support::{ready, start_peer, wait_for};
 
 const INSTALL_TOKEN: &str = "provisioned-install-token-0123";
 /// Text only the document's readers ever see.
@@ -147,7 +142,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     // The runtime module the driver serves is resolved before it starts, so
     // the time this test gives the page to create its identity is the page's
     // own.
-    let bundle = support::page_bundle();
+    let bundle = crate::support::page_bundle();
     let mut browser = tokio::process::Command::new("node")
         .arg(driver)
         .arg("node")
@@ -434,7 +429,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     bo.send(Cmd::Join(acme.workspace_id)).unwrap();
     let mut written = automerge::AutoCommit::load(&snapshot).unwrap();
     written.load_incoming(&change).unwrap();
-    support::holds(&bo, &route, &written).await;
+    crate::support::holds(&bo, &route, &written).await;
 
     // Cy is pre-admitted: Ada's root signs a grant for the digest of a
     // one-time token someone else hands Cy, and Cy is admitted the moment
@@ -517,7 +512,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     let cy_device = cy_cert.device_public_key;
     let cy = start_peer(host.clone(), cy_cert, host_cert.clone(), cy_key);
     cy.send(Cmd::Join(acme.workspace_id)).unwrap();
-    support::holds(
+    crate::support::holds(
         &cy,
         &route,
         &automerge::AutoCommit::load(&snapshot).unwrap(),

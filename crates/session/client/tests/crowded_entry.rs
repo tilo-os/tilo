@@ -39,10 +39,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod support;
-
-tilo_automerge_isolate::test_worker!();
-
 use std::time::{Duration, Instant};
 use tilo_session_client::{Cmd, Event, Link, Outbox, TransportPhase};
 
@@ -55,7 +51,7 @@ use tilo_session_client::MemoryPeerStore;
 use tilo_session_client::device::{Entering, door_entry};
 use tilo_user_identity::UserIdentity;
 
-use support::{enrol, enter_page, keyed, start_workspace_host_relaying};
+use crate::support::{enrol, enter_page, keyed, start_workspace_host_relaying};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -426,7 +422,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         "lounge-host",
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
     let workspaces = host.relay.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();

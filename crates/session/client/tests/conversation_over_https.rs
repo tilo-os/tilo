@@ -14,11 +14,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod support;
-
-// Placing the workspace has the host build its governance in an automerge worker.
-tilo_automerge_isolate::test_worker!();
-
 use std::collections::BTreeSet;
 use tilo_session_client::{Cmd, Outbox};
 
@@ -35,7 +30,7 @@ use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_relay_client::invite::guest_certificate;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, UserIdentity};
 
-use support::{door, enrol, enter, hears, redeem, say, start_workspace_host};
+use crate::support::{door, enrol, enter, hears, redeem, say, start_workspace_host};
 
 /// A device certificate for `root`'s page, as the person's own root signs it.
 async fn page_cert(root: &SigningKey, label: &str) -> (SigningKey, DeviceCert) {

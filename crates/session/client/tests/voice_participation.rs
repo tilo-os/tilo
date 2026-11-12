@@ -13,17 +13,13 @@
 
 #[path = "support/call.rs"]
 mod call;
-mod support;
-
-// This binary re-execs as the automerge worker (support is shared with crates that lack the dep).
-tilo_automerge_isolate::test_worker!();
 
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
 use tilo_session_client::{Cmd, Event, Link, Outbox, VoiceEvent};
 
+use crate::support::{ready, start_peer, wait_for};
 use call::{GovernedCall, native, operate};
-use support::{ready, start_peer, wait_for};
 
 /// The next call event of `peer` that `pick` accepts.
 async fn voice<T>(

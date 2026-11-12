@@ -14,11 +14,6 @@
     reason = "in a test these are the assertion, not a hazard; one test is one transcript between a native participant and a page"
 )]
 
-mod support;
-
-// Placing the workspace has the host build its governance in an automerge worker.
-tilo_automerge_isolate::test_worker!();
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -35,7 +30,7 @@ use tilo_relay::workspaces::WorkspaceContent;
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
-use support::{
+use crate::support::{
     Device, WORKSPACE, enrol, ready, route, start_host, start_peer, wait_for, workspace,
 };
 
@@ -103,7 +98,7 @@ fn vault() -> VaultKey {
 
 /// Whether the page says it holds something for the note, and why.
 fn held(peer: &Link) -> Option<String> {
-    let note = support::route();
+    let note = crate::support::route();
     let held = format!("held {}/{}:", note.app_id, note.record);
     peer.status()
         .channels
@@ -249,7 +244,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
         let Inbound::Delta { author, data } = inbound else {
             continue;
         };
-        if support::is_host(&author) {
+        if crate::support::is_host(&author) {
             continue;
         }
         match postcard::from_bytes::<NeighbourMsg>(&data) {
@@ -275,7 +270,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
             _ => {}
         }
     }
-    support::admitted(&page).await;
+    crate::support::admitted(&page).await;
 
     // The page holds the write for the surface it does not run, and says so:
     // it waits for the app surface alone, not for keys or governance.
@@ -288,7 +283,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     })
     .await;
     assert!(
-        support::said(&page, &note).is_empty(),
+        crate::support::said(&page, &note).is_empty(),
         "no edit of the record is opened before its surface arrives"
     );
 
@@ -296,7 +291,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     // what the page waited for is decided: it is the bytes hashed to the
     // address asked for that decide it, which the page keeps by that hash.
     keeps.answer();
-    support::holds(&page, &note, &document).await;
+    crate::support::holds(&page, &note, &document).await;
     wait_for("nothing held for the note", || async {
         held(&page).is_none().then_some(())
     })
@@ -314,7 +309,7 @@ async fn connect(
     root: &ed25519_dalek::SigningKey,
     device: &Device,
 ) -> RelayCoeditSession {
-    support::place(host, &device.cert).await;
+    crate::support::place(host, &device.cert).await;
     let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .bind()
         .await

@@ -18,10 +18,6 @@
 
 #[path = "support/participant.rs"]
 mod participant;
-mod support;
-
-// Placing the workspace has the host build its governance in an automerge worker.
-tilo_automerge_isolate::test_worker!();
 
 use std::time::{Duration, Instant};
 
@@ -35,7 +31,7 @@ use tilo_session_client::{Cmd, Link, Outbox};
 
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, ready, route, start_host_admitting, start_peer};
+use crate::support::{enrol, ready, route, start_host_admitting, start_peer};
 
 /// How long one step of this test may take before it is a failure rather than a
 /// slow machine: far above what a page and a host cost on loopback, and far
@@ -55,11 +51,11 @@ struct Pages {
     a: Link,
     b: Link,
     _laptop: participant::Participant,
-    host: support::TestHost,
+    host: crate::support::TestHost,
     _state: tempfile::TempDir,
-    _host_device: support::Device,
-    _ada: support::Device,
-    _bob: support::Device,
+    _host_device: crate::support::Device,
+    _ada: crate::support::Device,
+    _bob: crate::support::Device,
     /// Ada's person, who writes the windows her page opens.
     ada_person: String,
 }
@@ -95,29 +91,30 @@ impl Pages {
             host_device.cert.clone(),
             ada.key.clone(),
         );
-        a.join_placed(support::WORKSPACE, "Workspace").unwrap();
+        a.join_placed(crate::support::WORKSPACE, "Workspace")
+            .unwrap();
         // Bob's page enters the same workspace through its door, on the
         // invitation its owner issued for him.
-        let granted = support::door(
+        let granted = crate::support::door(
             &host,
             &ada_root,
             &host_device,
-            support::WORKSPACE,
+            crate::support::WORKSPACE,
             bob_person,
         )
         .await;
-        let b = support::enter(
+        let b = crate::support::enter(
             &host,
             granted,
             &bob.cert,
             &bob.key,
             &host_device.cert,
-            support::workspace(),
+            crate::support::workspace(),
         )
         .await;
         ready(&[&a, &b]).await;
         for peer in [&a, &b] {
-            support::in_workspace(peer, support::workspace()).await;
+            crate::support::in_workspace(peer, crate::support::workspace()).await;
         }
         Self {
             a,
@@ -158,11 +155,13 @@ async fn a_message_reaches_the_other_page_without_waiting_for_a_poll() {
     let mut doc = AutoCommit::new();
     for index in 0..=MESSAGES {
         let text = format!("message-{index}");
-        let message = support::say(&mut doc, &text);
+        let message = crate::support::say(&mut doc, &text);
         let sent = Instant::now();
         a.write(route(), &message).unwrap();
         let heard = arrival(sent, &format!("the message {text:?}"), || {
-            support::said(b, &route()).contains(&text).then_some(())
+            crate::support::said(b, &route())
+                .contains(&text)
+                .then_some(())
         })
         .await;
         // The first one founds the record and opens its channel; the rest find
@@ -202,7 +201,7 @@ async fn a_window_opened_on_the_shared_desk_reaches_the_other_person() {
     // keys it is sealed under: what a page showing a workspace does as it opens.
     for peer in [a, b] {
         peer.send(Cmd::OpenRoute(desk())).unwrap();
-        support::wait_keyed(peer, &desk()).await;
+        crate::support::wait_keyed(peer, &desk()).await;
     }
     let before = desk_of(b);
     assert!(
@@ -258,7 +257,7 @@ async fn a_window_opened_on_the_shared_desk_reaches_the_other_person() {
 fn desk() -> DocumentRoute {
     DocumentRoute {
         app_id: DESKTOP_APP.into(),
-        cluster_id: support::WORKSPACE.into(),
+        cluster_id: crate::support::WORKSPACE.into(),
         record: DESKTOP_RECORD.into(),
     }
 }
@@ -266,7 +265,7 @@ fn desk() -> DocumentRoute {
 /// The desk `peer` holds of the workspace as its model reads it, when it holds
 /// the record at all.
 fn desk_of(peer: &Link) -> SharedDesktop {
-    support::record_of(peer, &desk())
+    crate::support::record_of(peer, &desk())
         .and_then(|doc| tilo_desktop_model::shared_record::read(&doc, None))
         .unwrap_or_default()
 }
@@ -298,11 +297,11 @@ fn window_opened(
     label: &str,
     (window, tab): (u64, u64),
 ) -> DocumentMutation {
-    let mut doc = support::record_of(peer, &desk()).unwrap_or_default();
+    let mut doc = crate::support::record_of(peer, &desk()).unwrap_or_default();
     doc.set_actor(automerge::ActorId::from(person.as_bytes().to_vec()));
     let heads = doc.get_heads();
     let mut desk = tilo_desktop_model::shared_record::read(&doc, None).unwrap_or_default();
-    let identity = tilo_desktop_model::WorkspaceId::parse(support::WORKSPACE).unwrap();
+    let identity = tilo_desktop_model::WorkspaceId::parse(crate::support::WORKSPACE).unwrap();
     let slot = WorkspaceSlot::of_workspace(identity);
     if !desk.tree.workspaces.iter().any(|held| held.slot == slot) {
         desk.tree.workspaces.push(Workspace::in_workspace(

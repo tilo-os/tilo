@@ -12,10 +12,6 @@
 
 #[path = "support/call.rs"]
 mod call;
-mod support;
-
-// This binary re-execs as the automerge worker (support is shared with crates that lack the dep).
-tilo_automerge_isolate::test_worker!();
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -25,8 +21,8 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, CallSummary, Directions, Showing};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
+use crate::support::{Device, TestHost, enrol, start_workspace_host, wait_for};
 use call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
-use support::{Device, TestHost, enrol, start_workspace_host, wait_for};
 
 /// `device`'s own session with the workspace, subscribed.
 async fn session(address: iroh::EndpointAddr, workspace_id: u64, device: &Device) -> RelayClient {

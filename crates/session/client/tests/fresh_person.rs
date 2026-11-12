@@ -16,10 +16,6 @@
 
 #[path = "support/call.rs"]
 mod call;
-mod support;
-
-// This binary re-execs as the automerge worker (the host's workspaces use it).
-tilo_automerge_isolate::test_worker!();
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -27,7 +23,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_client::{Cmd, Outbox};
 use tilo_user_identity::DeviceCapabilities;
 
-use support::{
+use crate::support::{
     TestHost, door, enrol, hears, ready, redeem, refused, say, start_peer, start_workspace_host,
     wait_for,
 };

@@ -9,8 +9,6 @@
     reason = "in a test these are the assertion, not a hazard; the host and page live until the test ends"
 )]
 
-mod support;
-
 use http_body_util::BodyExt as _;
 use test_http::{Reply, Responder};
 use tilo_net::proxy::{self, Proxy};
@@ -19,7 +17,9 @@ use tilo_relay::web::FetchProxySetup;
 use tilo_session_client::Link;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{HostSettings, enrol, start_host_plain, start_host_serving, start_peer, wait_for};
+use crate::support::{
+    HostSettings, enrol, start_host_plain, start_host_serving, start_peer, wait_for,
+};
 
 /// What an Invidious instance answers `/api/v1/trending` with, trimmed to
 /// what Tube lists.

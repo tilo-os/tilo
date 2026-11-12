@@ -15,10 +15,6 @@
 
 #[path = "support/participant.rs"]
 mod participant;
-mod support;
-
-// Placing the workspace has the host build its governance in an automerge worker.
-tilo_automerge_isolate::test_worker!();
 
 use std::collections::BTreeMap;
 use tilo_session_client::{Cmd, Event, Link, Outbox};
@@ -28,7 +24,9 @@ use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, hears, ready, route, say, start_host, start_peer, wait_for, workspace};
+use crate::support::{
+    enrol, hears, ready, route, say, start_host, start_peer, wait_for, workspace,
+};
 
 fn record(record: String) -> DocumentRoute {
     DocumentRoute { record, ..route() }
@@ -126,7 +124,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     .await;
     // Records are sealed: a participant admits each page to them.
     let _laptop = participant::Participant::start(&host.relay, &root).await;
-    let peer = |device: support::Device| {
+    let peer = |device: crate::support::Device| {
         start_peer(
             host.iroh(),
             device.cert,
@@ -135,7 +133,9 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
         )
     };
     let author = peer(author);
-    author.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    author
+        .join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
     ready(&[&author]).await;
     let note = route();
     let archive = record(neighbour_wire::on_demand_record("uuid:archive"));
@@ -157,8 +157,12 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     // Two pages join: each is replayed the note and the chain's head only.
     let early = peer(early);
     let reader = peer(reader);
-    early.join_placed(support::WORKSPACE, "Workspace").unwrap();
-    reader.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    early
+        .join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
+    reader
+        .join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
     let (mut at_early, mut at_reader) = (Received::default(), Received::default());
     for (page, received) in [(&early, &mut at_early), (&reader, &mut at_reader)] {
         until("the eager records", page, received, |received| {
@@ -228,7 +232,8 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
 
     // A page joining now is replayed the new head, not the part before it.
     let late = peer(late);
-    late.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    late.join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
     let mut at_late = Received::default();
     until("the new head", &late, &mut at_late, |received| {
         received.of(&note) > 0 && received.of(&part(2)) > 0

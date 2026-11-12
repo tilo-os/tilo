@@ -17,10 +17,6 @@
 
 #[path = "support/call.rs"]
 mod call;
-mod support;
-
-// This binary re-execs as the automerge worker (support is shared with crates that lack the dep).
-tilo_automerge_isolate::test_worker!();
 
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, Directions};

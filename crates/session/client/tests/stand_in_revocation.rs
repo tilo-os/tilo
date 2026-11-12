@@ -14,10 +14,6 @@
     reason = "the host, its sessions and the test's scratch directory live until the test ends"
 )]
 
-mod support;
-
-tilo_automerge_isolate::test_worker!();
-
 use ed25519_dalek::SigningKey;
 use tilo_relay_client::issue_stand_in;
 use tilo_session_client::{Cmd, Outbox};
@@ -26,7 +22,7 @@ use tilo_user_identity::{
     RevocationReason, UserIdentity, issue_device_cert_as_stand_in,
 };
 
-use support::{enrol, place, ready, start_host, start_peer, wait_for};
+use crate::support::{enrol, place, ready, start_host, start_peer, wait_for};
 
 /// A person whose root lives in one browser tab has a stand-in approver on
 /// their host. Once they keep the root with a passkey, the page revokes the
@@ -80,7 +76,7 @@ async fn a_stand_in_revoked_beside_a_session_refuses_what_it_signs_after() {
     )
     .unwrap();
 
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let host = start_host(
         &root,
         &host_device,
@@ -95,7 +91,8 @@ async fn a_stand_in_revoked_beside_a_session_refuses_what_it_signs_after() {
         host_device.cert.clone(),
         browser.key.clone(),
     );
-    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    peer.join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
     ready(&[&peer]).await;
 
     // The person keeps their root with a passkey: the page has the root
@@ -115,7 +112,7 @@ async fn a_stand_in_revoked_beside_a_session_refuses_what_it_signs_after() {
         let entry = entry.clone();
         let workspaces = host.relay.workspaces().unwrap();
         async move {
-            let held = workspaces.state(support::WORKSPACE).await?;
+            let held = workspaces.state(crate::support::WORKSPACE).await?;
             held.revocations().into_iter().find(|held| held == &entry)
         }
     })
@@ -133,7 +130,7 @@ async fn a_stand_in_revoked_beside_a_session_refuses_what_it_signs_after() {
         .relay
         .workspaces()
         .unwrap()
-        .state(support::WORKSPACE)
+        .state(crate::support::WORKSPACE)
         .await
         .unwrap()
         .revocations()

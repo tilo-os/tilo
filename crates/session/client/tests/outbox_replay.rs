@@ -15,10 +15,6 @@
 
 #[path = "support/participant.rs"]
 mod participant;
-mod support;
-
-// Placing the workspace has the host build its governance in an automerge worker.
-tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Link, Outbox, TransportPhase};
@@ -27,13 +23,13 @@ use automerge::AutoCommit;
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
-use support::{
+use crate::support::{
     admitted, enrol, holds, ready, restart_host, route, say, start_host, start_peer, wait_for,
 };
 
 /// How many of `peer`'s writes to the workspace its replica's custody still holds.
 fn unadmitted(peer: &Link) -> usize {
-    let workspace = tilo_desktop_model::WorkspaceId::parse(support::WORKSPACE).unwrap();
+    let workspace = tilo_desktop_model::WorkspaceId::parse(crate::support::WORKSPACE).unwrap();
     peer.engine()
         .owner()
         .unadmitted_writes(workspace)
@@ -70,7 +66,8 @@ async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
     )
     .unwrap();
     let receipt = peer.barrier().unwrap();
-    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    peer.join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
     wait_for("the barrier", || async { receipt.try_recv().ok() })
         .await
         .unwrap();
@@ -122,7 +119,8 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
         Arc::new(browser.key.clone()),
         store.clone(),
     );
-    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    peer.join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
     peer.send(Cmd::OpenRoute(route())).unwrap();
     ready(&[&peer]).await;
     admitted(&peer).await;
@@ -160,7 +158,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     .unwrap();
     assert_eq!(unadmitted(&peer), 0);
 
-    support::place(&host.relay, &observer.cert).await;
+    crate::support::place(&host.relay, &observer.cert).await;
     let observer_peer = start_peer(
         host.iroh(),
         observer.cert.clone(),
@@ -168,7 +166,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
         observer.key.clone(),
     );
     observer_peer
-        .join_placed(support::WORKSPACE, "Workspace")
+        .join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
     observer_peer.send(Cmd::OpenRoute(route())).unwrap();
     holds(&observer_peer, &route(), &offline).await;

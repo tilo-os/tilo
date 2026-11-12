@@ -13,10 +13,6 @@
 
 #[path = "support/participant.rs"]
 mod participant;
-mod support;
-
-// Placing the workspace has the host build its governance in an automerge worker.
-tilo_automerge_isolate::test_worker!();
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use collab_types::DocumentMutation;
@@ -24,7 +20,7 @@ use tilo_relay_protocol::workspaces::WorkspacesRequest;
 use tilo_session_client::{Cmd, Event, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{
+use crate::support::{
     enrol, hears, holds, ready, restart_host, route, say, start_host, start_peer, wait_for,
 };
 
@@ -33,7 +29,7 @@ fn landed(peer: &Link) -> usize {
     peer.drain()
         .into_iter()
         .filter(|event| {
-            matches!(event, Event::Landed { author: Some(author), .. } if !support::is_host(author))
+            matches!(event, Event::Landed { author: Some(author), .. } if !crate::support::is_host(author))
         })
         .count()
 }
@@ -104,9 +100,11 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
         host_device.cert.clone(),
         observer.key,
     );
-    author.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    author
+        .join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
     observer
-        .join_placed(support::WORKSPACE, "Workspace")
+        .join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
     observer.send(Cmd::OpenRoute(route())).unwrap();
     ready(&[&author, &observer]).await;
@@ -130,7 +128,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
             )
             .unwrap();
     }
-    support::durable(&author).await;
+    crate::support::durable(&author).await;
     holds(&observer, &route(), &doc).await;
     settled(&observer).await;
     assert_eq!(landed(&observer), HISTORY + 1);
@@ -170,7 +168,9 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     // A peer without a position (a fresh page) still gets everything.
     let fresh = enrol(&root, "tablet", DeviceCapabilities::member());
     let fresh = start_peer(host.iroh(), fresh.cert, host_device.cert.clone(), fresh.key);
-    fresh.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    fresh
+        .join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
     fresh.send(Cmd::OpenRoute(route())).unwrap();
     holds(&fresh, &route(), &doc).await;
     settled(&fresh).await;

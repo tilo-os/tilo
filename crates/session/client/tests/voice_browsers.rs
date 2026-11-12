@@ -13,8 +13,6 @@
 )]
 #[path = "support/call.rs"]
 mod call;
-mod support;
-tilo_automerge_isolate::test_worker!();
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -321,7 +319,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
     let page_device = bob_device.cert.device_public_key;
     let page = Arc::new(Page {
         workspace: governed.cluster_id.clone(),
-        peer: support::start_peer(
+        peer: crate::support::start_peer(
             governed.iroh(),
             bob_device.cert,
             governed.host.cert.clone(),
@@ -329,7 +327,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
         ),
     });
     page.peer.send(Cmd::Join(governed.workspace_id)).unwrap();
-    support::ready(&[&page.peer]).await;
+    crate::support::ready(&[&page.peer]).await;
 
     // The plane's frames are sealed with the workspace scope's keys; the page
     // holds them as a workspace member, and so does the device it calls.

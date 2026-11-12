@@ -10,8 +10,6 @@
     reason = "in a test these are the assertion, not a hazard; the host and page live until the test ends"
 )]
 
-mod support;
-
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_relay_client::{
@@ -19,7 +17,7 @@ use tilo_relay_client::{
 };
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{Device, ready, start_host, start_peer};
+use crate::support::{Device, ready, start_host, start_peer};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_page_root_certifies_its_node_and_then_itself() {

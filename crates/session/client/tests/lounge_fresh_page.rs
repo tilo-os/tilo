@@ -35,10 +35,6 @@
     reason = "a rehearsal fixture: a failed step is the answer, and it says which check failed"
 )]
 
-mod support;
-
-tilo_automerge_isolate::test_worker!();
-
 use std::io::{BufRead, BufReader, Write as _};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
@@ -340,7 +336,7 @@ impl Lounge {
         let page = self.page(&owner);
         page.join_placed(&self.workspace, "Lounge").unwrap();
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(support::ready(&[&page]));
+            tokio::runtime::Handle::current().block_on(crate::support::ready(&[&page]));
         });
         let reply = page
             .ask_workspaces(WorkspacesRequest::Invite {
@@ -456,7 +452,7 @@ async fn fresh_page(lounge: &Lounge, who: &Person, invitation: &[u8]) -> Link {
         "the invitation admits the page: {admitted:?}"
     );
     page.join_placed(&lounge.workspace, "Lounge").unwrap();
-    support::ready(&[&page]).await;
+    crate::support::ready(&[&page]).await;
     page
 }
 
@@ -468,7 +464,7 @@ fn chat_messages(page: &Link, workspace: &str, channel: &str) -> Vec<chat::model
         cluster_id: workspace.to_owned(),
         record: String::new(),
     };
-    let Some(chat_doc) = support::record_of(page, &record) else {
+    let Some(chat_doc) = crate::support::record_of(page, &record) else {
         println!("the page holds none of Chat's record");
         return Vec::new();
     };
@@ -489,7 +485,7 @@ fn chat_messages(page: &Link, workspace: &str, channel: &str) -> Vec<chat::model
             cluster_id: workspace.to_owned(),
             record: chat::parts::part(index).route().to_owned(),
         };
-        let Some(document) = support::record_of(page, &part) else {
+        let Some(document) = crate::support::record_of(page, &part) else {
             continue;
         };
         if let Ok(held) = tilo_app::tilo_resource::Reader::<chat::parts::ChatPart>::read(&document)
@@ -575,8 +571,8 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     };
     let started = std::time::Instant::now();
     let wait = tokio::time::Instant::now() + Duration::from_secs(300);
-    while !(support::record_of(&page, &chat).is_some()
-        && support::record_of(&page, &part).is_some())
+    while !(crate::support::record_of(&page, &chat).is_some()
+        && crate::support::record_of(&page, &part).is_some())
         && tokio::time::Instant::now() < wait
     {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -590,7 +586,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
 
     // 3. The desk: the members' windows, as the shared desktop record holds
     // them, read through the desktop model the window draws.
-    let desk = support::record_of(&page, &desktop)
+    let desk = crate::support::record_of(&page, &desktop)
         .and_then(|doc| tilo_desktop_model::shared_record::read(&doc, None));
     let windows: Vec<String> = desk
         .as_ref()

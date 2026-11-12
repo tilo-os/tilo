@@ -12,8 +12,6 @@
     reason = "in a test these are the assertion, not a hazard; the browser, host and page live until the test ends"
 )]
 
-mod support;
-
 use std::sync::Arc;
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
@@ -28,7 +26,7 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Lines};
 use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
-use support::{Device, ready, start_host, start_peer};
+use crate::support::{Device, ready, start_host, start_peer};
 
 /// The root the page holds, signing over the driver's stdio.
 struct PageRoot {
@@ -64,7 +62,7 @@ async fn a_passkey_root_in_chrome_certifies_a_node_and_its_own_page() {
     // The runtime module the driver serves is resolved before it starts, so
     // the time this test gives the page to create its identity is the page's
     // own.
-    let bundle = support::page_bundle();
+    let bundle = crate::support::page_bundle();
     let mut browser = tokio::process::Command::new("node")
         .arg(driver)
         .arg("passkey")

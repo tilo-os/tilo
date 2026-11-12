@@ -17,9 +17,6 @@
 
 #[path = "support/participant.rs"]
 mod participant;
-mod support;
-
-tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
 
@@ -33,7 +30,7 @@ use tilo_relay_protocol::web::API_PREFIX;
 use tilo_session_client::device::{Device, run_as_agent};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
-use support::{door, enrol, enter as enter_as, start_workspace_host, wait_for};
+use crate::support::{door, enrol, enter as enter_as, start_workspace_host, wait_for};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))

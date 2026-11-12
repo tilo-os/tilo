@@ -12,10 +12,6 @@
     reason = "in a test these are the assertion, not a hazard; the test is one login, in order; the host lives until it ends"
 )]
 
-mod support;
-
-tilo_automerge_isolate::test_worker!();
-
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_relay_client::invite::guest_certificate;
@@ -23,7 +19,7 @@ use tilo_relay_client::login_code;
 use tilo_relay_protocol::login_code::{Report, Step};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{door, enrol, enter as enter_as, start_workspace_host};
+use crate::support::{door, enrol, enter as enter_as, start_workspace_host};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
