@@ -337,7 +337,7 @@ pub struct AgentOptions {
 /// A placer is named, but its members or account are not usable.
 pub fn host_shells(state: PathBuf) -> Result<Arc<HostShells>, String> {
     Ok(Arc::new(
-        match crate::placed_shells::PlacedShells::from_env()? {
+        match crate::placed_shells::PlacedShells::shared_from_env()? {
             Some(placed) => HostShells::Placed(placed),
             None => HostShells::Here(ush::workspace_shell::WorkspaceShells::from_env(state)),
         },
@@ -358,7 +358,7 @@ pub enum HostShells {
     /// Here: ush's workspace shells, in this process.
     Here(ush::workspace_shell::WorkspaceShells),
     /// On the member device holding the workspace's VM.
-    Placed(crate::placed_shells::PlacedShells),
+    Placed(Arc<crate::placed_shells::PlacedShells>),
 }
 
 impl HostShells {

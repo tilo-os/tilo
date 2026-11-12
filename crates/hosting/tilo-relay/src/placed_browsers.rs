@@ -71,7 +71,7 @@ impl PlacedBrowsers {
     ///
     /// A placer is named but the members or the account are not usable.
     pub fn from_env() -> Result<Option<Self>, String> {
-        Ok(PlacedShells::from_env()?.map(|placed| Self::new(Arc::new(placed))))
+        Ok(PlacedShells::shared_from_env()?.map(Self::new))
     }
 
     #[must_use]
