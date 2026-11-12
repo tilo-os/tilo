@@ -160,7 +160,6 @@ tilo-workspace-directory = { path = "../workspace-directory" }
 agent-provider-config = { path = "../../agent/provider-config" }
 tilo-rt = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
-pollster.workspace = true
 tracing.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -406,6 +405,7 @@ settings-store = { path = "../../system/settings-store", features = ["watch"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]
+pollster.workspace = true
 # A Rust app's views, drawn by the shell as it draws a tilolang app's (one-app-model.md §2):
 # the sample catalogue's channels and videos, never the live worker.
 tube = { path = "../../../apps/tube", default-features = false, features = ["samples"] }

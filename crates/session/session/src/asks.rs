@@ -600,16 +600,17 @@ impl Shared {
 
     /// What workspace settings feeds its panes from.
     pub(crate) fn workspace_settings_feed(&self) -> workspace_settings::Feeding<'_> {
-        workspace_settings::Feeding::new(
-            &self.handle,
-            &self.person,
-            &self.search,
-            &self.ws_settings_fed,
-            &self.workspace_tabs,
-            self.file_picker.as_ref(),
-            self.personal.as_ref(),
-            self.engine.as_deref(),
-        )
+        workspace_settings::Feeding {
+            handle: &self.handle,
+            person: &self.person,
+            search: &self.search,
+            fed: &self.ws_settings_fed,
+            tabs: &self.workspace_tabs,
+            picker: self.file_picker.as_ref(),
+            personal: self.personal.as_ref(),
+            engine: self.engine.as_ref(),
+            landings: &self.landings,
+        }
     }
 
     /// Make a new workspace through the desk's own published action, so the rules and the naming

@@ -17,7 +17,6 @@ use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
 use tilo_lock::MutexRecover as _;
-use tilo_service::Started;
 use tilo_session_core::door::Doors;
 use tilo_surface_host::{DesktopHost, WidgetHost};
 use ui::host_operation::ResourceOperationStart;
@@ -1353,8 +1352,10 @@ impl Session {
                 wake: Some(options.wake.handle()),
             })
         });
+        let landings = Rc::new(crate::landing::Landings::new(options.wake.handle()));
         let inviting = crate::invite::Invite::new(
             Rc::new(crate::platform::invite::DeskWorkspace {
+                landings: Rc::clone(&landings),
                 handle: handle.clone(),
                 person: options.person.clone(),
                 sync: sync.is_some(),
@@ -1466,6 +1467,7 @@ impl Session {
             ),
             notes,
             membership_fed: Cell::new(None),
+            landings,
             _channels: channels,
             personal,
             clipboard,
@@ -1497,21 +1499,50 @@ impl Session {
         if let Some(launch) = &shared.launch {
             let handle = shared.handle.clone();
             let engine = shared.engine.clone();
-            launch.lend_authorship(Rc::new(move |workspace: &str, app: &str| {
-                if let Err(error) = crate::membership::authorship(
-                    engine.as_deref(),
-                    &crate::governance::Desk(&handle),
-                    workspace,
-                    app,
-                ) {
-                    tracing::warn!(
-                        %workspace,
-                        app,
-                        %error,
-                        "an opening app was not let author its workspace"
-                    );
-                }
-            }));
+            let landings = Rc::clone(&shared.landings);
+            let apps = Rc::downgrade(launch);
+            launch.lend_authorship(Rc::new(
+                move |workspace: &str, app: &str, then: Box<dyn FnOnce(&crate::apps::Apps)>| {
+                    let apps = apps.clone();
+                    let start = move || {
+                        if let Some(apps) = apps.upgrade() {
+                            then(&apps);
+                        }
+                    };
+                    let desk = crate::governance::Desk(&handle);
+                    let granting =
+                        match crate::membership::authorship(engine.as_ref(), &desk, workspace, app)
+                        {
+                            Ok(Some(granting)) => granting,
+                            Ok(None) => return start(),
+                            Err(error) => {
+                                not_authored(workspace, app, &error);
+                                return start();
+                            }
+                        };
+                    // The workspace's governance signs the grant off the loop; the launch starts
+                    // once it landed, and asking again then takes the grant onto the desk.
+                    let (engine, handle) = (engine.clone(), handle.clone());
+                    let (workspace, app) = (workspace.to_owned(), app.to_owned());
+                    landings.then(crate::landing::off_loop(granting), move |granted| {
+                        let desk = crate::governance::Desk(&handle);
+                        let taken = granted
+                            .unwrap_or_else(|| Err("the grant was given up".into()))
+                            .and_then(|()| {
+                                crate::membership::authorship(
+                                    engine.as_ref(),
+                                    &desk,
+                                    &workspace,
+                                    &app,
+                                )
+                            });
+                        if let Err(error) = taken {
+                            not_authored(&workspace, &app, &error);
+                        }
+                        start();
+                    });
+                },
+            ));
         }
         shared.start_search();
         // What the person copied is personal: the clipboard publishes the
@@ -2200,9 +2231,7 @@ impl Session {
             .borrow_mut()
             .invoke_confirmed(resource, action, arguments)
         {
-            Some(Ok(Started::Done(output))) => Ok(ResourceOperationStart::Completed(output)),
-            Some(Ok(Started::Accepted)) => Ok(ResourceOperationStart::Accepted),
-            Some(Err(error)) => Err(error),
+            Some(started) => started.map(crate::doors::plane::answered),
             None => Err(DoorError::Unknown(ActionAddress::new(resource, action))),
         }
     }
@@ -2602,6 +2631,11 @@ impl LoopTurns for Turns {
     fn unparked(&self) {
         self.0.unparked();
     }
+}
+
+/// Say that the app `app` opening in `workspace` was not let author its records there.
+fn not_authored(workspace: &str, app: &str, error: &str) {
+    tracing::warn!(%workspace, app, %error, "an opening app was not let author its workspace");
 }
 
 #[cfg(test)]

@@ -43,7 +43,12 @@ impl WorkspaceNodes {
 
     /// What `ask` of `node` in `workspace` comes to: `grants` a share holds, `revoked` by its end,
     /// or `read` and `undoable` at the node.
-    fn answer(&self, workspace: &str, node: &str, ask: WorkspaceNodeAsk) -> WorkspaceNodeOutcome {
+    async fn answer(
+        &self,
+        workspace: &str,
+        node: &str,
+        ask: WorkspaceNodeAsk,
+    ) -> WorkspaceNodeOutcome {
         let id = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         if !self.engine.holds(id) {
             return Err("this device does not hold the workspace".into());
@@ -71,12 +76,12 @@ impl WorkspaceNodes {
                 )?;
                 // What the share gives, as the workspace writes it: the same grants every device
                 // reads, bounded by what this person holds there when the workspace admits them.
-                pollster::block_on(membership.share(&share, node, access))?;
+                membership.share(&share, node, access).await?;
                 json!({ "grants": held(&share)? })
             }
             WorkspaceNodeAsk::Unshare { share } => {
                 let before = held(&share)?;
-                pollster::block_on(membership.unshare(&share))?;
+                membership.unshare(&share).await?;
                 json!({ "revoked": before.saturating_sub(held(&share)?) })
             }
             WorkspaceNodeAsk::Permits => {
@@ -99,22 +104,16 @@ impl WorkspaceNodeActions for WorkspaceNodes {
         node: &str,
         ask: WorkspaceNodeAsk,
     ) -> Result<tilo_actions::remote::Pending<WorkspaceNodeOutcome>, String> {
-        let (complete, answer) = tilo_actions::remote::pending();
         let workspace = workspace.to_owned();
         let node = node.to_owned();
         let this = Self {
             engine: Arc::clone(&self.engine),
             person: self.person.clone(),
         };
-        let answer_it = move || this.answer(&workspace, &node, ask);
-        // A share is a commit into the workspace's record, and what a person may do there waits on
-        // that record's open: both wait on the disk, off the loop the ask arrived on.
-        #[cfg(target_os = "linux")]
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn_blocking(move || complete.complete(answer_it()));
-            return Ok(answer);
-        }
-        complete.complete(answer_it());
-        Ok(answer)
+        // A share is a commit into the workspace's record, signed by this device's signer: it
+        // answers once signed, off the loop the ask arrived on.
+        Ok(crate::landing::off_loop(async move {
+            this.answer(&workspace, &node, ask).await
+        }))
     }
 }

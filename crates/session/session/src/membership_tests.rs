@@ -29,12 +29,91 @@ fn identity(cert: &tilo_user_identity::DeviceCert, key: &SigningKey) -> HostIden
 /// the person in it as its owner. `joiner` joins the workspace too, as their own device, and
 /// comes back as the person the workspace knows them by.
 fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir) {
+    workspace_signed_through(joiner, None)
+}
+
+/// When a signer that holds its signatures back answers: once the asking loop turned.
+#[derive(Default)]
+struct SignGate {
+    held: std::sync::atomic::AtomicBool,
+    waiting: std::sync::Mutex<Vec<std::task::Waker>>,
+}
+
+impl SignGate {
+    fn held(&self) -> bool {
+        self.held.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Hold every signature back from now on.
+    fn hold(&self) {
+        self.held.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The loop turned: answer what was held back.
+    fn open(&self) {
+        self.held.store(false, std::sync::atomic::Ordering::SeqCst);
+        let waiting = std::mem::take(&mut *self.waiting.lock().expect("the gate"));
+        for waker in waiting {
+            waker.wake();
+        }
+    }
+}
+
+/// This device's key behind a gate: what a page's key, which signs through a promise, or a signer
+/// that answers through the session's own loop looks like to the code that asks it.
+struct LateSigner {
+    key: SigningKey,
+    gate: std::sync::Arc<SignGate>,
+}
+
+impl collab_types::signer::DeviceSigner for LateSigner {
+    fn device_public_key(&self) -> [u8; 32] {
+        self.key.verifying_key().to_bytes()
+    }
+
+    fn endpoint_secret(&self) -> Option<[u8; 32]> {
+        Some(self.key.to_bytes())
+    }
+
+    fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
+        let signature = ed25519_dalek::Signer::sign(&self.key, &message).to_bytes();
+        let gate = std::sync::Arc::clone(&self.gate);
+        Box::pin(std::future::poll_fn(move |context| {
+            if gate.held() {
+                gate.waiting
+                    .lock()
+                    .expect("the gate")
+                    .push(context.waker().clone());
+                if gate.held() {
+                    return std::task::Poll::Pending;
+                }
+            }
+            std::task::Poll::Ready(Ok(signature))
+        }))
+    }
+}
+
+/// [`workspace_here`] with this device signing through `gate` when one is given.
+fn workspace_signed_through(
+    joiner: &str,
+    gate: Option<std::sync::Arc<SignGate>>,
+) -> (Engine, Workspace, String, tempfile::TempDir) {
     let person_root = SigningKey::from_bytes(&[9; 32]);
     let person_key = SigningKey::from_bytes(&[10; 32]);
     let cert = testing::certificate(&person_root, &person_key, "This device");
     let directory = tempfile::TempDir::new().expect("a state directory");
+    let identity = match gate {
+        Some(gate) => HostIdentity::kept(
+            cert.clone(),
+            LateSigner {
+                key: person_key.clone(),
+                gate,
+            },
+        ),
+        None => identity(&cert, &person_key),
+    };
     let engine = Engine::open(
-        identity(&cert, &person_key),
+        identity,
         Some(directory.path()),
         std::iter::empty(),
         crate::platform::custody::of_this_desk(),
@@ -659,6 +738,15 @@ impl GovernedDesk {
             .expect("a frame");
     }
 
+    /// Step the session until `done` says so, or the time a test may hang ran out: what the
+    /// workspace answers a change lands on a pass after the one that asked.
+    fn frames_until(&mut self, mut done: impl FnMut(&mut Self) -> bool) {
+        let deadline = tilo_test_env::hang_deadline();
+        while !done(self) && std::time::Instant::now() < deadline {
+            self.frames();
+        }
+    }
+
     /// Close the session, as this computer does when its desk is not up.
     fn close(&mut self) {
         self.session = None;
@@ -757,7 +845,7 @@ fn a_role_the_people_tab_sets_reaches_the_other_members_device() {
     );
     press(&mut app, &format!("ws-people-role-{ada}"));
     activate(&mut app, "Commenter");
-    desk.frames();
+    desk.frames_until(|desk| shown_role(desk, &ada).as_deref() == Some("commenter"));
     app.settle();
     assert_eq!(
         shown_role(&mut desk, &ada).as_deref(),
@@ -1690,14 +1778,11 @@ fn an_apps_share_of_a_node_is_the_workspaces_own_grants() {
     use std::sync::Arc;
     use tilo_action_policy::share::is_of_share;
     use tilo_action_policy::{ActionKind, Answer, Authority, Context, TreePath};
-    use tilo_actions::remote::{Pending, PendingPoll};
+    use tilo_actions::remote::Pending;
     use tilo_broker_core::services::WorkspaceNodeAsk;
 
-    fn answered<T: std::fmt::Debug>(mut pending: Pending<T>) -> T {
-        match pending.poll_ready() {
-            PendingPoll::Ready(value) => value,
-            other => panic!("the workspace answers at once here: {other:?}"),
-        }
+    fn answered<T>(pending: Pending<T>) -> T {
+        landed(pending)
     }
 
     let (engine, _, joiner, _state) = workspace_here("ada");
@@ -1757,4 +1842,56 @@ fn an_apps_share_of_a_node_is_the_workspaces_own_grants() {
             .all(|grant| !is_of_share(grant, "m1")),
         "nothing of the share is left in the workspace"
     );
+}
+
+/// What `pending` answers once it landed, within the time a test may hang.
+fn landed<T>(pending: tilo_actions::remote::Pending<T>) -> T {
+    let within =
+        tilo_test_env::hang_deadline().saturating_duration_since(std::time::Instant::now());
+    pending
+        .wait_timeout(within)
+        .unwrap_or_else(|_| panic!("the work did not answer"))
+        .expect("the work was given up before it answered")
+}
+
+/// A share written through a signer that answers only once the loop that asked turned (a page's
+/// key, or a signer answering through the session's own loop): the ask hands back its answer at
+/// once and holds nothing, and the share lands once the signer answered. A loop that waited for
+/// the signature here would never turn, and the signer would never answer.
+#[test]
+fn a_share_signed_late_never_holds_the_loop_that_asked() {
+    use crate::workspace_nodes::WorkspaceNodes;
+    use std::sync::Arc;
+    use tilo_action_policy::TreePath;
+    use tilo_actions::remote::PendingPoll;
+    use tilo_broker_core::services::WorkspaceNodeAsk;
+
+    let gate = Arc::new(SignGate::default());
+    let (engine, _, _, _state) = workspace_signed_through("ada", Some(Arc::clone(&gate)));
+    let engine = Arc::new(engine);
+    let asks = WorkspaceNodes::service(Some(&engine)).expect("this session holds a workspace");
+    let node = TreePath::workspace(WORKSPACE)
+        .app("so.tilo.notes")
+        .kind("notes.notebook")
+        .resource("plan")
+        .to_string();
+    gate.hold();
+    let mut share = asks
+        .ask(
+            WORKSPACE,
+            &node,
+            WorkspaceNodeAsk::Share {
+                share: "m1".into(),
+                access: "view".into(),
+            },
+        )
+        .expect("a node of this workspace");
+    assert!(
+        matches!(share.poll_ready(), PendingPoll::Waiting),
+        "nothing is shared before the signer answered"
+    );
+    // The loop that asked goes on, and its turn is what lets the signer answer.
+    gate.open();
+    let shared = landed(share).expect("the workspace's owner shares what they hold");
+    assert_eq!(shared["grants"], 4, "one grant per role below the owner");
 }

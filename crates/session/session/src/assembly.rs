@@ -321,6 +321,9 @@ pub(crate) struct Shared {
     /// last taken from: what nothing new of a workspace's governance has
     /// passed since.
     pub(crate) membership_fed: Cell<Option<u64>>,
+    /// What the loop does with the answers of async work it started (a signature, a commit into a
+    /// workspace's record), on the pass after each landed.
+    pub(crate) landings: Rc<crate::landing::Landings>,
     /// This device's channels of those workspaces' sealed records, and the
     /// devices each one admits: kept for as long as the session runs.
     #[cfg(target_os = "linux")]

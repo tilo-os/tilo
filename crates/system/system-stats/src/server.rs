@@ -32,9 +32,18 @@ pub trait Prompter: Send + Sync {
     /// (a choice made earlier, kept as they asked).
     fn granted(&self, handoff: &Handoff, grant: Grant) -> bool;
 
-    /// Put the permission prompt in front of the person and wait for the
-    /// answer. Blocks the asking connection's thread, never the service.
-    fn ask(&self, handoff: &Handoff, grant: Grant) -> bool;
+    /// Put the permission prompt in front of the person: whether they allowed
+    /// it, once they answered. The asking connection's thread waits for it,
+    /// never the service, nor whoever puts the prompt up.
+    fn ask(&self, handoff: &Handoff, grant: Grant) -> mpsc::Receiver<bool>;
+}
+
+/// An answer known before anyone is asked.
+#[must_use]
+pub fn answered(allowed: bool) -> mpsc::Receiver<bool> {
+    let (answer, answered) = mpsc::channel();
+    let _ = answer.send(allowed);
+    answered
 }
 
 /// No one to ask: every question is answered no.
@@ -45,8 +54,8 @@ impl Prompter for NoPrompter {
         false
     }
 
-    fn ask(&self, _handoff: &Handoff, _grant: Grant) -> bool {
-        false
+    fn ask(&self, _handoff: &Handoff, _grant: Grant) -> mpsc::Receiver<bool> {
+        answered(false)
     }
 }
 
@@ -254,7 +263,10 @@ impl Connection<'_> {
             Request::AskGrant { request, grant } => {
                 // Only what the manifest declares can be asked for.
                 let declared = self.handoff.ceiling.with(grant) == self.handoff.ceiling;
-                if declared && !self.grants.holds(grant) && prompter.ask(self.handoff, grant) {
+                if declared
+                    && !self.grants.holds(grant)
+                    && prompter.ask(self.handoff, grant).recv().unwrap_or(false)
+                {
                     // A command line is part of a process row: allowing it
                     // allows the list it belongs to.
                     self.grants = self.grants.with(grant);

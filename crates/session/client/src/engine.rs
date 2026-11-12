@@ -184,6 +184,9 @@ pub struct Engine {
     /// The desk's workspaces this device could not found here: founding one is asked for again only
     /// by a later session, not by every pass over the desk.
     unfounded: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
+    /// The desk's workspaces being founded now: a pass that comes while one is signed founds it
+    /// no second time.
+    founding: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
     /// This device's workspaces as its other devices reach them, when it keeps a state directory to
     /// hold their frames in.
     #[cfg(not(target_arch = "wasm32"))]
@@ -360,6 +363,7 @@ impl Engine {
             custody,
             link: std::sync::Mutex::new(None),
             unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            founding: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             #[cfg(not(target_arch = "wasm32"))]
             directed: None,
             arrivals: Arc::new(crate::arrivals::Arrivals::default()),
@@ -1628,9 +1632,25 @@ impl Engine {
         name: &str,
         endpoint: Option<&iroh_base::EndpointAddr>,
     ) {
-        if self.holds(workspace) || self.unfounded.lock_recover().contains(&workspace) {
+        if self.holds(workspace)
+            || self.unfounded.lock_recover().contains(&workspace)
+            || !self.founding.lock_recover().insert(workspace)
+        {
             return;
         }
+        self.found_here(slot, workspace, name, endpoint).await;
+        self.founding.lock_recover().remove(&workspace);
+    }
+
+    /// [`Self::found`] once nothing else founds `workspace`.
+    #[cfg(target_os = "linux")]
+    async fn found_here(
+        &self,
+        slot: WorkspaceSlot,
+        workspace: WorkspaceId,
+        name: &str,
+        endpoint: Option<&iroh_base::EndpointAddr>,
+    ) {
         let identity = self.identity();
         if !identity.device_cert.capabilities.can_own_workspaces {
             return;

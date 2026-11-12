@@ -201,6 +201,9 @@ impl<'a> Membership<'a> {
     }
 }
 
+/// The grant [`authorship`] asks of a workspace's governance, signed by this device's signer.
+pub type Granting = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+
 /// Let `app` author its own records in `workspace`, as the person who opens it
 /// there: the workspace's governance gives the grant when they administer it
 /// ([`crate::engine::Engine::administers`]), and the desk takes it from there
@@ -211,15 +214,18 @@ impl<'a> Membership<'a> {
 /// owner. Nothing is written while the workspace already makes the app an
 /// author.
 ///
+/// The grant the governance must sign first comes back to run off the caller's
+/// loop: once it landed, asking again takes it onto the desk.
+///
 /// # Errors
 /// The workspace's governance refused the grant, or a desk-only workspace has
 /// no owner to give it.
 pub fn authorship(
-    engine: Option<&Engine>,
+    engine: Option<&std::sync::Arc<Engine>>,
     desk: &dyn Workspaces,
     workspace: &str,
     app: &str,
-) -> Result<(), String> {
+) -> Result<Option<Granting>, String> {
     let id = WorkspaceId::parse(workspace).ok_or("the launch names no workspace")?;
     let authors = |policy: &WorkspacePolicy| {
         policy
@@ -234,9 +240,11 @@ pub fn authorship(
         // people, and asks for nothing here. The workspace's own devices grant it, and what they
         // grant arrives in the projection below like the rest of its grants.
         if !authors(&policy) && engine.administers(workspace) {
-            pollster::block_on(Membership::of(engine, id).grant_app_authorship(app))?;
+            let (engine, app) = (std::sync::Arc::clone(engine), app.to_owned());
+            return Ok(Some(Box::pin(async move {
+                Membership::of(&engine, id).grant_app_authorship(&app).await
+            })));
         }
-        let policy = engine.policy(workspace)?;
         edit_workspace(desk, id, |shown| Ok(project(shown, &policy)))?;
     } else {
         // A workspace that lives only on this desk holds no governance here, so the desk's own
@@ -246,7 +254,7 @@ pub fn authorship(
             .map_or(0, |since| since.as_secs());
         edit_workspace(desk, id, |shown| author_on_desk(shown, app, now))?;
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Let `app` author its records in `workspace` , which lives only on this desk: the owner, whose

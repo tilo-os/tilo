@@ -1597,46 +1597,37 @@ impl SessionDoors {
                     slot,
                     run,
                     done,
-                } => {
-                    let ran = match arguments_of(slot.as_deref()) {
-                        Ok(arguments) => {
-                            // A step a service publishes runs there, on the record the service
-                            // keeps — Chat's `record-work` on a turn's summons is the session's
-                            // Chat service's, not the arrangement's. Every other step is the
-                            // session's own doors': the arrangement, the windows and the notices.
-                            // Any resource a service publishes, at any depth: a note in a
-                            // notebook the session keeps is the service's as its notebook is.
-                            let served = tilo_actions::door::resolve(
-                                &services.borrow().resources(),
-                                &address,
-                            )
-                            .is_some();
-                            if served {
-                                invoke_service_step(
-                                    services,
-                                    &actor,
-                                    run.as_ref(),
-                                    &address,
-                                    &arguments,
-                                )
-                            } else {
-                                doors
-                                    .invoke_as(&actor, &address, &arguments, look)
-                                    .map(|started| match started {
-                                        ui::host_operation::ResourceOperationStart::Completed(
-                                            output,
-                                        ) => Some(output),
-                                        ui::host_operation::ResourceOperationStart::Accepted => {
-                                            None
-                                        }
-                                    })
-                                    .map_err(|error| crate::surfaces::refusal(&error))
-                            }
-                        }
-                        Err(why) => Err(why),
-                    };
-                    done.complete(ran);
-                }
+                } => match arguments_of(slot.as_deref()) {
+                    // A step a service publishes runs there, on the record the service keeps —
+                    // Chat's `record-work` on a turn's summons is the session's Chat service's,
+                    // not the arrangement's. Every other step is the session's own doors': the
+                    // arrangement, the windows and the notices. Any resource a service publishes,
+                    // at any depth: a note in a notebook the session keeps is the service's as
+                    // its notebook is.
+                    Ok(arguments)
+                        if tilo_actions::door::resolve(
+                            &services.borrow().resources(),
+                            &address,
+                        )
+                        .is_some() =>
+                    {
+                        invoke_service_step(
+                            services,
+                            &actor,
+                            run.as_ref(),
+                            &address,
+                            &arguments,
+                            done,
+                        );
+                    }
+                    Ok(arguments) => done.complete(
+                        doors
+                            .invoke_as(&actor, &address, &arguments, look)
+                            .map(ui::host_operation::ResourceOperationStart::completed)
+                            .map_err(|error| crate::surfaces::refusal(&error)),
+                    ),
+                    Err(why) => done.complete(Err(why)),
+                },
                 DoorAsk::Record { app, done } => {
                     done.complete(services.borrow().record(&app));
                 }

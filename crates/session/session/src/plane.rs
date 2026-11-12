@@ -29,6 +29,7 @@ use tilo_action_broker::services::{
     ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
     WifiContinuityServices, WorkspaceMemberships,
 };
+use tilo_actions::DoorError;
 use tilo_broker_core::services::TrackerRuns;
 use tilo_broker_core::services::{
     ContentStoreServices, SearchIndexServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
@@ -135,7 +136,7 @@ impl Link {
                         %action,
                         "an app invokes a published action"
                     );
-                    let _ = reply.send(receipt(services, &resource, &action, &arguments));
+                    answer(services, &resource, &action, &arguments, reply);
                 }
             }
         }
@@ -1131,33 +1132,64 @@ fn encoded(value: &serde_json::Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap_or_default()
 }
 
-/// What invoking one of the services' actions answered.
-fn receipt(services: &mut Services, resource: &str, action: &str, arguments: &[u8]) -> Receipt {
+/// Answer `reply` with what invoking one of the services' actions answered: at once, or when the
+/// async work it started lands.
+fn answer(
+    services: &mut Services,
+    resource: &str,
+    action: &str,
+    arguments: &[u8],
+    reply: oneshot::Sender<Receipt>,
+) {
     let arguments = match serde_json::from_slice::<Map<String, serde_json::Value>>(arguments) {
         Ok(arguments) => arguments,
         Err(error) => {
-            return Receipt::Refused {
+            let _ = reply.send(Receipt::Refused {
                 code: "invalid_arguments".into(),
                 message: format!("the arguments are not a JSON object: {error}"),
-            };
+            });
+            return;
         }
     };
-    match services.invoke(resource, action, &arguments) {
-        Some(Ok(Started::Done(output))) => match serde_json::to_vec(&output) {
+    let done = match services.invoke(resource, action, &arguments) {
+        Some(Ok(Started::Done(output))) => Ok(output),
+        Some(Ok(Started::Accepted)) => {
+            let _ = reply.send(Receipt::Accepted);
+            return;
+        }
+        Some(Ok(Started::Later(later))) => {
+            later.then(move |landed| {
+                let _ = reply.send(receipt(landed.unwrap_or_else(|| {
+                    Err(DoorError::Failed("the action's work was given up".into()))
+                })));
+            });
+            return;
+        }
+        Some(Err(error)) => Err(error),
+        None => {
+            let _ = reply.send(Receipt::Refused {
+                code: "unknown_action".into(),
+                message: format!("this session publishes no `{resource}` resource"),
+            });
+            return;
+        }
+    };
+    let _ = reply.send(receipt(done));
+}
+
+/// What an action that finished answered, as the wire carries it.
+fn receipt(done: Result<tilo_actions::ActionOutput, DoorError>) -> Receipt {
+    match done {
+        Ok(output) => match serde_json::to_vec(&output) {
             Ok(output) => Receipt::Done(output),
             Err(error) => Receipt::Refused {
                 code: "failed".into(),
                 message: format!("the action's output does not encode: {error}"),
             },
         },
-        Some(Ok(Started::Accepted)) => Receipt::Accepted,
-        Some(Err(error)) => Receipt::Refused {
+        Err(error) => Receipt::Refused {
             code: error.code().to_owned(),
             message: error.to_string(),
-        },
-        None => Receipt::Refused {
-            code: "unknown_action".into(),
-            message: format!("this session publishes no `{resource}` resource"),
         },
     }
 }

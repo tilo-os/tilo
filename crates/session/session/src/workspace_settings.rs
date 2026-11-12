@@ -14,7 +14,7 @@ use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::collaborators::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, agent_access};
-use tilo_desktop_model::{DesktopTree, UserId, Workspace, role_from_id, role_id};
+use tilo_desktop_model::{DesktopTree, UserId, Workspace, WorkspaceId, role_from_id, role_id};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_sheets::Seat as _;
@@ -56,45 +56,23 @@ impl WorkspaceTabs {
 /// What the sheet is fed from: the desk in front, the lists its tabs offer,
 /// and the workspace's own records its tabs read.
 pub(crate) struct Feeding<'a> {
-    handle: &'a DesktopHandle,
-    person: &'a UserId,
+    pub(crate) handle: &'a DesktopHandle,
+    pub(crate) person: &'a UserId,
     /// This session's search: the machine's app lists, and the apps a page or a link the sheet asks
     /// for opens in.
-    search: &'a SessionSearch,
+    pub(crate) search: &'a SessionSearch,
     /// The desk revision the panes were last fed at.
-    fed: &'a Cell<Option<u64>>,
+    pub(crate) fed: &'a Cell<Option<u64>>,
     /// The workspace's agents and emoji, read and changed through Chat's records.
-    tabs: &'a WorkspaceTabs,
+    pub(crate) tabs: &'a WorkspaceTabs,
     /// The session's file chooser, where a picture to add is chosen.
-    picker: Option<&'a FilePickerSeat>,
-    personal: Option<&'a RefCell<Personal>>,
+    pub(crate) picker: Option<&'a FilePickerSeat>,
+    pub(crate) personal: Option<&'a RefCell<Personal>>,
     /// This device's engine, where the workspace's own governance is written: what the person
     /// changes of the workspace's people goes there, so every member admits it.
-    engine: Option<&'a Engine>,
-}
-
-impl<'a> Feeding<'a> {
-    pub(crate) fn new(
-        handle: &'a DesktopHandle,
-        person: &'a UserId,
-        search: &'a SessionSearch,
-        fed: &'a Cell<Option<u64>>,
-        tabs: &'a WorkspaceTabs,
-        picker: Option<&'a FilePickerSeat>,
-        personal: Option<&'a RefCell<Personal>>,
-        engine: Option<&'a Engine>,
-    ) -> Self {
-        Self {
-            handle,
-            person,
-            search,
-            fed,
-            tabs,
-            picker,
-            personal,
-            engine,
-        }
-    }
+    pub(crate) engine: Option<&'a std::sync::Arc<Engine>>,
+    /// Where what the workspace answered a change is taken in, once its signature landed.
+    pub(crate) landings: &'a crate::landing::Landings,
 }
 
 /// Open the sheet on the workspace in front: its panes as the workspace stands, and its name field
@@ -190,7 +168,7 @@ fn show(
         review,
         fed.personal,
         fed.tabs,
-        fed.engine,
+        fed.engine.map(|engine| &**engine),
     );
     shown.notice = seat.notice();
     seat.show(shown);
@@ -281,12 +259,12 @@ fn ask(
                 tracing::debug!(%role, "no such role: nothing changed");
                 return;
             };
-            govern(seat, fed, |ws, actor| {
+            govern(seat, fed, move |ws, actor| {
                 domain::set_member_role(ws, actor, &member, role)
             });
         }
         sheet::WorkspaceSettingsEffect::RemoveMember { member } => {
-            govern(seat, fed, |ws, actor| {
+            govern(seat, fed, move |ws, actor| {
                 domain::remove_member(ws, actor, &member)
             });
         }
@@ -294,7 +272,7 @@ fn ask(
             subject,
             permission,
             expiry,
-        } => govern(seat, fed, |ws, actor| {
+        } => govern(seat, fed, move |ws, actor| {
             let Some(draft) = domain::draft_for(ws, &subject, &permission, &expiry) else {
                 tracing::debug!(%subject, %permission, "no such grant: nothing changed");
                 return Ok(domain::PolicyEdit::default());
@@ -302,7 +280,7 @@ fn ask(
             domain::apply_grant_draft(ws, actor, &draft)
         }),
         sheet::WorkspaceSettingsEffect::Revoke { grant } => {
-            govern(seat, fed, |ws, actor| {
+            govern(seat, fed, move |ws, actor| {
                 domain::apply_revoke(ws, actor, &grant)
             });
         }
@@ -400,17 +378,46 @@ fn withdraw_bot(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, entry: &
     else {
         return;
     };
-    let governance = fed
-        .engine
-        .filter(|engine| engine.policy(&workspace_id.to_string()).is_ok())
-        .map(|engine| crate::membership::Membership::of(engine, workspace_id));
-    let Some(governance) = governance else {
+    let Some(engine) = governing(fed, workspace_id) else {
         tracing::debug!("this device holds no governance to withdraw a bot request in");
         return;
     };
-    if let Err(reason) = pollster::block_on(governance.withdraw_bot_request(entry)) {
-        refuse(seat, fed, &reason);
-    }
+    let entry = entry.to_owned();
+    let withdrawn = crate::landing::off_loop(async move {
+        crate::membership::Membership::of(&engine, workspace_id)
+            .withdraw_bot_request(&entry)
+            .await
+    });
+    let seat = seat.clone();
+    fed.landings.then(withdrawn, move |withdrawn| {
+        if let Err(reason) = answered(withdrawn) {
+            refused(&seat, &reason);
+        }
+    });
+}
+
+/// This device's engine, when it holds the governance of `workspace`.
+fn governing(fed: &Feeding<'_>, workspace: WorkspaceId) -> Option<std::sync::Arc<Engine>> {
+    fed.engine
+        .filter(|engine| engine.policy(&workspace.to_string()).is_ok())
+        .cloned()
+}
+
+/// What the workspace answered a change, once it landed.
+fn answered(landed: Option<Result<(), String>>) -> Result<(), String> {
+    landed.unwrap_or_else(|| Err("the change was given up before the workspace answered".into()))
+}
+
+/// Say over the sheet why the workspace refused a change it answered after the pass that asked:
+/// the panes stand as they were, and the note goes over them.
+fn refused(seat: &sheet::WorkspaceSettingsSeat, reason: &str) {
+    seat.refuse(sheet::Notice {
+        title: t("workspace-settings-refused"),
+        detail: Some(reason.to_owned()),
+    });
+    let mut shown = seat.settings();
+    shown.notice = seat.notice();
+    seat.show(shown);
 }
 
 /// Apply `edit` to the workspace in front as `person` , and keep the tree when it changed
@@ -436,7 +443,7 @@ fn edit(
 fn govern(
     seat: &sheet::WorkspaceSettingsSeat,
     fed: &Feeding<'_>,
-    edit: impl FnOnce(&mut Workspace, &UserId) -> Result<domain::PolicyEdit, Refusal>,
+    edit: impl Fn(&mut Workspace, &UserId) -> Result<domain::PolicyEdit, Refusal> + 'static,
 ) {
     let handle = fed.handle;
     let person = fed.person;
@@ -452,20 +459,39 @@ fn govern(
         return;
     }
     let workspace_id = workspace.id();
-    let governance = fed
-        .engine
-        .filter(|engine| engine.policy(&workspace_id.to_string()).is_ok())
-        .map(|engine| crate::membership::Membership::of(engine, workspace_id));
-    if let Some(governance) = &governance {
-        let writes = governance.changes(workspace, &changed);
-        if let Err(reason) = pollster::block_on(governance.write(&writes)) {
-            return refuse(seat, fed, &reason);
+    let Some(engine) = governing(fed, workspace_id) else {
+        // The change the person made is the one that stands, so a refusal they have since
+        // corrected has nothing left to say.
+        seat.dismiss_notice();
+        handle.replace_tree(tree);
+        return;
+    };
+    let writes =
+        crate::membership::Membership::of(&engine, workspace_id).changes(workspace, &changed);
+    let written = crate::landing::off_loop(async move {
+        crate::membership::Membership::of(&engine, workspace_id)
+            .write(&writes)
+            .await
+    });
+    let (seat, handle, person) = (seat.clone(), handle.clone(), person.clone());
+    fed.landings.then(written, move |written| {
+        if let Err(reason) = answered(written) {
+            return refused(&seat, &reason);
         }
-    }
-    // The change the person made is the one that stands, so a refusal they have since corrected has
-    // nothing left to say.
-    seat.dismiss_notice();
-    handle.replace_tree(tree);
+        seat.dismiss_notice();
+        // The desk takes the change as it stands now, which moved while the workspace answered.
+        let mut tree = handle.read(Clone::clone);
+        let Some(workspace) = tree
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id() == workspace_id)
+        else {
+            return;
+        };
+        if edit(workspace, &person).is_ok_and(|changed| !changed.is_empty()) {
+            handle.replace_tree(tree);
+        }
+    });
 }
 
 /// Say why the workspace refused a change, over the tab the person asked on,

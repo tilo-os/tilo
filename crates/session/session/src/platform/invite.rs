@@ -15,6 +15,8 @@ use crate::invite::{Answer, Issued, Refused, Workspace};
 /// The workspace in front of this desk, as this device holds it: its governance says who may
 /// invite whom, and the desk's own published actions make and cancel the links.
 pub(crate) struct DeskWorkspace {
+    /// Where a link the device's signer signs is answered once it landed.
+    pub(crate) landings: Rc<crate::landing::Landings>,
     pub(crate) handle: tilo_desktop_surface::DesktopHandle,
     pub(crate) person: String,
     pub(crate) sync: bool,
@@ -33,23 +35,35 @@ impl DeskWorkspace {
         })
     }
 
-    /// Ask the desk's own action `action` with `arguments`.
+    /// Ask the desk's own action `action` with `arguments`, and hand what it answered to
+    /// `answer`: at once, or on the pass after a link the device's signer signs landed.
     fn invoke(
         &self,
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Option<serde_json::Value>, Refused> {
+        answer: impl FnOnce(Result<Option<serde_json::Value>, Refused>) + 'static,
+    ) {
+        let refused = move |error: tilo_actions::DoorError| {
+            tracing::warn!(%error, "the desk refused");
+            Refused::Because(error.to_string())
+        };
         match self
             .services
             .borrow_mut()
             .invoke(DESK_RESOURCE, action, arguments)
         {
-            Some(Ok(tilo_service::Started::Done(output))) => Ok(output.value),
-            Some(Ok(tilo_service::Started::Accepted)) | None => Err(Refused::Unanswered),
-            Some(Err(error)) => {
-                tracing::warn!(%error, action, "the desk refused");
-                Err(Refused::Because(error.to_string()))
+            Some(Ok(tilo_service::Started::Done(output))) => answer(Ok(output.value)),
+            Some(Ok(tilo_service::Started::Later(later))) => {
+                self.landings.then(later, move |landed| {
+                    answer(match landed {
+                        Some(Ok(output)) => Ok(output.value),
+                        Some(Err(error)) => Err(refused(error)),
+                        None => Err(Refused::Unanswered),
+                    });
+                });
             }
+            Some(Ok(tilo_service::Started::Accepted)) | None => answer(Err(Refused::Unanswered)),
+            Some(Err(error)) => answer(Err(refused(error))),
         }
     }
 }
@@ -146,26 +160,30 @@ impl Workspace for DeskWorkspace {
         if !recipient.is_empty() {
             arguments.insert("recipient".to_owned(), serde_json::Value::from(recipient));
         }
-        answer(self.invoke(ISSUE_INVITATION, &arguments).and_then(|value| {
-            let field = |name: &str| value.as_ref().and_then(|value| value.get(name));
-            let text = field("link").and_then(serde_json::Value::as_str);
-            Ok(Issued {
-                text: text.ok_or(Refused::Unanswered)?.to_owned(),
-                invite: field("invite")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                expires_at_ns: field("expires_at_ns")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or_default(),
-            })
-        }));
+        self.invoke(ISSUE_INVITATION, &arguments, move |value| {
+            answer(value.and_then(|value| {
+                let field = |name: &str| value.as_ref().and_then(|value| value.get(name));
+                let text = field("link").and_then(serde_json::Value::as_str);
+                Ok(Issued {
+                    text: text.ok_or(Refused::Unanswered)?.to_owned(),
+                    invite: field("invite")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    expires_at_ns: field("expires_at_ns")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_default(),
+                })
+            }));
+        });
     }
 
     fn cancel(&self, invite: &str, answer: Answer<()>) {
         let mut arguments = serde_json::Map::new();
         arguments.insert("invite".to_owned(), serde_json::Value::from(invite));
-        answer(self.invoke("cancel-invitation", &arguments).map(drop));
+        self.invoke("cancel-invitation", &arguments, move |value| {
+            answer(value.map(drop));
+        });
     }
 
     fn shelf(&self) -> (Option<url::Url>, Option<String>) {

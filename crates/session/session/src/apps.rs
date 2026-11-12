@@ -47,8 +47,9 @@ pub struct Apps {
 }
 
 /// What lets a package author its own records in the workspace it opens in,
-/// called with the workspace's id and the package's.
-type Authorship = Rc<dyn Fn(&str, &str)>;
+/// called with the workspace's id and the package's, and what runs once it
+/// may: at once, or on the pass after the workspace's governance answered.
+type Authorship = Rc<dyn Fn(&str, &str, Box<dyn FnOnce(&Apps)>)>;
 
 /// What starting an app needs besides the launch itself.
 struct State {
@@ -1265,27 +1266,44 @@ impl Apps {
         Some(key.clone())
     }
 
-    /// `workspace` as this launch starts in it: a launch that opens a package there has the
-    /// workspace make that package an author of its own records first, and is read again with what
-    /// it granted.
-    fn authored(&self, launch: &Launch, workspace: &Workspace) -> Workspace {
-        let Some(app) = launch.package() else {
-            return workspace.clone();
+    /// Run `start` with `workspace` as this launch starts in it: a launch that opens a package
+    /// there has the workspace make that package an author of its own records first, and is read
+    /// again with what it granted. A grant the workspace's governance signs runs off the loop, and
+    /// the launch starts on the pass after it landed: what it answers then is logged, and the
+    /// launch answers that its window comes.
+    fn authored(
+        &self,
+        launch: &Launch,
+        workspace: &Workspace,
+        start: impl FnOnce(&Self, &Workspace) -> Result<bool, DoorError> + 'static,
+    ) -> Result<bool, DoorError> {
+        let authorship = self.state.borrow().authorship.clone();
+        let (Some(app), Some(authorship)) = (launch.package(), authorship) else {
+            return start(self, workspace);
         };
         if !workspace.is_workspace() || workspace.grants.authors(app) {
-            return workspace.clone();
+            return start(self, workspace);
         }
-        let authorship = self.state.borrow().authorship.clone();
-        let Some(authorship) = authorship else {
-            return workspace.clone();
-        };
-        authorship(&workspace.id, app);
-        let refreshed = self.workspace_named(&workspace.id);
-        if refreshed.grants.authors(app) {
-            refreshed
-        } else {
-            workspace.clone()
-        }
+        let started = Rc::new(std::cell::Cell::new(None));
+        let (answer, kept, package) = (Rc::clone(&started), workspace.clone(), app.to_owned());
+        authorship(
+            &workspace.id,
+            app,
+            Box::new(move |apps: &Self| {
+                let refreshed = apps.workspace_named(&kept.id);
+                let workspace = if refreshed.grants.authors(&package) {
+                    refreshed
+                } else {
+                    kept
+                };
+                let ran = start(apps, &workspace);
+                if let Err(error) = &ran {
+                    tracing::warn!(%error, app = package, "an app did not start once it could author");
+                }
+                answer.set(Some(ran));
+            }),
+        );
+        started.take().unwrap_or(Ok(true))
     }
 
     /// Start `launch` in `workspace` : in the process the app already runs there when that one
@@ -1299,8 +1317,21 @@ impl Apps {
         instance: Option<u64>,
         reveal: Option<&str>,
     ) -> Result<bool, DoorError> {
-        let authored = self.authored(launch, workspace);
-        let workspace = &authored;
+        let (owned, reveal) = (launch.clone(), reveal.map(str::to_owned));
+        self.authored(launch, workspace, move |apps, workspace| {
+            apps.start_authored_window(&owned, workspace, new_window, instance, reveal.as_deref())
+        })
+    }
+
+    /// [`Self::start_window`] in `workspace` as the launch's package may author there.
+    fn start_authored_window(
+        &self,
+        launch: &Launch,
+        workspace: &Workspace,
+        new_window: bool,
+        instance: Option<u64>,
+        reveal: Option<&str>,
+    ) -> Result<bool, DoorError> {
         // The open is timed from here to the app's first presented frame: everything this session
         // does for it is in the launch's share, and the phases below say where that share went.
         let app = launch.app();
@@ -1532,8 +1563,20 @@ impl Apps {
                 launch.app()
             )));
         }
-        let authored = self.authored(launch, workspace);
-        let workspace = &authored;
+        let owned = launch.clone();
+        self.authored(launch, workspace, move |apps, workspace| {
+            apps.start_authored_windowless(&owned, workspace)
+                .map(|()| true)
+        })
+        .map(drop)
+    }
+
+    /// [`Self::start_windowless`] in `workspace` as the launch's package may author there.
+    fn start_authored_windowless(
+        &self,
+        launch: &Launch,
+        workspace: &Workspace,
+    ) -> Result<(), DoorError> {
         let Some(doors) = self.state.borrow().doors.clone() else {
             return Err(DoorError::Failed(
                 "this session starts no app without a window".into(),

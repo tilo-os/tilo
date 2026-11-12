@@ -7,7 +7,6 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-pollster.workspace = true
 # The answer to a command, which a page awaits and a program waits on.
 oneshot.workspace = true
 # The desk's model: the workspaces a participant takes part in, and the windows presence places
@@ -94,6 +93,7 @@ default = []
 toolkit = []
 
 [dev-dependencies]
+pollster.workspace = true
 # A workspace whose governance admits a newcomer after a record reached it.
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 web-time = { version = "1", features = ["serde"] }

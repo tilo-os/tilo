@@ -953,16 +953,23 @@ impl crate::Shared {
                     .is_some_and(|personal| personal.borrow().made_here(workspace.id()))
                 && !workspace.id().is_nil()
                 && !borrowed.contains(&workspace.id())
+                && !engine.holds(workspace.id())
             {
                 // A workspace made on this desk is a workspace from here on,
                 // not only this desk's: its governance is founded in the
                 // workspace it already has an identity for.
-                pollster::block_on(engine.found(
+                // It is signed by this device's signer, off the loop: the pass after it landed
+                // sees it held.
+                let (engine, slot, id) = (
+                    std::sync::Arc::clone(engine),
                     workspace.slot,
                     workspace.id(),
-                    &workspace.name,
-                    endpoint.as_ref(),
-                ));
+                );
+                let (name, endpoint) = (workspace.name.clone(), endpoint.clone());
+                let founded = crate::landing::off_loop(async move {
+                    engine.found(slot, id, &name, endpoint.as_ref()).await;
+                });
+                self.landings.then(founded, drop);
             }
             if workspace
                 .owner()

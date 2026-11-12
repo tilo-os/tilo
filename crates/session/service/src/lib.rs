@@ -35,13 +35,37 @@ pub use questions::{
 pub use worker::{Jobs, LoopWake, Wake, Worker};
 
 /// What an invocation started.
-#[derive(Clone, Debug, PartialEq)]
 pub enum Started {
     /// It finished on return, with this output.
     Done(ActionOutput),
     /// It was taken and runs on the device; its result lands in the
     /// service's reading.
     Accepted,
+    /// Its work is async (a signature, a commit into a workspace's record)
+    /// and runs off the loop: the asker hears this answer when it lands,
+    /// as it hears [`Self::Done`]'s at once.
+    Later(tilo_actions::remote::Pending<Result<ActionOutput, DoorError>>),
+}
+
+impl std::fmt::Debug for Started {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Done(output) => f.debug_tuple("Done").field(output).finish(),
+            Self::Accepted => f.write_str("Accepted"),
+            Self::Later(_) => f.write_str("Later"),
+        }
+    }
+}
+
+/// Two answers still to come are never known to be the same.
+impl PartialEq for Started {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Done(one), Self::Done(other)) => one == other,
+            (Self::Accepted, Self::Accepted) => true,
+            _ => false,
+        }
+    }
 }
 
 /// One service the session runs.
