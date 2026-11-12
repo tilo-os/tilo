@@ -211,6 +211,18 @@ pub fn start_session(
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
 ) -> Link {
+    let (task, link, receiver) = session_task(config, signer, store);
+    n0_future::task::spawn(task.run(receiver));
+    link
+}
+
+/// The session [`start_session`] runs, the link to it and its command queue,
+/// before it runs.
+fn session_task(
+    config: PeerConfig,
+    signer: Arc<dyn DeviceSigner>,
+    store: Arc<dyn PeerStore>,
+) -> (Task, Link, mpsc::UnboundedReceiver<Command>) {
     let (commands, receiver) = mpsc::unbounded_channel();
     let reports = Reports::connecting(config.cert.device_public_key);
     let record = store.load().unwrap_or_default();
@@ -286,11 +298,12 @@ pub fn start_session(
         agent_runs_next: 0,
         held_actions: Vec::new(),
         begun: BTreeSet::new(),
+        unadmitted: BTreeMap::new(),
+        admitted_here: BTreeSet::new(),
     };
     // The link's own queue is there before the session says anything.
     let link = Link::new(Arc::new(Commands(commands)), engine, reports);
-    n0_future::task::spawn(task.run(receiver));
-    link
+    (task, link, receiver)
 }
 
 /// The session's own sender: what its links say the client's commands through.
@@ -475,6 +488,15 @@ struct Task {
     /// says there — its certificate ([`Self::introduce`]) and its channels'
     /// governance ([`Self::send_governance`]) — while the replay runs.
     begun: BTreeSet<u64>,
+    /// The records that landed in a workspace whose governance, as this
+    /// device's replica holds it, did not admit this device yet, with the
+    /// author of the write that landed last: this device reads a record as the
+    /// member it is, so their readers hear of them once it is one
+    /// ([`Self::landed`], [`Self::follow_governance`]).
+    unadmitted: BTreeMap<DocumentRoute, Option<[u8; 32]>>,
+    /// The workspaces whose governance, as this device's replica holds it,
+    /// admitted this device on this session.
+    admitted_here: BTreeSet<u64>,
 }
 
 /// One action frame held until the host admits this session to its workspace.
@@ -2172,3 +2194,5 @@ mod tests {
 
 #[cfg(test)]
 mod iroh_connect_tests;
+#[cfg(test)]
+mod late_admission_tests;

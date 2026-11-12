@@ -93,6 +93,8 @@ default = []
 toolkit = []
 
 [dev-dependencies]
+# A workspace whose governance admits a newcomer after a record reached it.
+tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 web-time = { version = "1", features = ["serde"] }
 # A state directory for an engine, and a vault root for the channel state kept in it.
 tempfile.workspace = true

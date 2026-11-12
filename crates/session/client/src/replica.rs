@@ -204,6 +204,22 @@ impl Replicas {
         self.owner.receive_batch(workspace, inputs, now)
     }
 
+    /// Whether `workspace_id`'s governance, as this replica holds it, admits
+    /// this device now: what it reads the workspace's records as. A host
+    /// replays a workspace's governance in parts, and its newest part — the
+    /// change that admitted a device that just entered — can follow what the
+    /// device was already sent.
+    pub(crate) fn admits_this_device(&self, workspace_id: u64) -> bool {
+        let device = self.device.device_public_key;
+        self.with_workspace(workspace_id, |view| {
+            view.peer()
+                .permissions(device, SystemTime::now())
+                .map(drop)
+                .map_err(|error| error.to_string())
+        })
+        .is_some_and(|admitted| admitted.is_ok())
+    }
+
     /// The workspace held as `workspace_id`, once its governance is.
     pub(crate) fn workspace(&self, workspace_id: u64) -> Option<WorkspaceId> {
         self.workspaces.get(&workspace_id).copied()
