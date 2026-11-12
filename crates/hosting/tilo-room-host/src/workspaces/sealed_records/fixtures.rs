@@ -7,8 +7,6 @@
     reason = "a fixture failing is its test failing"
 )]
 
-use std::time::SystemTime;
-
 use channel_crypto::ChannelContentKeys;
 use collab_types::{ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
