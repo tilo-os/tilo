@@ -388,5 +388,28 @@ class DesktopIsolationHelperTests(unittest.TestCase):
                               f"{path} stages session code without tilo_test_isolate")
 
 
+class TestUserTests(unittest.TestCase):
+    """tools/as-test-user.sh gives the test user the build tree only in the image that has one."""
+
+    def run_helper(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": os.environ.get("HOME", "/"),
+        }
+        return subprocess.run(["bash", str(ROOT / "tools/as-test-user.sh"), *arguments], env=env,
+                              capture_output=True, text=True, check=False)
+
+    def test_a_developers_own_tree_is_left_to_them(self) -> None:
+        # A developer's account is the test user: handing the tree over must do nothing,
+        # and must not chown it to an empty owner.
+        with tempfile.TemporaryDirectory() as work:
+            tree = Path(work) / "target"
+            (tree / "debug").mkdir(parents=True)
+            owner = (tree.stat().st_uid, tree.stat().st_gid)
+            result = self.run_helper("--own-tree", str(tree))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((tree.stat().st_uid, tree.stat().st_gid), owner)
+
+
 if __name__ == "__main__":
     unittest.main()
