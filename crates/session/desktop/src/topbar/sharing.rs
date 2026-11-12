@@ -25,17 +25,19 @@ impl TopBarChrome {
         t_args("topbar-profile", &[("name", name.into())])
     }
 
-    /// The faces in the people control, one named image each, then the "+N" chip for those beyond
-    /// them. Keyed by the roster id, so a reader's place survives someone arriving or leaving.
+    /// The faces in the people control, one named control each, then the "+N" chip for those
+    /// beyond them. Keyed by the roster id, so a reader's place survives someone arriving or
+    /// leaving, and each stands where the pointer reaches it: a reader presses a face where a
+    /// person does, and it opens that person's card.
     pub(super) fn face_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
         // A bar not drawn yet stands the first few of everyone, as a wide bar does.
-        let shown: Vec<usize> = if self.face_rects.is_empty() {
+        let drawn: Vec<usize> = if self.face_rects.is_empty() {
             (0..self.faces_shown).collect()
         } else {
             self.shown_faces.clone()
         };
-        let mut faces: Vec<AccessNode> = shown
+        let mut faces: Vec<AccessNode> = drawn
             .iter()
             .enumerate()
             .filter_map(|(drawn, &index)| {
@@ -50,12 +52,11 @@ impl TopBarChrome {
                 } else {
                     name.clone()
                 };
-                let mut face = AccessNode::new(Role::Image)
+                let id = self.collaborator_ids.get(index).map_or("", String::as_str);
+                let mut face = AccessNode::new(Role::Button)
                     .with_name(name)
-                    .with_hashed_key((
-                        "topbar-face",
-                        self.collaborator_ids.get(index).map_or("", String::as_str),
-                    ));
+                    .with_action_target(format!("{}{id}", Self::FACE_TARGET))
+                    .with_hashed_key(("topbar-face", id));
                 if let Some(rect) = self.face_rects.get(drawn) {
                     face = face.with_bounds(*rect);
                 }

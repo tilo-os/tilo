@@ -1656,6 +1656,13 @@ impl Widget for TopBarChrome {
                     .as_ref()
                     .is_some_and(|chrome| chrome.intent(ChromeIntent::ToggleProfile));
         }
+        // A face opens the person it draws, as a press on it does.
+        if let Some(id) = target.strip_prefix(Self::FACE_TARGET) {
+            return self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.intent(ChromeIntent::ShowPerson(id.to_owned())));
+        }
         self.activate_control(target)
     }
 
