@@ -5,22 +5,13 @@ use tilo_desktop_surface::host::records::{app_of, wire_record};
 use tilo_relay_protocol::live::{LiveLayout, LiveRecord};
 use ui::record::RecordId;
 
-/// Who each window of this desk is, by tab, as presence names records: the short digest of the app
-/// and the record its component bound. What places a person in the window they work in, and a
-/// follower's view bringing it forward.
-#[cfg(target_os = "linux")]
+/// Who each window of this desk is, by tab, as presence names records: the app and record each
+/// window shows, and the digest presence names the record by. What places a person in the window
+/// they work in, and a follower's view bringing it forward. A window whose app named none is read
+/// from the desk's own tree; a page keeps no continuations, so it hands its own windows here and
+/// names the people it reads by them the way a session does.
 #[must_use]
-pub(crate) fn bindings(
-    tree: &tilo_desktop_model::DesktopTree,
-    notes: &crate::continuations::Continuations,
-) -> Vec<(tilo_desktop_model::TabId, String, String)> {
-    bindings_of(tree, &notes.windows())
-}
-
-/// [`bindings`] for what windows show as their apps said it: the app and record each holds, and
-/// the digest presence names the record by. A window whose app named none is read from the desk's
-/// own tree.
-pub(crate) fn bindings_of(
+pub fn bindings_of(
     tree: &tilo_desktop_model::DesktopTree,
     windows: &[(tilo_desktop_model::TabId, Option<String>, String)],
 ) -> Vec<(tilo_desktop_model::TabId, String, String)> {

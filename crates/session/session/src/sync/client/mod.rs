@@ -881,9 +881,11 @@ impl Roster {
         notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
-        self.here
-            .borrow()
-            .people(tree, &crate::sync::layout::bindings(tree, notes), app_name)
+        self.here.borrow().people(
+            tree,
+            &crate::sync::layout::bindings_of(tree, &notes.windows()),
+            app_name,
+        )
     }
 
     #[cfg(target_os = "linux")]

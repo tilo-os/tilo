@@ -39,9 +39,9 @@ use tilo_desktop::profile_card::{
     LazyProfileCard, ProfileAction, ProfileChoice, ProfileGroup, ProfileModel,
 };
 use tilo_desktop::topbar::TopBarChrome;
+use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::commands::Standing;
 use tilo_desktop_model::ownership::Authors;
-use tilo_desktop_model::{DesktopTree, TabId};
 use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
 use tilo_desktop_surface::navigation::{ChromeEffect, Verb};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, HostActionSource};
@@ -316,6 +316,7 @@ impl ChromeSource for PageChrome {
 }
 
 impl PageChrome {
+    /// Who is here, as the page's roster and the bar's faces list them.
     fn people(&self, tree: &DesktopTree) -> Vec<tilo_desktop::here::Person> {
         here_people(&self.here, &self.shared, tree)
     }
@@ -391,15 +392,9 @@ fn mount_people(
             // The page's frames draw its layers in the frame's own scale.
             scale: 1.0,
             seated: chrome.authorship.author.clone(),
-            // Each window's record as its route names it; the page's windows name no app
-            // beside it, which the route does.
-            notes: Rc::new(move || {
-                shared
-                    .shown_records()
-                    .into_iter()
-                    .map(|(tab, record)| (tab, None, record))
-                    .collect()
-            }),
+            // Each window's record, by its tab: the page's windows name no app beside it, which
+            // the desk's tree says.
+            notes: Rc::new(move || shared.shown_records()),
             apps: Some(
                 Arc::new(crate::page_apps::PageApps) as Arc<dyn tilo_session::platform::apps::Apps>
             ),
@@ -437,18 +432,7 @@ pub(crate) fn here_people(
     shared: &crate::desktop::Shared,
     tree: &DesktopTree,
 ) -> Vec<tilo_desktop::here::Person> {
-    let bindings: HashMap<TabId, ui::record::RecordCheckout> =
-        shared.bound_records().into_iter().collect();
-    let records: Vec<(TabId, String, String)> = tree
-        .tabs()
-        .filter_map(|tab| {
-            let (app, record) =
-                tilo_desktop_surface::host::records::of_window(tree, &bindings, tab.id)?;
-            let named = tilo_relay_protocol::live::LiveRecord { app, record };
-            let digest = hex::encode(named.short_digest());
-            Some((tab.id, named.app, digest))
-        })
-        .collect();
+    let records = tilo_session::sync::layout::bindings_of(tree, &shared.shown_records());
     let app_name = |app: &str| crate::desktop::known_application(app).map(str::to_owned);
     here.borrow().people(tree, &records, &app_name)
 }

@@ -826,7 +826,7 @@ impl Panel {
                 place: if row.is_agent {
                     row.working_app
                         .as_deref()
-                        .map(app_called)
+                        .map(|app| self.app_called(app))
                         .map(|app| tilo_desktop::collaborators::in_app(&app))
                 } else {
                     row.activity.clone()
@@ -935,6 +935,22 @@ impl Panel {
             "pair-device" => Some("settings://devices_sync"),
             _ => None,
         }
+    }
+
+    /// What this host calls the app `app`: the name the app lists of the machine or the page
+    /// carry for it, and none where it lists no name for it.
+    fn host_name(&self, app: &str) -> Option<String> {
+        self.apps
+            .as_deref()
+            .map(|apps| apps.name(app))
+            .filter(|name| !name.trim().is_empty())
+    }
+
+    /// What the app `app` is called to the person: as this host names it, else the session's own
+    /// naming, so a card never shows an id.
+    fn app_called(&self, app: &str) -> String {
+        self.host_name(app)
+            .unwrap_or_else(|| crate::app_names::app_name(app))
     }
 
     /// Whether this device has the app that holds a person's conversations.
@@ -1055,17 +1071,13 @@ impl Panel {
             .collect();
         // Each person's screen, its windows named with what they show where this desk holds that
         // record, else with the app's name.
-        let apps = self.apps.as_deref();
         let screens = match (self.sync.as_ref(), front) {
             (Some(sync), Some(workspace)) => sync
                 .members(&workspace)
                 .into_iter()
                 .map(|member| {
                     let name_of = |app: &str, record: &str| {
-                        titled.get(record).cloned().or_else(|| {
-                            let name = apps.map_or_else(String::new, |apps| apps.name(app));
-                            (!name.trim().is_empty()).then_some(name)
-                        })
+                        titled.get(record).cloned().or_else(|| self.host_name(app))
                     };
                     let screen = member
                         .layout
@@ -2029,16 +2041,3 @@ fn roster_place(area: Rect, theme: &Theme) -> Rect {
 #[cfg(all(test, target_os = "linux"))]
 #[path = "people_scale_tests.rs"]
 mod scale_tests;
-
-/// What the app `app` is called to the person: the session's own naming where it reads the
-/// machine's app lists, else the name every desktop carries.
-fn app_called(app: &str) -> String {
-    #[cfg(target_os = "linux")]
-    {
-        crate::app_names::app_name(app)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        tilo_desktop_search::names::app_name(app)
-    }
-}

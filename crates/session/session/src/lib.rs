@@ -77,7 +77,6 @@ mod ambient_brightness;
 mod app_icons;
 #[cfg(target_os = "linux")]
 mod app_liveness;
-#[cfg(target_os = "linux")]
 mod app_names;
 #[cfg(target_os = "linux")]
 mod app_sheets;

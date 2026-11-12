@@ -677,12 +677,13 @@ impl Shared {
     /// record by, as a native session's windows note theirs. An app's primary record is spelled
     /// empty, as an agent working in it names it, and the roster matches the window's app too: a
     /// Notes window showing Notes' primary record is where an agent writing a note there is, and
-    /// following it brings that window forward rather than opening Notes again.
-    pub fn shown_records(&self) -> std::collections::BTreeMap<u64, String> {
+    /// following it brings that window forward rather than opening Notes again. A window drawn by
+    /// its app's own surface names no app here; the desk's tree says which app it runs.
+    pub fn shown_records(&self) -> Vec<(u64, Option<String>, String)> {
         self.records
             .borrow()
             .iter()
-            .map(|(tab, checkout)| (*tab, checkout.id.route().to_owned()))
+            .map(|(tab, checkout)| (*tab, None, checkout.id.route().to_owned()))
             .collect()
     }
 }
