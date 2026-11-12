@@ -2434,7 +2434,7 @@ impl ImportApp {
     /// and, for a copy, where it goes.
     fn continuation_card(&self, c: &Continuation) -> Section {
         let mut items: Vec<Box<dyn Widget>> = vec![Box::new(
-            Text::new(if self.identity_ready {
+            Text::new(&if self.identity_ready {
                 crate::setup::strings::t("installer-import-review-note")
             } else {
                 crate::setup::strings::t("installer-import-review-note-identity")
