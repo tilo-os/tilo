@@ -661,6 +661,24 @@ run = "bash tools/ci/sdk-typescript.sh"
 image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
 requires = ["arch=x86_64"]
 
+# The developer docs' code examples, run the way a reader runs them: every block of an example
+# is a whole program that reaches the API with TILO_DOOR and TILO_API_KEY (tools/docs/
+# doc_examples.py). The host that serves them is the door-on-relay example of
+# tilo-agent-participant, and sh examples run the tilo command, so both are built here and
+# handed to the check that runs the examples in the SDKs' image.
+[[check]]
+name = "docs-examples-build"
+run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/docs-examples\"\ncargo build --locked -p tilo-agent-participant --example door-on-relay\ncargo build --locked -p tilo-cli --bin tilo\ncp \"$CARGO_TARGET_DIR/debug/examples/door-on-relay\" \"$CARGO_TARGET_DIR/debug/tilo\" \"$CARGO_TARGET_DIR/docs-examples/\"\n"
+requires = ["arch=x86_64"]
+outputs = ["/target/docs-examples/**"]
+
+[[check]]
+name = "docs-examples"
+run = "bash tools/ci/docs-examples.sh /target/docs-examples"
+needs = ["docs-examples-build"]
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+requires = ["arch=x86_64"]
+
 # The SDKs' release to npm and PyPI, tools/ci/publish/sdks.sh: both packages publish under the
 # one name tilo-sdk (on PyPI plain `tilo` belongs to an unrelated project, on npm the @tilo scope
 # is not available), and the version is the release tag's, never a number in the tree. The check
