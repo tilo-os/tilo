@@ -10,6 +10,8 @@ use tilo_relay_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
 use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
+use std::time::SystemTime;
+
 use crate::handshake::{Doorway, EntryFuture};
 use crate::workspaces::pages::Presented;
 use crate::workspaces::{Carried, Workspaces};
@@ -41,6 +43,17 @@ impl Doorway for Workspaces {
                 if let Some(again) = again {
                     return self.with_desktop_scope(&entering.workspace, again).await;
                 }
+            }
+            // A device that is a member already — a `tilo mcp` restarted, a
+            // page opened again — enters with the workspace's own admission:
+            // the door has nothing to decide for it, and an entry that asked
+            // it anyway would issue an invitation into the workspace's
+            // governance for someone already in, publish that to everyone
+            // here and spend it, on every run.
+            if entering.through == Through::Door
+                && let Some(member) = self.member_already(cert, &entering.workspace).await
+            {
+                return self.with_desktop_scope(&entering.workspace, member).await;
             }
             let (invitation, token) = match entering.through {
                 Through::Door => match self.door(cert, &entering.workspace, &entering.name).await {
@@ -117,6 +130,55 @@ impl Workspaces {
                 },
                 refused: refusal.answer_with(self.wait_list_door()),
             })
+    }
+
+    /// What `cert`'s device hears when it is a member of `workspace` already,
+    /// and the door keeps nobody out of it: the workspace's own admission,
+    /// with the standings its changes there are decided against brought up to
+    /// date first. `None` for a device the workspace does not admit, and for
+    /// one whose person the door refuses.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays locked until its standings are settled and the device's admission is read from it"
+    )]
+    async fn member_already(&self, cert: &DeviceCert, workspace: &str) -> Option<Entered> {
+        let now = tilo_clock::unix_now_ns();
+        let governed = self.workspace(workspace).await.ok()?;
+        let mut governed = governed.lock().await;
+        // The refusals the door would answer: a person banned or removed here
+        // does not come back in by the admission it gave them before.
+        let policy = governed
+            .peer()
+            .permissions(self.inner.host.cert.device_public_key, SystemTime::now())
+            .ok()?
+            .policy;
+        if policy.is_blocked(&hex::encode(cert.user_public_key))
+            || governed.door.refuses(cert.user_public_key, now)
+        {
+            return None;
+        }
+        // The workspace's own admission of this device, never another's: a
+        // stranger holds no permissions here.
+        governed
+            .peer()
+            .permissions(cert.device_public_key, SystemTime::now())
+            .ok()?;
+        // An entry cut off between committing an admission and settling it
+        // leaves the device in governance and out of the standings this
+        // workspace decides its changes against: settle before answering, as
+        // a device that enters once more does.
+        if !self
+            .inner
+            .host
+            .access
+            .projects_standing(governed.workspace_id(), cert.device_public_key)
+            .await
+        {
+            self.settle(&mut governed).await.ok()?;
+        }
+        Some(entered(
+            Self::admitted(&governed, cert.device_public_key, now).ok()?,
+        ))
     }
 }
 

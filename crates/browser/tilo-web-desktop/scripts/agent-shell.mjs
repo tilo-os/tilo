@@ -676,7 +676,14 @@ function mcpClient() {
   const send = (message, timeoutMs = 180000) => new Promise((resolve, reject) => {
     if (closed) { reject(new Error(`tilo mcp is not running: ${said.slice(-400)}`)); return; }
     const requestId = ++id;
-    waiting.set(requestId, resolve);
+    // What a fresh `tilo mcp` answers first is where an agent's return is spent when it is slow:
+    // its entry into the workspace, or the call itself. The page shows it only after both.
+    const askedAt = Date.now();
+    const name = message.params?.name ?? message.method;
+    waiting.set(requestId, answer => {
+      log(`tilo mcp ${name} answered in ${((Date.now() - askedAt) / 1000).toFixed(1)} s`);
+      resolve(answer);
+    });
     child.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: requestId, ...message})}\n`);
     setTimeout(() => {
       if (!waiting.has(requestId)) return;
