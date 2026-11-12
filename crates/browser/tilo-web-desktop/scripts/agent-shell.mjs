@@ -1790,6 +1790,12 @@ try {
                       .map(node => ({role: node.role, name: node.name, rect: node.rect})))}: ${names(await semantics(tab))}`);
               log(`${combo}: mid-edit shot in the note` +
                 `${cursor ? `, its cursor at ${JSON.stringify(cursor.rect)}` : ', with no agent cursor'}`);
+              // Following brings forward the window that shows the note: never a second one
+              // beside it. The windows are their tabs, named by what they show.
+              const title = new RegExp(`^${(steps.noteTitle ?? 'launch notes').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+              const noteWindows = (showing ?? await semantics(tab)).filter(node => node.role === 'Tab' && title.test(node.name));
+              check(`${combo}: following shows the note in one window`, noteWindows.length <= 1,
+                `${noteWindows.length} windows show it: ${noteWindows.map(node => JSON.stringify(node.rect)).join(', ')}`);
               await shot(tab, combo, 'following-mid-edit', {read: showing,
                 expect: [new RegExp(`^${(steps.noteTitle ?? 'launch notes').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i')]});
             }
