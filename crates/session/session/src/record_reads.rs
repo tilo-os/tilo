@@ -16,11 +16,12 @@ use std::sync::Arc;
 
 use tilo_action_broker::route::CrdtRoute;
 use tilo_action_broker::services::{
-    AwaitingRecord, ChainHeadAnswer, DocumentBytes, NativeDocumentRead, NativeDocumentReadContext,
-    NativeDocumentReads, RecordRead,
+    AwaitingRecord, ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead,
+    NativeDocumentReadContext, NativeDocumentReads, RecordRead,
 };
 use tilo_broker_core::custody::OwnerCustody as _;
 use tilo_desktop_model::WorkspaceId;
+use tilo_peer_state::owner::Holding;
 use ui::record::RecordId;
 
 use crate::engine::{Engine, RecordReading};
@@ -209,6 +210,60 @@ impl NativeDocumentReads for Records {
         known_revision: Option<[u8; 32]>,
         maximum: usize,
     ) -> Result<NativeDocumentRead, String> {
+        let holding = Holding {
+            revision: known_revision,
+            heads: &[],
+        };
+        self.read(context, holding, maximum)
+    }
+
+    /// A reader following the record is handed only the changes since what it holds, read from
+    /// the record as this device keeps it opened: a write costs the reader that write.
+    fn capture_since(
+        &self,
+        context: &NativeDocumentReadContext,
+        held: &HeldRevision,
+        maximum: usize,
+    ) -> Result<NativeDocumentRead, String> {
+        let holding = Holding {
+            revision: Some(held.revision),
+            heads: &held.heads,
+        };
+        self.read(context, holding, maximum)
+    }
+
+    /// Decided from the revision the record stands at, without reading it out.
+    fn unchanged(
+        &self,
+        context: &NativeDocumentReadContext,
+        known_revision: Option<[u8; 32]>,
+    ) -> Result<Option<bool>, String> {
+        let route = context.route();
+        Ok(self
+            .engine
+            .record_revision(&route.cluster_id, &route.app_id, &route.record_id)?
+            .map(|revision| Some(revision) == known_revision))
+    }
+
+    /// A read here is decided by the workspace's governance, which announces every write to it,
+    /// and by grants and certificates expiring, which it names.
+    fn next_change(
+        &self,
+        context: &NativeDocumentReadContext,
+        after: u64,
+    ) -> Result<Option<u64>, String> {
+        self.engine
+            .next_policy_change(&context.route().cluster_id, after)
+    }
+}
+
+impl Records {
+    fn read(
+        &self,
+        context: &NativeDocumentReadContext,
+        holding: Holding<'_>,
+        maximum: usize,
+    ) -> Result<NativeDocumentRead, String> {
         let route = context.route();
         // A workspace whose host sends records once they are opened follows only the records its
         // devices asked for: an Open is where this device asks, whether it holds a copy of the
@@ -216,9 +271,8 @@ impl NativeDocumentReads for Records {
         self.ask_for(route);
         let read = self.engine.read_record(
             &route.cluster_id,
-            &route.app_id,
-            &route.record_id,
-            known_revision,
+            (&route.app_id, &route.record_id),
+            holding,
             maximum,
         )?;
         Ok(match read {
@@ -229,6 +283,16 @@ impl NativeDocumentReads for Records {
             } => NativeDocumentRead::Captured {
                 revision,
                 heads,
+                body: Box::new(Captured(bytes)),
+            },
+            RecordReading::Changes {
+                revision,
+                heads,
+                bytes,
+            } => NativeDocumentRead::Changes {
+                revision,
+                heads,
+                base: holding.heads.to_vec(),
                 body: Box::new(Captured(bytes)),
             },
             RecordReading::Unchanged(revision) => NativeDocumentRead::Unchanged(revision),
@@ -398,6 +462,12 @@ mod tests {
             ),
             "a record that did not change since the caller's revision is answered as it"
         );
+        assert_eq!(records.unchanged(&reading, Some(revision)), Ok(Some(true)));
+        assert_eq!(
+            records.unchanged(&reading, None),
+            Ok(Some(false)),
+            "a reader holding nothing does not hold the record, decided without reading it"
+        );
 
         let stranger = testing::member_certificate(
             &SigningKey::from_bytes(&[0x41; 32]),
@@ -467,7 +537,7 @@ mod tests {
             assert!(!engine.holds_record(&id, APP, record));
             assert!(
                 !matches!(
-                    engine.read_record(&id, APP, record, None, 1 << 20),
+                    engine.read_record(&id, (APP, record), Holding::default(), 1 << 20),
                     Ok(RecordReading::Pending)
                 ),
                 "a read of {record} is not left waiting"

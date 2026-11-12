@@ -629,9 +629,8 @@ impl Task {
             bytes: snapshot, ..
         }) = self.engine.read_record(
             &route.cluster_id,
-            &route.app_id,
-            &route.record,
-            None,
+            (&route.app_id, &route.record),
+            tilo_peer_state::owner::Holding::default(),
             MAX_SNAPSHOT_BYTES,
         )
         else {

@@ -1,6 +1,6 @@
 //! Reads of only the changes since a revision the reader holds.
 use super::*;
-use crate::owner::{ChangesRead, CommittedDocument};
+use crate::owner::{CommittedDocument, History, Holding};
 use automerge::ObjType;
 use tilo_automerge::ApplyIncoming as _;
 
@@ -48,14 +48,24 @@ fn full(joined: &Enrolled, reader: [u8; 32]) -> CommittedDocument {
     document
 }
 
+/// A read by a reader holding the revision of `heads`, as an earlier read handed them out.
 fn changes(
     joined: &Enrolled,
     reader: [u8; 32],
     heads: &[[u8; 32]],
     maximum: usize,
-) -> Result<ChangesRead, String> {
+) -> Result<DocumentRead, String> {
+    let held: Vec<_> = heads.iter().copied().map(automerge::ChangeHash).collect();
+    let holding = Holding {
+        revision: Some(crate::committed_document_revision(&held)),
+        heads,
+    };
     joined.owner.with_current(joined.workspace, |view| {
-        view.read_changes(reader, APP, "", heads, maximum, joined.now)
+        let history = History {
+            open: &mut |_| Err("the record is not sealed".into()),
+            kept: &mut crate::KeptRecord::default(),
+        };
+        view.read_document_with_history(reader, (APP, ""), holding, maximum, joined.now, history)
     })
 }
 
@@ -76,7 +86,7 @@ fn the_changes_since_a_held_revision_complete_it_to_the_current_read() {
     let held = full(&joined, member);
     commit(&joined, |chat| chat.put(ROOT, "topic", "edited").unwrap());
     crate::owner::document_read::reset_captures();
-    let Ok(ChangesRead::Changes(read)) = changes(&joined, member, &held.heads, usize::MAX) else {
+    let Ok(DocumentRead::Changes(read)) = changes(&joined, member, &held.heads, usize::MAX) else {
         panic!("the member is handed the changes since what it holds");
     };
     assert_eq!(
@@ -106,13 +116,13 @@ fn the_changes_since_a_held_revision_complete_it_to_the_current_read() {
     );
     assert!(matches!(
         changes(&joined, member, &current.heads, usize::MAX),
-        Ok(ChangesRead::Unchanged(revision)) if revision == current.revision
+        Ok(DocumentRead::Unchanged(revision)) if revision == current.revision
     ));
 }
 
 /// The delta path decides nothing a whole read decides differently: a
 /// stranger is refused, and a base the document does not hold, heads out of
-/// order or changes over the limit leave the answer to a whole read.
+/// order or changes over the limit are answered with a whole read.
 #[test]
 fn a_changes_read_refuses_a_stranger_and_leaves_the_rest_to_a_whole_read() {
     let joined = enrolled();
@@ -129,7 +139,7 @@ fn a_changes_read_refuses_a_stranger_and_leaves_the_rest_to_a_whole_read() {
     assert!(full_refused(&joined, stranger));
     assert!(matches!(
         changes(&joined, member, &[[7; 32]], usize::MAX),
-        Ok(ChangesRead::Whole)
+        Ok(DocumentRead::Captured(_))
     ));
     let mut unordered = between.heads.clone();
     unordered.extend(&held.heads);
@@ -138,14 +148,14 @@ fn a_changes_read_refuses_a_stranger_and_leaves_the_rest_to_a_whole_read() {
     if unordered.len() > 1 {
         assert!(matches!(
             changes(&joined, member, &unordered, usize::MAX),
-            Ok(ChangesRead::Whole)
+            Ok(DocumentRead::Captured(_))
         ));
     }
-    assert!(matches!(
-        changes(&joined, member, &held.heads, 1),
-        Ok(ChangesRead::Whole)
-    ));
-    let Ok(ChangesRead::Changes(read)) = changes(&joined, member, &between.heads, usize::MAX)
+    assert!(
+        changes(&joined, member, &held.heads, 1).is_err(),
+        "changes over the limit are read whole, which the limit refuses too"
+    );
+    let Ok(DocumentRead::Changes(read)) = changes(&joined, member, &between.heads, usize::MAX)
     else {
         panic!("an intermediate revision is completed too");
     };
@@ -163,10 +173,10 @@ fn full_refused(joined: &Enrolled, reader: [u8; 32]) -> bool {
         .is_err()
 }
 
-/// A changes read between the frames of one checkpoint hands out nothing of
-/// its own: it leaves the answer to the whole read, which says pending.
+/// A changes read between the frames of one checkpoint hands out nothing:
+/// it says pending, as the whole read does.
 #[test]
-fn a_changes_read_between_the_frames_of_one_checkpoint_is_left_to_the_whole_read() {
+fn a_changes_read_between_the_frames_of_one_checkpoint_is_pending() {
     let joined = enrolled();
     let member = member().verifying_key().to_bytes();
     let held = full(&joined, member);
@@ -201,7 +211,7 @@ fn a_changes_read_between_the_frames_of_one_checkpoint_is_left_to_the_whole_read
             assert!(
                 matches!(
                     changes(&joined, member, &held.heads, usize::MAX),
-                    Ok(ChangesRead::Whole)
+                    Ok(DocumentRead::CheckpointPending)
                 ),
                 "a pending checkpoint is never answered with changes"
             );
@@ -288,7 +298,7 @@ fn a_remote_edit_of_a_large_document_costs_its_reader_the_edit() {
         panic!("a whole read hands out the edited document");
     };
     let (changes_owner, read) = fastest(3, || changes(&joined, member, &held.heads, usize::MAX));
-    let Ok(ChangesRead::Changes(read)) = read else {
+    let Ok(DocumentRead::Changes(read)) = read else {
         panic!("the reader is handed the edit's changes");
     };
     assert_eq!(read.revision, whole.revision);
