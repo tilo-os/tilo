@@ -475,6 +475,14 @@ impl Shared {
             .map(|(tab, _)| *tab)
     }
 
+    /// The applications whose code the page is fetching now: a window of one
+    /// fills in, and offers its views, once it arrives.
+    pub(crate) fn loading_apps(&self) -> Vec<&'static str> {
+        let mut apps: Vec<_> = self.loading.borrow().in_flight().collect();
+        apps.sort_unstable();
+        apps
+    }
+
     /// Whether an application finished loading since the last call.
     pub fn take_arrived(&self) -> bool {
         self.arrived.replace(false)

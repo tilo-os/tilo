@@ -808,6 +808,25 @@ impl Desktop {
 }
 
 impl Mount {
+    /// The desk's search and the apps still arriving, beside a frame's status.
+    fn add_desk_state(&self, value: &mut serde_json::Value) {
+        let desktop = self.desktop.as_ref();
+        value["searchOpen"] = desktop.is_some_and(|d| d.handle.search_open()).into();
+        value["searchCard"] = self.search_card().into();
+        // Whether the open search still owes rows. A settled desk presents no
+        // frame until something changes, so a page that waits for the palette's
+        // answer reads this rather than counting presented frames: the answer
+        // is the desk's own, and a frame of it may wait for the next minute.
+        value["searchSearching"] = desktop.is_some_and(|d| d.handle.search_searching()).into();
+        // The apps whose code is still on its way: a link to one of them waits
+        // for it before it asks the app's window for a view, where a large app
+        // over a slow link takes tens of seconds to arrive.
+        value["appsLoading"] = desktop
+            .map(|d| d.shared.loading_apps())
+            .unwrap_or_default()
+            .into();
+    }
+
     /// What the open search stands on, as the desk shows it: the query the field holds and the rows
     /// it offers, each as a name with what it says under it. A search the person pressed Enter on
     /// and that is still up says here what they were pressing on — a card that stayed open over a
@@ -3049,19 +3068,13 @@ impl Mount {
             "rootRect": root_rect,
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
-            "searchOpen": self.desktop.as_ref().is_some_and(|d| d.handle.search_open()),
-            "searchCard": self.search_card(),
-            // Whether the open search still owes rows. A settled desk presents no
-            // frame until something changes, so a page that waits for the palette's
-            // answer reads this rather than counting presented frames: the answer
-            // is the desk's own, and a frame of it may wait for the next minute.
-            "searchSearching": self.desktop.as_ref().is_some_and(|d| d.handle.search_searching()),
             // The page titles its tab after it.
             "workspaceName": self.desktop.as_ref().and_then(|d| d.handle.read(|tree| tree.active_workspace().map(|w| w.name.clone()))),
             "hostRequests": self.desktop.as_ref().map(|d| std::mem::take(&mut *d.requests.borrow_mut())).filter(|r| !r.is_empty()),
             "ime": ime,
         });
         let mut value = value;
+        self.add_desk_state(&mut value);
         if !(unbuilt && change == FrameChange::Nothing) {
             self.add_presence_changes(&mut value);
         }

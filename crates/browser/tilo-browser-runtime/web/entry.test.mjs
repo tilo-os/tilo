@@ -132,6 +132,34 @@ test('a link waits for its resource as long as the desktop has not drawn the fra
   assert.equal(polls, 6);
 });
 
+// Catches a run's link losing the whole page again on a busy machine: the
+// desk drew its frames while Console's code was still downloading, so the
+// link's wait ran out before the app could offer the run's view.
+test('a link waits for its app’s code before its own wait for the view begins', async () => {
+  const timers = {setTimeout: done => queueMicrotask(done)};
+  const target = {app: 'so.tilo.console', record: '', resource: message};
+  let frames = 0;
+  let polls = 0;
+  let loading = true;
+  // The desk draws every poll; the app's code arrives at the 300th, its
+  // views a few polls later.
+  const late = {actions: () => {
+    polls++;
+    frames++;
+    if (polls === 300) loading = false;
+    return polls < 304 ? [] : views;
+  }};
+  assert.deepEqual(await untilViewable(late, target, undefined,
+    {timers, waitMs: 500, frames: () => frames, loading: () => loading}), {action: 'reveal', args: {}});
+  // Its code in and still no view: not there, after the wait from then.
+  polls = 0;
+  loading = true;
+  const missing = {actions: () => { polls++; frames++; if (polls === 50) loading = false; return []; }};
+  await assert.rejects(untilViewable(missing, target, undefined,
+    {timers, waitMs: 500, frames: () => frames, loading: () => loading}), {message: UNAVAILABLE});
+  assert.equal(polls, 54);
+});
+
 test('an unbound desktop entry without a route is the person’s own desktop', () => {
   const link = {parse: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); }};
   assert.deepEqual(initialRoute({link, location: {hash: '', href: 'https://tilo.so/'}, mode: 'desktop'}),
