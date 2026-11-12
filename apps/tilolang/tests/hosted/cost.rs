@@ -415,8 +415,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 300_000,
             eval_layout_us: 300_000,
             held: Held {
-                optimized_us: 1_600_000,
-                development_us: 7_000_000,
+                optimized_us: 1_050_000,
+                development_us: 4_050_000,
             },
         },
     ),
@@ -426,8 +426,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 8_000,
             eval_layout_us: 8_000,
             held: Held {
-                optimized_us: 40_000,
-                development_us: 120_000,
+                optimized_us: 16_000,
+                development_us: 55_000,
             },
         },
     ),
@@ -437,8 +437,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 300_000,
-                development_us: 700_000,
+                optimized_us: 140_000,
+                development_us: 450_000,
             },
         },
     ),
@@ -448,8 +448,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 250_000,
-                development_us: 800_000,
+                optimized_us: 80_000,
+                development_us: 280_000,
             },
         },
     ),
@@ -459,8 +459,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 150_000,
-                development_us: 500_000,
+                optimized_us: 85_000,
+                development_us: 310_000,
             },
         },
     ),
@@ -470,8 +470,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 210_000,
-                development_us: 1_450_000,
+                optimized_us: 90_000,
+                development_us: 430_000,
             },
         },
     ),
@@ -481,8 +481,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 8_000,
             eval_layout_us: 8_000,
             held: Held {
-                optimized_us: 50_000,
-                development_us: 200_000,
+                optimized_us: 21_000,
+                development_us: 100_000,
             },
         },
     ),
@@ -1578,6 +1578,30 @@ fn scrolling_asks_the_app_for_rows_ahead_not_once_a_row() {
     );
 }
 
+/// The glide a wheel notch started, run to where it rests on the frame clock: where the list
+/// stands after a notch is what the notch did, not how far the frames the step measured got
+/// before the window was looked at, which is as far as the machine's speed let them.
+fn glide_out(session: &mut Session) {
+    use ui::time::testing::with_monotonic_time;
+    let mut at = ui::time::Instant::now();
+    for _ in 0..400 {
+        if !session
+            .window
+            .harness()
+            .frame_schedule()
+            .needs_animation_frame
+        {
+            return;
+        }
+        at += ui::time::Duration::from_millis(16);
+        with_monotonic_time(at, || {
+            session.host.turn();
+            session.window.frame();
+        });
+    }
+    panic!("the list's glide never came to rest");
+}
+
 /// Scrolling the list: a wheel notch down and back up, the top row changing each time.
 fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
     let first = top_title(session);
@@ -1590,6 +1614,7 @@ fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
         costs.add(cost(session, "scroll", |session| {
             session.window.scroll(0.0, if down { -3.0 } else { 3.0 });
         }));
+        glide_out(session);
         session.settle();
         let now = top_shown(session);
         assert_ne!(now, top, "the list scrolled");

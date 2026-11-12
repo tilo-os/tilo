@@ -33,6 +33,9 @@ use crate::widget::{
 use super::{ListModel, ListModelChange, TreeMarks, VirtualList};
 use crate::widget::ChangeMarkProps;
 
+#[path = "virtual_list_facts.rs"]
+mod facts;
+
 /// The height a row is reckoned at before it is laid out: a row with a secondary line.
 // ratchet-allow(pixel_const): a height reckoned before layout measures it, not spacing
 pub(crate) const ROW_ESTIMATE: f32 = 56.0;
@@ -622,21 +625,19 @@ impl ListModel for DescribedRows {
         let Some(key) = self.key_at(index) else {
             return false;
         };
-        self.with_item(&key, |item| {
-            item.opens || !matches!(item.detail, ItemRow::None)
-        })
-        .unwrap_or(false)
+        self.with_facts(&key, |item| item.opens || item.detail)
+            .unwrap_or(false)
     }
 
     /// What the row is grouped by: its item's heading, the list's tail for an item done
     /// with, or the list's heading for the items that name none.
     fn group_at(&self, index: usize) -> Option<super::RowGroup> {
         let key = self.key_at(index)?;
-        self.with_item(&key, |item| {
+        self.with_facts(&key, |item| {
             // A row with something to report — a change nobody has seen, an item removed and
             // not yet seen go — is not folded away with its group: its group's rows are out of
             // the way, and what it says is for the person, wherever it would stand.
-            if item.change.is_some() || item.removed {
+            if item.change || item.removed {
                 return None;
             }
             if item.tail {
@@ -673,7 +674,7 @@ impl ListModel for DescribedRows {
     /// the list's rows, and the count of its subtasks.
     fn tree_at(&self, index: usize) -> Option<super::TreeRow<String>> {
         let key = self.key_at(index)?;
-        self.with_item(&key, |item| {
+        self.with_facts(&key, |item| {
             let parent = item
                 .parent
                 .as_ref()
@@ -701,11 +702,8 @@ impl ListModel for DescribedRows {
 
     fn label(&self, index: usize) -> Option<String> {
         let key = self.key_at(index)?;
-        self.with_item(&key, |item| match item.row {
-            ItemRow::Row(row) if !row.title.is_empty() => Some(row.title),
-            _ => None,
-        })
-        .flatten()
+        self.with_facts(&key, |item| item.title.filter(|title| !title.is_empty()))
+            .flatten()
     }
 
     fn key_presenting(&self, id: &str) -> Option<String> {
@@ -874,7 +872,7 @@ fn with_open<M: ListModel<Key = String>>(
 
 /// The resource the item `key` shows, as an event carries it.
 fn item_of(rows: &DescribedRows, key: &str) -> Option<Value> {
-    rows.with_item(key, |item| item.item.map(|id| Value::Resource(id.0)))
+    rows.with_facts(key, |item| item.item.map(|id| Value::Resource(id.0)))
         .flatten()
 }
 
@@ -1171,7 +1169,7 @@ fn nesting_parent(
     if !marks.is_nested(&key.to_owned()) {
         return None;
     }
-    let parent = rows.with_item(key, |item| item.parent.clone()).flatten()?;
+    let parent = rows.with_facts(key, |item| item.parent).flatten()?;
     rows.key_presenting(&parent.0)
 }
 
@@ -1236,7 +1234,7 @@ fn message_of(
     // The row that shows the item the reader has not seen, of the rows the host rendered. An
     // item is named by its id (`root-x/iy`), the one the app said and the one the row shows.
     let first_unread = unread.is_some_and(|item| {
-        rows.with_item(key, |props| {
+        rows.with_facts(key, |props| {
             props
                 .item
                 .as_ref()
@@ -1244,7 +1242,7 @@ fn message_of(
         })
         .unwrap_or(false)
     });
-    let said = rows.with_item(key, |item| (item.author, item.time));
+    let said = rows.with_facts(key, |item| (item.author, item.time));
     let Some((Some(author), at)) = said else {
         let row = row_of(rows, key, feel, None, RowBuild::default());
         return page_row(under_unread(row, first_unread), RUN_GAP, measure);
@@ -1253,7 +1251,7 @@ fn message_of(
         .index_of(&key.to_owned())
         .and_then(|index| index.checked_sub(1))
         .and_then(|index| rows.key_at(index))
-        .and_then(|key| rows.with_item(&key, |item| (item.author, item.time)));
+        .and_then(|key| rows.with_facts(&key, |item| (item.author, item.time)));
     let clock = ConversationClock::local();
     let day = at.map(|at| clock.day(at.0));
     let new_day = day.is_some()
@@ -1308,7 +1306,7 @@ fn message_of(
     // Who has read to this line: their faces at its trailing end, once each, where their
     // reading ends. The author's own face stands at the line's head already.
     let read_by: Vec<Person> = rows
-        .with_item(key, |item| item.read_by)
+        .with_facts(key, |item| item.read_by)
         .unwrap_or_default()
         .into_iter()
         .filter(|who| who.identity != author.identity)
@@ -2782,6 +2780,7 @@ mod tests {
         fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
             match slot {
                 "row" => vec![Some(ListRowProps::NAME.to_owned())],
+                "detail" => vec![None],
                 _ => Vec::new(),
             }
         }

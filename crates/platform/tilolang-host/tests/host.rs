@@ -150,6 +150,10 @@ struct Window {
     /// The form the instance shows for the action waiting for its arguments, as the window
     /// last had it.
     form: Option<Box<patch::Form>>,
+    /// How many of the window's presses the instance said ran.
+    took: u64,
+    /// The patches taken in.
+    patched: usize,
 }
 
 impl Window {
@@ -164,6 +168,8 @@ impl Window {
             activated: false,
             bound: BTreeMap::new(),
             form: None,
+            took: 0,
+            patched: 0,
         }
     }
 
@@ -181,6 +187,7 @@ impl Window {
                         lane: Lane::Root,
                         patches,
                     } => {
+                        self.patched = self.patched.saturating_add(patches.len());
                         let root = self.root.as_mut().expect("a patch after the open");
                         for change in patches {
                             change.apply(root).expect("the patch applies");
@@ -213,6 +220,7 @@ impl Window {
                         self.bound.insert(key, value);
                     }
                     ToUi::Form(form) => self.form = form,
+                    ToUi::Took { fired } => self.took = fired,
                     _ => {}
                 }
             }
@@ -572,6 +580,39 @@ fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it
         (true, false),
         "and it is ada's to undo again"
     );
+}
+
+/// A press of an action the window chose (its bar, its palette) shows in the frame that ran it:
+/// what it changed and that it ran reach the window together, so the window takes them in with
+/// one frame rather than one for what it made and another for its having run.
+#[test]
+fn a_chosen_press_shows_and_is_told_in_the_frame_that_ran_it() {
+    let (mut host, mut window, _sent, _inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    let address = host
+        .instances()
+        .next()
+        .unwrap()
+        .published()
+        .iter()
+        .find(|action| action.action_label == "Increment")
+        .expect("the instance publishes the action the button runs")
+        .address
+        .clone();
+    window.send(&[ToApp::Invoke {
+        address,
+        argument: None,
+    }]);
+    let patched = window.patched;
+    host.turn();
+    window.take();
+    assert_eq!(
+        value_of(host.instances().next().unwrap()),
+        1,
+        "the press ran"
+    );
+    assert!(window.patched > patched, "what it changed was sent");
+    assert_eq!(window.took, 1, "and that it ran, in the same frame");
 }
 
 /// The person at `window` presses the counter's +: the instance runs the action it publishes.

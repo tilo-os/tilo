@@ -456,6 +456,39 @@ impl RowSource for RemoteRows {
         Ok(true)
     }
 
+    fn read_props(
+        &mut self,
+        key: &str,
+        read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        // What its props say does not depend on the keys its nodes carry in the window's tree:
+        // the row is read as the app sent it.
+        let Some(item) = self
+            .rows
+            .get(key)
+            .and_then(|row| find_kind(row, &self.item))
+        else {
+            return Ok(false);
+        };
+        let Some(description) = description_of(item) else {
+            return Ok(false);
+        };
+        let Ok(mut reconciler) = self.reconciler.try_borrow_mut() else {
+            return Ok(false);
+        };
+        read(&mut NodeSource::props_of(
+            item,
+            description,
+            &mut reconciler,
+            self.under.clone(),
+        ))?;
+        drop(reconciler);
+        if let (Some(shown), Ok(reconciler)) = (self.rows.get(key), self.reconciler.try_borrow()) {
+            crate::window::show_bound(shown, &self.prefix, &self.bound.borrow(), &reconciler);
+        }
+        Ok(true)
+    }
+
     /// A row of a loop over resources is keyed by the loop and the resource's id
     /// (`<loop>/<id>`): the key of the row showing `id`, when the list holds it.
     fn key_presenting(&self, id: &str) -> Option<String> {

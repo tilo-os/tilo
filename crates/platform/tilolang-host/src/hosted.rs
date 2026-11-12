@@ -907,11 +907,15 @@ impl Hosted {
         // the window shows reaches into them, and the indexes are built over them.
         self.instance.sync_chunks(self.record.chunks());
         changed |= self.instance.update();
-        changed |= self.chosen();
+        let chose = self.chosen();
+        changed |= chose;
         if let Some(why) = self.instance.take_stage_failure() {
             tracing::error!(%why, "the staged scenario failed");
         }
         changed |= self.commit();
+        if chose {
+            self.instance.show_ran();
+        }
         // After what the person did before asking is committed: an undo takes back their last
         // step, typing they did just before it included.
         for asked in self.instance.take_history() {
@@ -1871,7 +1875,8 @@ impl Hosted {
     /// Run the next action the person chose at the window as their own step: the same door an
     /// invocation the broker delivered for them takes, so the action runs for them however it
     /// reached the app. One a frame, so what a press opened is sent, and the window hears it
-    /// ran, before the press after it. Whether there was one.
+    /// ran, before the press after it ([`tilolang_tilo::instance::Instance::show_ran`]).
+    /// Whether there was one.
     fn chosen(&mut self) -> bool {
         let Some((press, address, argument)) = self.instance.take_chosen() else {
             return false;
@@ -1890,8 +1895,8 @@ impl Hosted {
             }
             Err(refused) => self.instance.action_refused(refused.message),
         }
-        // The press ran: the frame after it sends what it opened, then tells the window it
-        // ran, so what the person typed after it goes there.
+        // The press ran: once it is in the record this frame sends what it opened, then tells
+        // the window it ran, so what the person typed after it goes there.
         self.instance.press_ran(press);
         true
     }
