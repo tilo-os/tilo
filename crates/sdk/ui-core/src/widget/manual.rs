@@ -138,6 +138,11 @@ impl Manual {
     pub fn child_mut(&mut self, index: usize) -> Option<&mut Element> {
         self.parts.children.get_mut(index)
     }
+    /// The child at `index`, to read (where a canvas reads a pin's own box).
+    #[must_use]
+    pub fn child_at(&self, index: usize) -> Option<&Element> {
+        self.parts.children.get(index)
+    }
     /// How many children the region holds.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -203,6 +208,9 @@ impl Widget for Manual {
                 .any(|child| child.layout_needs_measure())
     }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
     fn layout_info(&self) -> Option<LayoutInfo> {
