@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure `tilo-app dev` edit-to-pixels for an in-place Rust hot reload.
 
-Starts a headless `shell --mode native` compositor in a private runtime
+Starts a headless `tilo-session` compositor in a private runtime
 directory, runs `tilo-app dev --timings --json APP` against it, then edits
 one line of the app's `src/lib.rs` several times. Each save is timed from the
 moment the file is closed to the first frame the reloaded code presents, and
@@ -108,7 +108,7 @@ def kill_group(proc: subprocess.Popen, sig=signal.SIGTERM, grace=5.0):
         proc.wait()
 
 
-def start_compositor(shell: Path, runtime: Path, log) -> tuple[subprocess.Popen, str]:
+def start_compositor(session: Path, runtime: Path, log) -> tuple[subprocess.Popen, str]:
     env = dict(os.environ)
     for key in ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"):
         env.pop(key, None)
@@ -127,11 +127,10 @@ def start_compositor(shell: Path, runtime: Path, log) -> tuple[subprocess.Popen,
         env[key] = str(home / sub)
     env["TILO_STATE_PATH"] = str(home / "config" / "state.json")
     env["TILO_TEST_CONTROL"] = str(runtime / "tilo-session" / "test-control.sock")
-    env["TILO_HEADLESS_SIZE"] = "1280x800"
     proc = subprocess.Popen(
-        # `--mode native` is the smithay compositor: the only mode a Wayland
-        # client can attach to.
-        [str(shell), "--mode", "native", "--backend", "headless"],
+        # A headless output is the only backend a Wayland client can attach to
+        # without a display.
+        [str(session), "--backend", "headless", "--size", "1280x800"],
         env=env,
         stdout=log,
         stderr=subprocess.STDOUT,
@@ -185,7 +184,7 @@ def main() -> int:
     parser.add_argument("app", type=Path)
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--tilo-app", type=Path, default=REPO / "target/debug/tilo-app")
-    parser.add_argument("--shell", type=Path, default=REPO / "target/debug/shell")
+    parser.add_argument("--session", type=Path, default=REPO / "target/debug/tilo-session")
     parser.add_argument("--edit-file", type=Path, default=Path("src/lib.rs"))
     parser.add_argument(
         "--edit-pattern",
@@ -213,7 +212,7 @@ def main() -> int:
     os.chmod(runtime, 0o700)
     comp_log = open(runtime / "compositor.log", "w")
     sink = open(args.log, "w") if args.log else None
-    compositor, display = start_compositor(args.shell, runtime, comp_log)
+    compositor, display = start_compositor(args.session, runtime, comp_log)
     dev = None
     runs: list[dict] = []
     try:

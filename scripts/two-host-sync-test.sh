@@ -1,38 +1,41 @@
 #!/usr/bin/env bash
-# Two-host peer-sync smoke test.
+# Two-host workspace-sync smoke test.
 #
-# Usage: open two terminals on the same LAN.
+# Usage: on each of two machines on the same network, from a checkout:
 #
-# Terminal 1 (owner):
 #   ./scripts/two-host-sync-test.sh owner
-#
-# Terminal 2 (peer):
 #   ./scripts/two-host-sync-test.sh peer
 #
-# Owner: launches `shell --backend winit` (peer sync is on by default),
-# prints an invite token via /invite, copies it to clipboard, and
-# pauses for the peer to connect.
+# Both start the desktop session, `tilo-session`. On the owner, open the
+# workspace's settings and, under "Invite people", "Create link" and then
+# "Copy link"; on the peer, "Join a workspace" and paste it. Both desks then
+# hold one workspace: a note typed on one shows on the other.
 #
-# Peer: launches `shell --backend winit`,
-# waits for the user to paste the token into /connect, then both
-# trees should converge on each other's edits.
+# The session is the one the image installs, `/usr/bin/tilo-session`; a
+# checkout's build is named with TILO_SESSION, and every argument is passed on:
+#
+#   TILO_SESSION=target/debug/tilo-session ./scripts/two-host-sync-test.sh owner
+#
+# `--backend nested` runs the desktop in a window of the desktop already on
+# screen, which is how both roles can be tried from one machine; `--backend
+# headless` starts it with no display at all, as a session on a builder does.
 #
 # This is documentation + glue, not an automated test.
 
 set -euo pipefail
 
 ROLE="${1:-}"
+shift || true
 case "$ROLE" in
   owner)
-    echo "[two-host] Starting owner. Use /invite in the palette to mint a token."
-    exec cargo run -p shell --bin shell -- --backend winit
+    echo "[two-host] owner: make a link under the workspace's settings, Invite people."
     ;;
   peer)
-    echo "[two-host] Starting peer. Use /connect in the palette and paste the owner's token."
-    exec cargo run -p shell --bin shell -- --backend winit
+    echo "[two-host] peer: Join a workspace, and paste the owner's link."
     ;;
   *)
-    echo "Usage: $0 {owner|peer}" >&2
+    echo "Usage: $0 {owner|peer} [tilo-session arguments...]" >&2
     exit 2
     ;;
 esac
+exec "${TILO_SESSION:-tilo-session}" "$@"
