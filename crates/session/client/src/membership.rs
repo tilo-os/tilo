@@ -169,14 +169,13 @@ impl<'a> Membership<'a> {
                 command,
             },
         };
-        self.engine
-            .owner()
-            .commit_workspace_membership_command(
-                request,
-                identity.signer.as_ref(),
-                tilo_clock::wall(),
-            )
-            .map(|_receipt| ())
+        collab_types::signer::at_once(self.engine.owner().commit_workspace_membership_command(
+            request,
+            identity.signer.as_ref(),
+            tilo_clock::wall(),
+        ))
+        .map_err(|error| error.to_string())?
+        .map(|_receipt| ())
     }
 
     /// Let `app` author its own records in the workspace, as this device: the

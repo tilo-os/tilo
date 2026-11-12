@@ -1567,25 +1567,20 @@ fn invite_from_this_device(
     )
     .expect("this computer's engine opens");
     let now = tilo_clock::wall();
-    engine
-        .owner()
-        .issue_invitation(
-            workspace_id,
-            cert,
-            &IssueInvitationRequest {
-                request_id: [0x71; 32],
-                role: MemberRole::Editor,
-                recipient_user_public_key: None,
-                invitee_name: Some("Ada".into()),
-                expires_at_ns: tilo_clock::unix_now_ns()
-                    .checked_add(60_000_000_000)
-                    .expect("an expiry"),
-                inviter_name: None,
-            },
-            &[],
-            key,
-            now,
-        )
+    let request = IssueInvitationRequest {
+        request_id: [0x71; 32],
+        role: MemberRole::Editor,
+        recipient_user_public_key: None,
+        invitee_name: Some("Ada".into()),
+        expires_at_ns: tilo_clock::unix_now_ns()
+            .checked_add(60_000_000_000)
+            .expect("an expiry"),
+        inviter_name: None,
+    };
+    let owner = engine.owner();
+    let issued = owner.issue_invitation(workspace_id, cert, &request, &[], key, now);
+    collab_types::signer::at_once(issued)
+        .unwrap()
         .expect("this device issues the link")
 }
 

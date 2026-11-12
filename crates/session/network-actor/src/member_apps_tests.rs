@@ -97,7 +97,7 @@ fn owner_at(state: &Path) -> NativeWorkspaceOwner {
 
 /// The invitation `administrator` issues into `workspace`, as the text a person
 /// hands over.
-fn invitation(
+async fn invitation(
     owner: &NativeWorkspaceOwner,
     workspace: Workspace,
     administrator: &DeviceCert,
@@ -121,6 +121,7 @@ fn invitation(
             key,
             SystemTime::now(),
         )
+        .await
         .expect("the workspace's device issues an invitation");
     encode_invitation_text(&issued.signed_invitation)
 }
@@ -326,6 +327,7 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
         Some(&hint(here, &host_endpoint, &host_cert, &host_key)),
         now,
     )
+    .await
     .expect("the workspace is founded here");
     far.create_workspace(
         elsewhere,
@@ -335,6 +337,7 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
         Some(&hint(elsewhere, &far_endpoint, &far_cert, &far_key)),
         now,
     )
+    .await
     .expect("the workspace is founded on the separate host");
     commit_record(&host, here, &host_key, "founded here");
     commit_record(&far, elsewhere, &far_key, "founded elsewhere");
@@ -373,7 +376,8 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
             &host_key,
             hint(here, &host_endpoint, &host_cert, &host_key),
             [7; 32],
-        ),
+        )
+        .await,
         std::sync::Arc::clone(&host_service),
     )
     .await;
@@ -389,7 +393,8 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
             &far_key,
             hint(elsewhere, &far_endpoint, &far_cert, &far_key),
             [9; 32],
-        ),
+        )
+        .await,
         std::sync::Arc::clone(&far_service),
     )
     .await;
@@ -405,7 +410,8 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
             &far_key,
             hint(elsewhere, &far_endpoint, &far_cert, &far_key),
             [8; 32],
-        ),
+        )
+        .await,
         std::sync::Arc::clone(&far_service),
     )
     .await;

@@ -11,6 +11,7 @@ use super::{index_of, part_bytes, parts_of};
 use crate::owner::{
     NativeAuthorityStorage, NativeWorkspaceOwner, WorkspaceId, open_file, read_file, testing,
 };
+use collab_types::signer::at_once;
 use ed25519_dalek::SigningKey;
 use std::{
     cell::Cell,
@@ -171,21 +172,25 @@ fn a_record_written_as_one_file_reads_once_and_is_then_kept_split() {
     assert_eq!(reopened.unwrap().storage().held().count(), 2);
 }
 
-#[test]
-fn a_change_writes_only_its_own_workspace_file_and_the_index() {
+#[tokio::test]
+async fn a_change_writes_only_its_own_workspace_file_and_the_index() {
     let directory = directory();
     let path = record_path(&directory);
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
-    let first = testing::founded(&owner, "One", &device, &key, now).unwrap();
-    let second = testing::founded(&owner, "Two", &device, &key, now).unwrap();
+    let first = testing::founded(&owner, "One", &device, &key, now)
+        .await
+        .unwrap();
+    let second = testing::founded(&owner, "Two", &device, &key, now)
+        .await
+        .unwrap();
     let before = part_files(&path);
     assert_eq!(before.len(), 2);
 
     let (created, replaced) =
-        replacements(|| testing::founded(&owner, "Three", &device, &key, now));
-    created.unwrap();
+        replacements(|| at_once(testing::founded(&owner, "Three", &device, &key, now)));
+    created.unwrap().unwrap();
     assert_eq!(replaced, 2, "the workspace's file and the index");
 
     let after = part_files(&path);
@@ -218,19 +223,21 @@ fn a_change_writes_only_its_own_workspace_file_and_the_index() {
     assert!(record.holds(first) && record.holds(second));
 }
 
-#[test]
-fn a_publication_that_stops_before_its_index_leaves_the_record_as_it_was() {
+#[tokio::test]
+async fn a_publication_that_stops_before_its_index_leaves_the_record_as_it_was() {
     let directory = directory();
     let path = record_path(&directory);
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
-    let first = testing::founded(&owner, "One", &device, &key, now).unwrap();
+    let first = testing::founded(&owner, "One", &device, &key, now)
+        .await
+        .unwrap();
     let durable = index_bytes(&path);
 
     // The workspace's file is written; the index that would name it is not.
     let stopped = with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
-        testing::founded(&owner, "Two", &device, &key, now)
+        at_once(testing::founded(&owner, "Two", &device, &key, now)).unwrap()
     });
     assert!(stopped.is_err());
     assert_eq!(index_bytes(&path), durable);
@@ -249,19 +256,23 @@ fn a_publication_that_stops_before_its_index_leaves_the_record_as_it_was() {
     let reopened = open_file(&path).unwrap();
     assert_eq!(reopened.storage().held().count(), 1);
     assert_eq!(part_files(&path).len(), 1);
-    testing::founded(&reopened, "Two", &device, &key, now).unwrap();
+    testing::founded(&reopened, "Two", &device, &key, now)
+        .await
+        .unwrap();
     assert_eq!(part_files(&path).len(), 2);
     assert_eq!(read_file(&path).unwrap().held().count(), 2);
 }
 
-#[test]
-fn a_workspace_costs_its_own_record() {
+#[tokio::test]
+async fn a_workspace_costs_its_own_record() {
     let directory = directory();
     let path = record_path(&directory);
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
-    let founded = testing::founded(&owner, "Founders", &device, &key, now).unwrap();
+    let founded = testing::founded(&owner, "Founders", &device, &key, now)
+        .await
+        .unwrap();
     let record = read_file(&path).unwrap();
     let founded_bytes = part_bytes(record.workspaces.get(&founded).unwrap())
         .unwrap()
@@ -294,15 +305,17 @@ fn a_workspace_costs_its_own_record() {
     );
 }
 
-#[test]
-fn a_split_record_leaves_the_file_it_came_from_for_an_older_build() {
+#[tokio::test]
+async fn a_split_record_leaves_the_file_it_came_from_for_an_older_build() {
     let directory = directory();
     let path = record_path(&directory);
     std::fs::write(&path, predecessor()).unwrap();
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
-    testing::founded(&owner, "Third", &device, &key, now).unwrap();
+    testing::founded(&owner, "Third", &device, &key, now)
+        .await
+        .unwrap();
     drop(owner);
 
     // A build before the split reads the file it wrote, whole, and holds two
@@ -322,13 +335,15 @@ fn a_split_record_leaves_the_file_it_came_from_for_an_older_build() {
     assert_eq!(reread.held().count(), 3);
 }
 
-#[test]
-fn a_released_workspace_leaves_no_file_behind() {
+#[tokio::test]
+async fn a_released_workspace_leaves_no_file_behind() {
     let directory = directory();
     let path = record_path(&directory);
     let (key, device) = device();
     let owner = open_file(&path).unwrap();
-    let workspace = testing::founded(&owner, "One", &device, &key, SystemTime::now()).unwrap();
+    let workspace = testing::founded(&owner, "One", &device, &key, SystemTime::now())
+        .await
+        .unwrap();
     assert!(owner.release_workspace(workspace).unwrap());
 
     assert!(part_files(&path).is_empty());
@@ -336,13 +351,15 @@ fn a_released_workspace_leaves_no_file_behind() {
     assert_eq!(open_file(&path).unwrap().storage().held().count(), 0);
 }
 
-#[test]
-fn an_index_that_names_a_missing_workspace_file_is_not_a_record() {
+#[tokio::test]
+async fn an_index_that_names_a_missing_workspace_file_is_not_a_record() {
     let directory = directory();
     let path = record_path(&directory);
     let (key, device) = device();
     let owner = open_file(&path).unwrap();
-    testing::founded(&owner, "One", &device, &key, SystemTime::now()).unwrap();
+    testing::founded(&owner, "One", &device, &key, SystemTime::now())
+        .await
+        .unwrap();
     drop(owner);
     let files = part_files(&path);
     let (name, _) = files.iter().next().unwrap();

@@ -333,7 +333,7 @@ async fn prepared_local_write_uses_current_sequence_after_an_intervening_commit(
             joined.workspace,
             |view| {
                 edit_from_view(view, joined.now, "edit from current owner turn")
-                    .map(|edit| vec![crate::owner::Write::Signed(edit)])
+                    .map(|edit| vec![edit])
             },
             &crate::owner::testing::member_key(),
             true,

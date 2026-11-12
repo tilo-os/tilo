@@ -1096,7 +1096,7 @@ impl NativeWorkspaceOwner {
     /// # Errors
     /// The workspace is not held here, `signer` is not this device's, signing
     /// failed, or the commit failed.
-    pub fn commit_bootstrap(
+    pub async fn commit_bootstrap(
         &self,
         workspace: WorkspaceId,
         signer: &dyn collab_types::signer::DeviceSigner,
@@ -1141,6 +1141,7 @@ impl NativeWorkspaceOwner {
             self.publish_record(workspace, &candidate, stored, None)?;
             Ok(messages)
         })
+        .await
     }
     /// Retire every retained frame the workspace has refused or a durable
     /// receipt names, and commit the retirement.
@@ -1266,7 +1267,7 @@ impl NativeWorkspaceOwner {
     /// exactly as it was.
     ///
     /// # Errors
-    /// As [`Self::sign_and_commit`].
+    /// As [`Self::commit_outgoing`].
     pub async fn renew_outgoing(
         &self,
         workspace: WorkspaceId,
@@ -1303,7 +1304,7 @@ impl NativeWorkspaceOwner {
             live.outbox_mut()
                 .admit_sealed_renewal(&original, renewal, now)
         };
-        self.sign_and_commit(workspace, signer, now, draft, admit)
+        self.commit_outgoing(workspace, signer, now, draft, admit)
             .await
             .map(drop)
     }
@@ -1323,7 +1324,7 @@ impl NativeWorkspaceOwner {
     /// maintains its own copy this way; no host compacts for it.
     ///
     /// # Errors
-    /// As [`Self::sign_and_commit`].
+    /// As [`Self::commit_outgoing`].
     pub async fn compact_outgoing(
         &self,
         workspace: WorkspaceId,
@@ -1365,21 +1366,20 @@ impl NativeWorkspaceOwner {
             live.publication_mut()
                 .admit_sealed_compaction(&app, &record, op, now)
         };
-        self.sign_and_commit(workspace, signer, now, draft, admit)
+        self.commit_outgoing(workspace, signer, now, draft, admit)
             .await
     }
 
-    /// Draft writes of `workspace` in one owner turn, each with the custody entry it replaces,
-    /// sign each with `signer`, this device's custody of its key, outside it, and commit those
-    /// `admit` takes into the outgoing custody in one durable commit of a second turn. One write
-    /// of this device runs at a time, so a draft's sequence is still past its record's floor when
-    /// it is admitted. A write `admit` refuses, or one whose entry left custody meanwhile, stays
-    /// out. Answers how many writes were taken.
+    /// Commit the writes `draft` drafts of `workspace`, each with the custody entry it replaces,
+    /// into the outgoing custody in one durable commit of a signed turn of `signer`, this device's
+    /// custody of its key: what the first run drafted is kept, and signed between the runs. A
+    /// write `admit` refuses, or one whose entry left custody meanwhile, stays out. Answers how
+    /// many writes were taken.
     ///
     /// # Errors
     /// `signer` is not the enrolled device, it may no longer write, the workspace is fenced,
     /// signing failed, or what was taken cannot be committed.
-    async fn sign_and_commit<T>(
+    async fn commit_outgoing<T: Clone>(
         &self,
         workspace: WorkspaceId,
         signer: &dyn collab_types::signer::DeviceSigner,
@@ -1387,63 +1387,69 @@ impl NativeWorkspaceOwner {
         draft: impl FnOnce(&NativeCommittedView) -> Result<Vec<(Option<[u8; 32]>, T, SignedOp)>, String>,
         mut admit: impl FnMut(&mut StatePeer, T, SignedOp) -> Result<NeighbourMsg, String>,
     ) -> Result<usize, String> {
-        let _writing = self.0.writes.lock().await;
-        let mut drafted = {
+        let mut draft = Some(draft);
+        let mut drafted = None;
+        crate::owner::write::signed_turn(signer, |signed| {
             let _turn = self.0.mutation.lock();
-            let view = self.view(workspace)?;
-            let device = view.device().device_public_key;
-            if signer.device_public_key() != device {
+            let candidate = self.view(workspace)?;
+            let device = candidate.device().device_public_key;
+            if signed.device_public_key() != device {
                 return Err("native outgoing signer differs from selected device".into());
             }
-            view.peer
+            candidate
+                .peer
                 .permissions(device, now)
                 .map_err(|error| error.to_string())?;
-            draft(&view)?
-        };
-        if drafted.is_empty() {
-            return Ok(0);
-        }
-        for (_, _, op) in &mut drafted {
-            crate::owner::write::sign(signer, op).await?;
-        }
-        let _turn = self.0.mutation.lock();
-        let candidate = self.view(workspace)?;
-        let (taken, mut record) = candidate.change(|live, record| {
-            let mut taken = 0usize;
-            for (replaces, with, op) in drafted {
-                let entries = &mut record
-                    .publication
-                    .as_mut()
-                    .ok_or("publication absent")?
-                    .entries;
-                if replaces.is_some_and(|id| !entries.iter().any(|kept| kept.id == id)) {
-                    continue;
-                }
-                // Admitted on a copy: a write that cannot be committed as one custody entry
-                // leaves the replica as it was.
-                let mut attempt = live.clone();
-                match admit(&mut attempt, with, op).and_then(|message| encode(&message, MAX_BYTES))
-                {
-                    Ok(bytes) => {
-                        entries.retain(|kept| Some(kept.id) != replaces);
-                        *live = attempt;
-                        append(record, bytes)?;
-                        taken = taken.saturating_add(1);
-                    }
-                    Err(error) => tracing::warn!(%error, "an outgoing write stays as it was"),
-                }
+            let drafted = crate::owner::write::drafted_once(&mut drafted, &mut draft, &candidate)?;
+            if drafted.is_empty() {
+                return Ok(0);
             }
+            let mut writes = Vec::with_capacity(drafted.len());
+            for (replaces, with, op) in drafted.iter() {
+                let mut op = op.clone();
+                collab_types::sign_op(&mut op, signed).map_err(|error| error.to_string())?;
+                writes.push((*replaces, with.clone(), op));
+            }
+            signed.settled()?;
+            let (taken, mut record) = candidate.change(|live, record| {
+                let mut taken = 0usize;
+                for (replaces, with, op) in writes {
+                    let entries = &mut record
+                        .publication
+                        .as_mut()
+                        .ok_or("publication absent")?
+                        .entries;
+                    if replaces.is_some_and(|id| !entries.iter().any(|kept| kept.id == id)) {
+                        continue;
+                    }
+                    // Admitted on a copy: a write that cannot be committed as one custody entry
+                    // leaves the replica as it was.
+                    let mut attempt = live.clone();
+                    match admit(&mut attempt, with, op)
+                        .and_then(|message| encode(&message, MAX_BYTES))
+                    {
+                        Ok(bytes) => {
+                            entries.retain(|kept| Some(kept.id) != replaces);
+                            *live = attempt;
+                            append(record, bytes)?;
+                            taken = taken.saturating_add(1);
+                        }
+                        Err(error) => tracing::warn!(%error, "an outgoing write stays as it was"),
+                    }
+                }
+                Ok(taken)
+            })?;
+            if taken == 0 {
+                return Ok(0);
+            }
+            record.generation = record
+                .generation
+                .checked_add(1)
+                .ok_or("native owner generation exhausted")?;
+            self.publish_record(workspace, &candidate, record, None)?;
             Ok(taken)
-        })?;
-        if taken == 0 {
-            return Ok(0);
-        }
-        record.generation = record
-            .generation
-            .checked_add(1)
-            .ok_or("native owner generation exhausted")?;
-        self.publish_record(workspace, &candidate, record, None)?;
-        Ok(taken)
+        })
+        .await
     }
 }
 #[cfg(test)]

@@ -13,7 +13,7 @@ impl NativeWorkspaceOwner {
     /// ([`crate::workspace::proven_saver`]), then the workspace change every
     /// receiver admits. A change the workspace already reflects commits nothing
     /// and answers the current generation.
-    pub fn commit_shortcut_change(
+    pub async fn commit_shortcut_change(
         &self,
         request: &OwnerCommitRequest,
         signer: &dyn DeviceSigner,
@@ -95,6 +95,7 @@ impl NativeWorkspaceOwner {
             self.publish_record(workspace, &candidate, record, None)?;
             Ok(receipt)
         })
+        .await
     }
 }
 

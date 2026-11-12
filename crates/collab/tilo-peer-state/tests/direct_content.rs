@@ -32,7 +32,7 @@ fn owner_at(state: &std::path::Path) -> NativeWorkspaceOwner {
 
 /// The invitation `host`'s device issues `member`'s person into the workspace it
 /// founded, naming itself as the host to join through.
-fn invitation(
+async fn invitation(
     host: &NativeWorkspaceOwner,
     workspace: tilo_desktop_model::WorkspaceId,
     host_cert: &tilo_user_identity::DeviceCert,
@@ -55,6 +55,7 @@ fn invitation(
             host_key,
             SystemTime::now(),
         )
+        .await
         .expect("the workspace's device issues an invitation");
     tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation)
 }
@@ -124,6 +125,7 @@ async fn a_hosts_ask_for_a_records_content_reaches_its_linked_member() {
     let host = owner_at(&directory.path().join("host"));
     let now = SystemTime::now();
     let workspace = testing::founded(&host, "Studio", &host_cert, &host_key, now)
+        .await
         .expect("the workspace is founded on this device");
     let member = owner_at(&directory.path().join("member"));
     joins(
@@ -131,7 +133,7 @@ async fn a_hosts_ask_for_a_records_content_reaches_its_linked_member() {
         &member_cert,
         &member_key,
         workspace,
-        invitation(&host, workspace, &host_cert, &host_key, [3; 32]),
+        invitation(&host, workspace, &host_cert, &host_key, [3; 32]).await,
         &host,
         &host_key,
     )

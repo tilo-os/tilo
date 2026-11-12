@@ -187,12 +187,15 @@ impl OwnerCommitService for Native {
                 CommitOperation::EffectReceipt { .. } => {
                     owner.commit_effect_receipt(&request, std::time::SystemTime::now())
                 }
-                CommitOperation::WorkspaceMembershipCommand { .. } => owner
-                    .commit_workspace_membership_command(
-                        request.clone(),
-                        &key,
-                        std::time::SystemTime::now(),
-                    ),
+                CommitOperation::WorkspaceMembershipCommand { .. } => {
+                    owner
+                        .commit_workspace_membership_command(
+                            request.clone(),
+                            &key,
+                            std::time::SystemTime::now(),
+                        )
+                        .await
+                }
                 _ => Err("unsupported fixture owner operation".into()),
             }?;
             receipt.validate_for(&request)?;
@@ -428,14 +431,13 @@ impl Fixture {
                 },
             },
         };
-        native
-            .owner
-            .commit_workspace_membership_command(
-                membership,
-                &native.key,
-                std::time::SystemTime::now(),
-            )
-            .unwrap();
+        collab_types::signer::at_once(native.owner.commit_workspace_membership_command(
+            membership,
+            &native.key,
+            std::time::SystemTime::now(),
+        ))
+        .unwrap()
+        .unwrap();
         let task = ISSUE.to_owned();
         let fanout = Arc::new(FanoutState::new());
         let config = crate::NativePeerBrokerConfig {
@@ -528,14 +530,13 @@ impl Fixture {
                 },
             },
         };
-        self.native
-            .owner
-            .commit_workspace_membership_command(
-                removal,
-                &self.native.key,
-                std::time::SystemTime::now(),
-            )
-            .unwrap();
+        collab_types::signer::at_once(self.native.owner.commit_workspace_membership_command(
+            removal,
+            &self.native.key,
+            std::time::SystemTime::now(),
+        ))
+        .unwrap()
+        .unwrap();
     }
     /// The person's message `message` was read here, as `conversations.rs` reads the turns of a
     /// conversation: the cause a turn's step is decided against.

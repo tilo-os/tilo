@@ -484,7 +484,7 @@ fn retain_manifest(
 impl NativeWorkspaceOwner {
     /// Execute a broker-admitted command with separately supplied governor custody.
     /// Public reads return verified metadata only, never retained document bytes.
-    pub fn execute_checkpoint(
+    pub async fn execute_checkpoint(
         &self,
         request: &CheckpointRequest,
         signer: &dyn DeviceSigner,
@@ -517,7 +517,8 @@ impl NativeWorkspaceOwner {
                         now,
                         Some(request),
                     )
-                })?;
+                })
+                .await?;
                 serde_json::to_value(ack).map_err(|e| e.to_string())
             }
             CheckpointCommand::NameBind { name, id } => {
@@ -530,7 +531,8 @@ impl NativeWorkspaceOwner {
                         now,
                         Some(request),
                     )
-                })?;
+                })
+                .await?;
                 serde_json::to_value(ack).map_err(|e| e.to_string())
             }
             CheckpointCommand::Inspect { id } => {
@@ -549,7 +551,7 @@ impl NativeWorkspaceOwner {
     /// Current governor signing custody is required independently of caller Read.
     /// Reusing an id with the same routes returns its original durable acknowledgement;
     /// changed routes are refused, even after later mutations. Naming is separate.
-    pub fn capture_checkpoint(
+    pub async fn capture_checkpoint(
         &self,
         workspace: WorkspaceId,
         caller: &DeviceCert,
@@ -560,6 +562,7 @@ impl NativeWorkspaceOwner {
         crate::owner::write::signed_turn(signer, |key| {
             self.capture_checkpoint_bound(workspace, caller, key, capture, now, None)
         })
+        .await
     }
     fn capture_checkpoint_bound(
         &self,
@@ -691,7 +694,7 @@ impl NativeWorkspaceOwner {
     }
     /// Move a human name to an existing immutable checkpoint. No content/grants copy.
     #[cfg(test)]
-    pub fn bind_checkpoint_name(
+    pub async fn bind_checkpoint_name(
         &self,
         workspace: WorkspaceId,
         caller: &DeviceCert,
@@ -703,6 +706,7 @@ impl NativeWorkspaceOwner {
         crate::owner::write::signed_turn(signer, |key| {
             self.bind_checkpoint_name_bound(workspace, caller, key, (name, id), now, None)
         })
+        .await
         .map(|_| ())
     }
     fn bind_checkpoint_name_bound(

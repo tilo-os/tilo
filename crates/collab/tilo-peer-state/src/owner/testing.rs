@@ -101,7 +101,7 @@ pub fn start_record(
 }
 
 /// Found `name` on `owner` as `certificate`'s device, naming its own host.
-pub fn founded(
+pub async fn founded(
     owner: &NativeWorkspaceOwner,
     name: &str,
     certificate: &DeviceCert,
@@ -109,14 +109,16 @@ pub fn founded(
     now: SystemTime,
 ) -> Result<WorkspaceId, String> {
     let workspace = WorkspaceId::new();
-    owner.create_workspace(
-        workspace,
-        name,
-        certificate,
-        key,
-        Some(&own_host_hint_here(workspace, certificate, key)),
-        now,
-    )?;
+    owner
+        .create_workspace(
+            workspace,
+            name,
+            certificate,
+            key,
+            Some(&own_host_hint_here(workspace, certificate, key)),
+            now,
+        )
+        .await?;
     Ok(workspace)
 }
 

@@ -130,7 +130,7 @@ fn fixture_with(
 
 /// Let a member author an app's records: an administered workspace command
 /// this device is allowed to give.
-fn grant_app_authorship(fixture: &Fixture, app: &str) {
+async fn grant_app_authorship(fixture: &Fixture, app: &str) {
     fixture
         .owner
         .commit_workspace_membership_command(
@@ -148,7 +148,7 @@ fn grant_app_authorship(fixture: &Fixture, app: &str) {
             &fixture.key,
             fixture.now,
         )
-        .unwrap();
+        .await.unwrap();
 }
 
 /// One write of this device's record, committed to its custody.
@@ -185,12 +185,12 @@ fn publish_write(fixture: &Fixture, workspace: crate::owner::WorkspaceId, key: &
 /// its retained frames and publishes them as it signed them: nothing it sends
 /// waits for an owner's checkpoint. A peer handed the later frame first asks
 /// for what that frame builds on, and converges once it arrives.
-#[test]
-fn a_member_device_republishes_its_retained_frames_and_a_peer_converges() {
+#[tokio::test]
+async fn a_member_device_republishes_its_retained_frames_and_a_peer_converges() {
     let fixture = member_device_fixture();
     let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let path = fixture.directory.path().join("owner.json");
-    grant_app_authorship(&fixture, "so.tilo.chat");
+    grant_app_authorship(&fixture, "so.tilo.chat").await;
     testing::start_record(
         &fixture.owner,
         workspace,
@@ -260,13 +260,13 @@ fn a_member_device_republishes_its_retained_frames_and_a_peer_converges() {
 
 /// A write to an app record changes nothing authorization decides on, so its
 /// watchers are not told; a change of the workspace's grants is, at once.
-#[test]
-fn only_a_governance_change_is_announced_to_authorization() {
+#[tokio::test]
+async fn only_a_governance_change_is_announced_to_authorization() {
     use tilo_identity_host::policy_change::epoch;
     let fixture = member_device_fixture();
     let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let before = epoch();
-    grant_app_authorship(&fixture, "so.tilo.chat");
+    grant_app_authorship(&fixture, "so.tilo.chat").await;
     assert_ne!(epoch(), before, "a grant is announced");
     testing::start_record(
         &fixture.owner,
@@ -280,6 +280,6 @@ fn only_a_governance_change_is_announced_to_authorization() {
     publish_write(&fixture, workspace, "first");
     publish_write(&fixture, workspace, "second");
     assert_eq!(epoch(), before, "an app record's writes are not announced");
-    grant_app_authorship(&fixture, "so.tilo.notes");
+    grant_app_authorship(&fixture, "so.tilo.notes").await;
     assert_ne!(epoch(), before, "the next grant is announced");
 }

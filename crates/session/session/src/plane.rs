@@ -741,11 +741,14 @@ impl WorkspaceMemberships for SessionMemberships {
         let engine = std::sync::Arc::clone(&self.engine);
         Box::pin(async move {
             let identity = engine.identity();
-            engine.owner().commit_workspace_membership_command(
-                request,
-                identity.signer.as_ref(),
-                std::time::SystemTime::now(),
-            )
+            engine
+                .owner()
+                .commit_workspace_membership_command(
+                    request,
+                    identity.signer.as_ref(),
+                    std::time::SystemTime::now(),
+                )
+                .await
         })
     }
 }

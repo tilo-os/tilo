@@ -66,7 +66,7 @@ pub use record::{
     EnrollmentTarget, NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus,
     StoredPendingEnrollment,
 };
-pub use write::{Committed, Write};
+pub use write::Committed;
 
 use crate::replica::Replica;
 use crate::{AdmissionReport, StatePeer, TransportOrigin};
@@ -177,9 +177,6 @@ struct SharedOwner {
     /// The committed record; replaced only inside a publication's `install`.
     authority: RwLock<NativeAuthorityStorage>,
     mutation: Mutex<()>,
-    /// One write of this device at a time, from its draft to its commit
-    /// ([`NativeWorkspaceOwner::write`]).
-    writes: tokio::sync::Mutex<()>,
     current: RwLock<Current>,
     listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
     /// Who hands on what this device commits to a workspace it hosts itself
@@ -541,7 +538,6 @@ impl NativeWorkspaceOwner {
             store,
             authority: RwLock::new(NativeAuthorityStorage::default()),
             mutation: Mutex::new(()),
-            writes: tokio::sync::Mutex::new(()),
             current: RwLock::new(Current::default()),
             listeners: Mutex::new(Vec::new()),
             kept_here: Mutex::new(Vec::new()),
@@ -583,7 +579,6 @@ impl NativeWorkspaceOwner {
             store,
             authority: RwLock::new(authority),
             mutation: Mutex::new(()),
-            writes: tokio::sync::Mutex::new(()),
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
             kept_here: Mutex::new(Vec::new()),
@@ -735,20 +730,6 @@ impl NativeWorkspaceOwner {
         self.publish(workspace, &view.replica, record, None)
     }
 
-    /// Publish `workspace`'s live replica whenever `changes` says a link
-    /// admitted into it, until the link is gone.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn persist_changes(
-        &self,
-        workspace: WorkspaceId,
-        changes: &mut tokio::sync::watch::Receiver<u64>,
-    ) {
-        while changes.changed().await.is_ok() {
-            if let Err(error) = self.persist(workspace) {
-                tracing::warn!(%error, ws = %workspace, "a workspace's admitted state was not published");
-            }
-        }
-    }
     /// The verdicts this device recorded on writes in `workspace`, each with
     /// the changes of the write it refused: what its author reads to see where
     /// its write is not. Nothing outside this device's own slice is returned:

@@ -32,7 +32,7 @@ impl NativeWorkspaceOwner {
     /// is not `device`'s, signing failed, `device` may not own workspaces, `host_hint` is not
     /// this workspace's address signed by `device`, or the record cannot be
     /// published.
-    pub fn create_workspace(
+    pub async fn create_workspace(
         &self,
         workspace: WorkspaceId,
         name: &str,
@@ -133,6 +133,7 @@ impl NativeWorkspaceOwner {
             self.publish_workspace(id, view, None)?;
             Ok(id)
         })
+        .await
     }
 
     /// Record where this device's own host of `workspace` is reached: the

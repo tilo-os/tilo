@@ -952,16 +952,14 @@ impl Engine {
                 0,
                 now,
             )?;
-            Ok(vec![tilo_peer_state::owner::Write::Draft(
-                tilo_peer_state::owner_commit::OwnerCommitRequest {
-                    workspace: workspace.to_string(),
-                    operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                        app: app.to_owned(),
-                        record: record.to_owned(),
-                        envelope: Box::new(op),
-                    },
+            Ok(vec![tilo_peer_state::owner_commit::OwnerCommitRequest {
+                workspace: workspace.to_string(),
+                operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                    app: app.to_owned(),
+                    record: record.to_owned(),
+                    envelope: Box::new(op),
                 },
-            )])
+            }])
         };
         let committed = self
             .owner
@@ -1343,7 +1341,7 @@ impl Engine {
         let expires_at_ns = now_ns.saturating_add(expires_in_seconds.saturating_mul(1_000_000_000));
         let mut request_id = [0; 32];
         getrandom::fill(&mut request_id).map_err(|error| error.to_string())?;
-        let issued = self.owner.issue_invitation(
+        let issued = collab_types::signer::at_once(self.owner.issue_invitation(
             room,
             &identity.device_cert,
             &IssueInvitationRequest {
@@ -1357,7 +1355,8 @@ impl Engine {
             &[hint],
             identity.signer.as_ref(),
             now,
-        )?;
+        ))
+        .map_err(|error| error.to_string())??;
         Ok(Issued {
             invite: hex::encode(issued.invite_id),
             link: tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation),
@@ -1628,14 +1627,16 @@ impl Engine {
             },
             None => None,
         };
-        match self.owner.create_workspace(
+        let founded = self.owner.create_workspace(
             workspace,
             name,
             &identity.device_cert,
             identity.signer.as_ref(),
             host_hint.as_ref(),
             tilo_clock::wall(),
-        ) {
+        );
+        match collab_types::signer::at_once(founded).unwrap_or_else(|error| Err(error.to_string()))
+        {
             Ok(_) => self.bind(slot, workspace),
             Err(error) => {
                 tracing::warn!(%error, %workspace, "the workspace was not founded here");

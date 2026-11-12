@@ -133,16 +133,14 @@ impl Task {
                         drafted,
                         now,
                     )?;
-                    Ok(tilo_peer_state::owner::Write::Draft(
-                        tilo_peer_state::owner_commit::OwnerCommitRequest {
-                            workspace: route.cluster_id.clone(),
-                            operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                                app: route.app_id.clone(),
-                                record: route.record.clone(),
-                                envelope: Box::new(op),
-                            },
+                    Ok(tilo_peer_state::owner_commit::OwnerCommitRequest {
+                        workspace: route.cluster_id.clone(),
+                        operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                            app: route.app_id.clone(),
+                            record: route.record.clone(),
+                            envelope: Box::new(op),
                         },
-                    ))
+                    })
                 })
                 .collect()
         };

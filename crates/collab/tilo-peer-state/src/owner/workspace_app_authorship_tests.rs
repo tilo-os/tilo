@@ -3,8 +3,8 @@ use crate::owner::{WorkspaceId, testing};
 use crate::owner_commit::{CommitOperation, OwnerCommitRequest};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 
-#[test]
-fn app_authorship_is_governor_signed_durable_and_exact_retry_only() {
+#[tokio::test]
+async fn app_authorship_is_governor_signed_durable_and_exact_retry_only() {
     let fixture = fixture();
     let request = OwnerCommitRequest {
         workspace: testing::WORKSPACE.into(),
@@ -19,10 +19,12 @@ fn app_authorship_is_governor_signed_durable_and_exact_retry_only() {
     let receipt = fixture
         .owner
         .commit_workspace_membership_command(request.clone(), &fixture.key, fixture.now)
+        .await
         .unwrap();
     let retry = fixture
         .owner
         .commit_workspace_membership_command(request.clone(), &fixture.key, fixture.now)
+        .await
         .unwrap();
     assert_eq!(receipt.binding, retry.binding);
     assert_eq!(receipt.generation, retry.generation);
@@ -37,6 +39,7 @@ fn app_authorship_is_governor_signed_durable_and_exact_retry_only() {
         fixture
             .owner
             .commit_workspace_membership_command(changed, &fixture.key, fixture.now,)
+            .await
             .is_err()
     );
     let reopened = crate::owner::open_file(&fixture.directory.path().join("owner.json")).unwrap();
@@ -56,8 +59,8 @@ fn app_authorship_is_governor_signed_durable_and_exact_retry_only() {
         .unwrap();
 }
 
-#[test]
-fn app_authorship_refuses_forged_person_and_invalid_package() {
+#[tokio::test]
+async fn app_authorship_refuses_forged_person_and_invalid_package() {
     let fixture = fixture();
     for (mut caller, app) in [
         (fixture.certificate.clone(), "so.tilo.chat"),
@@ -78,6 +81,7 @@ fn app_authorship_refuses_forged_person_and_invalid_package() {
             fixture
                 .owner
                 .commit_workspace_membership_command(request, &fixture.key, fixture.now,)
+                .await
                 .is_err()
         );
     }
@@ -85,8 +89,8 @@ fn app_authorship_refuses_forged_person_and_invalid_package() {
 
 /// The workspace's owner holds it structurally: a grant naming them, even one
 /// they signed themselves, never takes their authority over the workspace away.
-#[test]
-fn the_owners_own_grants_never_restrict_their_app_delegation() {
+#[tokio::test]
+async fn the_owners_own_grants_never_restrict_their_app_delegation() {
     let fixture = fixture();
     let workspace = WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let messages = fixture
@@ -159,6 +163,7 @@ fn the_owners_own_grants_never_restrict_their_app_delegation() {
         fixture
             .owner
             .commit_workspace_membership_command(request, &fixture.key, fixture.now,)
+            .await
             .is_ok()
     );
 }

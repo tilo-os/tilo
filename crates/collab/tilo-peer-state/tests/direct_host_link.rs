@@ -351,7 +351,7 @@ fn hint(
 
 /// The invitation `administrator` issues into `workspace`, as the text a person
 /// hands over.
-fn invitation(
+async fn invitation(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     workspace: tilo_desktop_model::WorkspaceId,
     administrator: &tilo_user_identity::DeviceCert,
@@ -375,6 +375,7 @@ fn invitation(
             key,
             SystemTime::now(),
         )
+        .await
         .expect("the workspace's device issues an invitation");
     tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation)
 }
@@ -456,6 +457,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         Some(&route),
         now,
     )
+    .await
     .expect("the workspace is founded here");
     // Both other devices join through this device's own join exchange.
     let service: Arc<dyn tilo_peer_state::join_transport::LocalJoinService> = Arc::new(JoinAnswer(
@@ -533,7 +535,8 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
             &host_key,
             route.clone(),
             [7; 32],
-        ),
+        )
+        .await,
         Arc::clone(&service),
     )
     .await;
@@ -598,7 +601,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         c_state.path(),
         &c_cert,
         &c_key,
-        invitation(&host, workspace, &host_cert, &host_key, route, [8; 32]),
+        invitation(&host, workspace, &host_cert, &host_key, route, [8; 32]).await,
         Arc::clone(&service),
     )
     .await;
@@ -947,6 +950,7 @@ async fn what_a_device_commits_to_the_workspace_it_hosts_reaches_its_members_liv
         Some(&route),
         now,
     )
+    .await
     .expect("the workspace is founded here");
     let service: Arc<dyn tilo_peer_state::join_transport::LocalJoinService> = Arc::new(JoinAnswer(
         OwnerJoinWorkspaces::new(host.clone(), host_key.clone()),
@@ -980,7 +984,8 @@ async fn what_a_device_commits_to_the_workspace_it_hosts_reaches_its_members_liv
             &host_key,
             route.clone(),
             [9; 32],
-        ),
+        )
+        .await,
         Arc::clone(&service),
     )
     .await;
@@ -1016,7 +1021,7 @@ async fn what_a_device_commits_to_the_workspace_it_hosts_reaches_its_members_liv
         c_state.path(),
         &c_cert,
         &c_key,
-        invitation(&host, workspace, &host_cert, &host_key, route, [10; 32]),
+        invitation(&host, workspace, &host_cert, &host_key, route, [10; 32]).await,
         Arc::clone(&service),
     )
     .await;
@@ -1103,8 +1108,8 @@ fn commit_record(
 /// are durable, so the device's next write, also after a restart, numbers past every snapshot a
 /// member was handed. Signed in the live replica alone, a restart numbered the next write from
 /// the durable view again, at a number a member already held.
-#[test]
-fn a_catch_up_is_durable_and_a_restarted_device_numbers_past_it() {
+#[tokio::test]
+async fn a_catch_up_is_durable_and_a_restarted_device_numbers_past_it() {
     let root = SigningKey::from_bytes(&[4; 32]);
     let (key, cert) = common::device_with(
         &root,
@@ -1119,10 +1124,12 @@ fn a_catch_up_is_durable_and_a_restarted_device_numbers_past_it() {
     let owner = owner_at(state.path());
     owner
         .create_workspace(workspace, "Hosted", &cert, &key, None, SystemTime::now())
+        .await
         .expect("the workspace is founded here");
     commit_record(&owner, workspace, &key, "first");
     let handed = owner
         .commit_bootstrap(workspace, &key, SystemTime::now())
+        .await
         .expect("the catch-up commits");
     let author = key.verifying_key().to_bytes();
     let taken = handed
