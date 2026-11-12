@@ -28,6 +28,7 @@ containers-section-ports = Ports
 containers-state = Zustand
 containers-created = Erstellt
 containers-command = Befehl
+containers-action-open = { $name } öffnen
 containers-section-details = Details
 containers-section-activity = Aktivität
 containers-section-usage = Auslastung

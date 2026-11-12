@@ -60,6 +60,7 @@ browser-service-forget-fence-failed = The selected account could not be fenced f
 
 browser-service-forget-retry = Retry forgetting this account
 browser-service-forget-retry-failed = Account deletion could not be completed. Saved credentials have not been revoked; retry forgetting this account.
+browser-service-open = Open { $name }
 browser-engine-failed = Close Browser and open it again. If it still won’t start, update or reinstall Browser in Store.
 
 ## Toolbar
@@ -336,6 +337,7 @@ browser-page-menu-name = Page context menu
 browser-quit-downloads-running = Downloads are still running
 browser-quit-cancelling-downloads = Cancelling downloads before quitting…
 browser-section-passwords = Passwords
+browser-section-no-secure-page = No secure page
 browser-section-address-autofill = Address autofill
 browser-a11y-search-engine = Search engine
 browser-a11y-clear-on-quit = Clear data when the browser closes
@@ -347,4 +349,7 @@ browser-save-login = Save login for { $site }?
 browser-section-saved-accounts = Saved accounts
 browser-section-forms = Forms on this page
 browser-action-keep-page = Keep the page as it is
+browser-action-close-picture-in-picture = Close picture-in-picture
+browser-action-close-reader-view = Close reader view
+browser-action-resume-history = Resume history in this window
 browser-action-let-leave = Let it leave: { $request }

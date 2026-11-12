@@ -61,11 +61,11 @@ impl SessionPane {
         let Some(img) = core.fb_image.clone() else {
             // Connected, but no frame decoded yet.
             let style = theme.text(TextRole::Body);
-            let label = "Waiting for the first screen update";
-            let (w, h) = text_renderer.measure_style(label, None, &style);
+            let label = crate::resource::CATALOG.t("remote-waiting-first-frame");
+            let (w, h) = text_renderer.measure_style(&label, None, &style);
             text_renderer.draw_style(
                 scene,
-                label,
+                &label,
                 media.ink_dim,
                 transform
                     * Affine::translate((

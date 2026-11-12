@@ -456,6 +456,10 @@ impl Credentials {
         if let Some(refresh) = refresh {
             header = header.push(Box::new(refresh));
         }
+        let page = match self.origin.as_deref() {
+            Some(origin) => origin.to_owned(),
+            None => crate::resource::CATALOG.t("browser-section-no-secure-page"),
+        };
         let mut column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -465,7 +469,7 @@ impl Credentials {
                 Action::Close,
             )))))
             .push(Box::new(
-                Text::new(self.origin.as_deref().unwrap_or("No secure page"))
+                Text::new(&page)
                     .with_role(TextRole::Caption)
                     .with_kind(TextKind::Url)
                     .dimmed(),
