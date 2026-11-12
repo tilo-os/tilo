@@ -53,6 +53,7 @@ pub(crate) fn engine_calls_on_this_thread() -> u64 {
 
 use anyhow::{Context, anyhow};
 use tilo_content::ContentStore;
+use ui::tilo_resource::Bytes;
 use vello::peniko::{Blob, ImageData as PenikoImage};
 
 use crate::markup::{ImportedPage, PagePlanEntry};
@@ -280,10 +281,9 @@ pub struct RasterBackend {
     reader_markup: bool,
     /// Per-source-page link areas, filled lazily on first request.
     link_cache: HashMap<(usize, usize), Arc<Vec<PageLink>>>,
-    /// Content hash and length of the opened bytes, which are kept in the
-    /// content-addressed blob store.
-    source_hash: String,
-    source_len: u64,
+    /// The opened bytes, as the window's content store keeps them: their
+    /// hash, and the reference that opens them.
+    source_bytes: Bytes,
     /// Where imported pages' bytes live, addressed by the hash in the plan.
     content: ContentStore,
 }
@@ -397,14 +397,11 @@ impl RasterBackend {
 
     fn open(bytes: &[u8], content: ContentStore) -> anyhow::Result<Self> {
         let engine = engine()?;
-        // The document is an immutable blob: keep the bytes in the app's
-        // content store (deduplicated by hash) so the markup record can pin
-        // exactly what it annotates. A store that refuses (size limits) still
-        // leaves the hash as the identity.
-        let source_hash = content
-            .put(bytes)
-            .unwrap_or_else(|_| tilo_content::hash_bytes(bytes));
-        let byte_len = bytes.len() as u64;
+        // The document is an immutable blob: keep the bytes in the window's
+        // content store, sealed as the record's content is, so the markup
+        // record can pin exactly what it annotates. A store that refuses
+        // (size limits) still leaves the bytes' hash as the identity.
+        let source_bytes = Bytes::keep(&content, bytes).unwrap_or_else(|_| Bytes::of(bytes));
         let source = match engine.open_bytes(bytes) {
             Ok(doc) => Self::source_from(doc)
                 .ok_or_else(|| anyhow!("the PDF has no pages or unsupported page sizes"))?,
@@ -434,19 +431,14 @@ impl RasterBackend {
             tiles: crate::tiles::TileCache::new(crate::tiles::MAX_TILE_CACHE_BYTES),
             reader_markup: true,
             link_cache: HashMap::new(),
-            source_hash,
-            source_len: byte_len,
+            source_bytes,
             content,
         })
     }
 
-    /// Content hash of the opened bytes.
-    pub fn source_hash(&self) -> &str {
-        &self.source_hash
-    }
-
-    pub fn source_len(&self) -> u64 {
-        self.source_len
+    /// The opened bytes, as the window's content store keeps them.
+    pub fn source_bytes(&self) -> &Bytes {
+        &self.source_bytes
     }
 
     /// The opened document's form fields, their widgets mapped to displayed
@@ -1584,9 +1576,8 @@ pub struct RasterDocument {
     /// Each displayed page's recorded rotation, in degrees.
     pub rotations: Vec<i32>,
     pub form_fields: Vec<tilo_pdf::FormField>,
-    /// Content hash and length of the opened bytes.
-    pub source_hash: String,
-    pub source_len: u64,
+    /// The opened bytes, as the window's content store keeps them.
+    pub source_bytes: Bytes,
 }
 
 /// Results delivered back to the UI by [`RasterHandle::drain_events`].
@@ -2741,8 +2732,7 @@ impl SourceWorker {
                             .collect();
                         let (geometries, rotations) = raster.page_layout();
                         let form_fields = raster.form_fields();
-                        let source_hash = raster.source_hash().to_string();
-                        let source_len = raster.source_len();
+                        let source_bytes = raster.source_bytes().clone();
                         active
                             .entry(session_id)
                             .or_default()
@@ -2753,8 +2743,7 @@ impl SourceWorker {
                             geometries,
                             rotations,
                             form_fields,
-                            source_hash,
-                            source_len,
+                            source_bytes,
                         };
                         RasterEvent::Opened {
                             request,

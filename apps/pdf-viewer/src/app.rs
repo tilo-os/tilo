@@ -824,8 +824,8 @@ pub struct PdfApp {
     form_fields: Vec<tilo_pdf::FormField>,
     /// Form values recorded in the document's record, by field name.
     form_values: std::collections::BTreeMap<String, model::FormEntry>,
-    /// Content hash and length of the open document's bytes.
-    source_blob: Option<(String, u64)>,
+    /// The open document's bytes, as this window's content store keeps them.
+    source_blob: Option<ui::tilo_resource::Bytes>,
     /// The record's annotations as stored (user space), for export.
     stored_annotations: Vec<Annotation>,
     /// Where the record's taken-over markup came from in the source.
@@ -1625,29 +1625,33 @@ impl PdfApp {
     /// Pin the open document's bytes in its record the first time the
     /// record meets them; say so when the file no longer matches.
     fn pin_source(&mut self, state: &AutoCommit) {
-        let Some((hash, len)) = self.source_blob.clone() else {
+        let Some(source) = self.source_blob.clone() else {
             return;
         };
         match PdfMarkup::of(state).pinned_source() {
             None if !self.read_only => {
-                self.submit(crate::actions::pin_source_action(
-                    &hash,
-                    len,
-                    &self.doc_name,
-                ));
+                self.submit(crate::actions::pin_source_action(&source, &self.doc_name));
             }
-            Some(pinned) if pinned.hash != hash => {
+            Some(pinned) if pinned.source.hash() != source.hash() => {
                 self.status_note.show(crate::t("pdf-note-source-changed"));
             }
             _ => {}
         }
     }
 
+    /// The open document's content hash, which names it the same on every
+    /// device (the reference it is kept under may differ).
+    fn source_identity(&self) -> Option<String> {
+        self.source_blob
+            .as_ref()
+            .map(|source| hex::encode(source.hash()))
+    }
+
     /// Take over the markup already in the PDF the first time the record
     /// meets these bytes (see [`crate::adopt`]): ask the PDF owner for it,
     /// once per source. Whether it was asked or is not needed.
     fn adopt_existing(&mut self, state: &AutoCommit) -> bool {
-        let Some((hash, _)) = self.source_blob.clone() else {
+        let Some(hash) = self.source_identity() else {
             return true;
         };
         let Some(pinned) = PdfMarkup::of(state).pinned_source() else {
@@ -1655,7 +1659,7 @@ impl PdfApp {
             return self.read_only;
         };
         if self.read_only
-            || pinned.hash != hash
+            || pinned.hash() != hash
             || PdfMarkup::of(state)
                 .imported_source()
                 .map(str::to_owned)
@@ -1690,10 +1694,7 @@ impl PdfApp {
             .map(str::to_owned)
             .as_deref()
             == Some(hash)
-            || self
-                .source_blob
-                .as_ref()
-                .is_none_or(|(current, _)| current != hash)
+            || self.source_identity().is_none_or(|current| current != hash)
         {
             return;
         }
@@ -1715,13 +1716,9 @@ impl PdfApp {
     /// Page images leave the document's own markup out exactly when the
     /// record has taken it over (the reader then draws it from the records).
     fn sync_reader_markup(&mut self, state: &AutoCommit) {
-        let hide = self.source_blob.as_ref().is_some_and(|(hash, _)| {
-            PdfMarkup::of(state)
-                .imported_source()
-                .map(str::to_owned)
-                .as_deref()
-                == Some(hash)
-        });
+        let hide = self
+            .source_identity()
+            .is_some_and(|hash| PdfMarkup::of(state).imported_source() == Some(hash.as_str()));
         if hide == self.reader_markup_hidden {
             return;
         }
@@ -4177,8 +4174,9 @@ impl PdfApp {
         };
         // A document shared in the workspace is fetched from a device that has
         // it: reading it asks for it, and it opens once it is here.
-        let Some(bytes) = self.content.read(&source.hash) else {
-            let state = self.content.state(&source.hash);
+        let reference = source.source.reference().unwrap_or_default();
+        let Some(bytes) = source.bytes(&self.content) else {
+            let state = self.content.state(&reference);
             if self.source_wait.map(|(was, _)| was) != Some(state) {
                 self.dirty = true;
             }
@@ -4272,7 +4270,7 @@ impl PdfApp {
                     self.pending_open = None;
                     self.doc = document;
                     self.form_fields.clone_from(&raster.form_fields);
-                    self.source_blob = Some((raster.source_hash.clone(), raster.source_len));
+                    self.source_blob = Some(raster.source_bytes.clone());
                     self.existing_request = None;
                     self.reader_markup_hidden = false;
                     self.form_values.clear();
@@ -5823,7 +5821,7 @@ impl PdfApp {
         let pinned = self
             .record_source
             .as_ref()
-            .and_then(|source| Some((source, self.content.read(&source.hash)?)));
+            .and_then(|source| Some((source, source.bytes(&self.content)?)));
         let (file, document) = match (pinned, self.source_path.as_deref()) {
             (Some((source, bytes)), _) => (source.name.clone(), engine.open_bytes(&bytes)),
             (None, Some(path)) => (path.display().to_string(), engine.open_path(path)),

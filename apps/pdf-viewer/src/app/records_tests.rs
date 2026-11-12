@@ -420,14 +420,14 @@ fn exports_are_deterministic_and_carry_page_operations() {
         let pinned = PdfMarkup::of(&state.doc)
             .pinned_source()
             .expect("source pinned");
-        let (pinned, len) = (pinned.hash, pinned.len);
+        let pinned = pinned.hash();
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(pinned, tilo_content::hash_bytes(&bytes));
-        assert_eq!(len, bytes.len() as u64);
         assert!(
             matches!(
                 PdfMarkup::of(&state.doc).source,
-                ui::tilo_resource::Bytes::Blob { len: stored, .. } if stored == len
+                ui::tilo_resource::Bytes::Blob { len: stored, .. }
+                    if stored == bytes.len() as u64
             ),
             "the record references the bytes as a blob"
         );

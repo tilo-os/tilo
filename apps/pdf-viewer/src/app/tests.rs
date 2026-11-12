@@ -144,8 +144,7 @@ fn a_pinned_pdf_reads_and_is_seen_from_the_content_store_without_a_file() {
         content_import::NO_PDF
     );
     app.record_source = Some(crate::markup::PinnedSource {
-        hash,
-        len: u64::try_from(bytes.len()).unwrap(),
+        source: ui::tilo_resource::Bytes::kept_as(&bytes, &hash),
         name: "report.pdf".into(),
     });
     let read = app.read_text(None, Some(1)).expect("the pinned PDF reads");
@@ -174,7 +173,11 @@ fn a_pinned_pdf_reads_and_is_seen_from_the_content_store_without_a_file() {
     assert!(picture.starts_with(b"\x89PNG"));
     assert!(app.look_page(0, None).is_err());
     assert!(app.look_page(1, Some(4000)).is_err());
-    app.record_source.as_mut().unwrap().hash = "0".repeat(64);
+    app.record_source.as_mut().unwrap().source = ui::tilo_resource::Bytes::Blob {
+        hash: [0; 32],
+        len: u64::try_from(bytes.len()).unwrap(),
+        sealed: None,
+    };
     assert_eq!(
         app.read_text(None, None).unwrap_err(),
         "report.pdf is not on this device yet"
@@ -194,8 +197,7 @@ fn a_shared_document_not_on_this_device_opens_once_it_arrives() {
     let content = RecordContent::store(ContentStore::memory(), std::sync::Arc::clone(&lane));
     let mut app = PdfApp::empty_with_content(content);
     app.record_source = Some(crate::markup::PinnedSource {
-        hash: hash.clone(),
-        len: u64::try_from(bytes.len()).unwrap(),
+        source: ui::tilo_resource::Bytes::kept_as(&bytes, &hash),
         name: "shared.pdf".into(),
     });
     let title = |app: &PdfApp| app.source_wait_text().map(|(title, ..)| title);
@@ -239,8 +241,11 @@ fn a_shared_document_not_on_this_device_opens_once_it_arrives() {
 fn a_file_for_another_window_says_where_it_opens() {
     let mut app = PdfApp::empty_with_content(ContentStore::memory());
     app.record_source = Some(crate::markup::PinnedSource {
-        hash: "0".repeat(64),
-        len: 1,
+        source: ui::tilo_resource::Bytes::Blob {
+            hash: [0; 32],
+            len: 1,
+            sealed: None,
+        },
         name: "shared.pdf".into(),
     });
     assert_eq!(
@@ -387,8 +392,10 @@ fn each_document_keeps_its_markup_in_a_record_of_its_own() {
         assert_eq!(
             PdfMarkup::of(&st.doc)
                 .pinned_source()
-                .map(|source| source.hash),
-            app.source_blob.as_ref().map(|(hash, _)| hash.clone()),
+                .map(|source| source.hash()),
+            app.source_blob
+                .as_ref()
+                .map(|source| hex::encode(source.hash())),
             "the window's record now marks up the chosen document"
         );
     }
@@ -2858,8 +2865,8 @@ pub(super) fn settle_record(app: &mut PdfApp, st: &mut ui::State) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         app.sync_settled(&mut st.doc, &st.root);
-        let adopted = app.source_blob.as_ref().is_some_and(|(hash, _)| {
-            PdfMarkup::of(&st.doc).imported_source() == Some(hash.as_str())
+        let adopted = app.source_blob.as_ref().is_some_and(|source| {
+            PdfMarkup::of(&st.doc).imported_source() == Some(hex::encode(source.hash()).as_str())
         });
         if !app.seed_pending && adopted {
             return;

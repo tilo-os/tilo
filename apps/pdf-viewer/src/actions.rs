@@ -416,8 +416,8 @@ pub fn set_free_text_box_user_action(
     ]))
 }
 
-pub fn pin_source_action(hash: &str, len: u64, name: &str) -> Invoke<PdfMarkup> {
-    PdfMarkup::PIN_SOURCE.with((hash.to_owned(), len, name.to_owned()))
+pub fn pin_source_action(source: &ui::tilo_resource::Bytes, name: &str) -> Invoke<PdfMarkup> {
+    PdfMarkup::PIN_SOURCE.with((source.clone(), name.to_owned()))
 }
 
 /// Record the reader's place as the resume hint of the open document.

@@ -2,13 +2,13 @@
 //! which has no files and no picker, gives a markup record its document.
 //!
 //! The record names its document the way a launch on a file does: by
-//! pinning the bytes' content hash as its source ([`PdfMarkup::pin_source`]).
-//! The bytes stay in the content store; only the hash, size and name enter
-//! the record, so every replica reads the same document through its own
-//! window's store.
+//! pinning the bytes as its source ([`PdfMarkup::pin_source`]). The bytes
+//! stay in the content store; the reference that opens them and the name
+//! enter the record, so every replica reads the same document through its
+//! own window's store.
 
 use ui::framework::EffectCx;
-use ui::tilo_resource::Invoke;
+use ui::tilo_resource::{Bytes, Invoke};
 
 use super::PdfApp;
 use crate::markup::PdfMarkup;
@@ -20,18 +20,17 @@ pub(super) const NO_PDF: &str =
 /// The name a PDF opened from content without one is shown under.
 const UNNAMED: &str = "Document.pdf";
 
-/// The content hash `address` names: a `tilo.content:<hash>` address or the
-/// bare hash, lowercased.
-fn content_hash(address: &str) -> Result<String, String> {
+/// The content reference `address` names: a `tilo.content:<reference>`
+/// address or the bare reference, as it is (a reference's key is
+/// case-sensitive).
+fn content_reference(address: &str) -> Result<String, String> {
     let address = address.trim();
-    let hash = ui::tilo_actions::content_hash(address)
-        .unwrap_or(address)
-        .to_ascii_lowercase();
-    if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        Ok(hash)
+    let reference = ui::tilo_actions::content_hash(address).unwrap_or(address);
+    if tilo_content::valid_reference(reference) {
+        Ok(reference.to_owned())
     } else {
         Err(format!(
-            "`{address}` names no content: give the PDF's `tilo.content:<hash>`"
+            "`{address}` names no content: give the PDF's `tilo.content:<reference>`"
         ))
     }
 }
@@ -52,10 +51,17 @@ impl PdfApp {
         name: Option<&str>,
         cx: &EffectCx<PdfMarkup>,
     ) -> Result<serde_json::Value, String> {
-        let hash = content_hash(address)?;
+        let reference = content_reference(address)?;
+        let bytes = self
+            .content
+            .read(&reference)
+            .ok_or_else(|| format!("content `{reference}` is not in this workspace's store"))?;
+        // The bytes themselves name the document: the reference that opens
+        // them may differ between devices.
+        let digest = tilo_content::hash_bytes(&bytes);
         let held = cx.live().get().pinned_source();
         if let Some(held) = &held
-            && held.hash != hash
+            && held.hash() != digest
         {
             let name = if held.name.is_empty() {
                 "another PDF"
@@ -66,37 +72,36 @@ impl PdfApp {
                 "this record already marks up {name}: open the PDF in a record of its own"
             ));
         }
-        let bytes = self
-            .content
-            .read(&hash)
-            .ok_or_else(|| format!("content `{hash}` is not in this workspace's store"))?;
         // A Word file sent under a PDF's name: say what opens it, rather than
         // that this reader does not.
         if tilo_content::document_format(&bytes).is_none_or(|format| format.extension != "pdf")
             && let Some(what) = tilo_content::opened_by(&bytes)
         {
-            return Err(format!("content `{hash}` is not a PDF: {what}"));
+            return Err(format!("content `{reference}` is not a PDF: {what}"));
         }
         // The portable engine is memory-safe and runs in process, as an
         // agent's confined window needs.
         let document = tilo_pdf::Engine::portable()
             .open_bytes(&bytes)
-            .map_err(|error| format!("content `{hash}` is not a PDF this reader opens: {error}"))?;
+            .map_err(|error| {
+                format!("content `{reference}` is not a PDF this reader opens: {error}")
+            })?;
         let pages = document.page_count();
         let name = if let Some(held) = &held {
             held.name.clone()
         } else {
             let name = name.map_or("", str::trim);
             let name = if name.is_empty() { UNNAMED } else { name };
-            let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            // The bytes are already where the workspace keeps content under
+            // this reference: the record pins exactly that, sealed as it is.
             cx.submit(Invoke::group([
-                crate::actions::pin_source_action(&hash, len, name),
+                crate::actions::pin_source_action(&Bytes::kept_as(&bytes, &reference), name),
                 PdfMarkup::START_PAGE_PLAN.with(pages),
             ]));
             name.to_owned()
         };
         Ok(serde_json::json!({
-            "content": ui::tilo_actions::content_resource(&hash),
+            "content": ui::tilo_actions::content_resource(&reference),
             "name": name,
             "page_count": pages,
             "already_held": held.is_some(),
@@ -145,7 +150,7 @@ mod tests {
             .state()
             .pinned_source()
             .expect("the record pins the PDF");
-        assert_eq!(pinned.hash, hash);
+        assert_eq!(pinned.hash(), hash);
         assert_eq!(pinned.name, "report.pdf");
         assert_eq!(
             app.state().page_plan().len(),
@@ -189,7 +194,7 @@ mod tests {
             .expect_err("another PDF is refused");
         assert!(refused.to_string().contains("Document.pdf"), "{refused}");
         assert_eq!(
-            app.state().pinned_source().map(|source| source.hash),
+            app.state().pinned_source().map(|source| source.hash()),
             Some(first)
         );
     }
@@ -250,5 +255,73 @@ mod tests {
         );
         app.settle();
         assert!(app.state().pinned_source().is_none());
+    }
+
+    /// A PDF the workspace keeps sealed pins the reference that opens it: the
+    /// store holds ciphertext, the record's markup is made against those bytes,
+    /// and a second member whose device holds only the ciphertext reads the same
+    /// document. A record pinned by a plain hash, as earlier versions pinned it,
+    /// still reads.
+    #[test]
+    fn a_sealed_pdf_is_pinned_by_the_reference_that_opens_it() {
+        use super::{PdfApp, PdfMarkup};
+        use ui::tilo_resource::{Bytes, Replica};
+
+        let bytes = fixture("sample.pdf");
+        let writer = tilo_content::ContentStore::memory_in_workspace().sealing();
+        let reference = writer.put(&bytes).expect("the PDF is kept");
+        assert!(tilo_content::is_sealed(&reference), "{reference}");
+        assert!(
+            !writer.has(&tilo_content::hash_bytes(&bytes)),
+            "the store holds no plaintext"
+        );
+
+        // The record pinned in the workspace: the reference, as it was kept.
+        let mut replica = Replica::<PdfMarkup>::new();
+        replica
+            .apply(
+                PdfMarkup::PIN_SOURCE
+                    .with((Bytes::kept_as(&bytes, &reference), "report.pdf".to_owned())),
+            )
+            .expect("the record pins the PDF");
+        let pinned = PdfMarkup::of(replica.doc())
+            .pinned_source()
+            .expect("the record's source");
+        assert_eq!(pinned.hash(), tilo_content::hash_bytes(&bytes));
+
+        let mut app = PdfApp::empty_with_content(writer.clone());
+        app.record_source = Some(pinned.clone());
+        let read = app
+            .read_text(None, Some(1))
+            .expect("the pinned PDF reads on the device it was kept on");
+        assert_eq!(read["file"], "report.pdf");
+
+        // A member's device holds the ciphertext alone, under its address, and
+        // opens the document by the reference the record names.
+        let address = tilo_content::content_address(&reference).expect("a reference");
+        let carried = writer.read(&address).expect("the ciphertext");
+        assert_ne!(carried, bytes, "the ciphertext is not the PDF");
+        let member = tilo_content::ContentStore::memory_in_workspace();
+        member.put_public(&carried).expect("kept as carried");
+        let mut reader = PdfApp::empty_with_content(member);
+        reader.record_source = Some(pinned);
+        let read = reader
+            .read_text(None, Some(1))
+            .expect("the member opens it");
+        assert_eq!(read["file"], "report.pdf");
+
+        // A source pinned by its plain hash still reads where the bytes were
+        // kept so.
+        let plain = tilo_content::ContentStore::memory_in_workspace();
+        let hash = plain.put(&bytes).expect("kept in the clear");
+        let mut earlier = PdfApp::empty_with_content(plain);
+        earlier.record_source = Some(crate::markup::PinnedSource {
+            source: Bytes::kept_as(&bytes, &hash),
+            name: "report.pdf".into(),
+        });
+        let read = earlier
+            .read_text(None, Some(1))
+            .expect("an earlier pin reads");
+        assert_eq!(read["file"], "report.pdf");
     }
 }
