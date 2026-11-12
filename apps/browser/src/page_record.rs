@@ -199,10 +199,28 @@ pub struct RecordPage {
     pub dropped: u64,
 }
 
+impl PageRecord {
+    /// What the record holds: the actions that operated Browser's tabs, by tab and place, and
+    /// the tabs that have actions here.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it. A window reads one tab's actions a part at a time
+    /// ([`Self::page`]).
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "browser.page-record",
     label = "Page record",
-    params = page_actions
+    params = page_actions,
+    read_content = PageRecord::read_document
 )]
 impl PageRecord {
     /// Set down a page action.
