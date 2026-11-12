@@ -508,7 +508,7 @@ impl NativeWorkspaceOwner {
                     description,
                     routes,
                 };
-                let ack = self.signed_turn(signer, |key| {
+                let ack = crate::owner::write::signed_turn(signer, |key| {
                     self.capture_checkpoint_bound(
                         workspace,
                         &request.caller,
@@ -521,7 +521,7 @@ impl NativeWorkspaceOwner {
                 serde_json::to_value(ack).map_err(|e| e.to_string())
             }
             CheckpointCommand::NameBind { name, id } => {
-                let ack = self.signed_turn(signer, |key| {
+                let ack = crate::owner::write::signed_turn(signer, |key| {
                     self.bind_checkpoint_name_bound(
                         workspace,
                         &request.caller,
@@ -557,7 +557,7 @@ impl NativeWorkspaceOwner {
         capture: CheckpointCapture<'_>,
         now: SystemTime,
     ) -> Result<CheckpointAcknowledgement, String> {
-        self.signed_turn(signer, |key| {
+        crate::owner::write::signed_turn(signer, |key| {
             self.capture_checkpoint_bound(workspace, caller, key, capture, now, None)
         })
     }
@@ -700,7 +700,7 @@ impl NativeWorkspaceOwner {
         id: uuid::Uuid,
     ) -> Result<(), String> {
         let now = SystemTime::now();
-        self.signed_turn(signer, |key| {
+        crate::owner::write::signed_turn(signer, |key| {
             self.bind_checkpoint_name_bound(workspace, caller, key, (name, id), now, None)
         })
         .map(|_| ())

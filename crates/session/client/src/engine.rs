@@ -1322,7 +1322,7 @@ impl Engine {
         let issued = self.owner.issue_invitation(
             room,
             &identity.device_cert,
-            IssueInvitationRequest {
+            &IssueInvitationRequest {
                 request_id,
                 role,
                 recipient_user_public_key,
@@ -1330,7 +1330,7 @@ impl Engine {
                 expires_at_ns,
                 inviter_name: None,
             },
-            vec![hint],
+            &[hint],
             identity.signer.as_ref(),
             now,
         )?;
@@ -1609,7 +1609,7 @@ impl Engine {
             name,
             &identity.device_cert,
             identity.signer.as_ref(),
-            host_hint,
+            host_hint.as_ref(),
             SystemTime::now(),
         ) {
             Ok(_) => self.bind(slot, workspace),

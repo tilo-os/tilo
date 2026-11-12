@@ -157,7 +157,7 @@ fn a_workspace_founded_before_its_record_named_its_host_is_named_once() {
             "Founders",
             &device,
             &key,
-            Some(testing::own_host_hint_here(workspace, &device, &key)),
+            Some(&testing::own_host_hint_here(workspace, &device, &key)),
             now,
         )
         .unwrap();
@@ -246,7 +246,7 @@ fn a_workspace_is_founded_by_its_own_device_with_a_name() {
     let hint = testing::own_host_hint_here(unnamed, &device, &key);
     assert_eq!(
         owner
-            .create_workspace(unnamed, "  ", &device, &key, Some(hint), now)
+            .create_workspace(unnamed, "  ", &device, &key, Some(&hint), now)
             .unwrap_err(),
         "workspace name must contain 1–80 characters"
     );
@@ -254,7 +254,7 @@ fn a_workspace_is_founded_by_its_own_device_with_a_name() {
     let hint = testing::own_host_hint_here(workspace, &device, &key);
     assert_eq!(
         owner
-            .create_workspace(workspace, "Founders", &device, &other, Some(hint), now)
+            .create_workspace(workspace, "Founders", &device, &other, Some(&hint), now)
             .unwrap_err(),
         "a workspace is founded with its own device's key"
     );

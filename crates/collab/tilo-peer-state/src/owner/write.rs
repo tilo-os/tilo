@@ -67,6 +67,39 @@ impl Signatures {
 
 const UNSIGNED: &str = "the device signer signs this change outside the owner's turn";
 
+/// Run `turn`, a change of this device that signs as it goes, with `signer`, this device's
+/// custody of its key: a run that asks for a signature `signer` has not given yet commits
+/// nothing ([`Signatures::settled`]), `signer` signs what it asked for outside the owner's
+/// turn, and the turn runs again, until one run signed everything it wrote. A run sees what
+/// the runs before it saw, or asks again for what changed. `signer` answers at once, as the
+/// custody of every device that holds an owner does ([`collab_types::signer::sign_now`]).
+///
+/// # Errors
+/// `turn` refused, signing failed, or the turn still asked for signatures after its last run.
+pub(crate) fn signed_turn<T>(
+    signer: &dyn collab_types::signer::DeviceSigner,
+    mut turn: impl FnMut(&Signatures) -> Result<T, String>,
+) -> Result<T, String> {
+    let signatures = Signatures {
+        device: signer.device_public_key(),
+        signed: parking_lot::Mutex::default(),
+        wanted: parking_lot::Mutex::default(),
+    };
+    for _ in 0..SIGNED_RUNS {
+        let ran = turn(&signatures);
+        let wanted = std::mem::take(&mut *signatures.wanted.lock());
+        if wanted.is_empty() {
+            return ran;
+        }
+        for message in wanted {
+            let signature = collab_types::signer::sign_now(signer, message.clone())
+                .map_err(|error| error.to_string())?;
+            signatures.signed.lock().insert(message, signature);
+        }
+    }
+    Err(UNSIGNED.into())
+}
+
 impl collab_types::signer::DeviceSigner for Signatures {
     fn device_public_key(&self) -> [u8; 32] {
         self.device
@@ -83,40 +116,6 @@ impl collab_types::signer::DeviceSigner for Signatures {
 }
 
 impl NativeWorkspaceOwner {
-    /// Run `turn`, a change of this device that signs as it goes, with `signer`, this device's
-    /// custody of its key: a run that asks for a signature `signer` has not given yet commits
-    /// nothing ([`Signatures::settled`]), `signer` signs what it asked for outside the owner's
-    /// turn, and the turn runs again, until one run signed everything it wrote. A run sees what
-    /// the runs before it saw, or asks again for what changed. `signer` answers at once, as the
-    /// custody of every device that holds an owner does ([`collab_types::signer::sign_now`]).
-    ///
-    /// # Errors
-    /// `turn` refused, signing failed, or the turn still asked for signatures after its last run.
-    pub(crate) fn signed_turn<T>(
-        &self,
-        signer: &dyn collab_types::signer::DeviceSigner,
-        mut turn: impl FnMut(&Signatures) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let signatures = Signatures {
-            device: signer.device_public_key(),
-            signed: parking_lot::Mutex::default(),
-            wanted: parking_lot::Mutex::default(),
-        };
-        for _ in 0..SIGNED_RUNS {
-            let ran = turn(&signatures);
-            let wanted = std::mem::take(&mut *signatures.wanted.lock());
-            if wanted.is_empty() {
-                return ran;
-            }
-            for message in wanted {
-                let signature = collab_types::signer::sign_now(signer, message.clone())
-                    .map_err(|error| error.to_string())?;
-                signatures.signed.lock().insert(message, signature);
-            }
-        }
-        Err(UNSIGNED.into())
-    }
-
     /// Keep this device's verdicts on the document writes `heard` names, each with what
     /// [`Self::receive`] answered for it, in its own slice of `workspace`, signed by `signer`: a
     /// refused write reaches its author, as the next sync carries the verdict back, and a write
@@ -139,7 +138,7 @@ impl NativeWorkspaceOwner {
         if heard.is_empty() {
             return Ok(());
         }
-        self.signed_turn(signer, |signed| {
+        crate::owner::write::signed_turn(signer, |signed| {
             let _turn = self.0.mutation.lock();
             let candidate = self.view(workspace)?;
             let device = candidate.device().clone();

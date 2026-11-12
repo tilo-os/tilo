@@ -290,14 +290,14 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         administrator: &DeviceCert,
-        request: IssueInvitationRequest,
-        transport: Vec<TransportHint>,
+        request: &IssueInvitationRequest,
+        transport: &[TransportHint],
         signer: &dyn collab_types::signer::DeviceSigner,
         now: SystemTime,
     ) -> Result<IssuedInvitation, String> {
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
-        self.signed_turn(signer, |key| {
+        crate::owner::write::signed_turn(signer, |key| {
             let _turn = self.0.mutation.lock();
             self.change_record(workspace, |view, record| {
                 if key.device_public_key() != record.device.device_public_key {
@@ -321,7 +321,7 @@ impl NativeWorkspaceOwner {
                             &governed,
                             administrator,
                             request.clone(),
-                            transport.clone(),
+                            transport.to_vec(),
                             Signer { key, nonce },
                             crate::owner::enrollment::ns(now)?,
                         )

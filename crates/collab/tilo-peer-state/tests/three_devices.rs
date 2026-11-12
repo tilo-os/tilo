@@ -277,7 +277,7 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
         .issue_invitation(
             workspace,
             &cert_b,
-            IssueInvitationRequest {
+            &IssueInvitationRequest {
                 request_id: [3; 32],
                 role: MemberRole::Editor,
                 recipient_user_public_key: Some(cert_c.user_public_key),
@@ -288,7 +288,7 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
                     .unwrap(),
                 inviter_name: None,
             },
-            vec![hint(&cert_b, &key_b)],
+            &[hint(&cert_b, &key_b)],
             &key_b,
             now,
         )
@@ -477,7 +477,7 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
         .issue_invitation(
             workspace,
             &cert_b,
-            IssueInvitationRequest {
+            &IssueInvitationRequest {
                 request_id: [13; 32],
                 role: MemberRole::Viewer,
                 recipient_user_public_key: None,
@@ -488,7 +488,7 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
                     .unwrap(),
                 inviter_name: None,
             },
-            vec![hint(&cert_b, &key_b)],
+            &[hint(&cert_b, &key_b)],
             &key_b,
             now,
         )

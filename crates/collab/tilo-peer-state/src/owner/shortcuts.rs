@@ -27,7 +27,7 @@ impl NativeWorkspaceOwner {
         };
         let change: tilo_automation::ShortcutChange =
             serde_json::from_slice(change).map_err(|error| error.to_string())?;
-        self.signed_turn(signer, |key| {
+        crate::owner::write::signed_turn(signer, |key| {
             let _turn = self.0.mutation.lock();
             let candidate = self.view(workspace)?;
             if candidate.device() != caller || key.device_public_key() != caller.device_public_key {

@@ -38,7 +38,7 @@ impl NativeWorkspaceOwner {
         else {
             return Err("unsupported native membership owner commit family".into());
         };
-        self.signed_turn(signer, |key| {
+        crate::owner::write::signed_turn(signer, |key| {
             let _turn = self.0.mutation.lock();
             let candidate = self.view(workspace)?;
             if key.device_public_key() != candidate.device().device_public_key {

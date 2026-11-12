@@ -1102,7 +1102,7 @@ impl NativeWorkspaceOwner {
         signer: &dyn collab_types::signer::DeviceSigner,
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
-        self.signed_turn(signer, |signed| {
+        crate::owner::write::signed_turn(signer, |signed| {
             let _turn = self.0.mutation.lock();
             let candidate = self.view(workspace)?;
             if signed.device_public_key() != candidate.device().device_public_key {
@@ -1118,8 +1118,10 @@ impl NativeWorkspaceOwner {
                     let messages = next.publication_mut().bootstrap_messages(signed, now)?;
                     signed.settled()?;
                     *live = next;
+                    drop(live);
                     return Ok(messages);
                 }
+                drop(live);
             }
             let (messages, stored) = candidate.change(|live, stored| {
                 let generation = stored

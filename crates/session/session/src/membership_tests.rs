@@ -1572,7 +1572,7 @@ fn invite_from_this_device(
         .issue_invitation(
             workspace_id,
             cert,
-            IssueInvitationRequest {
+            &IssueInvitationRequest {
                 request_id: [0x71; 32],
                 role: MemberRole::Editor,
                 recipient_user_public_key: None,
@@ -1582,7 +1582,7 @@ fn invite_from_this_device(
                     .expect("an expiry"),
                 inviter_name: None,
             },
-            Vec::new(),
+            &[],
             key,
             now,
         )

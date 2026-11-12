@@ -43,7 +43,7 @@ fn invitation(
         .issue_invitation(
             workspace,
             host_cert,
-            tilo_peer_state::join::invitations::IssueInvitationRequest {
+            &tilo_peer_state::join::invitations::IssueInvitationRequest {
                 request_id,
                 role: tilo_peer_state::join::MemberRole::Editor,
                 recipient_user_public_key: None,
@@ -51,7 +51,7 @@ fn invitation(
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
                 inviter_name: None,
             },
-            vec![testing::own_host_hint_here(workspace, host_cert, host_key)],
+            &[testing::own_host_hint_here(workspace, host_cert, host_key)],
             host_key,
             SystemTime::now(),
         )

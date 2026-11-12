@@ -38,7 +38,7 @@ impl NativeWorkspaceOwner {
         name: &str,
         device: &DeviceCert,
         signer: &dyn DeviceSigner,
-        host_hint: Option<TransportHint>,
+        host_hint: Option<&TransportHint>,
         now: SystemTime,
     ) -> Result<WorkspaceId, String> {
         let name = valid_workspace_name(name)?;
@@ -51,7 +51,7 @@ impl NativeWorkspaceOwner {
         if workspace.is_nil() {
             return Err("a founded workspace has a canonical workspace".into());
         }
-        self.signed_turn(signer, |key| {
+        crate::owner::write::signed_turn(signer, |key| {
             let _turn = self.0.mutation.lock();
             let id = workspace;
             if self.0.authority.read().workspaces.contains_key(&id) {
@@ -106,7 +106,7 @@ impl NativeWorkspaceOwner {
                     // own host is reached is what `host_hint` says.
                     enrollment: None,
                     vouched: None,
-                    host_hint: host_hint.clone(),
+                    host_hint: host_hint.cloned(),
                     peer: peer.durable()?,
                     generation: 1,
                     continuity: 0,

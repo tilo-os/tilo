@@ -363,7 +363,7 @@ fn invitation(
         .issue_invitation(
             workspace,
             administrator,
-            tilo_peer_state::join::invitations::IssueInvitationRequest {
+            &tilo_peer_state::join::invitations::IssueInvitationRequest {
                 request_id,
                 role: tilo_peer_state::join::MemberRole::Editor,
                 recipient_user_public_key: None,
@@ -371,7 +371,7 @@ fn invitation(
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
                 inviter_name: None,
             },
-            vec![transport],
+            &[transport],
             key,
             SystemTime::now(),
         )
@@ -453,7 +453,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         "Hosted",
         &host_cert,
         &host_key,
-        Some(route.clone()),
+        Some(&route),
         now,
     )
     .expect("the workspace is founded here");
@@ -944,7 +944,7 @@ async fn what_a_device_commits_to_the_workspace_it_hosts_reaches_its_members_liv
         "Hosted",
         &host_cert,
         &host_key,
-        Some(route.clone()),
+        Some(&route),
         now,
     )
     .expect("the workspace is founded here");
