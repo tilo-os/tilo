@@ -203,6 +203,15 @@ impl ui_core::component_lifecycle::WindowActivation for ResourceRoot {
     }
 }
 
+impl ui_core::component_lifecycle::WindowTitle for ResourceRoot {
+    /// The app's own view names what its window shows: the page, the record, the place it is at.
+    /// A view that names nothing lets the window go by its app's name.
+    fn window_title(&self) -> Option<&str> {
+        let view = app_view_in(self.content.as_ref())?;
+        ui_core::component_lifecycle::window_title(view)
+    }
+}
+
 /// The operation type of the framework's `open` view: show the item at an
 /// anchor, as picking a search hit does.
 pub(crate) const OPEN_TYPE: &str = tilo_actions::remote::APPLICATION_OPEN_TYPE;
@@ -1523,7 +1532,7 @@ impl SearchCache {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl RootModel for ResourceRoot {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle; inner = content);
 
     fn view(&self) -> &(dyn Widget + 'static) {
         match &self.unreadable {

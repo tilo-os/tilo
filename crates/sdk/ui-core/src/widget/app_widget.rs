@@ -1024,6 +1024,7 @@ mod component_adapter {
             dyn crate::view::capability::ViewState,
             dyn crate::component_lifecycle::ComponentLifecycle,
             dyn crate::component_lifecycle::WindowActivation,
+            dyn crate::component_lifecycle::WindowTitle,
             dyn crate::undo::UndoPoints,
             dyn crate::widget::ResourceOperations
         );
@@ -1770,6 +1771,15 @@ mod component_adapter {
         fn take_window_activation_intent(&self) -> bool {
             self.in_root(crate::component_lifecycle::take_window_activation_intent)
                 .unwrap_or_default()
+        }
+    }
+
+    /// What the component the window shows says it shows, for the window's own title: the app's
+    /// root answers it, so a window whose content names the page it is at is named by that.
+    impl crate::component_lifecycle::WindowTitle for BoundAppWidget {
+        fn window_title(&self) -> Option<&str> {
+            self.in_root(crate::component_lifecycle::window_title)
+                .flatten()
         }
     }
 

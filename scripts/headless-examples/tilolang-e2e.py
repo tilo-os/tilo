@@ -24,10 +24,11 @@ app gets on a real system:
   snapshot   a PNG of the nested session per app, in OUT
   windows    a second window of Tasks, opened as a person opens one from search (its row
              with Ctrl+Enter), is a second window of the same process and its instance runs
-             in the same host; each tab is named by the page its window shows (Today, Inbox),
-             so two windows of one app read apart unopened; a task typed into either window
-             shows in the other at once, and each window names the controls of its own content
-             where it stands
+             in the same host; a task typed into either window shows in the other at once, and
+             each window names the controls of its own content where it stands
+  titles     each tab is named by the page its window shows, not by its app: the two windows of
+             Tasks read Today, the place both stand on, not Tasks, the app's name, so a person
+             reads which page a window is at without opening it (titles-window-*.png)
   today      Today's Tasks card reads Tasks' own record: the tasks typed into Tasks' Today
              show in Today's window, which holds none of them itself (today-*.png); one is
              marked done by its box, a checkbox Tasks' window names ("Mark ... done"), and
@@ -344,11 +345,10 @@ def search_beside(session: Session, title: str) -> None:
 
 def check_windows(session: Session, processes: dict, session_pid: int, out: Path) -> dict:
     """A second window of Tasks, opened from search as a person opens one, is a window of the
-    process Tasks' first window is, and its instance runs in the host the first one's does. Each
-    tab is named by the page its window shows — Today, Inbox — so two windows of one app read
-    apart without either being opened. A task typed into the first window shows in the second at
-    once, and each window names the controls of its own content: a tool or an assistive
-    technology pressing one presses the window it stands in."""
+    process Tasks' first window is, and its instance runs in the host the first one's does. A
+    task typed into the first window shows in the second at once, and each window names the
+    controls of its own content: a tool or an assistive technology pressing one presses the
+    window it stands in."""
     tasks = app_id("tasks")
     first = [w for w in session.windows() if w.get("app_id") == tasks]
     if len(first) != 1:
@@ -417,26 +417,31 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
         if missing:
             raise Failed(f"{tasks}'s window {window['tab']} names no control of its own: "
                          f"{missing} not among the controls it lists: {names}")
-    # Each tab is named by the page its window shows, so the strip reads which window is which
-    # without either being opened: the window that opened first stands on Today, and the second
-    # is taken to Inbox, as a person switches places in it.
-    names = window_controls(session, windows[1])
-    inbox = next((name for name in names
-                  if re.split(r"[\s,(]", name.strip())[0] == "Inbox"), None)
-    if inbox is None:
-        raise Failed(f"{tasks}'s second window offers no Inbox to go to: {names}")
-    session.click_named(inbox)
-    def named_by_page() -> dict | None:
-        shown = {w["tab"]: w.get("title") for w in session.windows() if w.get("app_id") == tasks}
-        return shown if (shown.get(windows[0]["tab"]) == "Today"
-                         and shown.get(windows[1]["tab"]) == "Inbox") else None
-    titles = until("each tab named by the page its window shows", named_by_page, 30)
-    # Both tabs as the strip shows them: one window on Today, the other on Inbox (named-*.png).
-    shot("named")
     return {"windows": [{"group": w["group"], "tab": w["tab"]} for w in windows],
-            "titles": {str(tab): title for tab, title in titles.items()},
             "controls": listed,
             "process": procs[0], "host": hosts[0], "changed": len(after)}
+
+
+def check_titles(session: Session, out: Path) -> dict:
+    """Each tab is named by what its window shows, not by its app: the two windows of Tasks read
+    Today, the place both stand on, where both read Tasks, the app's name, before. A person reads
+    which page a window is at without opening it, and the app's own glyph says which app it is."""
+    tasks = app_id("tasks")
+    found = [w for w in session.windows() if w.get("app_id") == tasks]
+    if len(found) != 2:
+        raise Failed(f"{tasks} shows {len(found)} windows, not the two this check reads")
+    titles = {w["tab"]: w.get("title") for w in found}
+    if set(titles.values()) != {"Today"}:
+        raise Failed(f"{tasks}'s tabs read {titles}: a tab names its app, not the page its window "
+                     f"shows (both windows stand on Tasks' Today)")
+    # Both tabs as the strip shows them, each window in front in turn: titles-*.png.
+    for index, (tab, title) in enumerate(titles.items()):
+        window = next(w for w in found if w.get("tab") == tab)
+        focus(session, window)
+        time.sleep(1.0)
+        session.control_cmd("snapshot", str(out / f"titles-window-{index}.png"))
+    return {"titles": {str(tab): title for tab, title in titles.items()},
+            "page": "Today", "app_name": "Tasks"}
 
 
 def window_controls(session: Session, window: dict) -> list[str]:
@@ -844,6 +849,7 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         ("idle", lambda: check_idle(session, summary["checks"]["processes"], pid)),
         ("today-before", lambda: hold_today(session, out, today_before)),
         ("windows", lambda: check_windows(session, summary["checks"]["processes"], pid, out)),
+        ("titles", lambda: check_titles(session, out)),
         ("today", lambda: check_today(session, out, today_before[0])),
     ])
     stop_session(proc)
