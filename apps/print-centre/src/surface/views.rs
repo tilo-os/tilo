@@ -29,22 +29,22 @@ use crate::resource::{
 };
 use ui::tilo_resource::Atom;
 
-fn text(s: &str, role: TextRole) -> El {
-    Box::new(Text::new(s).with_role(role))
+fn text(s: impl AsRef<str>, role: TextRole) -> El {
+    Box::new(Text::new(s.as_ref()).with_role(role))
 }
 
-fn copy(s: &str) -> El {
+fn copy(s: impl AsRef<str>) -> El {
     text(s, TextRole::Body)
 }
 
-fn muted(s: &str) -> El {
-    Box::new(Text::new(s).with_role(TextRole::Caption).dimmed())
+fn muted(s: impl AsRef<str>) -> El {
+    Box::new(Text::new(s.as_ref()).with_role(TextRole::Caption).dimmed())
 }
 
 /// A button that sends `command` to the page controller.
-fn command_button(id: &str, label: &str, tx: &Door, command: UiCommand) -> Button {
+fn command_button(id: &str, label: impl AsRef<str>, tx: &Door, command: UiCommand) -> Button {
     let tx = tx.clone();
-    Button::new(id, label)
+    Button::new(id, label.as_ref())
         .with_enabled(tx.0.is_some())
         .control_size(ControlSize::Large)
         .on_effect(move || {
@@ -84,8 +84,8 @@ fn section(items: Vec<El>) -> El {
     Box::new(Section::new(items))
 }
 
-fn titled_section(title: &str, items: Vec<El>) -> El {
-    Box::new(Section::titled(title, items))
+fn titled_section(title: impl AsRef<str>, items: Vec<El>) -> El {
+    Box::new(Section::titled(title.as_ref(), items))
 }
 
 /// Space that, with the column's own gap on each side, separates two groups of
@@ -167,12 +167,25 @@ fn page_with_footer(body: Column, footer: Option<Actions>) -> El {
     Box::new(root)
 }
 
-/// "printers, documents or scanners"
-fn join_areas(areas: &[&str]) -> String {
-    match areas.split_last() {
-        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
-        Some((last, _)) => (*last).to_owned(),
-        None => String::new(),
+/// The notice's subject and detail for the areas that could not be read.
+fn unavailable_copy(areas: &[&str]) -> (&'static str, &'static str) {
+    match areas {
+        ["printers"] => (
+            "print-centre-unavailable-printers",
+            "print-centre-unavailable-printers-detail",
+        ),
+        ["documents"] => (
+            "print-centre-unavailable-documents",
+            "print-centre-unavailable-documents-detail",
+        ),
+        ["scanners"] => (
+            "print-centre-unavailable-scanners",
+            "print-centre-unavailable-scanners-detail",
+        ),
+        _ => (
+            "print-centre-unavailable-some",
+            "print-centre-unavailable-some-detail",
+        ),
     }
 }
 
@@ -181,25 +194,16 @@ pub(super) fn unavailable_notice(areas: &[&str], tx: &Door) -> Option<El> {
     if areas.is_empty() {
         return None;
     }
-    let subject = match areas {
-        ["printers"] => "Printers couldn't be checked",
-        ["documents"] => "Print jobs couldn't be checked",
-        ["scanners"] => "Scanners couldn't be checked",
-        _ => "Some device information couldn't be checked",
-    };
-    let detail = format!(
-        "Print Centre couldn't get {} right now. Your saved devices and documents have not been removed.",
-        join_areas(areas)
-    );
+    let (subject, detail) = unavailable_copy(areas);
     // Trying again is what resolves it, so the banner holds that action.
     Some(Box::new(
-        Banner::error(subject)
-            .with_message(detail)
+        Banner::error(CATALOG.t(subject))
+            .with_message(CATALOG.t(detail))
             .with_id("print-centre.service")
             .with_action(
                 command_button(
                     "print-centre.service.retry",
-                    "Try again",
+                    CATALOG.t("print-centre-try-again"),
                     tx,
                     UiCommand::Refresh,
                 )
@@ -210,7 +214,7 @@ pub(super) fn unavailable_notice(areas: &[&str], tx: &Door) -> Option<El> {
 
 pub(super) fn loading_view() -> El {
     page(column().push(section(vec![
-            copy("Looking for printers, scanners and unfinished documents."),
+            copy(CATALOG.t("print-centre-loading-detail")),
             Box::new(
                 ProgressBar::indeterminate()
                     .with_label(crate::locales::CATALOG.t("print-centre-loading")),
@@ -240,7 +244,7 @@ fn supply_gauge(level: f32) -> BarGauge {
 
 /// The measure of a supply: what it is called and how much is left, over a
 /// track that shows the whole scale.
-fn supply_meter(name: &str, level: f32) -> El {
+fn supply_meter(name: impl Into<String>, level: f32) -> El {
     let percent = (level.clamp(0.0, 1.0) * 100.0).round();
     Box::new(supply_gauge(level).with_label(name, format!("{percent}%")))
 }
@@ -251,10 +255,24 @@ fn job_progress(job: &os_actions::printing::PrintJob) -> El {
     let done = job.impressions_completed.unwrap_or(0).min(total);
     let percent = job.progress_percent().unwrap_or(0);
     let label = if matches!(job.state, Some(os_actions::printing::JobState::Processing)) {
-        format!("Page {} of {total}", done.saturating_add(1).min(total))
+        CATALOG.t_args(
+            "print-centre-page-progress",
+            &[
+                (
+                    "page",
+                    ArgValue::Number(done.saturating_add(1).min(total) as f64),
+                ),
+                ("total", ArgValue::Number(total as f64)),
+            ],
+        )
     } else {
-        let pages = if total == 1 { "page" } else { "pages" };
-        format!("{done} of {total} {pages}")
+        CATALOG.t_args(
+            "print-centre-pages-progress",
+            &[
+                ("done", ArgValue::Number(done as f64)),
+                ("total", ArgValue::Number(total as f64)),
+            ],
+        )
     };
     // Progress is neutral until the printer stops the document.
     let gauge = BarGauge::new(f32::from(percent) / 100.0).with_label(label, format!("{percent}%"));
@@ -272,15 +290,15 @@ fn job_progress(job: &os_actions::printing::PrintJob) -> El {
 
 fn live_job_card(job: &os_actions::printing::PrintJob, tx: &Door) -> El {
     let status = match job.state {
-        Some(os_actions::printing::JobState::Held) => "Waiting to print",
-        Some(os_actions::printing::JobState::Stopped) => "Needs attention",
-        _ => "Printing now",
+        Some(os_actions::printing::JobState::Held) => CATALOG.t("print-centre-job-waiting"),
+        Some(os_actions::printing::JobState::Stopped) => CATALOG.t("print-centre-job-attention"),
+        _ => CATALOG.t("print-centre-job-printing"),
     };
     let mut summary = bare_column()
         .push(copy(status))
-        .push(muted(&format!(
-            "Sent to {}",
-            display_name(&job.destination)
+        .push(muted(CATALOG.t_args(
+            "print-centre-sent-to",
+            &[("printer", ArgValue::Text(display_name(&job.destination)))],
         )))
         .push(job_progress(job));
     if let Some(reason) = job.state_reasons.first() {
@@ -290,11 +308,16 @@ fn live_job_card(job: &os_actions::printing::PrintJob, tx: &Door) -> El {
     let card = match actions(vec![
         destructive(command_button(
             "print-centre.job.cancel",
-            "Cancel",
+            CATALOG.t("print-centre-cancel"),
             tx,
             UiCommand::RequestCancel(job.id.clone()),
         )),
-        command_button("print-centre.queue", "Open queue", tx, UiCommand::Queue),
+        command_button(
+            "print-centre.queue",
+            CATALOG.t("print-centre-open-queue"),
+            tx,
+            UiCommand::Queue,
+        ),
     ]) {
         Some(footer) => card.with_footer(footer),
         None => card,
@@ -317,14 +340,14 @@ fn status_badge(queue: &os_actions::printing::PrinterQueue) -> El {
 /// A printer on the dashboard: the whole card opens its page.
 fn printer_card(queue: &os_actions::printing::PrinterQueue, tx: &Door) -> El {
     let supplies = if let Some((level, _)) = supply_level(queue) {
-        supply_meter("Lowest supply", level)
+        supply_meter(CATALOG.t("print-centre-lowest-supply"), level)
     } else {
-        muted("Supply levels unavailable")
+        muted(CATALOG.t("print-centre-supplies-unavailable"))
     };
     let detail = if queue.default {
-        "Preferred printer"
+        CATALOG.t("print-centre-preferred")
     } else {
-        "Available to your apps"
+        CATALOG.t("print-centre-available")
     };
     let card = Card::new(Box::new(
         bare_column()
@@ -349,7 +372,14 @@ fn printer_card(queue: &os_actions::printing::PrinterQueue, tx: &Door) -> El {
     }
 }
 
-fn tool_row(id: &str, icon: Icon, title: &str, detail: &str, tx: &Door, command: UiCommand) -> El {
+fn tool_row(
+    id: &str,
+    icon: Icon,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+    tx: &Door,
+    command: UiCommand,
+) -> El {
     let tx = tx.clone();
     Box::new(
         ListRow::new(id, title)
@@ -390,11 +420,11 @@ pub(super) fn live_view(snapshot: &Snapshot, tx: &Door) -> El {
     if snapshot.queues.is_ok() {
         items.push(if queues.is_empty() {
             section(vec![
-                copy("No printers added yet. Find one on your network to print from any app."),
+                copy(CATALOG.t("print-centre-no-printers")),
                 Box::new(
                     primary(command_button(
                         "print-centre.discover.empty",
-                        "Find a printer",
+                        CATALOG.t("print-centre-find-printer"),
                         tx,
                         UiCommand::Discover,
                     ))
@@ -431,8 +461,11 @@ fn live_tools(
         tools.push(tool_row(
             "print-centre.scan.open",
             Icon::Camera,
-            "Scan a document",
-            &format!("{} is ready", scanner.description),
+            CATALOG.t("print-centre-scan-document"),
+            CATALOG.t_args(
+                "print-centre-scanner-ready",
+                &[("scanner", ArgValue::Text(scanner.description.clone()))],
+            ),
             tx,
             UiCommand::ScanSetup,
         ));
@@ -442,14 +475,14 @@ fn live_tools(
             .iter()
             .any(|job| matches!(job.state, Some(os_actions::printing::JobState::Completed)))
         {
-            "Review what printed and print it again"
+            CATALOG.t("print-centre-history-review")
         } else {
-            "Completed documents will appear here"
+            CATALOG.t("print-centre-history-empty")
         };
         tools.push(tool_row(
             "print-centre.history.open",
             Icon::History,
-            "Print history",
+            CATALOG.t("print-centre-print-history"),
             history,
             tx,
             UiCommand::History,
@@ -458,8 +491,8 @@ fn live_tools(
     tools.push(tool_row(
         "print-centre.diagnostics.open",
         Icon::Info,
-        "Device help",
-        "Check connections, paper, supplies and scanners",
+        CATALOG.t("print-centre-device-help"),
+        CATALOG.t("print-centre-device-help-detail"),
         tx,
         UiCommand::Diagnostics,
     ));
@@ -472,11 +505,11 @@ fn live_tools(
     ))
 }
 
-fn history_status(job: &os_actions::printing::PrintJob) -> &'static str {
+fn history_status(job: &os_actions::printing::PrintJob) -> String {
     match job.state {
-        Some(os_actions::printing::JobState::Completed) => "Printed",
-        Some(os_actions::printing::JobState::Canceled) => "Canceled",
-        _ => "Did not print",
+        Some(os_actions::printing::JobState::Completed) => CATALOG.t("print-centre-status-printed"),
+        Some(os_actions::printing::JobState::Canceled) => CATALOG.t("print-centre-status-canceled"),
+        _ => CATALOG.t("print-centre-status-not-printed"),
     }
 }
 
@@ -485,7 +518,7 @@ fn history_status(job: &os_actions::printing::PrintJob) -> &'static str {
 fn history_card(job: &os_actions::printing::PrintJob, tx: &Door) -> El {
     let again = command_button(
         &format!("print-centre.history.repeat.{}", job.id),
-        "Print again",
+        CATALOG.t("print-centre-print-again"),
         tx,
         UiCommand::RetryJob(job.id.clone()),
     )
@@ -526,12 +559,10 @@ pub(super) fn history_view(snapshot: &Snapshot, tx: &Door) -> El {
     // With the jobs unread, "No completed documents yet" would claim what
     // nobody knows: the notice above says they couldn't be checked.
     if terminal.is_empty() && snapshot.jobs.is_ok() {
-        items.push(copy(
-            "No completed documents yet. After a document finishes or is canceled, it will appear here.",
-        ));
+        items.push(copy(CATALOG.t("print-centre-nothing-completed")));
     } else {
         items.push(titled_section(
-            "Documents",
+            CATALOG.t("print-centre-documents"),
             vec![Box::new(
                 CardGrid::new(
                     terminal
@@ -560,10 +591,6 @@ fn device_summary(
     }
 }
 
-fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
-    if count == 1 { one } else { many }
-}
-
 pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &Door) -> El {
     let queues = snapshot.queues.as_deref().unwrap_or(&[]);
     let scanners = snapshot.scanners.as_deref().unwrap_or(&[]);
@@ -584,13 +611,19 @@ pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &Door) -> El {
     let check = Section::new(vec![Box::new(PropertyList::new(vec![
         Property::new(
             CATALOG.t("print-centre-printers-responding"),
-            format!("{responding} of {}", queues.len()),
+            CATALOG.t_args(
+                "print-centre-printers-responding-count",
+                &[
+                    ("responding", ArgValue::Number(responding as f64)),
+                    ("total", ArgValue::Number(queues.len() as f64)),
+                ],
+            ),
         ),
         Property::new(
             CATALOG.t("print-centre-reporting-levels"),
-            format!(
-                "{supply_reports} {}",
-                plural(supply_reports, "printer", "printers")
+            CATALOG.t_args(
+                "print-centre-reporting-levels-count",
+                &[("count", ArgValue::Number(supply_reports as f64))],
             ),
         ),
         Property::new(
@@ -637,7 +670,7 @@ fn printer_check(queue: &os_actions::printing::PrinterQueue, tx: &Door) -> El {
     }
     items.push(Box::new(command_button(
         "print-centre.diagnostics.device",
-        "Open printer controls",
+        CATALOG.t("print-centre-open-controls"),
         tx,
         UiCommand::Device(queue.name.clone()),
     )));
@@ -646,40 +679,38 @@ fn printer_check(queue: &os_actions::printing::PrinterQueue, tx: &Door) -> El {
 
 fn scanner_check(none_found: bool, tx: &Door) -> El {
     let items: Vec<El> = if none_found {
-        vec![copy(
-            "No scanner was found. Check its cable or network connection, then check again.",
-        )]
+        vec![copy(CATALOG.t("print-centre-no-scanner"))]
     } else {
         vec![
-            copy("Your scanner is available for a new document."),
+            copy(CATALOG.t("print-centre-scanner-ready")),
             Box::new(command_button(
                 "print-centre.diagnostics.scan",
-                "Start scanning",
+                CATALOG.t("print-centre-start-scanning"),
                 tx,
                 UiCommand::ScanSetup,
             )),
         ]
     };
-    titled_section("Scanner", items)
+    titled_section(CATALOG.t("print-centre-scanner"), items)
 }
 
-fn queue_state(job: &os_actions::printing::PrintJob) -> &'static str {
+fn queue_state(job: &os_actions::printing::PrintJob) -> String {
     match job.state {
-        Some(os_actions::printing::JobState::Completed) => "Printed",
-        Some(os_actions::printing::JobState::Canceled) => "Canceled",
-        Some(os_actions::printing::JobState::Aborted) => "Could not print",
-        Some(os_actions::printing::JobState::Held) => "Waiting",
-        Some(os_actions::printing::JobState::Stopped) => "Needs attention",
-        _ => "In progress",
+        Some(os_actions::printing::JobState::Completed) => CATALOG.t("print-centre-status-printed"),
+        Some(os_actions::printing::JobState::Canceled) => CATALOG.t("print-centre-status-canceled"),
+        Some(os_actions::printing::JobState::Aborted) => CATALOG.t("print-centre-status-failed"),
+        Some(os_actions::printing::JobState::Held) => CATALOG.t("print-centre-status-waiting"),
+        Some(os_actions::printing::JobState::Stopped) => CATALOG.t("print-centre-job-attention"),
+        _ => CATALOG.t("print-centre-status-in-progress"),
     }
 }
 
 fn queue_summary(job: &os_actions::printing::PrintJob) -> Column {
     let summary = bare_column()
         .push(copy(queue_state(job)))
-        .push(muted(&format!(
-            "Sent to {}",
-            display_name(&job.destination)
+        .push(muted(CATALOG.t_args(
+            "print-centre-sent-to",
+            &[("printer", ArgValue::Text(display_name(&job.destination)))],
         )));
     if is_active(job) {
         summary.push(job_progress(job))
@@ -700,7 +731,7 @@ fn queue_card(job: &os_actions::printing::PrintJob, pending_cancel: Option<&str>
     ) {
         buttons.push(command_button(
             "print-centre.job.retry",
-            "Try again",
+            CATALOG.t("print-centre-try-again"),
             tx,
             UiCommand::RetryJob(job.id.clone()),
         ));
@@ -713,9 +744,9 @@ fn queue_card(job: &os_actions::printing::PrintJob, pending_cancel: Option<&str>
         buttons.push(destructive(command_button(
             "print-centre.job.cancel",
             if confirming {
-                "Confirm cancel"
+                CATALOG.t("print-centre-confirm-cancel")
             } else {
-                "Cancel"
+                CATALOG.t("print-centre-cancel")
             },
             tx,
             if confirming {
@@ -745,12 +776,10 @@ pub(super) fn queue_view(snapshot: &Snapshot, tx: &Door, pending_cancel: Option<
         ));
     }
     if jobs.is_empty() && snapshot.jobs.is_ok() {
-        items.push(copy(
-            "Nothing waiting. New documents appear here as soon as an app sends them.",
-        ));
+        items.push(copy(CATALOG.t("print-centre-nothing-waiting")));
     } else {
         items.push(titled_section(
-            "Documents",
+            CATALOG.t("print-centre-documents"),
             vec![Box::new(
                 CardGrid::new(
                     jobs.iter()
@@ -771,9 +800,9 @@ pub(super) fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &Door)
     let mut buttons = vec![command_button(
         "print-centre.device.enabled",
         if enabled {
-            "Pause printer"
+            CATALOG.t("print-centre-pause-printer")
         } else {
-            "Resume printer"
+            CATALOG.t("print-centre-resume-printer")
         },
         tx,
         UiCommand::SetEnabled(queue.name.clone(), !enabled),
@@ -781,20 +810,20 @@ pub(super) fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &Door)
     if !queue.default {
         buttons.push(command_button(
             "print-centre.device.default",
-            "Make preferred",
+            CATALOG.t("print-centre-make-preferred"),
             tx,
             UiCommand::SetDefault(queue.name.clone()),
         ));
     }
     buttons.push(command_button(
         "print-centre.device.queue",
-        "View print queue",
+        CATALOG.t("print-centre-view-queue"),
         tx,
         UiCommand::Queue,
     ));
     buttons.push(command_button(
         "print-centre.device.diagnostics",
-        "Check printer",
+        CATALOG.t("print-centre-check-printer"),
         tx,
         UiCommand::Diagnostics,
     ));
@@ -806,24 +835,27 @@ pub(super) fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &Door)
                 supply_meter(&supply.name, f32::from(percent) / 100.0)
             })
             .collect(),
-        _ => vec![copy("This printer does not report supply levels.")],
+        _ => vec![copy(CATALOG.t("print-centre-no-supply-report"))],
     };
     let status = Property::new(CATALOG.t("print-centre-state"), friendly_queue_state(queue));
     let availability = Property::new(
         CATALOG.t("print-centre-availability"),
         if queue.default {
-            "Preferred printer"
+            CATALOG.t("print-centre-preferred")
         } else {
-            "Available to your apps"
+            CATALOG.t("print-centre-available")
         },
     );
     page(groups(vec![
         titled_section(
-            "Details",
+            CATALOG.t("print-centre-details"),
             vec![Box::new(PropertyList::new(vec![status, availability]))],
         ),
-        titled_section("Ink and toner", supplies),
-        titled_section("Printer controls", vec![button_row(buttons)]),
+        titled_section(CATALOG.t("print-centre-ink-toner"), supplies),
+        titled_section(
+            CATALOG.t("print-centre-printer-controls"),
+            vec![button_row(buttons)],
+        ),
     ]))
 }
 
@@ -833,19 +865,17 @@ pub(super) fn discovery_view(
 ) -> El {
     let body: El = match result {
         None => section(vec![
-            copy("Looking for printers on your network."),
+            copy(CATALOG.t("print-centre-searching")),
             Box::new(
                 ProgressBar::indeterminate()
                     .with_label(crate::locales::CATALOG.t("print-centre-finding-printers")),
             ),
         ]),
         Some(Ok(printers)) if printers.is_empty() => section(vec![
-            copy(
-                "No printers found. Make sure the printer is awake and connected to the same network, then search again.",
-            ),
+            copy(CATALOG.t("print-centre-no-printers-found")),
             Box::new(command_button(
                 "print-centre.discover.retry",
-                "Search again",
+                CATALOG.t("print-centre-search-again"),
                 tx,
                 UiCommand::Discover,
             )),
@@ -856,34 +886,39 @@ pub(super) fn discovery_view(
                 .map(|printer| {
                     let add_id = format!("print-centre.discover.add.{}", printer.name);
                     Box::new(
-                        Card::new(muted(printer.location.as_deref().unwrap_or("Nearby")))
-                            .with_title_action(
-                                &printer.name,
-                                Box::new(
-                                    command_button(
-                                        &add_id,
-                                        "Add",
-                                        tx,
-                                        UiCommand::AddPrinter(printer.clone()),
-                                    )
-                                    .with_icon(Icon::Plus),
-                                ),
+                        Card::new(muted(
+                            printer
+                                .location
+                                .as_deref()
+                                .unwrap_or(&CATALOG.t("print-centre-nearby")),
+                        ))
+                        .with_title_action(
+                            &printer.name,
+                            Box::new(
+                                command_button(
+                                    &add_id,
+                                    CATALOG.t("print-centre-add"),
+                                    tx,
+                                    UiCommand::AddPrinter(printer.clone()),
+                                )
+                                .with_icon(Icon::Plus),
                             ),
+                        ),
                     ) as El
                 })
                 .collect();
             titled_section(
-                "Printers on your network",
+                CATALOG.t("print-centre-printers-network"),
                 vec![Box::new(
                     CardGrid::new(cards).with_card_width(CardWidth::Wide),
                 )],
             )
         }
         Some(Err(_)) => section(vec![
-            copy("Could not search right now. Check your network connection and try again."),
+            copy(CATALOG.t("print-centre-search-failed")),
             Box::new(command_button(
                 "print-centre.discover.retry",
-                "Try again",
+                CATALOG.t("print-centre-try-again"),
                 tx,
                 UiCommand::Discover,
             )),
@@ -969,8 +1004,8 @@ fn document_card(filename: &str, preview: &PrintPreview, tx: &Door) -> El {
         ),
         PrintPreview::Unavailable => Box::new(
             bare_column()
-                .push(copy("Preview unavailable"))
-                .push(muted("The original document is unchanged.")),
+                .push(copy(CATALOG.t("print-centre-preview-unavailable")))
+                .push(muted(CATALOG.t("print-centre-original-unchanged"))),
         ),
     };
     let body = if pages > 1 {
@@ -999,13 +1034,13 @@ fn document_card(filename: &str, preview: &PrintPreview, tx: &Door) -> El {
                         .with_gap(Spacing::BASE.s2)
                         .push(Box::new(command_button(
                             "print-centre.print.previous-page",
-                            "Previous",
+                            CATALOG.t("print-centre-previous"),
                             tx,
                             UiCommand::PreviousPrintPage,
                         )))
                         .push(Box::new(command_button(
                             "print-centre.print.next-page",
-                            "Next",
+                            CATALOG.t("print-centre-next"),
                             tx,
                             UiCommand::NextPrintPage,
                         ))),
@@ -1151,14 +1186,14 @@ pub(super) fn print_setup_view(
 
     let mut buttons = vec![command_button(
         "print-centre.print.cancel",
-        "Cancel",
+        CATALOG.t("print-centre-cancel"),
         tx,
         UiCommand::CancelPrintSetup,
     )];
     if selected.is_some() {
         buttons.push(primary(command_button(
             "print-centre.print.submit",
-            "Print",
+            CATALOG.t("print-centre-print"),
             tx,
             UiCommand::PrintDocument,
         )));
@@ -1198,7 +1233,7 @@ fn driver_choice(
 }
 
 /// A choice with its name above it.
-fn setting(label: &str, control: ToggleGroup) -> El {
+fn setting(label: impl AsRef<str>, control: ToggleGroup) -> El {
     Box::new(
         Column::new()
             .with_no_padding()
@@ -1222,13 +1257,22 @@ fn page_details(
     tx: &Door,
 ) -> Column {
     let orientation = if page_data.height >= page_data.width {
-        "Portrait"
+        CATALOG.t("print-centre-portrait")
     } else {
-        "Landscape"
+        CATALOG.t("print-centre-landscape")
     };
     let mut details = bare_column()
         .push(text(
-            &format!("Page {} of {page_count}", selected_page.saturating_add(1)),
+            CATALOG.t_args(
+                "print-centre-page-of-document",
+                &[
+                    (
+                        "page",
+                        ArgValue::Number(selected_page.saturating_add(1) as f64),
+                    ),
+                    ("pages", ArgValue::Number(page_count as f64)),
+                ],
+            ),
             TextRole::Heading,
         ))
         .push(Box::new(PropertyList::new(vec![
@@ -1242,31 +1286,34 @@ fn page_details(
     if let Some(recognized) = &page_data.recognized_text {
         let snippet: String = recognized.chars().take(320).collect();
         if !snippet.trim().is_empty() {
-            details = details.push(titled_section("Recognized text", vec![copy(&snippet)]));
+            details = details.push(titled_section(
+                CATALOG.t("print-centre-recognized-text"),
+                vec![copy(&snippet)],
+            ));
         }
     }
     let mut tools = vec![
         command_button(
             "print-centre.scan.rotate",
-            "Rotate right",
+            CATALOG.t("print-centre-rotate-right"),
             tx,
             UiCommand::RotateScanPage,
         )
         .with_icon(Icon::RotateCw),
         command_button(
             "print-centre.scan.apply-crop",
-            "Apply crop",
+            CATALOG.t("print-centre-apply-crop"),
             tx,
             UiCommand::ApplyScanCrop,
         ),
     ];
     let mut tool_items: Vec<El> = Vec::new();
     if page_data.ocr_in_progress {
-        tool_items.push(muted("Updating recognized text…"));
+        tool_items.push(muted(CATALOG.t("print-centre-updating-text")));
     } else if page_data.ocr_needs_refresh {
         tools.push(command_button(
             "print-centre.scan.recognize",
-            "Update recognized text",
+            CATALOG.t("print-centre-update-text"),
             tx,
             UiCommand::RecognizeCurrentPage,
         ));
@@ -1278,13 +1325,16 @@ fn page_details(
     {
         tools.push(command_button(
             "print-centre.scan.copy-text",
-            "Copy recognized text",
+            CATALOG.t("print-centre-copy-text"),
             tx,
             UiCommand::CopyRecognizedText,
         ));
     }
     tool_items.insert(0, button_row(tools));
-    details.push(titled_section("Page tools", tool_items))
+    details.push(titled_section(
+        CATALOG.t("print-centre-page-tools"),
+        tool_items,
+    ))
 }
 
 /// Moving between, reordering and removing the pages of the document.
@@ -1295,7 +1345,7 @@ fn page_navigation(selected_page: usize, page_count: usize, tx: &Door) -> Vec<Bu
     if has_previous {
         buttons.push(command_button(
             "print-centre.scan.previous",
-            "Previous page",
+            CATALOG.t("print-centre-previous-page"),
             tx,
             UiCommand::PreviousScanPage,
         ));
@@ -1303,7 +1353,7 @@ fn page_navigation(selected_page: usize, page_count: usize, tx: &Door) -> Vec<Bu
     if has_next {
         buttons.push(command_button(
             "print-centre.scan.next",
-            "Next page",
+            CATALOG.t("print-centre-next-page"),
             tx,
             UiCommand::NextScanPage,
         ));
@@ -1311,7 +1361,7 @@ fn page_navigation(selected_page: usize, page_count: usize, tx: &Door) -> Vec<Bu
     if has_previous {
         buttons.push(command_button(
             "print-centre.scan.move-earlier",
-            "Move before previous page",
+            CATALOG.t("print-centre-move-earlier"),
             tx,
             UiCommand::MoveScanPageEarlier,
         ));
@@ -1319,14 +1369,14 @@ fn page_navigation(selected_page: usize, page_count: usize, tx: &Door) -> Vec<Bu
     if has_next {
         buttons.push(command_button(
             "print-centre.scan.move-later",
-            "Move after next page",
+            CATALOG.t("print-centre-move-later"),
             tx,
             UiCommand::MoveScanPageLater,
         ));
     }
     buttons.push(destructive(command_button(
         "print-centre.scan.delete-page",
-        "Remove this page",
+        CATALOG.t("print-centre-remove-page"),
         tx,
         UiCommand::DeleteScanPage,
     )));
@@ -1357,7 +1407,7 @@ fn scan_review_view(page_data: &super::ScannedPage, scan: &ScanState, tx: &Door)
                 .with_max_width(editor_width + 24.0)
                 .with_no_padding()
                 .with_child(titled_section(
-                    "Crop",
+                    CATALOG.t("print-centre-crop"),
                     vec![Box::new(
                         Container::new()
                             .with_size(editor_width, editor_height)
@@ -1377,11 +1427,11 @@ fn scan_review_view(page_data: &super::ScannedPage, scan: &ScanState, tx: &Door)
     let mut items: Vec<El> = Vec::new();
     items.push(Box::new(review));
     items.push(titled_section(
-        "Pages in this document",
+        CATALOG.t("print-centre-pages-in-document"),
         vec![
-            muted(&format!(
-                "{page_count} {}",
-                plural(page_count, "page", "pages")
+            muted(CATALOG.t_args(
+                "print-centre-pages-in-document-count",
+                &[("count", ArgValue::Number(page_count as f64))],
             )),
             button_row(page_navigation(selected_page, page_count, tx)),
         ],
@@ -1390,25 +1440,25 @@ fn scan_review_view(page_data: &super::ScannedPage, scan: &ScanState, tx: &Door)
     let footer = actions(vec![
         command_button(
             "print-centre.scan.new-document",
-            "New scanned document",
+            CATALOG.t("print-centre-new-document"),
             tx,
             UiCommand::NewScannedDocument,
         ),
         command_button(
             "print-centre.scan.save-page",
-            "Export this page",
+            CATALOG.t("print-centre-export-page"),
             tx,
             UiCommand::SaveScannedPage,
         ),
         command_button(
             "print-centre.scan.again",
-            "Scan another page",
+            CATALOG.t("print-centre-scan-another"),
             tx,
             UiCommand::ScanAnother,
         ),
         primary(command_button(
             "print-centre.scan.save-document",
-            "Save document",
+            CATALOG.t("print-centre-save-document"),
             tx,
             UiCommand::SaveScannedDocument,
         )),
@@ -1436,9 +1486,7 @@ fn scanner_choices(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Ve
             ));
         }
         if scanners.is_empty() {
-            devices.push(copy(
-                "No scanner is available. Check its cable or network connection, then refresh Print Centre.",
-            ));
+            devices.push(copy(CATALOG.t("print-centre-no-scanner-available")));
         }
     } else if let Some(issue) = unavailable_notice(&["scanners"], tx) {
         devices.push(issue);
@@ -1483,7 +1531,7 @@ fn scan_settings(scan: &ScanState, tx: &Door) -> Vec<El> {
     };
     vec![
         setting(
-            "Quality",
+            CATALOG.t("print-centre-quality"),
             scan_choice(
                 (
                     "print-centre.scan.resolution",
@@ -1496,7 +1544,7 @@ fn scan_settings(scan: &ScanState, tx: &Door) -> Vec<El> {
             ),
         ),
         setting(
-            "Appearance",
+            CATALOG.t("print-centre-appearance"),
             scan_choice(
                 ("print-centre.scan.color", &["Color", "Grayscale", "Text"]),
                 &scan.color,
@@ -1506,7 +1554,7 @@ fn scan_settings(scan: &ScanState, tx: &Door) -> Vec<El> {
             ),
         ),
         setting(
-            "Paper source",
+            CATALOG.t("print-centre-paper-source"),
             scan_choice(
                 (
                     "print-centre.scan.source",
@@ -1519,7 +1567,7 @@ fn scan_settings(scan: &ScanState, tx: &Door) -> Vec<El> {
             ),
         ),
         setting(
-            "Text language",
+            CATALOG.t("print-centre-text-language"),
             scan_choice(
                 (
                     "print-centre.scan.language",
@@ -1550,28 +1598,31 @@ pub(super) fn scan_setup_view(
     let page_count = scan.pages.len();
     let mut items: Vec<El> = Vec::new();
     if page_count > 0 {
-        items.push(muted(&format!(
-            "{page_count} {} captured. New scans are added to this document.",
-            plural(page_count, "page", "pages")
+        items.push(muted(CATALOG.t_args(
+            "print-centre-pages-captured",
+            &[("count", ArgValue::Number(page_count as f64))],
         )));
     }
     items.push(titled_section(
-        "Scanner",
+        CATALOG.t("print-centre-scanner"),
         scanner_choices(snapshot, selected, tx),
     ));
-    items.push(titled_section("Page settings", scan_settings(scan, tx)));
+    items.push(titled_section(
+        CATALOG.t("print-centre-page-settings"),
+        scan_settings(scan, tx),
+    ));
     let body = groups(items);
 
     let mut buttons = vec![
         command_button(
             "print-centre.scan.cancel",
-            "Cancel",
+            CATALOG.t("print-centre-cancel"),
             tx,
             UiCommand::Dashboard,
         ),
         command_button(
             "print-centre.scan.new-document",
-            "New scanned document",
+            CATALOG.t("print-centre-new-document"),
             tx,
             UiCommand::NewScannedDocument,
         )
@@ -1581,7 +1632,7 @@ pub(super) fn scan_setup_view(
         buttons.push(
             command_button(
                 "print-centre.scan.busy",
-                "Scanning page…",
+                CATALOG.t("print-centre-scanning-page"),
                 tx,
                 UiCommand::Dashboard,
             )
@@ -1590,7 +1641,7 @@ pub(super) fn scan_setup_view(
     } else if selected.is_some() {
         buttons.push(primary(command_button(
             "print-centre.scan.start",
-            "Scan page",
+            CATALOG.t("print-centre-scan-page"),
             tx,
             UiCommand::ScanPage,
         )));
