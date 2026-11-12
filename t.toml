@@ -4845,6 +4845,23 @@ outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/sig
 evidence = ["/target/e2e/state/logs/**"]
 timeout_secs = 1200
 
+# One returning person reloading their workspace page twenty times in one browser, on the e2e
+# stack: per reload, how long the old page held the navigation and what its pagehide listeners
+# took, and the count of reloads that crashed the tab or never came back. Run when named, to
+# chase a reload that kills its tab.
+[[check]]
+name = "e2e-reloads"
+run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e-reloads reloads"
+needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx && dnf clean all" }
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e-reloads/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0" }
+requires = ["arch=x86_64"]
+isolation = "nested"
+outputs = ["/target/e2e-reloads/*.log", "/target/e2e-reloads/reloads/**"]
+evidence = ["/target/e2e-reloads/state/logs/**"]
+timeout_secs = 900
+default = false
+
 # A newcomer's tour of the page for a person to review: every screen a first-time visitor meets,
 # light, dark and at a phone's width, kept as pictures. It judges nothing on looks.
 [[check]]

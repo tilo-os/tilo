@@ -66,7 +66,8 @@
 # (tools/ci/publish/web-desktop-bundle.sh); the stack's site is
 # TILO_SH_SITE's. WORK keeps what each flow found under WORK/<flow>/ and its
 # output in WORK/<flow>.log, and the stack's state in WORK/state. FLOW names
-# the flows to run (default: all; E2E_FLOWS, space separated, too); `visa`
+# the flows to run (default: all but `reloads`; E2E_FLOWS, space separated,
+# too); `visa`
 # brings `signin` with it and `restart` brings `people-call`. Needs node,
 # chromium, curl, bwrap, the stack's environment (TILO_SH_PROGRAMS,
 # TILO_SH_LOUNGE, TILO_SH_SITE, TILO_SH_CADDY naming what t built), and
@@ -116,6 +117,7 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
       TILO_PEOPLE_CASE=${flow#people-} exec node "$integration/people.mjs" "$site_origin" "$relay_origin" \
         "$relay_origin" "$out" "$roles" ;;
     share-link) exec node "$integration/share-link.mjs" "$site_origin" "$relay_origin" "$room" "$out" ;;
+    reloads) exec node "$integration/reloads.mjs" "$site_origin" "$out" ;;
     agent-setup|setup-resume)
       exec node "$integration/$flow.mjs" "$site_origin" "$relay_origin" "$TILO_CLI_BIN" "$E2E_SITE_CA" "$out" ;;
     signin|visa|entry|passkey) exec bash "$tilo_sh/check.sh" --flow "$flow" ;;
@@ -142,10 +144,14 @@ bundle=${1:?$usage}
 work=${2:?$usage}
 shift 2
 all=(signin directory boot people-call people-desk people-menus people-invite share-link agent-setup setup-resume visa entry passkey wait-list restart)
+# Run only when named: a person reloading their workspace page twenty times
+# in one browser, counting the reloads that crash or never come back.
+named_only=(reloads)
 asked=("$@")
 [[ ${#asked[@]} -gt 0 ]] || read -r -a asked <<< "${E2E_FLOWS:-${all[*]}}"
 for flow in "${asked[@]}"; do
-  [[ " ${all[*]} " == *" $flow "* ]] || { echo "no flow $flow; the flows are: ${all[*]}" >&2; exit 2; }
+  [[ " ${all[*]} ${named_only[*]} " == *" $flow "* ]] \
+    || { echo "no flow $flow; the flows are: ${all[*]} ${named_only[*]}" >&2; exit 2; }
 done
 wants() { [[ " ${asked[*]} " == *" $1 "* ]]; }
 # The visa run reads the key the startup approved, and the restart reads what
@@ -311,7 +317,7 @@ fi
 # flow slower rather than the run shorter (measured: with nine flows and four
 # people cases at once, steps a run of three cases passes in 15-20 s ran out at
 # 45 s - a search opening, a composer showing, a call's channel).
-order=(setup-resume visa people-call people-invite people-desk people-menus boot wait-list share-link agent-setup entry passkey directory)
+order=(setup-resume visa people-call people-invite people-desk people-menus boot wait-list share-link agent-setup entry passkey directory reloads)
 queue=()
 for flow in "${order[@]}"; do [[ " ${parallel[*]} " == *" $flow "* ]] && queue+=("$flow"); done
 at_once=${E2E_PARALLEL:-4}
