@@ -2069,20 +2069,25 @@ function agentSetupCodes({origin, identity, runtime, link}) {
     const links = await link;
     actions = createIdentityActions({identity, pairing: pairingAt({origin: host, identity, runtime, link: links}),
       standIn: standInOf({peer: {origin: host}, identity, runtime}), standInStore: globalThis.localStorage,
-      passkeys: () => false});
+      passkeys: () => false,
+      // The person's agent is in, so their root is worth not losing with
+      // this tab: a stand-in on the host keeps them, made now and not for
+      // every visitor shown a prompt.
+      onAgent: () => { void actions?.keepStandIn().catch(error => console.warn('first run: stand-in', error)); }});
     return actions;
   };
+  // A code taken into use (followed): the tab watches for the agent's device
+  // from then on, not while the prompt only waits on the screen.
+  const watched = (made, agents) => ({...made, follow: () => { agents.watchAgents(); return made.follow(); }});
   // What the setup keeps of a code names whose it is: a code kept for
   // another person or host is not this tab's to follow.
   const ours = saved => saved?.person === identity.userPublicKey && saved?.host === host;
   const make = () => makeCode().catch(error => { throw hostNamed(error, host); });
   const makeCode = async () => {
     const agents = await agentActions();
-    const pairing = await agents.connectAgent({workspace: setUpIn ?? namedOwnWorkspace(host, identity.userPublicKey)});
-    const made = await codes.create(pairing.link);
-    // While the person's root is in this tab alone, a stand-in on the
-    // host keeps them from being lost with it.
-    void agents.keepStandIn().catch(error => console.warn('first run: stand-in', error));
+    const pairing = await agents.connectAgent({workspace: setUpIn ?? namedOwnWorkspace(host, identity.userPublicKey),
+      watch: false});
+    const made = watched(await codes.create(pairing.link), agents);
     return {...made, saved: {...made.saved, person: identity.userPublicKey, host,
       invite: pairing.invite, inviteExpiresAt: pairing.expiresAt}};
   };
@@ -2091,11 +2096,14 @@ function agentSetupCodes({origin, identity, runtime, link}) {
     // The link in the code names an invite this tab made before it was
     // loaded again: the agent's device answering it is approved here, as
     // it would have been.
-    if (saved.invite) {
-      void agentActions().then(agents => agents.connectAgent({adopt: {id: saved.invite, expiresAt: saved.inviteExpiresAt}}))
-        .catch(error => console.warn('first run: approving your agent', error));
-    }
-    return codes.resume(saved);
+    const made = codes.resume(saved);
+    if (!saved.invite) return made;
+    const adopted = agentActions().then(async agents => {
+      await agents.connectAgent({adopt: {id: saved.invite, expiresAt: saved.inviteExpiresAt}, watch: false});
+      return agents;
+    });
+    adopted.catch(error => console.warn('first run: approving your agent', error));
+    return {...made, follow: async () => watched(made, await adopted).follow()};
   };
   return {codes, ours, make, resume};
 }
@@ -2270,14 +2278,19 @@ function loginCodes(runtime, origin) {
   return {
     async create(link = null) {
       const made = JSON.parse(await runtime.createLoginCode(post, link).catch(named));
-      return this.resume({code: made.code, expiresAt: made.expires_at_ms, follow: made.follow});
+      return this.resume({code: made.code, expiresAt: made.expires_at_ms, follow: made.follow, link});
     },
     /** A code made before, from what was kept of it (`{code, expiresAt,
-     * follow}`, `follow` the secret only this browser holds, and whatever
-     * else the page kept with it), followed again: kept again whole. */
+     * follow, link}`, `follow` the secret only this browser holds, and
+     * whatever else the page kept with it), followed again: kept again
+     * whole. The host only offered the code: each follow carries the offer
+     * back, and the first one has the host keep it. The page follows a code
+     * once its person uses it (copies the prompt, opens the commands), so a
+     * visitor who does nothing leaves nothing on the host. */
     resume(saved) {
+      const offer = JSON.stringify({code: saved.code, expires_at_ms: saved.expiresAt, link: saved.link ?? null});
       return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},
-        follow: async () => JSON.parse(await runtime.followLoginCode(post, saved.follow).catch(named))};
+        follow: async () => JSON.parse(await runtime.followLoginCode(post, saved.follow, offer).catch(named))};
     },
   };
 }

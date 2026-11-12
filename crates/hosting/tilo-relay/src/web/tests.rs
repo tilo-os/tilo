@@ -992,6 +992,27 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
 /// POST `body` as JSON to `path`, as `forwarded_for` behind a proxy when
 /// named: the status, the header block and the body. HTTP/1.0, so the
 /// body arrives whole rather than chunked.
+/// The tab's first follow of a code the host offered: the host keeps it from then on, so a
+/// computer can resolve it.
+async fn keep_code(
+    addr: SocketAddr,
+    created: &tilo_relay_protocol::login_code::Created,
+    link: Option<&str>,
+) -> tilo_relay_protocol::login_code::Polled {
+    let (code, _, polled) = call_json(
+        addr,
+        tilo_relay_protocol::login_code::FOLLOW_ROUTE,
+        &serde_json::json!({
+            "follow": created.follow,
+            "offer": {"code": created.code, "expires_at_ms": created.expires_at_ms, "link": link},
+        }),
+        None,
+    )
+    .await;
+    assert_eq!(code, 200, "{polled}");
+    serde_json::from_value(polled).unwrap()
+}
+
 async fn call_json(
     addr: SocketAddr,
     path: &str,
@@ -1054,6 +1075,33 @@ async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
     .await;
     assert_eq!(code, 200, "{created}");
     let created: wire::Created = serde_json::from_value(created).unwrap();
+    // Offered, not kept: a visitor who never copies the prompt leaves nothing on the host.
+    let (code, _, _) = call_json(
+        addr,
+        wire::RESOLVE_ROUTE,
+        &serde_json::json!({ "code": created.code }),
+        Some("192.0.2.77"),
+    )
+    .await;
+    assert_eq!(
+        code, 404,
+        "an offered code resolves only once its tab kept it"
+    );
+    let mut forged = created.clone();
+    forged.expires_at_ms += 1;
+    let (code, _, _) = call_json(
+        addr,
+        wire::FOLLOW_ROUTE,
+        &serde_json::json!({
+            "follow": created.follow,
+            "offer": {"code": forged.code, "expires_at_ms": forged.expires_at_ms, "link": link},
+        }),
+        None,
+    )
+    .await;
+    assert_eq!(code, 404, "an offer the host did not make is not kept");
+    let polled = keep_code(addr, &created, Some(&link)).await;
+    assert!(!polled.resolved && !polled.expired);
     let (code, _, refused) = call_json(
         addr,
         wire::CREATE_ROUTE,
@@ -1122,6 +1170,7 @@ async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
 
     let (_, _, fresh) = call_json(addr, wire::CREATE_ROUTE, &serde_json::json!({}), None).await;
     let fresh: wire::Created = serde_json::from_value(fresh).unwrap();
+    keep_code(addr, &fresh, None).await;
     for _ in 0..login_codes::MISSES_PER_ADDRESS {
         let (code, _, _) = call_json(
             addr,
@@ -1190,6 +1239,7 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
         let (_, _, created) =
             call_json(addr, wire::CREATE_ROUTE, &serde_json::json!({}), None).await;
         let created: wire::Created = serde_json::from_value(created).unwrap();
+        keep_code(addr, &created, None).await;
         let (_, _, resolved) = call_json(
             addr,
             wire::RESOLVE_ROUTE,
@@ -1501,6 +1551,7 @@ async fn a_computer_setting_up_for_a_tab_not_yet_let_in_waits_for_the_tab() {
     )
     .await;
     let created: wire::Created = serde_json::from_value(created).unwrap();
+    keep_code(addr, &created, Some(&link)).await;
     let (_, _, resolved) = call_json(
         addr,
         wire::RESOLVE_ROUTE,

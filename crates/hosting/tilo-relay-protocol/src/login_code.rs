@@ -21,7 +21,9 @@
 //!   person's stand-in on the host ([`STAND_IN_ROUTE`]) approves exactly
 //!   that request.
 //!
-//! A code is single use (the first resolve spends it), lasts
+//! A code is only offered until its tab first follows it ([`Follow`]): the
+//! host keeps nothing for a visitor who never uses one. A code is single
+//! use (the first resolve spends it), lasts
 //! [`CODE_LIFETIME_MS`], and only the tab that made it can follow it (with
 //! the [`Created::follow`] secret only that tab got). Once resolved, the
 //! computer reports what it does ([`Step`]) with the [`Resolved::report`]
@@ -35,7 +37,7 @@
 //! | [`RESOLVE_ROUTE`] | [`Resolve`] | [`Resolved`]; `404` unknown, spent or expired; `429` too many misses |
 //! | [`STEP_ROUTE`] | [`Report`] | `204` |
 //! | [`CLAIM_ROUTE`] | [`Claim`] | [`Claimed`]; `403` not a device of a person with a stand-in here |
-//! | [`FOLLOW_ROUTE`] | [`Follow`] | [`Polled`] |
+//! | [`FOLLOW_ROUTE`] | [`Follow`] | [`Polled`]; the first one carrying the [`Offer`] keeps the code |
 //! | [`STAND_IN_ROUTE`] | [`StandInRequest`] | [`StandInReply`] |
 //!
 //! # The stand-in
@@ -250,10 +252,33 @@ pub struct Claimed {
 }
 
 /// The tab follows its code.
+///
+/// A code the host made is only an offer: the host keeps nothing of it, so
+/// a visitor who never uses the code they were shown leaves nothing behind.
+/// The tab's first follow carries the offer back ([`Follow::offer`]), and
+/// the host, finding the follow secret is the one it derived for exactly
+/// that offer, keeps the code from then on: the person copied the prompt or
+/// opened the commands, so their agent may type it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Follow {
     pub follow: String,
+    /// The code as it was offered, which the host keeps if it does not
+    /// already.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer: Option<Offer>,
+}
+
+/// A code as the host offered it ([`Created`]), with the link it was asked
+/// to name: all the host needs to keep it, checked against its follow
+/// secret.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Offer {
+    pub code: String,
+    pub expires_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 /// Where a code is.

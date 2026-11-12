@@ -4,8 +4,8 @@
 //! that keeps its stand-in. The page reaches it through the runtime, the CLI natively.
 
 use tilo_relay_protocol::login_code::{
-    CLAIM_ROUTE, CREATE_ROUTE, Claim, Claimed, CreateCode, Created, FOLLOW_ROUTE, Follow, Polled,
-    RESOLVE_ROUTE, Report, Resolve, Resolved, STAND_IN_ROUTE, STEP_ROUTE, StandInReply,
+    CLAIM_ROUTE, CREATE_ROUTE, Claim, Claimed, CreateCode, Created, FOLLOW_ROUTE, Follow, Offer,
+    Polled, RESOLVE_ROUTE, Report, Resolve, Resolved, STAND_IN_ROUTE, STEP_ROUTE, StandInReply,
     StandInRequest,
 };
 use tilo_relay_protocol::web::API_PREFIX;
@@ -109,16 +109,23 @@ pub async fn create(client: &dyn HttpClient, link: Option<String>) -> Result<Cre
     answered(client, CREATE_ROUTE, json(&CreateCode { link })?).await
 }
 
-/// Where the code `follow` (the secret only its tab holds) is.
+/// Where the code `follow` (the secret only its tab holds) is. With the `offer` the code was made
+/// as ([`Created`] and the link it names), the host keeps the code if it does not yet: a code is
+/// only offered until its tab first follows it.
 ///
 /// # Errors
 /// The host was not reached or refused.
-pub async fn follow(client: &dyn HttpClient, follow: &str) -> Result<Polled, CodeRefusal> {
+pub async fn follow(
+    client: &dyn HttpClient,
+    follow: &str,
+    offer: Option<Offer>,
+) -> Result<Polled, CodeRefusal> {
     answered(
         client,
         FOLLOW_ROUTE,
         json(&Follow {
             follow: follow.to_owned(),
+            offer,
         })?,
     )
     .await

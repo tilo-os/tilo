@@ -362,12 +362,12 @@ export function createIdentityActions({
      * this one. `adopt` (`{id, expiresAt}`) is an invite this tab made before
      * it was loaded again, approved the same way while it is open: its link
      * is already in the agent's hands. */
-    async connectAgent({workspace, adopt = null} = {}) {
+    async connectAgent({workspace, adopt = null, watch = true} = {}) {
       if (adopt) {
         const invite = invites.adopt(adopt);
         if (!invite) return null;
         agents.add(invite.id);
-        stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
+        if (watch) controller.watchAgents();
         return {link: null, invite: invite.id, expiresAt: invite.expiresAt};
       }
       const invite = invites.open();
@@ -377,8 +377,14 @@ export function createIdentityActions({
         throw new IdentityError('no-workspace', 'Join a workspace before setting up an agent in it');
       }
       agents.add(invite.id);
-      stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
+      if (watch) controller.watchAgents();
       return {link, invite: invite.id, expiresAt: invite.expiresAt};
+    },
+    /** Ask the host for the devices answering this page's agent invites,
+     * from now on: once the person used the link an invite went into
+     * (`connectAgent({watch: false})` asks nothing until then). */
+    watchAgents() {
+      if (agents.size) stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
     },
     /** Show the actions in `mount`'s desktop. */
     async attach(target) {

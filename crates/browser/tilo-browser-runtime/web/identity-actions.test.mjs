@@ -534,6 +534,19 @@ test('an agent’s link is a pairing link to this tab with a fresh invite, open 
   assert.deepEqual(pairing.sheets, [], 'no sheet: the first screen shows the prompt');
 });
 
+test('a link only shown asks the host nothing until the person uses it', async () => {
+  // Every visitor's first screen shows a prompt with a link in it: the host is asked about the
+  // agent's device once the person took the prompt, not for everyone who only saw it.
+  const pairing = await pairingFixture();
+  await pairing.actions.connectAgent({watch: false});
+  assert.equal(pairing.poll, null, 'nothing is asked while the prompt only waits');
+  pairing.actions.watchAgents();
+  assert.equal(typeof pairing.poll, 'function', 'used, the tab looks for the agent');
+  pairing.host.pending = [request('d1', INVITE_A, {label: 'Claude Code on laptop'})];
+  await pairing.tick();
+  assert.deepEqual(pairing.agents, [{label: 'Claude Code on laptop'}]);
+});
+
 test('an agent set up in the person’s own workspace gets a link that opens it', async () => {
   const pairing = await pairingFixture();
   const made = await pairing.actions.connectAgent({workspace: 'MINE'});
