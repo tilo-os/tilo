@@ -23,7 +23,11 @@
               until their sessions end"
 )]
 
-use crate::common::people::{Device, Person, Site, show, two_devices_of_one_person, wait_shown};
+use std::time::Instant;
+
+use crate::common::people::{
+    Device, Person, Site, joined_within, show, two_devices_of_one_person, wait_shown,
+};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 
 /// The app whose window is opened on the desks here.
@@ -105,16 +109,29 @@ fn a_machine_copied_from_a_device_rejoins_as_a_device_of_its_own() {
         "the host admitted this device and the workspace is held here workspace={}",
         site.workspace
     );
-    tilo_test_env::wait_until(
-        format!("the copy rejoining {} as its own device", site.workspace),
-        || {
-            let log = copy.log();
-            log.contains(dropped)
-                && log
-                    .lines()
-                    .any(|line| line.contains(&admitted) && line.contains("member=true"))
-        },
-    );
+    // The copy joins as it starts, and the product gives that join its own patience before it says
+    // the join did not happen: the wait spans that and the suite's hang bound after it, and a wait
+    // that runs out reports what the copy's session said instead of only that it did not.
+    let rejoined = || {
+        let log = copy.log();
+        (log.contains(dropped)
+            && log
+                .lines()
+                .any(|line| line.contains(&admitted) && line.contains("member=true")))
+        .then_some(())
+    };
+    let deadline = Instant::now()
+        .checked_add(joined_within())
+        .expect("the wait's bound fits in an Instant");
+    while rejoined().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "the copy never rejoined {} as its own device; its session says:\n{}",
+            site.workspace,
+            copy.diagnostic(),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     copy.wait_holding(&site.workspace);
     laptop.wait_holding(&site.workspace);
     // Nobody was removed (Ada owns the site, so it lists her as no member of

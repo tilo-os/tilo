@@ -56,6 +56,13 @@ use tilo_user_identity::{DeviceCert, IdentityPaths};
 /// carries it.
 pub type Invitation = String;
 
+/// How long a device is given to hold the workspace it joined and to show it in front: the join is
+/// the product's own, which gives it [`tilo_session::sync::JOIN_PATIENCE`] before the person is told
+/// it did not happen, and the suite's hang bound after that.
+pub fn joined_within() -> Duration {
+    tilo_session::sync::JOIN_PATIENCE.saturating_add(tilo_test_env::hang_bound())
+}
+
 /// A site: a relay of this machine that governs one workspace, hosts it for the people in it and
 /// admits people to it at its door.
 pub struct Site {
@@ -1388,8 +1395,15 @@ impl Device {
     pub fn ask(&self, request: &Value) -> Value {
         let mut stream = UnixStream::connect(&self.control)
             .unwrap_or_else(|error| panic!("{}'s control socket: {error}", self.label));
+        // A request that asks the desk to hold its answer (`wait_ms`) is answered when what it
+        // waits for happens: the read outlives that wait by the suite's hang bound, so a desk still
+        // waiting for a change is waited for rather than reported as one that did not answer.
+        let held = request
+            .get("wait_ms")
+            .and_then(Value::as_u64)
+            .map_or(Duration::ZERO, Duration::from_millis);
         stream
-            .set_read_timeout(Some(Duration::from_secs(60)))
+            .set_read_timeout(Some(held.saturating_add(tilo_test_env::hang_bound())))
             .expect("a read timeout");
         stream
             .write_all(format!("{request}\n").as_bytes())
@@ -1432,7 +1446,12 @@ impl Device {
     /// Wait until this device keeps the workspace `workspace` , failing with what its session
     /// logged if it never does.
     pub fn wait_holding(&self, workspace: &str) {
-        let deadline = tilo_test_env::hang_deadline();
+        // A device is told to join as it starts, and the join is the product's own: it gives it
+        // `JOIN_PATIENCE` before it tells the person it did not happen, so the wait spans that and
+        // the suite's hang bound after it.
+        let deadline = Instant::now()
+            .checked_add(joined_within())
+            .expect("the wait's bound fits in an Instant");
         let mut pause = Duration::from_millis(10);
         loop {
             let held = self.held();
@@ -1528,9 +1547,25 @@ impl Device {
     /// Wait until the desk shows the workspace `workspace` in front: a person who joins a workspace
     /// lands in it, so the door opens apps into it rather than into the desk they were on.
     pub fn wait_showing(&self, workspace: &str) {
-        tilo_test_env::wait_until(format!("{} shows {workspace} in front", self.label), || {
-            self.showing().as_deref() == Some(workspace)
-        });
+        let deadline = Instant::now()
+            .checked_add(joined_within())
+            .expect("the wait's bound fits in an Instant");
+        let mut pause = Duration::from_millis(10);
+        loop {
+            let showing = self.showing();
+            if showing.as_deref() == Some(workspace) {
+                return;
+            }
+            let now = Instant::now();
+            assert!(
+                now < deadline,
+                "{} never showed {workspace} in front; it shows {showing:?}:\n{}",
+                self.label,
+                self.log(),
+            );
+            std::thread::sleep(pause.min(deadline.saturating_duration_since(now)));
+            pause = pause.saturating_mul(2).min(Duration::from_millis(500));
+        }
     }
 
     /// The store this device's session reads its installed apps from.
@@ -1920,8 +1955,7 @@ impl Chat<'_> {
     /// device holds them, once they differ from the revision `after`: read through the record door
     /// as plain JSON, which wakes the read on the next write to any of them.
     fn held(&self, after: Option<&str>) -> HeldChat {
-        let deadline = tilo_test_env::hang_deadline();
-        let wait = deadline.saturating_duration_since(Instant::now());
+        let wait = tilo_test_env::hang_bound();
         let answer = self.device.ask(&json!({
             "op": "record_read",
             "app": "so.tilo.chat",
@@ -1951,7 +1985,14 @@ impl Chat<'_> {
     /// Wait until Chat's record here holds what `wanted` names, woken by each write to it: `done`
     /// says what it holds instead, `None` once it holds that.
     fn wait_for(&self, wanted: &str, mut done: impl FnMut(&HeldChat) -> Option<String>) {
-        let deadline = tilo_test_env::hang_deadline();
+        // Chat's record is sealed in the workspace's channel, and what a device reads of it follows
+        // the channel service's own longest wait between asking for its keys: the wait spans that
+        // and the suite's hang bound, and each answer it is woken by is its progress.
+        let deadline = Instant::now()
+            .checked_add(
+                tilo_channels::asking_again_wait().saturating_add(tilo_test_env::hang_bound()),
+            )
+            .expect("the wait's bound fits in an Instant");
         let mut after = None;
         loop {
             let held = self.held(after.as_deref());

@@ -349,11 +349,27 @@ mod tests {
             document: HostDocument::new(Map::new(), |_| Ok(())),
             looks: AtomicU64::new(0),
         });
-        let (live, refresh) = tilo_test_env::idle::spawned_thread("tilo-settings-l", || {
-            LiveSettings::start_from(source.clone(), || {})
+        // The follower's thread is the one that runs `on_change`, so the change below is what names
+        // it here: this binary runs its tests as threads of one process, and every follower of the
+        // process is a thread of the same name, so a thread found by name may be another test's.
+        let (named, name) = mpsc::channel();
+        let live = LiveSettings::start_from(source.clone(), move || {
+            let _ = named.send(tilo_test_env::idle::current_thread_id());
         });
-        let looks = source.looks.load(Ordering::SeqCst);
+        source.update_section("display", display(2.0)).unwrap();
+        let refresh = tilo_test_env::recv("the follower's thread", &name)
+            .expect("this thread's id")
+            .to_string();
+        assert_eq!(
+            live.wait_for_change(0, tilo_test_env::hang_bound())
+                .section("display"),
+            display(2.0)
+        );
+
+        // The source holds still from here: a follower that looks between changes, or that wakes
+        // for anything but one, is one that polls.
         crate::tests::blocked_count(&refresh);
+        let looks = source.looks.load(Ordering::SeqCst);
         tilo_test_env::idle::assert_stays_asleep(&refresh, "follower of a ringing source");
         assert_eq!(
             source.looks.load(Ordering::SeqCst),
@@ -362,9 +378,11 @@ mod tests {
         );
         assert!(live.degraded().is_none());
 
-        source.update_section("display", display(2.0)).unwrap();
-        let snapshot = live.wait_for_change(0, tilo_test_env::hang_bound());
-        assert_eq!(snapshot.section("display"), display(2.0));
+        // And it still wakes for the next change, so the idleness above is not a follower that
+        // stopped following.
+        source.update_section("display", display(3.0)).unwrap();
+        let snapshot = live.wait_for_change(1, tilo_test_env::hang_bound());
+        assert_eq!(snapshot.section("display"), display(3.0));
     }
 
     #[test]
