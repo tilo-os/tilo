@@ -23,6 +23,16 @@
 pub mod lines;
 pub mod questions;
 mod worker;
+/// What a resource of a kind this crate publishes from outside a document is
+/// called, in the person's language: the kind's entry in the catalogue beside
+/// this crate, read the way a declaration's words are.
+mod i18n {
+    tilo_resource::declared_catalogue!(CATALOGUE);
+
+    pub(crate) fn name(kind: &str, source: &str) -> String {
+        tilo_resource::label::localized(kind, source, Some(&CATALOGUE))
+    }
+}
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};

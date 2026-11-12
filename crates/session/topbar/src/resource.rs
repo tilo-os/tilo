@@ -20,7 +20,7 @@ use crate::surface::TopBarSurface;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct TopBar {}
 
-#[resource(kind = "desktop.topbar", label = "Top bar")]
+#[resource(kind = "desktop.topbar")]
 impl TopBar {}
 
 /// What only the bar can do: press a running application's tray item, open

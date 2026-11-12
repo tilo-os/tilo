@@ -219,3 +219,41 @@ reason = "A store app's own name, the same in every language; the sentence aroun
 file = "apps/settings/src/panes/agent_models/hub.rs"
 text = "Hugging Face"
 reason = "A service's name, spelled the same in every language; the sentence around it is the catalogue's."
+
+# The session's capture fixtures: the words a screenshot poses, drawn for a
+# picture or a test, never in a window a person works in.
+
+[[allow]]
+file = "crates/session/activities/src/fixture.rs"
+text = "Glenn Gould"
+reason = "A sample activity card's subtitle in the capture fixtures, which no one reads."
+
+[[allow]]
+file = "crates/session/notification-banners/src/fixture.rs"
+text = "Ada Lovelace"
+reason = "A sample banner's sender in the capture fixtures, which no one reads."
+
+[[allow]]
+file = "crates/session/notification-banners/src/fixture.rs"
+text = "Design review"
+reason = "A sample banner's title in the capture fixtures, which no one reads."
+
+[[allow]]
+file = "crates/session/notification-banners/src/fixture.rs"
+text = "Build finished"
+reason = "A sample banner's title in the capture fixtures, which no one reads."
+
+[[allow]]
+file = "crates/session/notification-banners/src/fixture.rs"
+text = "Jonas Weber"
+reason = "A sample banner's sender in the capture fixtures, which no one reads."
+
+[[allow]]
+file = "crates/session/notification-banners/src/fixture.rs"
+text = "Battery critically low"
+reason = "A sample banner's title in the capture fixtures, which no one reads."
+
+[[allow]]
+file = "crates/session/notification-banners/src/fixture.rs"
+text = "Upload {at} finished"
+reason = "A sample banner's title in the capture fixtures, which no one reads."

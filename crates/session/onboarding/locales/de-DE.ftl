@@ -292,3 +292,16 @@ onboarding-backup-unavailable = Auf diesem Gerät kann keine Sicherung deiner pe
 
 ## A sample recovery key shown by a review render
 onboarding-sample-recovery-words = abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual
+
+## Actions
+
+onboarding-setup = Einrichtung
+so-tilo-onboarding-step-acknowledge = Bestätigen
+so-tilo-onboarding-step-browse = Eine Datei wählen
+so-tilo-onboarding-step-choose = Einen anderen Weg wählen
+so-tilo-onboarding-step-close-chooser = Die Dateiauswahl schließen
+so-tilo-onboarding-step-enter = Einen Wert eingeben
+so-tilo-onboarding-step-enter-secret = Ein Geheimnis eingeben
+so-tilo-onboarding-step-pick = Eine Datei auswählen
+so-tilo-onboarding-step-retry = Erneut versuchen
+so-tilo-onboarding-step-skip = Überspringen

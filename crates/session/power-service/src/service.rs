@@ -127,14 +127,22 @@ fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
 /// The `power:sleep` resource, with the actions a person can take on it.
 #[must_use]
 pub fn sleep_resource() -> ResourceSpec {
-    offer::<SleepAction>(ResourceSpec::new(SLEEP, SLEEP_KIND, "Power and sleep"))
+    offer::<SleepAction>(ResourceSpec::new(
+        SLEEP,
+        SLEEP_KIND,
+        crate::i18n::name(SLEEP_KIND, "Power and sleep"),
+    ))
 }
 
 /// The `power:battery` resource: the pack as it reads, and the charge limit
 /// where its driver offers one.
 #[must_use]
 pub fn battery_resource() -> ResourceSpec {
-    offer::<BatteryAction>(ResourceSpec::new(BATTERY, BATTERY_KIND, "Battery"))
+    offer::<BatteryAction>(ResourceSpec::new(
+        BATTERY,
+        BATTERY_KIND,
+        crate::i18n::name(BATTERY_KIND, "Battery"),
+    ))
 }
 
 /// The battery as a view of another language reads and changes it: its reading

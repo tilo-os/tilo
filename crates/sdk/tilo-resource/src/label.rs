@@ -136,6 +136,29 @@ pub fn message_key(kind: &str) -> String {
     kind.replace(['.', '_', ':'], "-")
 }
 
+/// The catalogue beside the crate being built, as a `static`:
+/// `declared_catalogue!(CATALOGUE);`, its source language embedded and its
+/// other languages read from the language packs as a declaration's words are.
+///
+/// A declaration names its words through its own catalogue; a crate that
+/// publishes a resource of a kind no declaration of its owns — a service's
+/// rows, read from what the machine holds — names it through this one
+/// ([`localized`] of the kind and the name it declares).
+#[macro_export]
+macro_rules! declared_catalogue {
+    ($vis:vis $name:ident) => {
+        $vis static $name: $crate::label::Catalogue = $crate::label::Catalogue {
+            id: ::core::env!("CARGO_PKG_NAME"),
+            source: ::core::include_str!(::core::concat!(
+                ::core::env!("CARGO_MANIFEST_DIR"),
+                "/locales/en-US.ftl"
+            )),
+            dir: ::core::concat!(::core::env!("CARGO_MANIFEST_DIR"), "/locales"),
+            locales: &["de-DE", "en-US"],
+        };
+    };
+}
+
 /// `source`, the name the resource declares, in the person's language: the
 /// catalogue entry for `kind` when one of theirs holds it, `source` itself
 /// otherwise.

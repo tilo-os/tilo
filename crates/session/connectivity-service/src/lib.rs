@@ -28,6 +28,17 @@
 
 pub mod device;
 pub mod effects;
+/// What a resource of a kind this crate publishes from outside a document is
+/// called, in the person's language: the kind's entry in the catalogue beside
+/// this crate, read the way a declaration's words are.
+mod i18n {
+    tilo_resource::declared_catalogue!(CATALOGUE);
+
+    pub(crate) fn name(kind: &str, source: &str) -> String {
+        tilo_resource::label::localized(kind, source, Some(&CATALOGUE))
+    }
+}
+
 pub mod model;
 
 use std::sync::Arc;
@@ -408,7 +419,7 @@ pub fn network_resource(network: &Network) -> ResourceSpec {
     let mut resource = offer::<NetworkAction>(ResourceSpec::new(
         NETWORK,
         "so.tilo.connectivity.network",
-        "Network",
+        crate::i18n::name("so.tilo.connectivity.network", "Network"),
     ));
     mark_what_the_device_lacks(&mut resource, network);
     resource.with_children(network_children(network))
@@ -536,7 +547,7 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
     let mut resource = offer::<BluetoothAction>(ResourceSpec::new(
         BLUETOOTH,
         "so.tilo.connectivity.bluetooth",
-        "Bluetooth",
+        crate::i18n::name("so.tilo.connectivity.bluetooth", "Bluetooth"),
     ));
     if !bluetooth.available {
         for action in [
@@ -606,8 +617,11 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
 /// The `vpn` resource reading `vpn`.
 #[must_use]
 pub fn vpn_resource(vpn: &Vpn) -> ResourceSpec {
-    let mut resource =
-        offer::<VpnAction>(ResourceSpec::new(VPN, "so.tilo.connectivity.vpn", "VPN"));
+    let mut resource = offer::<VpnAction>(ResourceSpec::new(
+        VPN,
+        "so.tilo.connectivity.vpn",
+        crate::i18n::name("so.tilo.connectivity.vpn", "VPN"),
+    ));
     if vpn.profiles.is_empty() {
         unavailable(
             &mut resource,
@@ -642,7 +656,7 @@ pub fn tethering_resource(tethering: &Tethering) -> ResourceSpec {
     let mut resource = offer::<TetheringAction>(ResourceSpec::new(
         TETHERING,
         "so.tilo.connectivity.tethering",
-        "Tethering",
+        crate::i18n::name("so.tilo.connectivity.tethering", "Tethering"),
     ));
     if !tethering.available {
         for action in ["set-hotspot", "configure-hotspot"] {

@@ -779,8 +779,12 @@ impl Service for Downloaded {
             })
             .collect();
         vec![
-            offer::<DownloadedAppsAction>(ResourceSpec::new(RESOURCE, KIND, LABEL))
-                .with_children(apps),
+            offer::<DownloadedAppsAction>(ResourceSpec::new(
+                RESOURCE,
+                KIND,
+                crate::i18n::name(KIND, LABEL),
+            ))
+            .with_children(apps),
         ]
     }
 

@@ -149,7 +149,6 @@ pub enum PlayerAction {
     #[effect(
         own_device,
         row,
-        label = "Play or pause",
         icon = "play",
         keywords = "media, music, play, pause, resume, abspielen, pausieren"
     )]
@@ -158,7 +157,6 @@ pub enum PlayerAction {
     #[effect(
         own_device,
         row,
-        label = "Next track",
         icon = "skip-forward",
         keywords = "media, music, next, skip, nächster titel"
     )]
@@ -167,7 +165,6 @@ pub enum PlayerAction {
     #[effect(
         own_device,
         row,
-        label = "Previous track",
         icon = "skip-back",
         keywords = "media, music, previous, back, vorheriger titel"
     )]
@@ -193,35 +190,23 @@ pub enum MediaAction {
     /// Play when paused, pause when playing.
     #[effect(
         own_device,
-        label = "Play or pause",
         icon = "play",
         keywords = "music, video, resume, wiedergabe"
     )]
     PlayPause,
     /// Skip to the next track.
-    #[effect(
-        own_device,
-        label = "Next track",
-        icon = "skip-forward",
-        keywords = "skip"
-    )]
+    #[effect(own_device, icon = "skip-forward", keywords = "skip")]
     Next,
     /// Go back to the previous track.
-    #[effect(
-        own_device,
-        label = "Previous track",
-        icon = "skip-back",
-        keywords = "back"
-    )]
+    #[effect(own_device, icon = "skip-back", keywords = "back")]
     Previous,
     /// Stop playing.
-    #[effect(own_device, label = "Stop", icon = "square", keywords = "halt")]
+    #[effect(own_device, icon = "square", keywords = "halt")]
     Stop,
     /// Go to a point in what plays.
     #[effect(
         own_device,
         idempotent,
-        label = "Go to",
         icon = "skip-forward",
         keywords = "seek, scrub, jump"
     )]
@@ -232,12 +217,7 @@ pub enum MediaAction {
     },
     /// Continue here the session another of the person's devices hands
     /// over.
-    #[effect(
-        own_device,
-        label = "Continue here",
-        icon = "play",
-        keywords = "handoff, continue, resume"
-    )]
+    #[effect(own_device, icon = "play", keywords = "handoff, continue, resume")]
     Resume {
         /// The handoff's request, 32 hex digits.
         #[param("The handoff's request")]
@@ -329,7 +309,11 @@ fn player_spec(player: &Player) -> ResourceSpec {
 /// The `media` resource reading `media`.
 #[must_use]
 pub fn resource(media: &Media) -> ResourceSpec {
-    let mut resource = offer::<MediaAction>(ResourceSpec::new(MEDIA, MEDIA_KIND, "Now playing"));
+    let mut resource = offer::<MediaAction>(ResourceSpec::new(
+        MEDIA,
+        MEDIA_KIND,
+        crate::i18n::name(MEDIA_KIND, "Now playing"),
+    ));
     front_controls(media, &mut resource);
     resource.with_children(media.players.iter().map(player_spec))
 }

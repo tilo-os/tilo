@@ -22,7 +22,7 @@ pub const APP_ID: &str = "so.tilo.onboarding";
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Onboarding {}
 
-#[resource(kind = "onboarding.setup", label = "Setup")]
+#[resource(kind = "onboarding.setup")]
 impl Onboarding {}
 
 /// Setup as an app.

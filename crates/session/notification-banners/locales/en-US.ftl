@@ -1,0 +1,10 @@
+notifications-banners = Notifications
+so-tilo-notification-banners-act = Choose on the notification
+so-tilo-notification-banners-answer-call = Answer the call
+so-tilo-notification-banners-decline-call = Decline the call
+so-tilo-notification-banners-dismiss = Dismiss the notification
+so-tilo-notification-banners-focus-newest = Focus the newest notification
+so-tilo-notification-banners-open = Open the notification
+so-tilo-notification-banners-read = Read it in full
+so-tilo-notification-banners-reply = Reply to the notification
+so-tilo-notification-banners-snooze = Snooze the notification

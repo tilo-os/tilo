@@ -274,8 +274,12 @@ impl Service for Questions {
     fn resources(&self) -> Vec<ResourceSpec> {
         let children = self.pending().into_iter().map(question_spec);
         vec![
-            ResourceSpec::new(QUESTIONS_RESOURCE, QUESTIONS_KIND, "Questions")
-                .with_children(children),
+            ResourceSpec::new(
+                QUESTIONS_RESOURCE,
+                QUESTIONS_KIND,
+                crate::i18n::name(QUESTIONS_KIND, "Questions"),
+            )
+            .with_children(children),
         ]
     }
 
