@@ -308,8 +308,14 @@ async function restingShot(tab, combo, name, up, ms = 15000, settledMs = 2000) {
   let previous = null;
   let kept = null;
   while (Date.now() - began < ms) {
+    // Whether it stood as the screenshot began: a screenshot takes seconds on the builder, and one
+    // begun while it stood is of it, even when it left before the screenshot came back.
+    const before = await up();
     const png = await tab.screenshot();
-    if (!(await up())) break;
+    if (!(await up())) {
+      if (before && png && !kept) kept = png;
+      break;
+    }
     if (png) {
       if (previous && png.equals(previous)) {
         writeFileSync(join(shotsDir, `${combo}-${name}.png`), png);
