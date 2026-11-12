@@ -637,6 +637,7 @@ enum InternalEvent {
     /// frame into this device's owner over its link.
     MemberHeard {
         ws: u64,
+        workspace: tilo_desktop_model::WorkspaceId,
         heard: tilo_peer_state::direct::Heard,
     },
     /// A workspace's link has the host's retained history in hand.
@@ -1173,6 +1174,9 @@ struct ActorState {
     /// The devices that take part in this device's workspaces through it
     /// ([`NetCmd::ServeMembers`]).
     members: Option<tilo_peer_state::direct::Owning>,
+    /// What this device's apps take the members' frames of each workspace under while no link of
+    /// it is up, as they take a link's: a workspace this device hosts itself has none.
+    member_scopes: HashMap<u64, Arc<native_ingress::Scope>>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     /// Approver sessions that put this person's agents' questions on the
@@ -2413,7 +2417,11 @@ impl ActorState {
             Some(InternalEvent::NativeHeard { ws, heard }) => {
                 self.native_heard(ws, heard).await;
             }
-            Some(InternalEvent::MemberHeard { ws, heard }) => self.member_heard(ws, heard).await,
+            Some(InternalEvent::MemberHeard {
+                ws,
+                workspace,
+                heard,
+            }) => self.member_heard(ws, workspace, heard).await,
             Some(InternalEvent::NativeReady { ws }) => self.native_ready(ws).await,
             Some(InternalEvent::NativeLinkClosed { ws, deleted }) => {
                 self.native_link_closed(ws, deleted).await;
@@ -3434,6 +3442,7 @@ async fn run(
         host_sessions: HashMap::new(),
         native_links: HashMap::new(),
         members: None,
+        member_scopes: HashMap::new(),
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
         agent_questions: services::approvers(),

@@ -1726,6 +1726,12 @@ impl Owning {
         self.sinks.write_recover().push(sink);
     }
 
+    /// The owner whose workspaces this answers for.
+    #[must_use]
+    pub fn owner(&self) -> &crate::owner::NativeWorkspaceOwner {
+        &self.owner
+    }
+
     /// Send `message`, `from`'s frame of `workspace`, to the members linked to
     /// this device there: what this device writes, and what the workspace's
     /// other devices wrote that reached it another way. A member linked here
