@@ -99,6 +99,19 @@ view documents(bag: Bag) {
     }
 }
 
+/// A list whose rows' documents read what the rows themselves do not: the bag they are in.
+view bag_documents(bag: Bag) {
+    state opened: Option<Item> = .none
+    std.list(bag.items, opened) { (item, at) ->
+        ui.ListItem(item: item, presence: at) {
+            item_line(item)
+            detail: {
+                text("{item.title} is in {bag.name}")
+            }
+        }
+    }
+}
+
 view item_document(item: Item) {
     section("About {item.title}") {
         text("what {item.title} is for")
@@ -624,6 +637,42 @@ view deck(d: Deck) {
     /// The document of a row is built for the row standing open into its item, and for no other
     /// row on screen: a list of ten thousand tasks costs the one page a person reads, and the
     /// rows that stand closed carry none of theirs.
+    /// A closed row runs none of the document it would open into: what that document reads and
+    /// the row does not is no read of the row, so renaming the bag every document names runs
+    /// no row standing closed, and the row a person opens shows the bag's name now.
+    #[test]
+    fn a_closed_rows_document_reads_nothing() {
+        let rows = Rows::new(20);
+        let mut view = rows.view("bag_documents");
+        let list = list_key(&view);
+        for i in 0..10 {
+            view.row(&list, i).unwrap();
+        }
+        let before = view.stats().renders;
+        rows.call(
+            "rename",
+            vec![Value::resource(&rows.bag), Value::text("groceries")],
+        );
+        view.poll_patches().unwrap();
+        // The view holding the list reads the bag; no row does.
+        let ran = view.stats().renders - before;
+        assert!(
+            ran <= 1,
+            "renaming the bag ran {ran} boundaries: the rows standing closed ran"
+        );
+
+        let third = view.row_key(&list, 2).expect("the third row");
+        view.open_row(&list, Some(&third));
+        view.poll_patches().unwrap();
+        let opened = view.row(&list, 2).unwrap().unwrap();
+        assert!(
+            texts(opened)
+                .iter()
+                .any(|text| text == "item 2 is in groceries"),
+            "the row standing open shows its document as the bag is now: {opened:?}"
+        );
+    }
+
     #[test]
     fn a_rows_document_is_built_for_the_row_standing_open_alone() {
         let rows = Rows::new(100);

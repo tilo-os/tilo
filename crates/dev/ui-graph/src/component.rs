@@ -22,10 +22,6 @@ use serde::{Deserialize, Serialize};
 /// The version of the description format: a change to the shape of [`Description`] bumps it.
 pub const FORMAT_VERSION: u32 = 8;
 
-/// The prop a `slot` node carries when what it holds is the document the row it stands in opens
-/// into where it stands: it is built only while that row stands open.
-pub const WHEN_OPEN_PROP: &str = "when_open";
-
 /// The prop a component carries when its block gives such a slot: the row offers to open into
 /// its document, which comes once it stands open.
 pub const OPENS_PROP: &str = "opens";

@@ -328,6 +328,9 @@ imports! {
 
     SpaceI = "space_i" ([H] -> [I64]);
     SpaceF = "space_f" ([H] -> [F64]);
+    // Whether the row the view is running for stands open into its document: what a slot that
+    // holds the document is built under.
+    RowOpen = "row_open" ([] -> [I32]);
 
     Abort = "abort" ([H] -> []);
 }

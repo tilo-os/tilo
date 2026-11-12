@@ -283,6 +283,7 @@ imports! {
     (UiAction, "ui_action", "iii", ""),
     (SpaceI, "space_i", "i", "l"),
     (SpaceF, "space_f", "i", "f"),
+    (RowOpen, "row_open", "", "i"),
 
     // A file: its name, media type or address (by the part asked), its size, its content read
     // as text, and the chooser a control runs.

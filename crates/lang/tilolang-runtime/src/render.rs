@@ -53,8 +53,6 @@ const EACH: &str = "each";
 const SUFFIX: &str = "suffix";
 /// The parameter of a row view that takes the row's key suffix (`<suffix>/<item key>`).
 const ROW_KEY: &str = "$key";
-/// The kind of the node a component's named slot lowers to, holding the view its block gives it.
-const SLOT: &str = "slot";
 
 /// A view export of a loaded module.
 #[derive(Clone, Debug)]
@@ -147,8 +145,9 @@ pub(crate) struct Walk<'a> {
     /// Whether the nodes here are a row of a `list` that stands a divider where its unseen part
     /// starts (`unseen_from:`), which already says of a row there that it is new.
     pub says_new: bool,
-    /// Whether the nodes here are a row standing open into its item where it stands: the slot
-    /// that holds the item's document is built here, and in no closed row.
+    /// Whether the nodes here are a row standing open into its item where it stands: a view the
+    /// row calls runs as the open row's, so the slot holding the item's document is built in it
+    /// (`row_open`), and in no closed row.
     pub open: bool,
     /// How many rows that list shows, when it is a card's preview (its `preview` property):
     /// the rows after those are never shown, so they are not built.
@@ -382,10 +381,12 @@ impl Core {
             .cloned()
             .or_else(|| self.written_author(&pkg.hash))
             .unwrap_or_else(|| pkg.hash.clone());
+        let open = scoped.as_ref().is_some_and(|scoped| scoped.open);
         self.frames.borrow_mut().push(
             author,
             FrameKind::View(ViewState {
                 space,
+                open,
                 window: offer.window.to_owned(),
                 viewer: offer.viewer.clone(),
                 ..ViewState::default()
@@ -696,23 +697,7 @@ impl Core {
             return self.view_call_node(cx, fragment, walk, acc, boundaries, call);
         }
         let below = Walk::below(walk, n, key.as_str());
-        // The slot holding the document a row opens into where it stands is built only for the
-        // row standing open: a closed row carries the empty slot, and the item's document — its
-        // view calls, its reads and everything they draw — is built when the row opens.
-        let closed = n.kind == SLOT
-            && !walk.open
-            && n.props
-                .get(tilolang::toolkit::WHEN_OPEN_PROP)
-                .is_some_and(|open| match open {
-                    Value::Bool(open) => *open,
-                    Value::Int(open) => *open != 0,
-                    _ => false,
-                });
-        let (children, rows_total) = if closed {
-            (Vec::new(), 0)
-        } else {
-            self.build_children(cx, (n, &key), below, acc, hook)?
-        };
+        let (children, rows_total) = self.build_children(cx, (n, &key), below, acc, hook)?;
         let mut props = n.props.clone();
         if below.preview.is_some() {
             // How many rows the list has, the ones not built included: the count it carries
