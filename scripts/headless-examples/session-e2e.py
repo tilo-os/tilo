@@ -3,9 +3,9 @@
 
 One session (dist/dev/nested-session.sh, headless, lavapipe only) runs what a person's session
 runs: the shell with its broker and workspace host, the launcher and its sandboxes, the
-host, native Tasks and the agent runtime, and four tilolang apps built from apps/tl (Notes, Tasks,
-Mail, Chat) and installed as signed packages. Every check below drives it the way a person, the
-REPL or an agent does, and each one is there because a bug in that path was invisible to the
+host, native Tasks, Chat and the agent runtime, and four tilolang apps built from apps/tl (Notes,
+Tasks, Mail, Chat) and installed as signed packages. Every check below drives it the way a person,
+the REPL or an agent does, and each one is there because a bug in that path was invisible to the
 unit tests and found only by starting a session by hand:
 
   audio    the session's sound is its own: one null output, no device of the machine's in its
@@ -38,13 +38,17 @@ unit tests and found only by starting a session by hand:
            ("a document change carries no claim") and after which the workspace's readers miss the
            record: the check fails on any refused change, so it fails on integration
            70ba3301da0 until `open_stored` commits the Genesis (fix not landed yet).
-  ask      asking an agent makes its issue in the tracker, opens no window, and starts a task
-           agent, which asks the model. The model is TestOnlyFixedReplyModel below: a loopback
+  ask      asking an agent sends the person's request to the agent they keep — a new one when
+           they keep none — through the session's one send (`session:send-to#send`, the action a
+           window's box, text typed on the canvas and an agent all run). The session then starts
+           that agent, it asks the model, and its answer lands in the person's conversation with
+           it, where Chat shows it. The model is TestOnlyFixedReplyModel below: a loopback
            OpenAI-compatible endpoint inside this script that gives one fixed reply. It exists
            for this test only; never point a live session at it.
-           Catches the ask addressing native Tasks' `tasks.tracker` while the windowless Tasks
-           publishes under its bound alias (`tilo-ui-bound:v1:...`), so the broker never found
-           it and the composer said "No reply yet": fails until that fix lands.
+           Catches a send that never reaches the agent's conversation (the request then lies
+           unanswered in Chat, as it did in a session with no Chat installed: "so.tilo.chat is
+           not installed here"), an agent the session never starts, and a turn whose steps are
+           refused: the model is never asked, and the check fails with what the session logged.
   restart  the session stopped and started again on the same state: the four windows come
            back, present frames, and hold what was written (the note in Notes, the channel in
            Chat).
@@ -98,37 +102,43 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 SESSION_SH = REPO / "dist/dev/nested-session.sh"
 sys.path.insert(0, str(HERE / "agent-tilolang"))
-from replay_model import TASK_MARK, OpenAiReplay, text_of  # noqa: E402
+from replay_model import OpenAiReplay  # noqa: E402
 
 # The tilolang apps, by their directory under apps/tl, and the native apps beside them: the
-# agent runtime and native Tasks, whose tracker holds the agents' tasks.
+# agent runtime that answers the person's asks, native Tasks, and Chat, which keeps the
+# conversations an agent works in and the agents a workspace keeps.
 TL_APPS = ["notes", "tasks", "mail", "chat"]
-NATIVE = "agent tasks"
-TRACKER_ISSUES = "tasks.tracker/issues/"
-# tilo_actions::BOUND_RESOURCE_PREFIX: an app instance's alias of its own resource ids.
-BOUND_RESOURCE_PREFIX = "tilo-ui-bound:v1:"
+NATIVE = "agent tasks chat"
+# The provider the session publishes its own actions under
+# (tilo_actions::remote::SESSION_ACTIONS_PROVIDER).
+SESSION_PROVIDER = "so.tilo.session"
 # How long any one wait may take before it counts as a hang: a first frame takes well under a
 # second here, so this bounds only a path that never answers.
 HANG_BOUND = float(os.environ.get("TILO_TEST_HANG_BOUND_SECS", "30"))
 # The one output a nested session's sound has (tilo_media::audio::SESSION_SINK).
 SESSION_SINK = "tilo-sink"
-# What the person asks the agent, and the one reply the test-only model gives.
-REQUEST = "Tidy up the release tasks"
-FIXED_REPLY = "The release tasks are tidy. (This is the e2e test model's fixed reply.)"
+# What the person asks the agent, and the one reply the test-only model gives. The request is a
+# question, which an agent answers in its reply: a request for work in an application would have
+# to be carried out there, and this model only answers.
+REQUEST = "What is left for the release?"
+FIXED_REPLY = "Three tasks are left in the release. (This is the e2e test model's fixed reply.)"
 TEST_MODEL = "e2e-fixed-reply"
-# The task the test model's program adds: the change the asked agent makes in an app.
-ASKED_TASK = "Call Xaver about the launch video"
-# What the session logs as the task agent's process exits: a task agent ends with its run.
-AGENT_EXITED = "app-exit: package=so.tilo.agent "
-# What the agent logs when the issue refuses one of the run's own calls on it
-# (apps/agent/src/session/tracker.rs, session.rs, agent_loop.rs).
+# Chat's messages as the workspace's record holds them: what was said and in which
+# conversation (apps/chat/src/record.rs, `derived:messages`).
+CHAT_MESSAGES = "derived:part.0@derived:messages@derived:default@tab:0000000000000000"
+# The agent loop's own tool that finishes a turn with the answer its person reads
+# (apps/agent/src/tools.rs, `PLAN`).
+FINISH = "plan"
+# What the session and its apps log when the ask or the run's own steps are refused
+# (crates/session/session/src/send_to.rs, app_tabs.rs, apps.rs, apps/agent/src/session).
 RUN_REFUSALS = [
-    "the issue did not take the run's report",
-    "the issue's action was not invoked",
-    "the issue refused the turn's receipt",
-    "the issue refused the failed turn's receipt",
-    "native task stopped before completion",
-    "native task review report was refused",
+    "an app action was not delivered",
+    "a send did not land",
+    "a window's send was not taken",
+    "an agent did not start",
+    "refused a run that answers no turn",
+    "the conversation refused the run's report",
+    "the conversation's `record-work` refused its arguments",
 ]
 
 
@@ -167,9 +177,8 @@ def wait_for(what: str, check: Callable[[], Any], seen: Callable[[], Any] | None
 # --- the test-only model -------------------------------------------------------------------
 
 class TestOnlyFixedReplyModel:
-    """A loopback OpenAI-compatible endpoint for this test alone: the composer's `respond`
-    transform is told the request is work (titled as asked), and every turn of the task's own
-    loop gets FIXED_REPLY and no tool call. It records each task turn it was asked."""
+    """A loopback OpenAI-compatible endpoint for this test alone: every turn of the agent's loop
+    finishes with FIXED_REPLY, and each turn it was asked is kept."""
 
     def __init__(self) -> None:
         self.task_turns: list[list[dict[str, Any]]] = []
@@ -183,17 +192,14 @@ class TestOnlyFixedReplyModel:
         return self
 
     def respond(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not any(TASK_MARK in text_of(m.get("content")) for m in messages):
-            return [{"type": "text", "text": json.dumps({"result": {"work": REQUEST}})}]
         with self.lock:
             self.task_turns.append(messages)
-            first = not any(m.get("role") == "assistant" for m in messages)
-        # Its first turn adds a task through the `tilo` tool (apps/agent/src/programs.rs), the
-        # way a real model does what it is asked; once that answered, the fixed reply ends it.
-        if first:
-            return [{"type": "tool_use", "id": "toolu_e2e_add_task", "name": "tilo",
-                     "input": {"program": f'tasks.add(tasks.tasks, "{ASKED_TASK}")'}}]
-        return [{"type": "text", "text": FIXED_REPLY}]
+            turn = len(self.task_turns)
+        # The loop's finish tool: a turn that answers without an action is the person's reply. Its
+        # call id is the turn's, as a provider's is, so a later turn's call is not taken for one
+        # already consumed.
+        return [{"type": "tool_use", "id": f"toolu_e2e_finish_{turn}", "name": FINISH,
+                 "input": {"reply": FIXED_REPLY, "done": True}}]
 
     @property
     def port(self) -> int:
@@ -327,13 +333,18 @@ class Session:
         return self.control_json("actions", "list", query, "--json", "--programmatic",
                                  "--wait").get("actions", [])
 
-    def invoke(self, provider: str, ident: str, args: dict | None = None) -> dict:
+    def invoke(self, provider: str, ident: str, args: dict | None = None,
+               job: bool = False) -> dict:
+        """Invoke `provider`'s action `ident` and answer its settled receipt. `job` for an action
+        that takes the work and carries it out on the session's next pass: its receipt says
+        `accepted`, and the check proves what it did by the session's own state."""
         argv = ["actions", "invoke", provider, ident, "--wait=30000"]
         if args is not None:
             argv += ["--args-json", json.dumps(args)]
         answer = self.control_json(*argv)
         state = answer.get("receipt", {}).get("update", {}).get("state")
-        if state not in (None, "succeeded"):
+        done = (None, "succeeded", "accepted") if job else (None, "succeeded")
+        if state not in done:
             raise Failed(f"{provider} {ident} did not succeed: {json.dumps(answer)[:1500]}")
         return answer
 
@@ -364,35 +375,27 @@ def windows_by_app(session: Session) -> dict[str, dict]:
     return {w.get("app_id"): w for w in session.windows()}
 
 
-def read_content(session: Session, name: str) -> str | None:
-    """What the running instance of tilolang `name` holds, as its "Read the content" answers:
-    the workspace's records and, read one by one, each record of the app's own kinds. The
-    instance in the workspace in front answers it, from its own replica."""
-    action = wait_for(f"{name}'s 'Read the content'", lambda: next((
-        a for a in session.actions("Read the content")
-        if a.get("application") == app_id(name)
-        and a["id"].split("\x1f")[-1] == "read"), None))
-    try:
-        listing = session.invoke("app-actions", action["id"])
-        value = listing.get("receipt", {}).get("update", {}).get("output", {}).get("value", {})
-        parts = [json.dumps(value)]
-        for record in value.get("records", []) if isinstance(value, dict) else []:
-            if record.get("kind", "").startswith(f"tl.{app_id(name)}."):
-                read = session.invoke("app-actions", action["id"], {"item": record["item"]})
-                parts.append(json.dumps(read.get("receipt", {}).get("update", {}).get("output", {})))
-    except Failed as error:
-        # A directory id names one revision of the app's directory; once the app changed, the
-        # action is listed again under the next one.
-        if "unknown_action" in str(error):
-            return None
-        raise
-    return "\n".join(parts)
+def said(session: Session, wait_ms: int = 0) -> list[dict]:
+    """Chat's messages as the workspace's record holds them, each by the words it says and the
+    conversation it is in: what a person reads in Chat, read through the record door as they
+    read it. Held until the record moves or `wait_ms` passed when one is given."""
+    answer = session.control_json("raw", json.dumps({
+        "op": "record_read", "app": "so.tilo.chat", "records": [CHAT_MESSAGES],
+        "wait_ms": wait_ms}))
+    messages: list[dict] = []
 
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if isinstance(value.get("text"), str) and isinstance(value.get("channel"), str):
+                messages.append({"text": value["text"], "channel": value["channel"]})
+            for inner in value.values():
+                walk(inner)
+        elif isinstance(value, list):
+            for inner in value:
+                walk(inner)
 
-def holds(session: Session, name: str, text: str) -> bool | None:
-    """Whether the running instance of `name` holds `text`; None while its listing moves."""
-    content = read_content(session, name)
-    return None if content is None else text in content
+    walk(answer.get("answer") or {})
+    return messages
 
 
 class Repl:
@@ -628,63 +631,53 @@ def check_repl(session: Session, out: Path) -> dict:
         (out / "repl-transcript.txt").write_text(repl.transcript)
 
 
-def logical_resource(resource: str) -> str:
-    """The app's own id of `resource`: an instance with no window (the windowless Tasks)
-    publishes its resources under its instance's alias, `BOUND_RESOURCE_PREFIX` and the id in
-    hex last, as `tilo_actions::selection::logical_resource_id` reads it."""
-    if not resource.startswith(BOUND_RESOURCE_PREFIX):
-        return resource
-    try:
-        return bytes.fromhex(resource.rsplit(":", 1)[-1]).decode()
-    except ValueError:
-        return resource
+def refusals(session: Session) -> list[str]:
+    """What the session and its apps logged as refusing the ask or a step of the run it made."""
+    return [line for line in session.log_lines() if any(r in line for r in RUN_REFUSALS)]
 
 
 def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
-    """Asking an agent makes the tracker issue, opens no window and starts a task agent."""
+    """Asking an agent sends the person's request to the agent they keep (a new one when they
+    keep none) through the session's one send, and the agent the session starts answers it: it
+    asks the model, and its answer lands in the person's conversation with it, where Chat shows
+    it."""
     session.provision(model)
-    row = wait_for("ask row ready for a new agent", lambda: next((
-        a for a in session.actions(REQUEST)
-        if a.get("provider") == "ask-agent" and "Settings" not in (a.get("subtitle") or "")), None),
-        lambda: [a.get("subtitle") for a in session.actions(REQUEST) if a.get("provider") == "ask-agent"])
-    before = sorted((w.get("app_id"), w.get("tab")) for w in session.windows())
-    session.invoke(row["provider"], row["id"])
+    # The action every ask runs: the one a window's box and text typed on the canvas invoke, and
+    # the one the desk's catalogue lists for an agent to run.
+    row = wait_for("the session's send, as the desk lists it", lambda: next((
+        a for a in session.actions("send")
+        if a.get("provider") == SESSION_PROVIDER and a.get("operation") == "send"), None),
+        lambda: [{"provider": a.get("provider"), "title": a.get("title"),
+                  "operation": a.get("operation")} for a in session.actions("send")])
+    session.invoke(row["provider"], row["id"],
+                   {"to": [{"kind": "new-agent", "name": ""}], "text": REQUEST}, job=True)
 
-    def issue() -> str | None:
-        """The issue's address: listed among the workspace's records under the request, or
-        named in what its task agent was told."""
-        listed = next((logical for a in session.actions(REQUEST)
-                       if (logical := logical_resource(a.get("resource") or ""))
-                       .startswith(TRACKER_ISSUES)), None)
-        if listed:
-            return listed
-        told = re.search(re.escape(TRACKER_ISSUES) + r"[\w-]+", json.dumps(model.task_turns))
-        return told.group(0) if told else None
+    def reached_the_agent() -> bool:
+        """Whether the agent was asked, failing at once with what the session refused."""
+        if refused := refusals(session):
+            raise Failed("the ask or the run's own steps were refused:\n" + "\n".join(refused[:8]))
+        return bool(model.task_turns)
 
-    made = wait_for("tracker issue for the request", issue,
-                    lambda: f"model errors {model.errors}\n{session.log_tail()}")
-    wait_for("task agent asking the model", lambda: model.task_turns,
+    wait_for("the agent the ask made, asking the model", reached_the_agent,
              lambda: f"model errors {model.errors}\n{session.log_tail()}")
-    after = sorted((w.get("app_id"), w.get("tab")) for w in session.windows())
-    if after != before:
-        raise Failed(f"asking opened or closed windows: before {before}, after {after}")
-    # The agent's change landed: the task its program added is in the running Tasks.
-    wait_for("the task the agent added, in Tasks", lambda: holds(session, "tasks", ASKED_TASK),
-             lambda: f"model errors {model.errors}; turns {len(model.task_turns)}; the program "
-                     f"answered: {text_of(model.task_turns[-1][-1].get('content'))[:1500] if len(model.task_turns) > 1 else '-'}"
-                     f"\n{session.log_tail()}")
-    # The run holds and settles each turn's spend and reports its own end on the issue, and
-    # only then does its task agent exit. Catches the agent's spend arguments not matching
-    # Tasks' actions and its finish-run being refused as made for a task that had ended.
-    exited = wait_for("the task agent ending with its task",
-                      lambda: next((line for line in session.log_lines() if AGENT_EXITED in line), None),
-                      lambda: session.log_tail())
-    refused = [line for line in session.log_lines() if any(r in line for r in RUN_REFUSALS)]
-    if refused:
-        raise Failed("the run's own reports were refused:\n" + "\n".join(refused[:8]))
-    if not exited.rstrip().endswith("exit status: 0"):
-        raise Failed(f"the task agent did not end cleanly: {exited}")
-    return {"issue": made, "task_turns": len(model.task_turns)}
+
+    def answered() -> dict | None:
+        """The agent's answer, in the conversation the person's request is in: where a person
+        reads it."""
+        messages = said(session)
+        asked = next((m for m in messages if m["text"] == REQUEST), None)
+        if asked is None:
+            return None
+        return next((m for m in messages
+                     if m["channel"] == asked["channel"] and m["text"].strip() == FIXED_REPLY), None)
+
+    answer = wait_for("the agent's answer in the person's conversation with it", answered,
+                      lambda: f"turns {len(model.task_turns)}; the conversation holds "
+                              f"{[m['text'][:80] for m in said(session)]}\n{session.log_tail()}")
+    if refused := refusals(session):
+        raise Failed("the ask or the run's own steps were refused:\n" + "\n".join(refused[:8]))
+    return {"send": row["id"], "turns": len(model.task_turns),
+            "answer": answer["text"][:120]}
 
 
 def check_restart(session: Session) -> dict:
