@@ -2459,15 +2459,18 @@ impl ImportApp {
                     |e| e,
                     |p| {
                         p.map_or_else(
-                            || "Destination not reviewed yet".into(),
-                            |p| format!("Copies to {}", shown_path(&p)),
+                            || CATALOG.t("imager-destination-not-reviewed"),
+                            |p| {
+                                CATALOG.t_args(
+                                    "imager-copies-to",
+                                    &[("path", ui::i18n::ArgValue::Text(shown_path(&p)))],
+                                )
+                            },
                         )
                     },
                 ),
-                ChoiceMode::Later => "Decide later. It stays in Add folders.".into(),
-                ChoiceMode::Connected => {
-                    "Connected folders are not available. Nothing was synced or copied.".into()
-                }
+                ChoiceMode::Later => CATALOG.t("imager-choice-later"),
+                ChoiceMode::Connected => CATALOG.t("imager-connected-folders-unavailable"),
             };
             let can_review = self
                 .operations
@@ -2624,7 +2627,7 @@ impl ImportApp {
 /// One issue a copy found: the item and why it needs attention.
 fn issue_row(path: &Path, reason: &str) -> ListRow {
     let shown = if path.as_os_str().is_empty() {
-        "The folder itself".to_string()
+        CATALOG.t("imager-folder-itself")
     } else {
         path.display().to_string()
     };

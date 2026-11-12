@@ -951,10 +951,10 @@ impl ImagerApp {
                 .button("imager.next", "Continue", Command::Next)
                 .role(ButtonRole::Primary),
             Step::Confirm => {
-                let write = Button::new("imager.write", "Erase and write")
+                let write = Button::new("imager.write", &CATALOG.t("imager-write"))
                     .role(ButtonRole::Destructive)
                     .with_accessible_name(&self.target().map_or_else(
-                        || "Erase and write the selected drive".to_string(),
+                        || CATALOG.t("imager-write-driving"),
                         |drive| {
                             CATALOG.t_args(
                                 "imager-a11y-erase-drive",
@@ -1147,17 +1147,34 @@ impl ImagerApp {
                 .release_progress()
                 .and_then(|progress| progress.completed.zip(progress.total))
             {
-                Some((done, total)) if total > 0 => format!("{stage}, {}%", done * 100 / total),
+                Some((done, total)) if total > 0 => CATALOG.t_args(
+                    "imager-release-progress",
+                    &[
+                        ("stage", ui::i18n::ArgValue::Text(stage.to_string())),
+                        (
+                            "percent",
+                            ui::i18n::ArgValue::Number((done * 100 / total) as f64),
+                        ),
+                    ],
+                ),
                 _ => stage.to_string(),
             }
         } else if release.local_path.is_empty() {
-            format!(
-                "{}, {} channel, downloads first",
-                release.target_label(),
-                release.channel
+            CATALOG.t_args(
+                "imager-release-channel-downloads-first",
+                &[
+                    ("target", ui::i18n::ArgValue::Text(release.target_label())),
+                    ("channel", ui::i18n::ArgValue::Text(release.channel.clone())),
+                ],
             )
         } else {
-            format!("{}, {} channel", release.target_label(), release.channel)
+            CATALOG.t_args(
+                "imager-release-channel",
+                &[
+                    ("target", ui::i18n::ArgValue::Text(release.target_label())),
+                    ("channel", ui::i18n::ArgValue::Text(release.channel.clone())),
+                ],
+            )
         };
         let mut row = ListRow::new(
             format!("imager.release.{}", release.selection_id()),
@@ -1264,7 +1281,11 @@ impl ImagerApp {
             .and_then(|actions| actions.effect(&ImagerEffect::ExportConfig))
         {
             body = body.push(Box::new(
-                Button::new("imager.export-config", "Preview embedded setup").on_action(binding),
+                Button::new(
+                    "imager.export-config",
+                    &CATALOG.t("imager-preview-embedded"),
+                )
+                .on_action(binding),
             ));
         }
         if !self.needs_manual_customization() {
@@ -1437,18 +1458,18 @@ impl ImagerApp {
         {
             meta.push(format!("about {} left", fmt_eta(eta)));
         }
-        let next = if self.progress.phase == JobPhase::Verifying {
-            "Reading the drive back to check every byte."
+        let next = CATALOG.t(if self.progress.phase == JobPhase::Verifying {
+            "imager-writing-verify-now"
         } else {
-            "Then the drive is read back and checked."
-        };
+            "imager-writing-verify-next"
+        });
         let mut lines = page::related();
         if !meta.is_empty() {
             lines = lines.push(Box::new(
                 Self::centred(&meta.join(", "), TextRole::Body).numeric(),
             ));
         }
-        lines = lines.push(Box::new(Self::centred(next, TextRole::Body).dimmed()));
+        lines = lines.push(Box::new(Self::centred(&next, TextRole::Body).dimmed()));
         let mut body = page::stack()
             .with_rhythm(ui::tokens::Rhythm::Group)
             .push(Box::new(Self::ring_row(ring)))
@@ -1456,9 +1477,12 @@ impl ImagerApp {
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
             body = body.push(Box::new(
                 Self::centred(
-                    &format!(
-                        "{} to {}. Keep the drive connected until this finishes.",
-                        src.name, tgt.model
+                    &CATALOG.t_args(
+                        "imager-writing-from-to",
+                        &[
+                            ("source", ui::i18n::ArgValue::Text(src.name.clone())),
+                            ("target", ui::i18n::ArgValue::Text(tgt.model.clone())),
+                        ],
                     ),
                     TextRole::Caption,
                 )

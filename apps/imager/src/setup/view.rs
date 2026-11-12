@@ -807,86 +807,120 @@ impl SetupApp {
     /// Tilo Desktop on the review: what will happen, and on which computer.
     fn desktop_install_card(&self) -> Section {
         let detail = match self.desktop_flow.state() {
-            DesktopFlowState::Checking => {
-                "Checking this computer and the signed Tilo Desktop catalog…".to_string()
-            }
-            DesktopFlowState::Unavailable { host, .. } => {
-                format!("Tilo Desktop isn't available for {host} yet.")
-            }
+            DesktopFlowState::Checking => CATALOG.t("imager-desktop-checking"),
+            DesktopFlowState::Unavailable { host, .. } => CATALOG.t_args(
+                "imager-desktop-unavailable",
+                &[("host", ui::i18n::ArgValue::Text(host.clone()))],
+            ),
             DesktopFlowState::Ready(selection) => {
-                if selection.already_installed {
-                    format!(
-                        "Tilo Desktop {} is already installed on {}. Continue to check the Tilo session; approve the check when asked.",
-                        selection.release.version, selection.host
-                    )
-                } else {
-                    format!(
-                        "Tilo Desktop {} is ready for {}. Continue to download it; approve the installation when asked.",
-                        selection.release.version, selection.host
-                    )
-                }
+                let version = (
+                    "version",
+                    ui::i18n::ArgValue::Text(selection.release.version.clone()),
+                );
+                let host = ("host", ui::i18n::ArgValue::Text(selection.host.clone()));
+                CATALOG.t_args(
+                    if selection.already_installed {
+                        "imager-desktop-already-installed"
+                    } else {
+                        "imager-desktop-ready"
+                    },
+                    &[version, host],
+                )
             }
-            DesktopFlowState::Downloading(selection) => format!(
-                "Downloading and checking Tilo Desktop {} for {}. Cancelling now stops before anything is installed.",
-                selection.release.version, selection.host
+            DesktopFlowState::Downloading(selection) => CATALOG.t_args(
+                "imager-desktop-downloading",
+                &[
+                    (
+                        "version",
+                        ui::i18n::ArgValue::Text(selection.release.version.clone()),
+                    ),
+                    ("host", ui::i18n::ArgValue::Text(selection.host.clone())),
+                ],
             ),
-            DesktopFlowState::Authorizing(selection) => format!(
-                "Waiting for you to approve installing Tilo Desktop {} on {}.",
-                selection.release.version, selection.host
+            DesktopFlowState::Authorizing(selection) => CATALOG.t_args(
+                "imager-desktop-authorizing",
+                &[
+                    (
+                        "version",
+                        ui::i18n::ArgValue::Text(selection.release.version.clone()),
+                    ),
+                    ("host", ui::i18n::ArgValue::Text(selection.host.clone())),
+                ],
             ),
-            DesktopFlowState::Preparing(selection) => format!(
-                "Checking Tilo Desktop {} for {} once more before installing.",
-                selection.release.version, selection.host
+            DesktopFlowState::Preparing(selection) => CATALOG.t_args(
+                "imager-desktop-preparing",
+                &[
+                    (
+                        "version",
+                        ui::i18n::ArgValue::Text(selection.release.version.clone()),
+                    ),
+                    ("host", ui::i18n::ArgValue::Text(selection.host.clone())),
+                ],
             ),
-            DesktopFlowState::Installing(selection) => format!(
-                "Installing Tilo Desktop {} on {}. Closing setup does not stop the installation.",
-                selection.release.version, selection.host
+            DesktopFlowState::Installing(selection) => CATALOG.t_args(
+                "imager-desktop-installing",
+                &[
+                    (
+                        "version",
+                        ui::i18n::ArgValue::Text(selection.release.version.clone()),
+                    ),
+                    ("host", ui::i18n::ArgValue::Text(selection.host.clone())),
+                ],
             ),
-            DesktopFlowState::Verifying(selection) => {
-                format!("Checking the installed Tilo session on {}.", selection.host)
-            }
+            DesktopFlowState::Verifying(selection) => CATALOG.t_args(
+                "imager-desktop-verifying",
+                &[("host", ui::i18n::ArgValue::Text(selection.host.clone()))],
+            ),
             DesktopFlowState::Installed { selection, result } => {
                 if self.guided_desktop.is_some() {
                     self.status.clone()
                 } else {
-                    format!(
-                        "Tilo Desktop {} is installed and verified on {}. Save your work and sign out when you are ready, then choose Tilo on the login screen. Your current session stays the default.",
-                        result.version, selection.host
+                    CATALOG.t_args(
+                        "imager-desktop-installed",
+                        &[
+                            ("version", ui::i18n::ArgValue::Text(result.version.clone())),
+                            ("host", ui::i18n::ArgValue::Text(selection.host.clone())),
+                        ],
                     )
                 }
             }
             DesktopFlowState::Failed { kind, message, .. } => {
-                let what = match kind {
-                    DesktopFailureKind::DownloadCancelled => "The download was cancelled.",
-                    DesktopFailureKind::AuthorizationCancelled => {
-                        "The installation was not approved."
-                    }
-                    DesktopFailureKind::AuthorizationRefused => {
-                        "Installing needs an administrator's approval."
-                    }
-                    DesktopFailureKind::WorkerLost => "Checking this computer stopped early.",
-                    DesktopFailureKind::Readiness => "This computer is not ready for Tilo Desktop.",
-                    DesktopFailureKind::Download => "The download failed.",
-                    DesktopFailureKind::NativeTransaction => "The installation failed.",
-                };
+                let what = CATALOG.t(match kind {
+                    DesktopFailureKind::DownloadCancelled => "imager-desktop-download-cancelled",
+                    DesktopFailureKind::AuthorizationCancelled => "imager-desktop-not-approved",
+                    DesktopFailureKind::AuthorizationRefused => "imager-desktop-needs-admin",
+                    DesktopFailureKind::WorkerLost => "imager-desktop-stopped-early",
+                    DesktopFailureKind::Readiness => "imager-desktop-not-ready",
+                    DesktopFailureKind::Download => "imager-desktop-download-failed",
+                    DesktopFailureKind::NativeTransaction => "imager-desktop-install-failed",
+                });
                 if self.desktop_only {
-                    format!("{what} {message}")
+                    CATALOG.t_args(
+                        "imager-desktop-failed",
+                        &[
+                            ("what", ui::i18n::ArgValue::Text(what)),
+                            ("detail", ui::i18n::ArgValue::Text(message.clone())),
+                        ],
+                    )
                 } else {
-                    format!("{what} {message} Your folder choices are kept; check again to retry.")
+                    CATALOG.t_args(
+                        "imager-desktop-failed-retry",
+                        &[
+                            ("what", ui::i18n::ArgValue::Text(what)),
+                            ("detail", ui::i18n::ArgValue::Text(message.clone())),
+                        ],
+                    )
                 }
             }
         };
         let retained = if self.desktop_only {
             super::strings::t("installer-desktop-keep-existing")
         } else {
-            match self.capabilities.platform.host {
-                HostOs::Windows => "Windows stays installed and remains the startup default.",
-                HostOs::Linux => {
-                    "Your Linux installation stays as it is and remains the default session."
-                }
-                HostOs::Other => "Your current system stays installed and remains the default.",
-            }
-            .to_owned()
+            CATALOG.t(match self.capabilities.platform.host {
+                HostOs::Windows => "imager-retained-windows",
+                HostOs::Linux => "imager-retained-linux",
+                HostOs::Other => "imager-retained-other",
+            })
         };
         Section::new(vec![Box::new(
             page::related()
@@ -987,8 +1021,7 @@ impl SetupApp {
                 .as_ref()
                 .is_some_and(SupportReport::blocks_install)
             {
-                "A component needed for the desktop is unsupported. Resolve it below, then check again."
-                    .to_string()
+                CATALOG.t("imager-desktop-unsupported-component")
             } else {
                 self.internal_readiness_text()
             };
