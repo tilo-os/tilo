@@ -36,9 +36,13 @@ pub(super) fn restore(
         ) {
             return Err("sealed history holds a cleartext write".into());
         }
+        // A compaction's segment is admitted as part of it: the compaction
+        // names it ([`sealed_compaction::check_stored`]).
         let admitted = DocumentAdmission::from_op(&core.workspace, &route.app, &route.record, op)
             .map_err(err)?;
-        if core.exact_admissions.get(&admitted.key) != Some(&admitted.operation_id) {
+        if !collab_types::is_compaction_segment(op)
+            && core.exact_admissions.get(&admitted.key) != Some(&admitted.operation_id)
+        {
             return Err("sealed history lacks exact admission evidence".into());
         }
         if document

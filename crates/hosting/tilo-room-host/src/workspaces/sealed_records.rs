@@ -15,7 +15,7 @@
 //! no device's history waits for someone else to fold it.
 
 use channel_crypto::ChannelContentKeys;
-use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, SignedOp};
+use collab_types::{ArtifactId, ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::StatePeer;
@@ -23,8 +23,8 @@ use tilo_peer_state::StatePeer;
 use super::{GovernedWorkspace, SystemTime, Workspaces};
 
 /// Member writes followed before a failed compaction is tried again. A
-/// record whose merged snapshot outgrew one mutation never compacts; trying
-/// on every write opened and merged its whole history each time.
+/// record whose history does not merge yet does not compact; trying on every
+/// write opened and merged its whole history each time.
 const COMPACTION_RETRY: usize = 256;
 
 /// The content keys of one record's channel, as the node holds them.
@@ -49,10 +49,11 @@ impl RecordKeys {
     }
 
     /// Seal content of the record under the channel's current epoch.
+    #[cfg(feature = "agents")]
     fn seal(
         &self,
         retention: ContentRetention,
-    ) -> impl FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + '_ {
+    ) -> impl FnMut(&[u8]) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> + '_ {
         move |plaintext| {
             self.keys
                 .seal_content(self.artifact, retention, plaintext)
@@ -70,10 +71,17 @@ impl RecordKeys {
         rebuilt: Option<Vec<u8>>,
         key: &SigningKey,
         now: SystemTime,
-    ) -> Result<NeighbourMsg, String> {
-        let (mut open, mut seal) = (self.open(), self.seal(ContentRetention::Checkpoint));
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let mut open = self.open();
+        // A snapshot larger than one op goes in segments: the first a
+        // checkpoint, the rest following it.
+        let mut seal = |frame: &[u8]| {
+            self.keys
+                .seal_content(self.artifact, ContentRetention::of_frame(frame), frame)
+                .map_err(|error| error.to_string())
+        };
         let author = key.verifying_key().to_bytes();
-        let mut op = candidate.publication().draft_sealed_compaction(
+        let mut ops = candidate.publication().draft_sealed_compaction(
             (app, record),
             rebuilt,
             &mut open,
@@ -81,10 +89,12 @@ impl RecordKeys {
             author,
             now,
         )?;
-        collab_types::sign_op(&mut op, key).map_err(|error| error.to_string())?;
+        for op in &mut ops {
+            collab_types::sign_op(op, key).map_err(|error| error.to_string())?;
+        }
         candidate
             .publication_mut()
-            .admit_sealed_compaction(app, record, op, now)
+            .admit_sealed_compaction(app, record, ops, now)
     }
 }
 

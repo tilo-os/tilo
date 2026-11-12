@@ -27,7 +27,7 @@ impl SealedHistoryKeys for Held {
         self.0
             .seal_content(
                 collab_types::document_artifact_id(app, WORKSPACE, record),
-                ContentRetention::Checkpoint,
+                ContentRetention::of_frame(snapshot),
                 snapshot,
             )
             .map_err(|error| error.to_string())
@@ -649,10 +649,16 @@ fn compacted_at(
             now,
         )
         .unwrap();
-    collab_types::sign_op(&mut op, governor_key).unwrap();
-    host.publication_mut()
+    for op in &mut op {
+        collab_types::sign_op(op, governor_key).unwrap();
+    }
+    let [compaction]: [NeighbourMsg; 1] = host
+        .publication_mut()
         .admit_sealed_compaction(APP, "", op, now)
         .unwrap()
+        .try_into()
+        .unwrap();
+    compaction
 }
 
 /// The host's side of the link: the history it holds, what it relayed in its order, the most

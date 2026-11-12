@@ -111,6 +111,20 @@ impl StatePeer {
         {
             return Err("transport author or document workspace mismatch".into());
         }
+        // A piece of a compaction that spans several ops changes nothing on its
+        // own: it is gathered, and the compaction is admitted once it is whole.
+        let envelope = if collab_types::is_compaction_piece(&envelope)
+            && !self
+                .publication()
+                .holds_sealed(&app_id, &record_id, &envelope)
+        {
+            match self.gather_compaction_piece((&app_id, &record_id), *envelope)? {
+                Some(head) => Box::new(head),
+                None => return Ok(AdmissionReport::metadata(ReceiveOutcome::default())),
+            }
+        } else {
+            envelope
+        };
         if strict_report
             && let Some(admitted) = self.lookup_exact_document_parts(
                 source,
@@ -646,7 +660,9 @@ impl StatePeer {
         let folded = (envelope.kind == OpKind::Compaction)
             .then(|| sealed_compaction::covered(&envelope))
             .transpose()?;
-        Self::retain_sealed(&mut candidate, envelope)?;
+        let segments = self.compaction_segments(&route, &envelope)?;
+        let gathered = !segments.is_empty();
+        Self::retain_sealed(&mut candidate, envelope, segments)?;
         let primary = if self.core.admission_v5 {
             self.core.exact_admissions.insert(&admitted)?;
             // The writes the compaction folded are in its snapshot now:
@@ -662,6 +678,9 @@ impl StatePeer {
         };
         candidate.channel = validated;
         candidate.encryption_required = true;
+        if gathered {
+            self.forget_gathered(&route);
+        }
         self.core.documents.insert(route, candidate);
         Ok(AdmissionReport::new(
             primary,
@@ -672,7 +691,11 @@ impl StatePeer {
             },
         ))
     }
-    fn retain_sealed(candidate: &mut Document, envelope: SignedOp) -> Result<(), AdmissionError> {
+    fn retain_sealed(
+        candidate: &mut Document,
+        envelope: SignedOp,
+        segments: Vec<SignedOp>,
+    ) -> Result<(), AdmissionError> {
         let full = || -> AdmissionError {
             "sealed record history is full; a key holder must compact it (PeerPublication::draft_sealed_compaction)"
                 .into()
@@ -682,6 +705,7 @@ impl StatePeer {
                 &candidate.sealed.to_vec(),
                 &candidate.channel.last_seq_per_author,
                 &envelope,
+                segments,
             )?
             .into();
             if history.len() > MAX_SEALED_OPS || history.bytes() > MAX_SEALED_BYTES {

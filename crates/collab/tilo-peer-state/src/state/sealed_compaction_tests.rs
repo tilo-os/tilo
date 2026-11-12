@@ -319,26 +319,42 @@ fn open(keys: &ChannelContentKeys, op: &SignedOp) -> Result<Vec<u8>, String> {
         .map_err(|error| error.to_string())
 }
 
+/// A compaction of a record small enough for one op.
 fn mint(
     peer: &mut StatePeer,
     keys: &ChannelContentKeys,
     key: &SigningKey,
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
-    let mut op = peer.publication().draft_sealed_compaction(
+    let [compaction]: [NeighbourMsg; 1] = mint_pieces(peer, keys, key, now)?
+        .try_into()
+        .map_err(|_| "the compaction spans several ops")?;
+    Ok(compaction)
+}
+
+/// A compaction and the segments it names, as the messages that carry them.
+fn mint_pieces(
+    peer: &mut StatePeer,
+    keys: &ChannelContentKeys,
+    key: &SigningKey,
+    now: SystemTime,
+) -> Result<Vec<NeighbourMsg>, String> {
+    let mut ops = peer.publication().draft_sealed_compaction(
         (APP, RECORD),
         None,
         &mut |op| open(keys, op),
         &mut |plaintext| {
-            keys.seal_content(artifact(), ContentRetention::Checkpoint, plaintext)
+            keys.seal_content(artifact(), ContentRetention::of_frame(plaintext), plaintext)
                 .map_err(|error| error.to_string())
         },
         key.verifying_key().to_bytes(),
         now,
     )?;
-    collab_types::sign_op(&mut op, key).map_err(|error| error.to_string())?;
+    for op in &mut ops {
+        collab_types::sign_op(op, key).map_err(|error| error.to_string())?;
+    }
     peer.publication_mut()
-        .admit_sealed_compaction(APP, RECORD, op, now)
+        .admit_sealed_compaction(APP, RECORD, ops, now)
 }
 
 /// A compaction of `superseded`, sealed with `keys` but not signed.
@@ -2198,6 +2214,144 @@ fn a_checkpoint_founds_its_record_behind_sealed_changes_let_go() {
     assert_eq!(held(&fresh).first(), Some(&envelope_of(&saved)));
 }
 
+/// A record whose merged state no single op can carry, written on past the bound of its history,
+/// stays writable: its compaction spans a signed head and the segments it names, a keyless
+/// replica takes the set only whole, in place of the writes it covers, and keeps its history
+/// within the bound. A device joining late takes the set from what that replica holds, and its
+/// key holder reads the whole record with every change of its history.
+#[test]
+fn a_record_larger_than_one_op_compacts_in_segments_and_stays_writable() {
+    const BASE: usize = 10;
+    const PART: usize = 1024 * 1024;
+    const EDIT: usize = 256 * 1024;
+    let mut f = fixture();
+    let keys = f.keys();
+    let (now, owner, editor) = (f.now, f.owner.clone(), f.editor.clone());
+    let mut author = Author::new(&f.host);
+    let mut written = 0usize;
+    let mut compactions = Vec::new();
+    for index in 0..BASE {
+        let edit = author.edit_bytes(&format!("part-{index}"), noise(PART, index as u64));
+        let sealed = write(&f.host, &editor, &keys, &edit, now);
+        written += envelope_of(&sealed).payload.len();
+        admit(&mut f.host, &editor, sealed, now);
+    }
+    for index in 0..12u64 {
+        if !f.host.publication().sealed_records_to_compact().is_empty() {
+            let mut holder = f.host.clone();
+            let pieces = mint_pieces(&mut holder, &keys, &owner, now).unwrap();
+            assert!(pieces.len() > 3, "a snapshot of 10 MiB spans several ops");
+            // The segments alone change nothing; the set is taken whole.
+            let before = held(&f.host);
+            for piece in pieces.iter().skip(1) {
+                f.host
+                    .receive_from_report(origin(&owner), piece.clone(), now)
+                    .unwrap();
+                assert_eq!(held(&f.host), before, "a segment alone is taken");
+            }
+            admit(&mut f.host, &owner, pieces[0].clone(), now);
+            let history = held(&f.host);
+            assert_eq!(
+                history.len(),
+                pieces.len(),
+                "the set replaced every write it covers"
+            );
+            written += history.iter().map(|op| op.payload.len()).sum::<usize>();
+            compactions.push(pieces);
+        }
+        let edit = author.edit_bytes("edit", noise(EDIT, 1000 + index));
+        let sealed = write(&f.host, &editor, &keys, &edit, now);
+        written += envelope_of(&sealed).payload.len();
+        admit(&mut f.host, &editor, sealed, now);
+        let bytes: usize = held(&f.host).iter().map(|op| op.payload.len()).sum();
+        assert!(
+            bytes <= MAX_SEALED_BYTES,
+            "the keyless history stays within its bound"
+        );
+    }
+    assert!(
+        written > MAX_SEALED_BYTES,
+        "the record was written past its bound: {written}"
+    );
+    assert!(
+        compactions.len() > 1,
+        "the record compacted again and again"
+    );
+
+    // A replica that persisted the set restores it.
+    let restored = f.restore(&f.host.durable().unwrap()).unwrap();
+    assert_eq!(held(&restored), held(&f.host));
+
+    joins_late(&f, compactions.last().unwrap(), &mut author.0);
+}
+
+/// A device joining late takes `last`, the last compaction set `f`'s keyless store took, as the
+/// store holds it, the compaction first, then the writes after it; its key holder reads `whole`
+/// with every change of its history.
+fn joins_late(f: &Fixture, last: &[NeighbourMsg], whole: &mut AutoCommit) {
+    let (now, keys) = (f.now, f.keys());
+    let mut fresh = StatePeer::new(
+        WORKSPACE,
+        f.authority.clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    fresh.select_admission_v5().unwrap();
+    fresh
+        .receive_from(origin(&f.owner), f.host.workspace_message(), now)
+        .unwrap();
+    for piece in last {
+        fresh
+            .receive_from_report(origin(&f.owner), piece.clone(), now)
+            .unwrap();
+    }
+    assert_eq!(
+        held(&fresh).len(),
+        last.len(),
+        "the late joiner took the whole set"
+    );
+    for op in held(&f.host).into_iter().skip(last.len()) {
+        let key = if op.author.as_bytes() == &f.owner.verifying_key().to_bytes() {
+            &f.owner
+        } else {
+            &f.editor
+        };
+        admit(&mut fresh, key, message(op), now);
+    }
+    assert_eq!(held(&fresh), held(&f.host));
+    let opened = fresh
+        .publication()
+        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+        .unwrap()
+        .unwrap();
+    assert!(opened.unmerged.is_empty(), "{:?}", opened.unmerged);
+    let mut read = AutoCommit::load(&opened.document).unwrap();
+    assert_eq!(
+        read.get_heads(),
+        whole.get_heads(),
+        "every change of the history"
+    );
+    assert_eq!(
+        read.get(ROOT, "part-3").unwrap().map(|(value, _)| value),
+        whole.get(ROOT, "part-3").unwrap().map(|(value, _)| value),
+    );
+}
+
+/// `len` incompressible bytes from `seed`: a sealed history is as large as what it carries.
+fn noise(len: usize, seed: u64) -> Vec<u8> {
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect()
+}
+
 #[path = "kept_open_tests.rs"]
 mod kept_open;
 
@@ -2259,9 +2413,14 @@ fn checkpoints_written_as_changes_fill_a_sealed_history_with_copies_of_the_recor
     // The key holder's compaction names what it covers, so the replica drops it all for one
     // copy, and the record goes on.
     let mut holder = f.host.clone();
-    let compaction = mint(&mut holder, &keys, &owner, now).unwrap();
-    admit(&mut f.host, &owner, compaction, now);
-    assert_eq!(held(&f.host).len(), 1);
+    let pieces = mint_pieces(&mut holder, &keys, &owner, now).unwrap();
+    for piece in pieces.iter().skip(1) {
+        f.host
+            .receive_from_report(origin(&owner), piece.clone(), now)
+            .unwrap();
+    }
+    admit(&mut f.host, &owner, pieces[0].clone(), now);
+    assert_eq!(held(&f.host).len(), pieces.len());
     let sealed = write(&f.host, &editor, &keys, &author.edit("value", "on"), now);
     admit(&mut f.host, &editor, sealed, now);
 }

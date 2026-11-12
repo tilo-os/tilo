@@ -1724,8 +1724,18 @@ impl NativeWorkspaceOwner {
                     .unwrap_or(HostAnswer::Refused);
                 let route = (app_id.as_str(), record_id.as_str());
                 match (envelope.kind, answer) {
+                    // A segment is taken with its compaction.
+                    (OpKind::Compaction, _) if collab_types::is_compaction_segment(&envelope) => {}
                     (OpKind::Compaction, _) => {
                         let owed = owed_to(publication, runs, route)?;
+                        for segment in owed.iter().filter(|write| {
+                            collab_types::is_compaction_segment(write)
+                                && write.author == envelope.author
+                                && write.seq == envelope.seq
+                        }) {
+                            live.publication_mut()
+                                .gather_sealed_piece(route, segment.clone())?;
+                        }
                         take_hosted(live, publication, runs, route, &envelope, &owed, now)?;
                     }
                     (_, HostAnswer::Refused) => {
@@ -1840,15 +1850,18 @@ impl NativeWorkspaceOwner {
                     let renewal = draft
                         .inspect_err(|error| tracing::warn!(%error, "sealed write stays unrenewed"))
                         .ok()??;
-                    Some((Some(entry.id), original, renewal))
+                    Some((Some(entry.id), original, vec![renewal]))
                 })
                 .collect())
         };
-        let admit =
-            |live: &mut StatePeer, _: &mut StoredPublication, original: NeighbourMsg, renewal| {
-                live.outbox_mut()
-                    .admit_sealed_renewal(&original, renewal, now)
-            };
+        let admit = |live: &mut StatePeer,
+                     _: &mut StoredPublication,
+                     original: NeighbourMsg,
+                     renewal: Vec<SignedOp>| {
+            let renewal = renewal.into_iter().next().ok_or("no renewal drafted")?;
+            live.outbox_mut()
+                .admit_sealed_renewal(&original, renewal, now)
+        };
         self.commit_outgoing(workspace, signer, now, draft, admit)
             .await
     }
@@ -1924,7 +1937,8 @@ impl NativeWorkspaceOwner {
             let latest = publication.entries.iter().rev().find(|entry| {
                 postcard::from_bytes::<NeighbourMsg>(&entry.bytes).is_ok_and(|message| {
                     matches!(&message, NeighbourMsg::AppDocument { app_id, record_id, envelope, .. }
-                        if app_id == app && record_id == record && envelope.kind == OpKind::Compaction)
+                        if app_id == app && record_id == record && envelope.kind == OpKind::Compaction
+                            && !collab_types::is_compaction_segment(envelope))
                 })
             });
             Ok(latest
@@ -1983,14 +1997,14 @@ impl NativeWorkspaceOwner {
                     let drafted = view.peer.publication().draft_sealed_compaction(
                         route, None, &mut open, &mut seal, device, now,
                     );
-                    let op = drafted
+                    let ops = drafted
                         .inspect_err(|error| {
                             tracing::warn!(%error, %app, %record, "sealed record history stays uncompacted");
                         })
                         .ok()?;
                     Some(
                         owed_to(publication, runs, route)
-                            .map(|owed| (None, (app, record, owed), op)),
+                            .map(|owed| (None, (app, record, owed), ops)),
                     )
                 })
                 .collect()
@@ -2000,8 +2014,8 @@ impl NativeWorkspaceOwner {
         let admit = |live: &mut StatePeer,
                      publication: &mut StoredPublication,
                      (app, record, owed): (String, String, Vec<SignedOp>),
-                     op| {
-            compacted_here(live, publication, runs, (&app, &record), &owed, op, now)
+                     ops| {
+            compacted_here(live, publication, runs, (&app, &record), &owed, ops, now)
         };
         let compacted = self
             .commit_outgoing(workspace, signer, now, draft, admit)
@@ -2045,11 +2059,20 @@ impl NativeWorkspaceOwner {
         };
         let route = (app_id.as_str(), record_id.as_str());
         let draft = |_: &NativeCommittedView| Ok(vec![(Some(id), message.clone(), op)]);
+        // `op` is the compaction and the segments it names.
         let admit = |live: &mut StatePeer,
                      publication: &mut StoredPublication,
                      message: NeighbourMsg,
-                     op: SignedOp| {
-            drafted_here(live, publication, runs, (route, &history), message, op, now)
+                     ops: Vec<SignedOp>| {
+            drafted_here(
+                live,
+                publication,
+                runs,
+                (route, &history),
+                message,
+                ops,
+                now,
+            )
         };
         // A compaction that cannot go as drafted is let go: custody never waits on it.
         match self
@@ -2109,12 +2132,14 @@ impl NativeWorkspaceOwner {
         workspace: WorkspaceId,
         signer: &dyn collab_types::signer::DeviceSigner,
         now: SystemTime,
-        draft: impl FnOnce(&NativeCommittedView) -> Result<Vec<(Option<[u8; 32]>, T, SignedOp)>, String>,
+        draft: impl FnOnce(
+            &NativeCommittedView,
+        ) -> Result<Vec<(Option<[u8; 32]>, T, Vec<SignedOp>)>, String>,
         mut admit: impl FnMut(
             &mut StatePeer,
             &mut StoredPublication,
             T,
-            SignedOp,
+            Vec<SignedOp>,
         ) -> Result<NeighbourMsg, String>,
     ) -> Result<usize, String> {
         let mut draft = Some(draft);
@@ -2135,39 +2160,52 @@ impl NativeWorkspaceOwner {
                 return Ok(0);
             }
             let mut writes = Vec::with_capacity(drafted.len());
-            for (replaces, with, op) in drafted.iter() {
-                let mut op = op.clone();
-                collab_types::sign_op(&mut op, signed).map_err(|error| error.to_string())?;
-                writes.push((*replaces, with.clone(), op));
+            for (replaces, with, ops) in drafted.iter() {
+                let mut signed_ops = Vec::with_capacity(ops.len());
+                for op in ops {
+                    let mut op = op.clone();
+                    collab_types::sign_op(&mut op, signed).map_err(|error| error.to_string())?;
+                    signed_ops.push(op);
+                }
+                writes.push((*replaces, with.clone(), signed_ops));
             }
             signed.settled()?;
             let (taken, mut record) = candidate.change(|live, record| {
                 let mut taken = 0usize;
-                for (replaces, with, op) in writes {
+                for (replaces, with, ops) in writes {
                     let publication = record.publication.as_mut().ok_or("publication absent")?;
                     if replaces
                         .is_some_and(|id| !publication.entries.iter().any(|kept| kept.id == id))
                     {
                         continue;
                     }
-                    let compaction = op.kind == OpKind::Compaction;
-                    // Admitted on copies: a write that cannot be committed as one custody entry
-                    // leaves the replica and custody as they were.
+                    let compaction = ops.first().is_some_and(|op| op.kind == OpKind::Compaction);
+                    let segments: Vec<SignedOp> = ops.iter().skip(1).cloned().collect();
+                    // Admitted on copies: a write that cannot be committed as custody entries
+                    // leaves the replica and custody as they were. A compaction in segments is
+                    // admitted whole, and its segments go right behind it.
                     let mut attempt = live.clone();
                     let mut kept = publication.clone();
-                    match admit(&mut attempt, &mut kept, with, op)
-                        .and_then(|message| encode(&message, MAX_BYTES))
-                    {
-                        Ok(bytes) => {
+                    let admitted = (|| {
+                        let message = admit(&mut attempt, &mut kept, with, ops)?;
+                        let bytes = encode(&message, MAX_BYTES)?;
+                        let segments = segments
+                            .into_iter()
+                            .map(|segment| encode(&with_envelope(&message, segment), MAX_BYTES))
+                            .collect::<Result<Vec<_>, String>>()?;
+                        Ok::<_, String>((bytes, segments))
+                    })();
+                    match admitted {
+                        Ok((bytes, segments)) => {
                             *publication = kept;
                             *live = attempt;
+                            let id = *blake3::hash(&bytes).as_bytes();
                             match replaces {
-                                Some(id) if publication.slots.contains(&id) => {
-                                    in_place(record, id, bytes)?;
+                                Some(slot) if publication.slots.contains(&slot) => {
+                                    in_place(record, slot, bytes)?;
                                 }
                                 _ => {
                                     publication.entries.retain(|kept| Some(kept.id) != replaces);
-                                    let id = *blake3::hash(&bytes).as_bytes();
                                     append(record, bytes)?;
                                     if compaction {
                                         record
@@ -2178,6 +2216,10 @@ impl NativeWorkspaceOwner {
                                             .push(id);
                                     }
                                 }
+                            }
+                            let mut after = id;
+                            for segment in segments {
+                                after = append_after(record, after, segment)?;
                             }
                             taken = taken.saturating_add(1);
                         }
@@ -2232,6 +2274,28 @@ impl NativeWorkspaceOwner {
         }
         let runs = (self.0.store.as_ref(), candidate.record.workspace);
         let mut live = candidate.live();
+        // A compaction in segments is taken once all of its pieces are here.
+        let gathered;
+        let envelope = if collab_types::is_compaction_piece(envelope) {
+            match live
+                .publication_mut()
+                .gather_sealed_piece(route, (**envelope).clone())
+            {
+                Err(error) => return Some(Err(error)),
+                Ok(None) => {
+                    return Some(Ok(crate::AdmissionReport::new(
+                        crate::InputDisposition::MetadataOnly,
+                        crate::ReceiveOutcome::default(),
+                    )));
+                }
+                Ok(Some(head)) => {
+                    gathered = head;
+                    &gathered
+                }
+            }
+        } else {
+            &**envelope
+        };
         let taken = (|| {
             live.publication()
                 .check_sealed_compaction(route, envelope, now)?;
@@ -2240,10 +2304,11 @@ impl NativeWorkspaceOwner {
             let mut next = publication.clone();
             // This device's compactions the host took before this one, whose answers are still
             // on their way.
-            for sent in owed
-                .iter()
-                .filter(|sent| sent.kind == OpKind::Compaction && covers(envelope, sent))
-            {
+            for sent in owed.iter().filter(|sent| {
+                sent.kind == OpKind::Compaction
+                    && !collab_types::is_compaction_segment(sent)
+                    && covers(envelope, sent)
+            }) {
                 take_hosted(&mut peer, &mut next, runs, route, sent, &owed, now)?;
             }
             take_hosted(&mut peer, &mut next, runs, route, envelope, &owed, now)?;
@@ -2275,7 +2340,7 @@ fn compacted_here(
     runs: Runs<'_>,
     (app, record): (&str, &str),
     owed: &[SignedOp],
-    op: SignedOp,
+    ops: Vec<SignedOp>,
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
     let history = host_history(live, publication, runs, (app, record), owed)?;
@@ -2294,7 +2359,10 @@ fn compacted_here(
     };
     let message = live
         .publication_mut()
-        .admit_sealed_compaction(app, record, op, now)?;
+        .admit_sealed_compaction(app, record, ops, now)?
+        .into_iter()
+        .next()
+        .ok_or("a compaction publishes as its own message")?;
     hosted.writes = history
         .into_iter()
         .filter(|write| !live.publication().holds_sealed(app, record, write))
@@ -2305,7 +2373,11 @@ fn compacted_here(
 /// The compaction custody of `view` sends next, when custody holds its place at its head:
 /// drafted against `history`, the host's history as it acknowledged it, under the sequence of
 /// the place, as the record's custody message, or `None` when it cannot be drafted.
-type NextDrafted = ([u8; 32], NeighbourMsg, Option<(SignedOp, Vec<SignedOp>)>);
+type NextDrafted = (
+    [u8; 32],
+    NeighbourMsg,
+    Option<(Vec<SignedOp>, Vec<SignedOp>)>,
+);
 fn next_drafted(
     view: &NativeCommittedView,
     runs: Runs<'_>,
@@ -2347,7 +2419,7 @@ fn next_drafted(
     let drafted = drafted
         .inspect_err(|error| tracing::warn!(%error, "a compaction stays unsent"))
         .ok();
-    Ok(Some((entry.id, message, drafted.map(|op| (op, history)))))
+    Ok(Some((entry.id, message, drafted.map(|ops| (ops, history)))))
 }
 /// Commit `op`, drafted against `history` (the host's history of `record` of `app` as it
 /// acknowledged it) in place of `message`, custody's compaction of this device's own history:
@@ -2359,9 +2431,14 @@ fn drafted_here(
     runs: Runs<'_>,
     (route, history): ((&str, &str), &[SignedOp]),
     message: NeighbourMsg,
-    op: SignedOp,
+    ops: Vec<SignedOp>,
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
+    let mut ops = ops.into_iter();
+    let op = ops.next().ok_or("no compaction drafted")?;
+    for segment in ops {
+        live.publication_mut().gather_sealed_piece(route, segment)?;
+    }
     let NeighbourMsg::AppDocument {
         peer,
         app_id,
@@ -2403,6 +2480,38 @@ fn drafted_here(
         envelope: Box::new(op),
     })
 }
+/// `message` carrying `envelope`, a segment of the compaction it carries, in its place.
+fn with_envelope(message: &NeighbourMsg, envelope: SignedOp) -> NeighbourMsg {
+    let mut message = message.clone();
+    if let NeighbourMsg::AppDocument { envelope: held, .. } = &mut message {
+        **held = envelope;
+    }
+    message
+}
+/// Commit `bytes` into custody right behind the entry `after`, as the next segment of the
+/// compaction there, and answer its own entry's id. Behind it a store keeps a segment in the
+/// tail of the compaction it continues.
+fn append_after(
+    view: &mut record::StoredWorkspace,
+    after: [u8; 32],
+    bytes: Vec<u8>,
+) -> Result<[u8; 32], String> {
+    let id = *blake3::hash(&bytes).as_bytes();
+    append(view, bytes)?;
+    let publication = view.publication.as_mut().ok_or("publication absent")?;
+    if let (Some(at), Some(from)) = (
+        publication
+            .entries
+            .iter()
+            .position(|entry| entry.id == after),
+        publication.entries.iter().position(|entry| entry.id == id),
+    ) && from > at.saturating_add(1)
+    {
+        let entry = publication.entries.remove(from);
+        publication.entries.insert(at.saturating_add(1), entry);
+    }
+    Ok(id)
+}
 /// Put `bytes`, a compaction drafted for the host, where the compaction custody held the
 /// place of as `id` stands: it goes in that compaction's turn.
 fn in_place(
@@ -2438,7 +2547,8 @@ fn in_place(
 /// Whether `entry` of custody is a compaction.
 fn is_compaction(entry: &StoredOutgoing) -> bool {
     matches!(postcard::from_bytes(&entry.bytes),
-        Ok(NeighbourMsg::AppDocument { envelope, .. }) if envelope.kind == OpKind::Compaction)
+        Ok(NeighbourMsg::AppDocument { envelope, .. })
+            if envelope.kind == OpKind::Compaction && !collab_types::is_compaction_segment(&envelope))
 }
 /// Whether `compaction` covers `write`.
 fn covers(compaction: &SignedOp, write: &SignedOp) -> bool {
@@ -2487,7 +2597,9 @@ fn host_history(
             let rest: Vec<SignedOp> = held
                 .into_iter()
                 .skip(1)
-                .filter(|write| !hosted.covers(write))
+                .filter(|write| {
+                    !hosted.covers(write) && !collab_types::is_compaction_segment(write)
+                })
                 .collect();
             hosted.writes.into_iter().chain(rest).collect()
         }

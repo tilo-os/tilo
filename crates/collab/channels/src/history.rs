@@ -99,9 +99,11 @@ impl ChannelKeyAccess {
         let ChannelAccess::Ready(keys) = access else {
             return Err("this device holds no current key for the record's channel".into());
         };
+        // A compaction's snapshot too large for one op goes as segments, the
+        // later ones following its first in a store's retained tail.
         keys.seal_content(
             artifact,
-            collab_types::ContentRetention::Checkpoint,
+            collab_types::ContentRetention::of_frame(cleartext),
             cleartext,
         )
         .map_err(|error| error.to_string())

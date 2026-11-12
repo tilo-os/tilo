@@ -275,7 +275,7 @@ impl SealingMember {
     /// The member folds the record's sealed history, as the workspace holds it
     /// now, into one signed checkpoint under its own author: what its engine
     /// publishes in place of the writes the checkpoint covers.
-    pub async fn compact(&self, workspaces: &Workspaces, workspace: &str) -> NeighbourMsg {
+    pub async fn compact(&self, workspaces: &Workspaces, workspace: &str) -> Vec<NeighbourMsg> {
         let (app, record) = (self.route.0.as_str(), self.route.1.as_str());
         let artifact = collab_types::document_artifact_id(app, workspace, record);
         let mut candidate = workspaces
@@ -287,35 +287,37 @@ impl SealingMember {
             .peer()
             .clone();
         let now = tilo_clock::wall();
-        let mut op = candidate
+        let mut ops = candidate
             .publication()
             .draft_sealed_compaction(
                 (app, record),
                 None,
                 &mut |op| self.open(op),
-                &mut |snapshot| {
+                &mut |frame| {
                     self.keys
-                        .seal_content(artifact, ContentRetention::Checkpoint, snapshot)
+                        .seal_content(artifact, ContentRetention::of_frame(frame), frame)
                         .map_err(|error| error.to_string())
                 },
                 self.key.verifying_key().to_bytes(),
                 now,
             )
             .unwrap();
-        collab_types::sign_op(&mut op, &self.key).unwrap();
-        let message = candidate
+        for op in &mut ops {
+            collab_types::sign_op(op, &self.key).unwrap();
+        }
+        let messages = candidate
             .publication_mut()
-            .admit_sealed_compaction(app, record, op, now)
+            .admit_sealed_compaction(app, record, ops, now)
             .unwrap();
         // The compaction took this device's next place in the record's
         // sequence, as its engine's own writes see it: the writes after it
         // carry the numbers after that.
-        let NeighbourMsg::AppDocument { envelope, .. } = &message else {
+        let Some(NeighbourMsg::AppDocument { envelope, .. }) = messages.first() else {
             panic!("a compaction is a document write")
         };
         self.seq
             .store(envelope.seq, std::sync::atomic::Ordering::Relaxed);
-        message
+        messages
     }
 
     /// Open `op`, any write of the record's history, under any epoch this

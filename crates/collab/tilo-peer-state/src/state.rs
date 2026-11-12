@@ -85,6 +85,7 @@ pub use native_publication::NativePublicationCut;
 pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use personal::{PeerPersonal, PersonalStore};
 pub use seed::{seed_workspace, workspace_seed};
+mod compaction_set;
 mod sealed_compaction;
 mod sealed_history;
 pub use sealed_compaction::{
@@ -294,6 +295,8 @@ pub struct StatePeer {
     app_surfaces: AppSurfaces,
     /// What app messages let go unapplied waited for. Never persisted.
     missed: held::Missed,
+    /// The pieces of segmented compactions not yet whole. Never persisted.
+    gathering: compaction_set::Gathering,
     /// Whether this is a workspace host's copy of the workspace
     /// ([`Self::write_as_workspace_host`]). Set by the host, never persisted.
     workspace_host: bool,
