@@ -627,7 +627,9 @@ impl SetupApp {
                 let result = self
                     .internal_download_flow
                     .as_mut()
-                    .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-unavailable"))
+                    .ok_or_else(|| {
+                        crate::setup::strings::t("imager-setup-error-download-unavailable")
+                    })
                     .and_then(InternalDownloadFlow::pause);
                 let pending = super::strings::t("imager-setup-status-pausing-download");
                 self.apply_internal_command_result(result, &pending);
@@ -645,7 +647,9 @@ impl SetupApp {
                 let result = self
                     .internal_download_flow
                     .as_mut()
-                    .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-unavailable"))
+                    .ok_or_else(|| {
+                        crate::setup::strings::t("imager-setup-error-download-unavailable")
+                    })
                     .and_then(InternalDownloadFlow::cancel);
                 let pending = super::strings::t("imager-setup-status-cancelling-download");
                 self.apply_internal_command_result(result, &pending);
