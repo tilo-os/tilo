@@ -2016,7 +2016,8 @@ function agentSetupCodes({origin, identity, runtime, link}) {
   // What the setup keeps of a code names whose it is: a code kept for
   // another person or host is not this tab's to follow.
   const ours = saved => saved?.person === identity.userPublicKey && saved?.host === host;
-  const make = async () => {
+  const make = () => makeCode().catch(error => { throw hostNamed(error, host); });
+  const makeCode = async () => {
     const agents = await agentActions();
     const pairing = await agents.connectAgent({workspace: setUpIn ?? namedOwnWorkspace(host, identity.userPublicKey)});
     const made = await codes.create(pairing.link);
@@ -2205,9 +2206,10 @@ function standInOf({peer, identity, runtime}) {
  */
 function loginCodes(runtime, origin) {
   const post = httpsPost(origin);
+  const named = error => { throw hostNamed(error, origin); };
   return {
     async create(link = null) {
-      const made = JSON.parse(await runtime.createLoginCode(post, link));
+      const made = JSON.parse(await runtime.createLoginCode(post, link).catch(named));
       return this.resume({code: made.code, expiresAt: made.expires_at_ms, follow: made.follow});
     },
     /** A code made before, from what was kept of it (`{code, expiresAt,
@@ -2215,9 +2217,20 @@ function loginCodes(runtime, origin) {
      * else the page kept with it), followed again: kept again whole. */
     resume(saved) {
       return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},
-        follow: async () => JSON.parse(await runtime.followLoginCode(post, saved.follow))};
+        follow: async () => JSON.parse(await runtime.followLoginCode(post, saved.follow).catch(named))};
     },
   };
+}
+
+/** `error`, naming the host at `origin` it came from (`origin`, as
+ * `first-run.mjs` `setupFailure` reads it) unless it names one already: the
+ * codes' host is not the page's own (tilo.sh's come from eu1.tilo.sh), and
+ * the screen says which one did not answer. */
+function hostNamed(error, origin) {
+  if (error && typeof error === 'object' && !error.origin) {
+    try { error.origin = new URL(origin).origin; } catch { /* Then the screen names the site. */ }
+  }
+  return error;
 }
 
 /**

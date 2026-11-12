@@ -189,8 +189,30 @@ export function setupFailure(error, {site = HOME_SITE} = {}) {
   if (code === 'not-a-device') return 'That computer is not signed in to Tilo as you. Try your agent on one that is, or use a passkey.';
   if (code === 'not-let-in') return 'This tab isn’t let in yet. Try again in a moment.';
   if (code === 'not-loaded') return 'Tilo didn’t finish loading in this tab.';
-  if (code === 'timeout' || code === 'unreachable' || error?.name === 'TypeError') return `Couldn’t reach ${hostOf(site)}. Check your connection, then try again.`;
-  return `${hostOf(site)} did not make a code. Try again, or skip for now.`;
+  // The host that did not answer is the one the codes come from
+  // (`error.origin`, which the entry page names), not necessarily the page's.
+  const from = typeof error?.origin === 'string' ? error.origin : site;
+  const host = hostOf(from);
+  if (code === 'timeout' || code === 'unreachable' || error?.name === 'TypeError') {
+    // A page cannot read why a request failed, but a host on this computer
+    // is not behind a connection: it is not running, or (over https) the
+    // browser refused its certificate, which a fetch reports as nothing more.
+    const local = onThisComputer(from);
+    if (local === 'http:') return `Couldn’t reach ${host} on this computer. Check that it is running, then try again.`;
+    if (local === 'https:') return `Couldn’t reach ${host} on this computer. It isn’t running, or this browser doesn’t trust its certificate.`;
+    return `Couldn’t reach ${host}. Check your connection, then try again.`;
+  }
+  return `${host} did not make a code. Try again, or skip for now.`;
+}
+
+/** The scheme of `origin` when it is on this computer (a `localhost` name or
+ * a loopback address), else `null`. */
+function onThisComputer(origin) {
+  let url;
+  try { url = new URL(origin); } catch { return null; }
+  const name = url.hostname;
+  const local = name === 'localhost' || name.endsWith('.localhost') || /^127\./.test(name) || name === '[::1]';
+  return local ? url.protocol : null;
 }
 
 /** What a button that has no code yet says it waits for. */
