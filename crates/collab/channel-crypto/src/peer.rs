@@ -71,7 +71,10 @@
 //! State is written before anything it produced leaves the device: a frame
 //! reaches [`ChannelPeer::outbox`] only once the state holding it is
 //! durable (in the host's store for a peer opened from one, or in the export a
-//! browser writes before it sends).
+//! browser writes before it sends). A Welcome or another member's commit
+//! taken in produces nothing that leaves the device, so its state is written
+//! later ([`ChannelPeer::save_deferred`]), off the path to the page's first
+//! frame: losing it only makes the device ask again.
 
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
@@ -245,6 +248,9 @@ pub struct ChannelPeer {
     /// The format the state this peer was loaded from was written in, when
     /// an earlier build wrote it ([`crate::formats`]).
     upgraded_from: Option<u8>,
+    /// A change not yet written to `states`: one whose loss only makes this
+    /// device ask for the channel again ([`Self::save_deferred`]).
+    unsaved: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -430,7 +436,7 @@ impl ChannelPeer {
         vault: &VaultKey,
     ) -> Result<Self> {
         let device = Ed25519PublicKey::from_bytes(signer.device_public_key());
-        let peer = Self {
+        let mut peer = Self {
             channel,
             device,
             signer,
@@ -448,6 +454,7 @@ impl ChannelPeer {
             states,
             issued: 0,
             upgraded_from: None,
+            unsaved: false,
         };
         peer.save(vault)?;
         Ok(peer)
@@ -661,6 +668,7 @@ impl ChannelPeer {
             states: None,
             issued: file.issued,
             upgraded_from,
+            unsaved: false,
         })
     }
 
@@ -1638,7 +1646,9 @@ impl ChannelPeer {
         self.parent = Some(parent);
         self.advance(frame);
         self.settle_orphaned();
-        self.save(vault)?;
+        // Kept after the page shows ([`Self::save_deferred`]): a commit lost
+        // with it is found again, or the device asks again.
+        self.unsaved = true;
         Ok(PeerEvent::Advanced { epoch })
     }
 
@@ -1731,7 +1741,9 @@ impl ChannelPeer {
                         }
                     }
                 }
-                self.save(vault)?;
+                // Kept after the page shows ([`Self::save_deferred`]): a
+                // join lost with it is asked for again.
+                self.unsaved = true;
                 Ok(PeerEvent::Joined { epoch })
             }
             Err(Error::WelcomeRefused(refusal)) => {
@@ -1776,12 +1788,43 @@ impl ChannelPeer {
         Ok(frame)
     }
 
-    fn save(&self, vault: &VaultKey) -> Result<()> {
+    fn save(&mut self, vault: &VaultKey) -> Result<()> {
         let Some(states) = &self.states else {
             return Ok(());
         };
         let sealed = self.export_sealed(vault)?;
-        states.write(self.channel, &sealed)
+        states.write(self.channel, &sealed)?;
+        self.unsaved = false;
+        Ok(())
+    }
+
+    /// Whether this peer holds a change [`Self::save_deferred`] has yet to
+    /// write.
+    #[must_use]
+    pub const fn has_unsaved(&self) -> bool {
+        self.unsaved && self.states.is_some()
+    }
+
+    /// Write the change taking in a Welcome or a commit left unwritten.
+    ///
+    /// Sealing a large group's state takes as long as joining it, and nothing
+    /// waits on it: the frame taken in produced nothing that leaves this
+    /// device, and every change that does is written before it leaves (the
+    /// module docs), this one with it. So the caller writes it once the
+    /// person sees the channel's content, not before. A device that stops
+    /// first keeps the state it had before the frame: a waiting device waits
+    /// again and asks anew, and a member finds the frame it missed, or starts
+    /// over and asks again. Either way it is admitted with the channel's
+    /// history.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state cannot be sealed or written.
+    pub fn save_deferred(&mut self, vault: &VaultKey) -> Result<()> {
+        if self.has_unsaved() {
+            self.save(vault)?;
+        }
+        Ok(())
     }
 }
 
