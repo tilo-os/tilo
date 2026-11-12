@@ -181,8 +181,8 @@ diffmerge-a11y-show-source = Quelle { $source } anzeigen
 
 diffmerge-effects-open-files = Dateien öffnen
 diffmerge-effects-open-one = Eine Datei öffnen
-diffmerge-effects-save-merged = Zusammengeführtes Ergebnis sichern
-diffmerge-effects-save-merged-as = Zusammengeführtes Ergebnis sichern unter…
+diffmerge-effects-save-merged = Zusammengeführtes Ergebnis speichern
+diffmerge-effects-save-merged-as = Zusammengeführtes Ergebnis speichern unter…
 diffmerge-effects-compare-folders = Ordner vergleichen
 diffmerge-effects-load-sample = Beispiel laden
 diffmerge-effects-show-diff = Zwei-Wege-Vergleich

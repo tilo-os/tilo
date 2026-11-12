@@ -147,7 +147,7 @@ shortcuts-not-finished = Konnte nicht abgeschlossen werden
 ## Actions
 
 shortcuts-door-refresh = Kurzbefehle neu laden
-shortcuts-door-save = Kurzbefehl sichern
+shortcuts-door-save = Kurzbefehl speichern
 shortcuts-door-run = Kurzbefehl ausführen
 shortcuts-door-delete = Kurzbefehl löschen
 shortcuts-door-describe = Mit dem Agenten entwerfen

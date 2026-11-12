@@ -48,8 +48,8 @@ typst-no-problems = Das Dokument wurde ohne Probleme übersetzt.
 ## Actions
 
 typst-effect-compile = Neu übersetzen
-typst-effect-save = Typst-Datei sichern
-typst-effect-save-as = Typst-Datei sichern unter…
+typst-effect-save = Typst-Datei speichern
+typst-effect-save-as = Typst-Datei speichern unter…
 typst-effect-open-file = Typst-Datei öffnen
 typst-effect-export-pdf = PDF exportieren
 typst-effect-zoom-out = Verkleinern

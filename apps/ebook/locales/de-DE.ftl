@@ -337,6 +337,6 @@ ebook-library-toggle-bookmark = Lesezeichen setzen oder entfernen
 ebook-library-highlight = Markieren
 ebook-library-change-color = Farbe ändern
 ebook-library-delete-highlight = Markierung löschen
-ebook-library-delete-annotation = Löschen
+ebook-library-delete-annotation = Anmerkung löschen
 ebook-library-remove-font = Schrift entfernen
 ebook-library-delete-scheme = Farbschema löschen
