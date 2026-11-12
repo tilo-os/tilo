@@ -3,9 +3,10 @@
 // `Key` is a Fluent message of locales/en-US.ftl, so a mistyped label is a
 // compile error: `cx.button(crate::locales::keys::ADD, App::ADD.invoke())`.
 // `tilo-app locale sync` rewrites the keys after a catalog edit.
+// tilo-app:locale=de-DE
 // tilo-app:locale=en-US
 
-ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);
 
 pub mod keys {
     pub const WEATHER_A11Y_PLACES: ui::i18n::LabelKey =
