@@ -1,724 +1,439 @@
 #!/usr/bin/env python3
-"""Two Tilo sessions collaborating in one workspace, end to end.
+"""Two people's sessions in one workspace, and an edit crossing between them.
 
-Starts two compositors — separate state directories, separate
-Iroh endpoint keys, separate user identities, separate control sockets —
-and drives them through the flow a pair of users would take:
+Starts two headless sessions, each with its own state directory, its own
+identity and its own runtime directory, the tree's own apps installed as signed
+packages and launched by each session's own launcher into its own sandbox. One
+person invites the other into their workspace with the desk's own invitation;
+the other is started with that link and comes into the workspace on its way up,
+with nobody at its desk.
 
-  1. the host mints an invite from the command palette (`/invite`),
-  2. the peer pastes it into the palette's connect prompt (`/connect`),
-  3. a change the host makes to the workspace shows up in the peer's own
-     state,
-  4. the host grants the peer a capability; the peer's own action gate
-     starts permitting the action,
-  5. the host revokes it; the peer's own action gate stops,
-  6. the peer tries to administer the workspace and is refused.
+  workspace  the peer holds the workspace the host invited it into: the same
+             durable id, the same owner, and its own copy of what the workspace
+             records
+  notes      a note page written in the native Notes window on one session is
+             found by Notes on the other, and that window draws again with it
+  tasks      a task typed into the tilolang Tasks window on one session is
+             listed by Tasks on the other, and that window draws again with it
+  sandboxes  both apps are the launcher's own sandboxed processes with no
+             network of their own, so what crossed went through the
+             collaboration door rather than through a socket an app holds
 
-Every claim is read back from the *other* session's `state_dump` or
-from its own `check_action`, never from the side that made the change.
+Every claim is read from the session that did not make the change: the app on
+the other side answers it from its own copy of the record, its window there is
+counted before and after, and the desk's state is read from that session's own
+control socket. Screenshots of both sides are left in OUT.
 
     scripts/two-session-collab-demo.py
-    scripts/two-session-collab-demo.py --out /tmp/demo --keep
+    scripts/two-session-collab-demo.py --out target/collab-demo --build
 
-Requires `cargo build -p shell --bin shell` to have run. No display.
+It needs the session and its apps built (dist/dev/nested-session-build.sh, or
+`TILO_NESTED_SESSION_BUILD` naming where they were); `--build` makes them
+first, through `TILO_NESTED_SESSION_BUILD_EXEC` when this machine has no
+toolchain. Nothing here touches the live desktop or this machine's GPU: each
+session renders headless on lavapipe.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
-import re
 import os
 import shutil
-import signal
-import socket
-import subprocess
 import sys
-import time
+import uuid
+from pathlib import Path
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parent
+sys.path.insert(0, str(HERE / "headless-examples"))
+from real_apps import BUILD, Failed, Session, build, prepare, run, until  # noqa: E402
 
-# The app the demonstration grants over, and the action it gates. Both
-# are arbitrary names — what matters is that the peer's answer about
-# them comes from the replicated capability list.
-DEMO_APP = "org.tilo.Notes"
-DEMO_ACTION = "edit"
-DEMO_RESOURCE = "notes.notebook"
-# A path the filesystem capability covers. Two capabilities are granted
-# rather than one because they answer different questions and only one of
-# them is expressible in the Permissions tab: `Capability::from_capability`
-# maps filesystem / device / network scopes into the portal-shaped
-# descriptor the tab renders, and nothing else. So the workspace-scoped
-# grant is the one the action gate reads, and the path-scoped grant is the
-# one that shows up on screen with a Revoke button next to it.
-DEMO_PATH = "/var/workspace/shared"
+# The native app: a package the tree builds, launched by the session's launcher.
+NOTES = "so.tilo.notes"
+# The tilolang app: Tasks, installed from its own signed package.
+TASKS = "so.tilo.lang.tasks"
+TASKS_PACKAGE = REPO / "apps/tl/tasks"
+# The session's own provider, and the two resources it publishes the desk as: the
+# desk's windows (focus), and the workspace's own commands (its invitation).
+DESK = "so.tilo.session"
+WINDOWS = "desktop:desk"
+WORKSPACE_COMMANDS = "session:desk"
+# The variable a session joins the workspace of an invitation with, at startup.
+JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
+# How long a change may take to cross: two devices on one machine, so this is
+# the app's own wake, not a network's round trip.
+CROSSING_BOUND = 60.0
+# What each session installs besides Tasks: the native app the session package
+# the tree builds itself.
+APPS = "notes"
 
-# How long to wait for a workspace change to cross. Replication is pulled on
-# a fixed cadence, so this is that cadence plus room for a slow frame.
-SYNC_TIMEOUT_S = 25.0
-
-
-# --------------------------------------------------------------------
-# control socket
-# --------------------------------------------------------------------
-
-
-def call(sock_path: str, payload: dict, timeout: float = 30.0) -> dict:
-    """Send one command, read one reply."""
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-    s.connect(sock_path)
-    try:
-        s.sendall(json.dumps(payload).encode() + b"\n")
-        buf = b""
-        while b"\n" not in buf:
-            chunk = s.recv(1 << 20)
-            if not chunk:
-                raise RuntimeError("compositor closed the connection mid-reply")
-            buf += chunk
-        return json.loads(buf.split(b"\n", 1)[0])
-    finally:
-        s.close()
+failures: list[str] = []
 
 
-def ok(resp: dict) -> dict:
-    if "err" in resp:
-        raise RuntimeError(f"compositor refused: {resp['err']}")
-    return resp
+def step(number: str, text: str) -> None:
+    print(f"\n=== {number}  {text}", flush=True)
 
 
-class Session:
-    """One running compositor, addressed by its control socket."""
-
-    def __init__(self, name: str, user: str, run_dir: str, sock: str, binary: str,
-                 size: str, runtime_dir: str):
-        self.name = name
-        self.user = user
-        self.dir = run_dir
-        self.sock = sock
-        self.binary = binary
-        self.size = size
-        # Each session needs its own XDG_RUNTIME_DIR: the compositor
-        # binds its collab broker at <runtime>/tilo/services/collab.sock,
-        # and two sessions sharing one runtime dir are two sessions
-        # contending for one socket. On a real machine that is a
-        # per-user directory and the question does not arise; here it
-        # has to be arranged. Keep it short — sun_path is ~108 bytes.
-        self.runtime_dir = runtime_dir
-        self.proc: subprocess.Popen | None = None
-        self.log_path = os.path.join(run_dir, "compositor.log")
-        self._log = None
-
-    @property
-    def collab_sock(self) -> str:
-        """Where this session's broker should be listening."""
-        return os.path.join(self.runtime_dir, "tilo", "services", "collab.sock")
-
-    # -- lifecycle ---------------------------------------------------
-
-    def start(self) -> None:
-        os.makedirs(os.path.join(self.dir, "config"), exist_ok=True)
-        os.makedirs(os.path.join(self.dir, "keys"), exist_ok=True)
-        os.makedirs(self.runtime_dir, mode=0o700, exist_ok=True)
-        env = dict(os.environ)
-        # No display, and nothing inherited that would make the two
-        # sessions share state.
-        env.pop("DISPLAY", None)
-        env.pop("WAYLAND_DISPLAY", None)
-        # Nothing may point the toolkit at a broker other than this
-        # session's own — the point of the exercise is that a session
-        # provides one without being told where it is.
-        env.pop("QUICK_COLLAB_SOCK", None)
-        env.pop("QUICK_COLLAB_CAPNP_SOCK", None)
-        env.update(
-            XDG_RUNTIME_DIR=self.runtime_dir,
-            XDG_CONFIG_HOME=os.path.join(self.dir, "config"),
-            XDG_DATA_HOME=os.path.join(self.dir, "data"),
-            XDG_CACHE_HOME=os.path.join(self.dir, "cache"),
-            TILO_USER_ID=self.user,
-            TILO_PEER_KEY_PATH=os.path.join(self.dir, "keys", "peer-key"),
-            TILO_FS_ACL_PATH=os.path.join(self.dir, "config", "fs-capabilities.json"),
-            TILO_TEST_CONTROL=self.sock,
-            TILO_HEADLESS_SIZE=self.size,
-            RUST_LOG=env.get("RUST_LOG", "info"),
-        )
-        self._log = open(self.log_path, "w")
-        self.proc = subprocess.Popen(
-            [self.binary, "--backend", "headless", "--enable-peer-sync"],
-            cwd=REPO, env=env, stdout=self._log, stderr=subprocess.STDOUT,
-        )
-
-    def wait_ready(self, timeout: float = 90.0) -> None:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self.proc and self.proc.poll() is not None:
-                raise RuntimeError(
-                    f"{self.name} exited before binding its control socket; "
-                    f"see {self.log_path}"
-                )
-            if os.path.exists(self.sock):
-                # Bound is not the same as answering.
-                try:
-                    self.state()
-                    return
-                except (OSError, RuntimeError):
-                    pass
-            time.sleep(0.25)
-        raise RuntimeError(f"{self.name} never answered on {self.sock}")
-
-    def stop(self) -> None:
-        if self.proc and self.proc.poll() is None:
-            self.proc.send_signal(signal.SIGTERM)
-            try:
-                self.proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-        if self._log:
-            self._log.close()
-
-    # -- driving -----------------------------------------------------
-
-    def state(self) -> dict:
-        return ok(call(self.sock, {"op": "state_dump"}))["state"]
-
-    def chrome(self) -> dict:
-        return self.state()["chrome"]
-
-    def tree(self) -> dict:
-        return self.state()["workspace_tree"]
-
-    def active_workspace(self) -> dict:
-        tree = self.tree()
-        active = tree["active"]
-        for ws in tree["workspaces"]:
-            if ws["id"] == active:
-                return ws
-        raise RuntimeError(f"{self.name}: no active workspace in the tree")
-
-    def key(self, name: str) -> None:
-        ok(call(self.sock, {"op": "key", "key": name}))
-
-    def type_text(self, text: str) -> None:
-        # Long tokens go in chunks: one command per few hundred
-        # characters keeps each request comfortably under the socket's
-        # line cap while still arriving as ordinary key events.
-        for i in range(0, len(text), 200):
-            ok(call(self.sock, {"op": "type", "text": text[i:i + 200]}))
-
-    def modifiers(self, ctrl=False, shift=False, alt=False, logo=False) -> None:
-        ok(call(self.sock, {"op": "modifiers", "ctrl": ctrl, "shift": shift,
-                            "alt": alt, "logo": logo}))
-
-    def snapshot(self, path: str) -> str:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        ok(call(self.sock, {"op": "snapshot", "path": path}))
-        return path
-
-    def settle(self, seconds: float = 0.6) -> None:
-        """Let the compositor paint.
-
-        Rects for chrome affordances are published by the draw pass, so
-        a click by name issued in the same breath as the state change
-        that reveals it would miss.
-        """
-        time.sleep(seconds)
-
-    def palette(self) -> dict:
-        return self.chrome()["palette"]
-
-    def open_palette(self, machine_wide: bool = True) -> None:
-        """Open the command palette.
-
-        Super+Space searches the whole machine; Ctrl+K narrows to the
-        focused app. Which one to use depends on the row wanted: the
-        shell's own actions only appear under Super+Space, while the
-        peer-sync rows are offered under both and win the ranking under
-        Ctrl+K, where filenames merely containing "invite" are not
-        competing for the top row.
-        """
-        self.modifiers(logo=machine_wide, ctrl=not machine_wide)
-        self.key("Space" if machine_wide else "k")
-        self.modifiers()
-        self.settle(0.4)
-
-    def run_palette_command(self, query: str, expect_id: str | None = None,
-                            machine_wide: bool = True) -> str | None:
-        """Open the palette, type `query`, and activate the top row.
-
-        Returns the id of the row that was activated, so the caller can
-        assert it ran the command it meant to rather than whatever the
-        search happened to rank first.
-        """
-        self.open_palette(machine_wide)
-        self.type_text(query)
-        self.settle(0.7)
-        selected = self.palette()["selected_id"]
-        if expect_id is not None and selected != expect_id:
-            rows = [r["id"] for r in self.palette()["rows"]][:6]
-            raise RuntimeError(
-                f"{self.name}: palette query {query!r} selected {selected!r}, "
-                f"expected {expect_id!r} (rows: {rows})")
-        self.key("Enter")
-        self.settle()
-        return selected
-
-    def open_permissions_tab(self) -> bool:
-        """Open workspace settings on its Permissions tab.
-
-        Returns whether the tab was reachable. The pill always paints —
-        a host has to be able to reach the tab that grants before
-        anything has been granted — so a `False` here means the modal
-        itself did not open.
-        """
-        if not self.chrome()["overlays"]["ws_settings"]:
-            self.run_palette_command("workspace settings", expect_id="result:0")
-        if not self.chrome()["overlays"]["ws_settings"]:
-            return False
-        self.settle()
-        targets = {t["name"] for t in ok(call(self.sock, {"op": "list_targets"}))["targets"]}
-        if "ws_settings_tab[permissions]" not in targets:
-            return False
-        self.click("ws_settings_tab[permissions]")
-        return self.chrome()["ws_settings_tab"] == "Permissions"
-
-    def close_ws_settings(self) -> None:
-        while self.chrome()["overlays"]["ws_settings"]:
-            self.key("Escape")
-            self.settle(0.3)
-
-    def revoke_rects(self) -> list[str]:
-        return sorted(t["name"]
-                      for t in ok(call(self.sock, {"op": "list_targets"}))["targets"]
-                      if t["name"].startswith("permissions_revoke["))
-
-    def toggle_overview(self) -> None:
-        self.modifiers(ctrl=True)
-        self.key("Tab")
-        self.modifiers()
-        self.settle()
-
-    def click(self, name: str) -> None:
-        ok(call(self.sock, {"op": "click_named", "name": name}))
-        self.settle(0.4)
-
-    def grant(self, subject: str, scope: str, access: str,
-              cap_id: str | None = None) -> dict:
-        payload = {"op": "grant", "subject": subject, "scope": scope, "access": access}
-        if cap_id:
-            payload["id"] = cap_id
-        return call(self.sock, payload)
-
-    def revoke(self, cap_id: str) -> dict:
-        return call(self.sock, {"op": "revoke", "id": cap_id})
-
-    def check_action(self, actor: str, app: str = DEMO_APP,
-                     action: str = DEMO_ACTION, kind: str = "undoable",
-                     resource: str = DEMO_RESOURCE) -> dict:
-        return call(self.sock, {"op": "check_action", "actor": actor, "app": app,
-                                "resource": resource, "action": action,
-                                "kind": kind})
-
-
-# --------------------------------------------------------------------
-# reporting
-# --------------------------------------------------------------------
-
-FAILURES: list[str] = []
-
-
-def step(n: str, text: str) -> None:
-    print(f"\n=== {n}  {text}", flush=True)
-
-
-def claim(description: str, actual, expected) -> None:
-    good = actual == expected
-    mark = "PASS" if good else "FAIL"
-    print(f"  [{mark}] {description}\n         expected {expected!r}\n"
-          f"         observed {actual!r}", flush=True)
-    if not good:
-        FAILURES.append(description)
+def check(label: str, ok, detail: str = "") -> bool:
+    print(f"  {'PASS' if ok else 'FAIL'}  {label}" + (f" — {detail}" if detail else ""), flush=True)
+    if not ok:
+        failures.append(label)
+    return bool(ok)
 
 
 def note(text: str) -> None:
-    print(f"  ...  {text}", flush=True)
+    print(f"       {text}", flush=True)
 
 
-def wait_for(fn, timeout: float = SYNC_TIMEOUT_S, interval: float = 0.5):
-    """Poll `fn` until it returns a truthy value, or give up."""
-    deadline = time.time() + timeout
-    last = None
-    while time.time() < deadline:
-        last = fn()
-        if last:
-            return last
-        time.sleep(interval)
-    return last
+# --- what a session holds ---------------------------------------------------------
 
 
-# --------------------------------------------------------------------
-# the demonstration
-# --------------------------------------------------------------------
+def workspaces(session: Session) -> dict[str, dict]:
+    """The workspaces this session's desk holds, each by its durable id."""
+    tree = (session.state_dump() or {}).get("workspace_tree") or {}
+    return {workspace["room"]: workspace
+            for workspace in tree.get("workspaces") or [] if workspace.get("room")}
 
 
-def broker_answers(path: str) -> bool:
-    """Is a broker actually listening at `path`?
+def front_workspace(session: Session) -> dict | None:
+    """The workspace in front on this session's desk."""
+    tree = (session.state_dump() or {}).get("workspace_tree") or {}
+    held = workspaces(session)
+    front = tree.get("active")
+    for workspace in held.values():
+        if workspace.get("id") == front or workspace.get("room") == front:
+            return workspace
+    return next(iter(held.values()), None)
 
-    Existence is not the claim worth making — a stale socket file from
-    a session that died survives on disk and connects to nothing. What
-    an app needs is a listener that accepts, which is exactly what the
-    launcher does on its behalf, so do the same thing here.
-    """
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(5.0)
+
+def owner_of(workspace: dict) -> str | None:
+    """The person who governs a workspace, as its policy names them."""
+    owner = (workspace.get("policy") or {}).get("owner")
+    return owner if isinstance(owner, str) and owner else None
+
+
+def members_of(workspace: dict) -> list[str]:
+    """Everyone the workspace's policy names besides its owner."""
+    members = (workspace.get("policy") or {}).get("members") or {}
+    return sorted(members) if isinstance(members, dict) else []
+
+
+def invitation(host: Session) -> str:
+    """The link the host makes into the workspace in front, through its own desk action."""
+    answer = host.invoke(DESK, f"{WORKSPACE_COMMANDS}\u001fissue-invitation",
+                         {"role": "editor", "expires_in_seconds": 3600})
+    issued = (answer.get("receipt") or {}).get("update", {}).get("output", {}).get("value") or {}
+    link = issued.get("link")
+    if not link:
+        raise Failed(f"the desk made no invitation: {json.dumps(answer)[:1500]}")
+    return link
+
+
+def listed_action(session: Session, application: str, title: str, deadline: float = 120.0):
+    """The action whose title holds `title` that the window of `application` publishes."""
+    def found():
+        for action in session.actions(title):
+            if (action.get("application") == application
+                    and title.lower() in (action.get("title") or "").lower()):
+                return action
+        return None
     try:
-        s.connect(path)
-        return True
-    except OSError:
-        return False
-    finally:
-        s.close()
+        return until(f"{application}'s {title!r} action", found, deadline)
+    except Failed:
+        listed = sorted({f"{a.get('title')} ({a.get('operation_kind')})"
+                         for a in session.actions("") if a.get("application") == application})
+        raise Failed(f"{application} publishes no {title!r}; it lists {listed}") from None
 
 
-def run(host: Session, peer: Session, shots: str) -> None:
-    step("0.", "each session runs a collaboration broker of its own")
-    # This is what a real login was missing: the broker only ever
-    # started in the hosted entry point, behind an environment variable
-    # the OS image never set, so apps asked for the collab service,
-    # found nothing, and ran alone without saying so.
-    for s in (host, peer):
-        chrome = s.chrome()
-        claim(f"{s.name} session reports collaboration available",
-              chrome["collab"]["available"], True)
-        claim(f"{s.name} session reports no reason it would be unavailable",
-              chrome["collab"]["unavailable_reason"], None)
-        # The compositor says where it bound; check it is the path the
-        # launcher computes, and that something answers there.
-        claim(f"{s.name} broker bound the launcher's service path",
-              chrome["collab"]["socket"], s.collab_sock)
-        claim(f"{s.name} broker accepts a connection",
-              broker_answers(s.collab_sock), True)
-    claim("the two sessions have separate brokers",
-          host.collab_sock != peer.collab_sock, True)
-
-    step("1.", "two sessions, each with its own identity and state")
-    host_chrome, peer_chrome = host.chrome(), peer.chrome()
-    claim("host session's user", host_chrome["local_user_id"], host.user)
-    claim("peer session's user", peer_chrome["local_user_id"], peer.user)
-    claim("they are different processes",
-          host.proc.pid != peer.proc.pid, True)
-    note(f"host pid {host.proc.pid} on {host.sock}")
-    note(f"peer pid {peer.proc.pid} on {peer.sock}")
-    note(f"host peer-id {peer_id_of(host)}")
-    note(f"peer peer-id {peer_id_of(peer)}")
-    claim("the two sessions have distinct Iroh identities",
-          peer_id_of(host) != peer_id_of(peer), True)
-
-    step("2.", "the host creates a workspace and makes it active")
-    before = len(host.tree()["workspaces"])
-    host.toggle_overview()
-    claim("the overview opened", host.chrome()["overlays"]["overview"], True)
-    host.click("add_workspace")
-    after_tree = host.tree()
-    claim("host workspace count grew", len(after_tree["workspaces"]), before + 1)
-    host.click(f"overview_card[{before}]")
-    claim("the overview closed on selection",
-          host.chrome()["overlays"]["overview"], False)
-    host_ws = host.active_workspace()
-    claim("the new workspace is the active one",
-          host_ws["id"], after_tree["workspaces"][before]["id"])
-    note(f"host active workspace: {host_ws['name']} (id {host_ws['id']}, "
-         f"workspace {host_ws['room']})")
-    claim("the workspace it just made has an owner", host_ws["owner"], host.user)
-    claim("and the host may administer it",
-          host.chrome()["may_administer_active"], True)
-
-    step("3.", "the host mints an invite from the command palette")
-    host.run_palette_command("invite peer", expect_id="result:0")
-    token = wait_for(lambda: host.chrome()["peer_sync"]["invite_token"], timeout=20)
-    claim("the palette produced an invite token", bool(token), True)
-    if not token:
-        raise SystemExit("no token: the rest of the demonstration cannot run")
-    note(f"token is {len(token)} chars; status: "
-         f"{host.chrome()['peer_sync']['status']}")
-    host.snapshot(os.path.join(shots, "01-host-invite-token.png"))
-    # Dismiss the card: it is a modal, and it sits over the middle of
-    # the screen where the settings modal's fields are.
-    host.key("Escape")
-    host.settle()
-    claim("the invite card dismisses",
-          host.chrome()["peer_sync"]["invite_token"], None)
-
-    step("4.", "the peer joins through the palette's connect prompt")
-    peer_ws_before = peer.active_workspace()
-    note(f"peer active workspace before: {peer_ws_before['name']} "
-         f"(workspace {peer_ws_before['room']})")
-    claim("peer starts in a different workspace",
-          peer_ws_before["room"] != host_ws["room"], True)
-    peer.run_palette_command("connect to peer", expect_id="result:0")
-    opened = wait_for(
-        lambda: peer.chrome()["peer_sync"]["connect_input"] is not None, timeout=15)
-    claim("the connect prompt opened", bool(opened), True)
-    peer.snapshot(os.path.join(shots, "02-peer-connect-prompt.png"))
-    peer.type_text(token)
-    typed = peer.chrome()["peer_sync"]["connect_input"]
-    claim("the token arrived in the prompt intact", typed, token)
-    peer.key("Enter")
-    status = wait_for(
-        lambda: (peer.chrome()["peer_sync"]["status"] or "").startswith("Joined"),
-        timeout=15)
-    note(f"peer status: {peer.chrome()['peer_sync']['status']}")
-    claim("the peer joined a workspace", bool(status), True)
-    peer.key("Escape")
-    peer_ws = peer.active_workspace()
-    claim("the peer is now in the host's workspace", peer_ws["room"], host_ws["room"])
-    # Joining also records who administers the workspace. The value comes from
-    # the invite's signature, so the peer knows the workspace's owner and
-    # capabilities may only ever arrive from that peer — including not
-    # from another guest of the same workspace.
-    claim("the peer records the inviter as the workspace's governance authority",
-          peer.tree().get("room_authority", {}).get(peer_ws["room"]),
-          {"Peer": f"iroh:{peer_id_of(host)}"})
-    claim("the host still governs the workspace it made",
-          host.tree().get("room_authority", {}).get(host_ws["room"], "Local"),
-          "Local")
-    peer.snapshot(os.path.join(shots, "03-peer-joined.png"))
-
-    step("5.", "a change the host makes to the workspace reaches the peer")
-    marker = f"Shared workspace {int(time.time())}"
-    rename_active_workspace(host, marker)
-    claim("host renamed its workspace", host.active_workspace()["name"], marker)
-    arrived = wait_for(lambda: peer.active_workspace()["name"] == marker)
-    claim("the peer's own copy carries the new name",
-          peer.active_workspace()["name"], marker)
-    # Ownership is part of the same replicated document, and it is what
-    # decides who may administer. Read it off the peer.
-    claim("the peer's copy records the host as owner",
-          peer.active_workspace()["owner"], host.user)
-    claim("the peer may not administer the workspace it joined",
-          peer.chrome()["may_administer_active"], False)
-    host.snapshot(os.path.join(shots, "04-host-after-rename.png"))
-    peer.snapshot(os.path.join(shots, "05-peer-after-rename.png"))
-    if not arrived:
-        raise SystemExit("the rename never crossed; nothing downstream would mean anything")
-
-    step("6.", "the peer cannot do the thing yet")
-    before_grant = peer.check_action(f"app:{DEMO_APP}")
-    note(f"peer check_action -> {json.dumps(before_grant)}")
-    claim("the peer's own action gate denies it",
-          before_grant.get("answer", {}).get("permitted"), False)
-
-    step("7.", "the host grants the capability")
-    cap_id = "demo-notes-write"
-    fs_cap_id = "demo-notes-path"
-    granted = host.grant(f"app:{DEMO_APP}", "workspace", "write", cap_id)
-    note(f"host grant (workspace scope) -> {json.dumps(granted)}")
-    claim("the grant was recorded", granted.get("answer", {}).get("granted"), cap_id)
-    granted_fs = host.grant(f"app:{DEMO_APP}", f"fs:{DEMO_PATH}", "write", fs_cap_id)
-    note(f"host grant (path scope) -> {json.dumps(granted_fs)}")
-    claim("the path grant was recorded",
-          granted_fs.get("answer", {}).get("granted"), fs_cap_id)
-
-    has_cap = wait_for(
-        lambda: {c["id"] for c in peer.active_workspace().get("sandbox") or []}
-        >= {cap_id, fs_cap_id})
-    claim("both capabilities are in the peer's own list", bool(has_cap), True)
-    after_grant = peer.check_action(f"app:{DEMO_APP}")
-    note(f"peer check_action -> {json.dumps(after_grant)}")
-    claim("the peer's own action gate now permits it",
-          after_grant.get("answer", {}).get("permitted"), True)
-
-    # On screen, on the peer's machine: the Permissions tab lists the
-    # grant that arrived over the wire. This is the one place the chrome
-    # paints a replicated capability, so it is the screenshot that shows
-    # the sync rather than merely showing a running desktop.
-    claim("the peer's Permissions tab is reachable", peer.open_permissions_tab(), True)
-    peer_rows = peer.revoke_rects()
-    note(f"peer permissions rows: {peer_rows}")
-    # Rows are addressable by the capability id they revoke, which is
-    # the key `revoke_as` takes — so this asserts the peer's screen shows
-    # a row for *this* capability, not merely one mentioning the app.
-    claim("the peer's tab lists the replicated capability",
-          f"permissions_revoke[{fs_cap_id}]" in peer_rows, True)
-    peer.snapshot(os.path.join(shots, "07-peer-permissions-after-grant.png"))
-    host.open_permissions_tab()
-    host.snapshot(os.path.join(shots, "06-host-permissions-after-grant.png"))
-
-    step("8.", "the peer tries to administer the workspace, and is refused")
-    peer_grant = peer.grant("app:org.tilo.Rogue", "workspace", "write")
-    note(f"peer grant -> {json.dumps(peer_grant)}")
-    claim("the peer's grant was refused", "err" in peer_grant, True)
-    claim("refused for the right reason",
-          peer_grant.get("err", {}).get("code"), "grant_refused")
-    peer_revoke = peer.revoke(cap_id)
-    note(f"peer revoke -> {json.dumps(peer_revoke)}")
-    claim("the peer's revoke was refused", "err" in peer_revoke, True)
-    still_there = any(c["id"] == cap_id
-                      for c in peer.active_workspace().get("sandbox") or [])
-    claim("and the capability the peer tried to revoke is still there",
-          still_there, True)
-    rogue_on_host = any(c.get("access") == "Write"
-                        and "Rogue" in json.dumps(c.get("subject"))
-                        for c in host.active_workspace().get("sandbox") or [])
-    claim("nothing the peer asked for reached the host", rogue_on_host, False)
-    peer.snapshot(os.path.join(shots, "07b-peer-revoke-disabled.png"))
-
-    step("9.", "the host revokes, and the peer stops being able to")
-    # The path-scoped grant is revoked by clicking the Revoke button in
-    # the host's own Permissions tab — the affordance a user has.
-    host_rows = host.revoke_rects()
-    note(f"host permissions rows: {host_rows}")
-    target = f"permissions_revoke[{fs_cap_id}]"
-    claim("the host's tab offers a Revoke button for it",
-          target in host_rows, True)
-    if target not in host_rows:
-        target = None
-    if target:
-        host.click(target)
-        host.settle()
-    claim("the path capability is gone from the host's list",
-          all(c["id"] != fs_cap_id
-              for c in host.active_workspace().get("sandbox") or []), True)
-    fs_gone = wait_for(
-        lambda: all(c["id"] != fs_cap_id
-                    for c in peer.active_workspace().get("sandbox") or []))
-    claim("and gone from the peer's own list too", bool(fs_gone), True)
-    host.snapshot(os.path.join(shots, "08b-host-permissions-after-revoke.png"))
-    host.close_ws_settings()
-
-    # The workspace-scoped grant is revoked through
-    # `Workspace::revoke_as` rather than by a click, to exercise the same
-    # authority check from the other side of the API.
-    revoked = host.revoke(cap_id)
-    note(f"host revoke (workspace scope) -> {json.dumps(revoked)}")
-    claim("the host's revoke succeeded",
-          revoked.get("answer", {}).get("revoked"), True)
-    gone = wait_for(
-        lambda: all(c["id"] != cap_id
-                    for c in peer.active_workspace().get("sandbox") or []))
-    claim("the capability is gone from the peer's own list", bool(gone), True)
-    after_revoke = peer.check_action(f"app:{DEMO_APP}")
-    note(f"peer check_action -> {json.dumps(after_revoke)}")
-    claim("the peer's own action gate denies it again",
-          after_revoke.get("answer", {}).get("permitted"), False)
-    # Snapshot the peer while its settings modal is still up: the row
-    # that was there in shot 07 is gone, and the Permissions pill with
-    # it, because the workspace no longer holds a grant the tab can express.
-    peer.snapshot(os.path.join(shots, "09-peer-permissions-after-revoke.png"))
-    note(f"peer permissions rows after revoke: {peer.revoke_rects()}")
-    peer.close_ws_settings()
-    host.snapshot(os.path.join(shots, "08-host-after-revoke.png"))
-
-
-def peer_id_of(s: Session) -> str:
-    """Pull the Iroh endpoint id the session logged at startup."""
+def answers(session: Session, action: dict, args: dict | None = None) -> str:
+    """What an app's own action answers, as JSON text."""
+    answer = session.invoke(action.get("provider") or "app-actions", action["id"], args)
     try:
-        with open(s.log_path) as f:
-            for line in f:
-                # tracing paints its field names and separators, so the
-                # escapes have to come off before the split.
-                plain = re.sub(r"\x1b\[[0-9;]*m", "", line)
-                if "local_peer_id=" in plain:
-                    return plain.split("local_peer_id=")[1].split()[0].strip()
-    except OSError:
-        pass
-    return "<unknown>"
+        value = answer["receipt"]["update"]["output"]["value"]
+    except (KeyError, TypeError):
+        return json.dumps(answer)
+    return json.dumps(value)
 
 
-def rename_active_workspace(s: Session, name: str) -> None:
-    """Rename through the chrome's own name-edit path.
-
-    Opens workspace settings, clicks the name field, replaces what is
-    there and commits with Enter — the same sequence a user performs.
-    """
-    s.run_palette_command("workspace settings", expect_id="result:0")
-    if not s.chrome()["overlays"]["ws_settings"]:
-        raise RuntimeError(f"{s.name}: workspace settings did not open")
-    s.click("ws_settings_name_input")
-    if s.chrome()["editing_workspace_name"] is None:
-        raise RuntimeError(f"{s.name}: the name field did not take focus")
-    for _ in range(64):
-        s.key("Backspace")
-    s.type_text(name)
-    s.key("Enter")
-    s.settle()
-    s.key("Escape")
-    s.settle()
+def frames(session: Session, app: str) -> int:
+    """How many frames the window of `app` has drawn: a still window keeps its count."""
+    for window in session.windows():
+        if window.get("app_id") == app and window.get("window") is not None:
+            return int(window.get("frames") or 0)
+    return 0
 
 
-# --------------------------------------------------------------------
+def redrawn(session: Session, app: str, drawn: int, what: str) -> int:
+    """Wait for the window of `app` to draw again past `drawn`: it woke with `what`."""
+    return until(f"the {app} window on {session.tag} to draw {what}",
+                 lambda: (now if (now := frames(session, app)) > drawn else None),
+                 CROSSING_BOUND, 0.25)
+
+
+def focus(session: Session, app: str) -> dict:
+    """Bring `app`'s window to the front, as the desk's own verb does."""
+    window = until(f"the window of {app} on {session.tag}",
+                   lambda: next((w for w in session.windows()
+                                 if w.get("app_id") == app and w.get("window") is not None), None),
+                   180, 0.5)
+    session.invoke(DESK, f"{WINDOWS}\u001ffocus", {"tab": str(window["tab"])})
+    return window
+
+
+def sandboxed(session: Session, app: str) -> bool:
+    """Whether `app` runs as the launcher's own sandboxed process.
+
+    A sandboxed app's binary sits in the store the launcher mounts for it,
+    `/var/tilo-apps/<id>/`, which exists in the app's own mount namespace and
+    nowhere else: a process of the app running from that path is one the
+    launcher made, inside the namespaces it gives it."""
+    return bool(session.processes(app))
+
+
+def device_identity(session: Session) -> str:
+    """A digest of this session's device identity: two sessions of one person
+    share it, and two people's computers never do."""
+    import hashlib
+    digest = hashlib.sha256()
+    for path in sorted((session.state / "identity").rglob("*")):
+        if path.is_file():
+            digest.update(str(path.relative_to(session.state)).encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest() if (session.state / "identity").is_dir() else ""
+
+
+def no_network(app: str) -> tuple[bool, str]:
+    """Whether the package's sandbox gives `app` no network of its own, and what it says."""
+    for manifest in REPO.glob("apps/*/tilo-app.toml"):
+        text = manifest.read_text(errors="replace")
+        if any(line.strip() in (f'id = "{app}"', f'id       = "{app}"') for line in text.splitlines()):
+            net = text.split("[sandbox.net]", 1)[-1] if "[sandbox.net]" in text else ""
+            mode = next((line.split("=", 1)[1].strip() for line in net.splitlines()
+                         if line.strip().startswith("mode")), "")
+            return mode.strip('"') == "off", f"[sandbox.net] mode = {mode}"
+    return False, f"no manifest declares {app}"
+
+
+def tasks_content(session: Session) -> str:
+    """What Tasks on this session holds: its own `read` of the workspace's records.
+
+    A tilolang app answers a read of the workspace's records by kind and id, and a
+    read of each record of its own: the task titles are in what it answers."""
+    def read_action():
+        for action in session.actions("Read the content"):
+            parts = (action.get("id") or "").split("\u001f")
+            if action.get("application") == TASKS and parts[-2:] == [f"tl:{TASKS}", "read"]:
+                return action
+        return None
+    try:
+        action = until("Tasks' read action", read_action, 180, 0.5)
+    except Failed:
+        return ""
+    text = answers(session, action)
+    try:
+        records = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    if isinstance(records, dict):
+        for record in records.get("records") or []:
+            if str(record.get("kind", "")).startswith(f"tl.{TASKS}."):
+                text += "\n" + answers(session, action, {"item": record["item"]})
+    return text
+
+
+def build_tasks(built: Path, state: Path) -> Path:
+    """`apps/tl/tasks` as a signed package of `state`'s runtime, to install."""
+    built.mkdir(parents=True, exist_ok=True)
+    package = built / "tasks.tapp"
+    if package.is_file():
+        return package
+    runtime = (state / "runtimes/.version").read_text().strip()
+    tool = next(path for path in (state / "bin/tilolang", BUILD / "bin/tilolang") if path.is_file())
+    run([tool, "build", TASKS_PACKAGE, "--search", REPO / "apps/tl", "--out", built,
+         "--tilo-runtime", f"tilo-runtime/{runtime}"], cwd=REPO)
+    return package
+
+
+# --- the demonstration ------------------------------------------------------------
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out", default=os.path.join(REPO, "target", "two-session-demo"),
-                    help="run directory for state, logs and screenshots")
-    ap.add_argument("--shell", default=os.path.join(REPO, "target", "debug", "shell"),
-                    help="path to the compositor binary")
-    ap.add_argument("--size", default="1280x800", help="headless viewport")
-    ap.add_argument("--keep", action="store_true",
-                    help="keep the previous run directory instead of wiping it")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--out", type=Path, default=REPO / "target/collab-demo",
+                        help="run directory for logs, screenshots and the two states")
+    parser.add_argument("--build", action="store_true",
+                        help="build the session and its apps first")
+    parser.add_argument("--remote-exec", default=os.environ.get("TILO_NESTED_SESSION_BUILD_EXEC"),
+                        help="command prefix the session's build runs through")
+    args = parser.parse_args()
+    out = args.out.resolve()
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
 
-    if not os.path.exists(args.shell):
-        print(f"no compositor at {args.shell}\n"
-              f"build it first:  cargo build -p shell --bin shell", file=sys.stderr)
+    if args.build:
+        build(apps=APPS, remote=args.remote_exec)
+    if not (BUILD / "bin/tilo-session").is_file():
+        print(f"no session build in {BUILD}: pass --build, or set TILO_NESTED_SESSION_BUILD",
+              file=sys.stderr)
         return 2
 
-    if not args.keep:
-        shutil.rmtree(args.out, ignore_errors=True)
-    shots = os.path.join(args.out, "shots")
-    os.makedirs(shots, exist_ok=True)
+    token = uuid.uuid4().hex[:8]
+    note_title = f"Release plan {token}"
+    note_body = f"Ship the {token} build on Friday."
+    task_title = f"Book the studio for {token}"
 
-    # Unix socket paths are capped near 108 bytes, so they go in the
-    # runtime dir rather than next to the rest of the run.
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
-    host_sock = os.path.join(runtime, f"tilo-demo-host-{os.getpid()}.sock")
-    peer_sock = os.path.join(runtime, f"tilo-demo-peer-{os.getpid()}.sock")
-    # A private runtime dir per session, standing in for the per-user
-    # one logind would give each of two real logins.
-    host_runtime = os.path.join(runtime, f"qd-h{os.getpid()}")
-    peer_runtime = os.path.join(runtime, f"qd-p{os.getpid()}")
-
-    host = Session("host", "alice", os.path.join(args.out, "host"), host_sock,
-                   args.shell, args.size, host_runtime)
-    peer = Session("peer", "bob", os.path.join(args.out, "peer"), peer_sock,
-                   args.shell, args.size, peer_runtime)
-
-    print(f"run directory: {args.out}")
-    print(f"screenshots:   {shots}")
-    rc = 0
+    host = Session(out / "host")
+    peer = Session(out / "peer")
     try:
-        for s in (host, peer):
-            s.start()
-        for s in (host, peer):
-            s.wait_ready()
-            print(f"{s.name} ready (pid {s.proc.pid}, user {s.user})")
-        run(host, peer, shots)
-    except Exception as exc:  # noqa: BLE001 — the report is the product
-        FAILURES.append(f"{type(exc).__name__}: {exc}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        for s in (host, peer):
-            s.stop()
-            for path in (s.sock,):
-                try:
-                    os.unlink(path)
-                except FileNotFoundError:
-                    pass
+        step("1", "two states, each with its own apps and runtime")
+        for session, tag in ((host, "host"), (peer, "peer")):
+            prepare(session.state, apps=APPS)
+            note(f"{tag}: {session.state}")
+        # Tasks as a tilolang package of this session's runtime: built once,
+        # installed into both states as the signed package the launcher trusts.
+        tapp = build_tasks(out / "build", host.state)
+        note(f"Tasks package: {tapp.name}")
 
-    print("\n" + "=" * 68)
-    if FAILURES:
-        rc = 1
-        print(f"{len(FAILURES)} claim(s) did not hold:")
-        for f in FAILURES:
-            print(f"  - {f}")
+        step("2", "the host's session starts and holds its own workspace")
+        host.start(apps=APPS, fresh=True, out=out, tag="host", tapps=[tapp])
+        host_workspace = front_workspace(host)
+        if host_workspace is None:
+            raise Failed("the host's desk holds no workspace to invite into")
+        note(f"host workspace {host_workspace['name']} ({host_workspace['room']})")
+        check("the host governs the workspace it made", bool(owner_of(host_workspace)),
+              json.dumps(host_workspace.get("policy"))[:600])
+
+        step("3", "the host invites the other person into that workspace")
+        link = invitation(host)
+        note(f"the link is {len(link)} characters")
+        link_path = out / "invitation.txt"
+        link_path.write_text(link)
+
+        step("4", "the peer starts with the link and comes into that workspace")
+        peer.start(apps=APPS, fresh=True, out=out, tag="peer", tapps=[tapp],
+                   env={JOIN_INVITATION: str(link_path)})
+        check("the two sessions are separate processes", host.proc.pid != peer.proc.pid,
+              f"{host.proc.pid} and {peer.proc.pid}")
+        check("they keep their state and their runtime apart",
+              host.state != peer.state and host.runtime_directory() != peer.runtime_directory(),
+              f"{host.runtime_directory()} and {peer.runtime_directory()}")
+        room = until("the peer to hold the host's workspace",
+                     lambda: (host_workspace["room"] if host_workspace["room"] in workspaces(peer)
+                              else None), 240, 0.5)
+        peer_workspace = workspaces(peer)[room]
+        check("the peer holds the workspace the link names",
+              peer_workspace["room"], host_workspace["room"])
+        check("the peer's copy names the host's person as its owner",
+              owner_of(peer_workspace), owner_of(host_workspace))
+        check("the two sessions are different people's computers",
+              device_identity(host) != device_identity(peer) != "",
+              f"{device_identity(host)[:16]} and {device_identity(peer)[:16]}")
+        check("the peer's copy carries what the workspace records",
+              bool(members_of(peer_workspace) or (peer_workspace.get("policy") or {}).get("grants")),
+              json.dumps(peer_workspace.get("policy"))[:600])
+        host.snapshot(out / "01-host-workspace.png")
+        peer.snapshot(out / "02-peer-workspace.png")
+
+        step("5", "both sessions open the native app, through their own desktops")
+        for session in (host, peer):
+            session.launch(NOTES)
+            session.answering(NOTES, deadline=240)
+            check(f"{session.tag} runs Notes as the launcher's sandboxed process",
+                  sandboxed(session, NOTES))
+        offline, how = no_network(NOTES)
+        check("Notes' package gives it no network of its own", offline, how)
+
+        step("6", "a note page written on the host reaches the peer's Notes")
+        focus(host, NOTES)
+        peer_drawn = frames(peer, NOTES)
+        host.chord("Control", "n")
+        host.type(note_title)
+        host.key("Enter")
+        host.type(note_body)
+        host.key("Enter")
+        host.snapshot(out / "03-host-note.png")
+        find_note = listed_action(peer, NOTES, "Find note")
+
+        def peer_finds() -> str | None:
+            text = answers(peer, find_note, {"title": note_title})
+            return text if note_title in text else None
+
+        found = until("the peer's Notes to find the page", peer_finds, CROSSING_BOUND, 0.5)
+        check("Notes on the peer finds the page the host wrote", bool(found), found[:500])
+        check("and the text of the page crossed with it", note_body in found, found[:500])
+        drawn = redrawn(peer, NOTES, peer_drawn, "the page that arrived")
+        check("the peer's Notes window woke and drew it", drawn > peer_drawn,
+              f"{peer_drawn} then {drawn} frames")
+        peer.snapshot(out / "04-peer-note.png")
+
+        step("7", "both sessions open the tilolang app")
+        for session in (host, peer):
+            session.launch(TASKS)
+            session.answering(TASKS, deadline=300)
+            check(f"{session.tag} runs Tasks as the launcher's sandboxed process",
+                  sandboxed(session, TASKS))
+        offline, how = no_network(TASKS)
+        check("Tasks' package gives it no network of its own", offline, how)
+
+        step("8", "a task typed on the host reaches the peer's Tasks")
+        focus(peer, TASKS)
+        peer_tasks_drawn = frames(peer, TASKS)
+        focus(host, TASKS)
+        host.type(task_title)
+        host.key("Enter")
+        host.snapshot(out / "05-host-task.png")
+
+        def peer_lists() -> str | None:
+            text = tasks_content(peer)
+            return text if task_title in text else None
+
+        listed = until("the peer's Tasks to list the new task", peer_lists, CROSSING_BOUND, 0.5)
+        check("the peer's own Tasks lists the task the host typed", bool(listed), listed[:500])
+        drawn = redrawn(peer, TASKS, peer_tasks_drawn, "the task that arrived")
+        check("the peer's Tasks window woke and drew it", drawn > peer_tasks_drawn,
+              f"{peer_tasks_drawn} then {drawn} frames")
+        peer.snapshot(out / "06-peer-task.png")
+
+        step("9", "each side's app answers from the one record")
+        check("the host's own Tasks lists the task it typed", task_title in tasks_content(host))
+        check("the host's Notes still holds the page it wrote",
+              note_title in answers(host, listed_action(host, NOTES, "Find note"),
+                                    {"title": note_title}))
+        check("the peer's Notes holds the page too, read back on its own",
+              note_body in answers(peer, find_note, {"title": note_title}))
+    except Failed as error:
+        check(f"the run finished: {error}", False)
+        for session, tag in ((host, "host"), (peer, "peer")):
+            log = session.state / "logs/session.log"
+            if log.is_file():
+                tail = [line[:300] for line in log.read_text(errors="replace").splitlines()
+                        if "ERROR" in line or "WARN" in line][-12:]
+                note(f"{tag} session log: {tail}")
+    finally:
+        for session in (host, peer):
+            session.stop()
+
+    print()
+    if failures:
+        print(f"FAILED ({len(failures)}):")
+        for failure in failures:
+            print(f"  - {failure}")
     else:
-        print("every claim held.")
-    print(f"screenshots: {shots}")
-    print(f"logs:        {host.log_path}\n             {peer.log_path}")
-    return rc
+        print("every claim held")
+    print(f"artefacts: {out}")
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Failed as error:
+        print(f"FAIL — {error}")
+        sys.exit(1)
+    except Exception as error:  # noqa: BLE001 - a demo that crashed is a failure
+        import traceback
+        traceback.print_exc()
+        print(f"FAIL — {type(error).__name__}: {error}")
+        sys.exit(1)
