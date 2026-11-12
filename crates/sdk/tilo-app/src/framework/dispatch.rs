@@ -506,6 +506,8 @@ impl DispatchCore {
         address: ActionAddress,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) {
+        #[cfg(debug_assertions)]
+        not_painting();
         let on_behalf_of = match &self.custody {
             Some(custody) => {
                 if let Err(error) = custody.check() {
@@ -1836,6 +1838,8 @@ impl<R: Resource> Dispatcher<R> {
         context: ActionContext,
         confirmed: bool,
     ) -> Result<(), ActionError> {
+        #[cfg(debug_assertions)]
+        not_painting();
         let _nonlocal = self.capture_nonlocal();
         self.core.applies_now()?;
         if !self.may_apply(action) {
@@ -2147,6 +2151,20 @@ fn asks<A: tilo_actions::Action>(action: &A) -> bool {
         tilo_actions::Action::change_kind(action),
         tilo_actions::Action::irreversible(action),
     )
+}
+
+/// Debug builds stop on a document write made while the window paints. A
+/// frame reads the document in `sync` and writes what it took up in
+/// `settle`, both before it paints: a write dispatched from `draw` lands
+/// after the frame decided what it shows, so it waits for an unrelated event
+/// or is never shown (and never synced). Take it up in `update` and write it
+/// in `settle`.
+#[cfg(debug_assertions)]
+fn not_painting() {
+    debug_assert!(
+        !ui_core::widget::painting(),
+        "a document write was dispatched from a widget's draw: take it up in update, and write it in settle"
+    );
 }
 
 /// The submissions each effect queued that have not landed yet, and the

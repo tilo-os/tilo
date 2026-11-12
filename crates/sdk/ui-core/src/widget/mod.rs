@@ -454,6 +454,8 @@ pub fn draw_child_unculled(
 ) {
     #[cfg(debug_assertions)]
     let open = scene.encoding().n_open_clips;
+    #[cfg(debug_assertions)]
+    let _painting = paint_pass::Painting::enter();
     let begun = crate::scene_parts::begin_widget(scene, child, index, transform);
     #[expect(
         clippy::disallowed_methods,
@@ -500,6 +502,8 @@ impl<W: Widget> DrawChild for W {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        #[cfg(debug_assertions)]
+        let _painting = paint_pass::Painting::enter();
         let begun = crate::scene_parts::begin_widget(scene, self, None, transform);
         #[expect(
             clippy::disallowed_methods,
@@ -2001,6 +2005,8 @@ pub use remount::Remount;
 mod reach;
 pub(crate) use reach::find;
 pub use reach::find_mut;
+#[cfg(debug_assertions)]
+mod paint_pass;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
 pub use layout::{
@@ -2008,6 +2014,8 @@ pub use layout::{
     compute_widget_layout, device_scale, enter_device_scale, insets, insets_all, insets_xy,
     layout_clip, placing_again, text_control_height, with_layout_clip,
 };
+#[cfg(debug_assertions)]
+pub use paint_pass::painting;
 
 mod cached_paint;
 pub use cached_paint::CachedPaint;

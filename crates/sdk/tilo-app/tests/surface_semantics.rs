@@ -231,3 +231,76 @@ impl ResourceApp for StackedApp {
 fn a_stacked_surface_is_operated_by_name() {
     operated_by_name::<StackedApp>();
 }
+
+/// A surface that writes what it paints: the frame has already read the
+/// document and decided what it shows by then, so debug builds stop on the
+/// write instead of letting it land a frame late or never.
+#[derive(Default)]
+struct WritesWhilePainting {
+    rect: Rect,
+    dispatch: Option<Dispatcher<Ballot>>,
+}
+
+impl Widget for WritesWhilePainting {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let style = tilo_app::taffy::Style {
+            size: tilo_app::taffy::Size {
+                width: tilo_app::taffy::Dimension::length(200.0),
+                height: tilo_app::taffy::Dimension::length(40.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    tilo_app::rect_geometry!();
+
+    fn name(&self) -> &'static str {
+        "WritesWhilePainting"
+    }
+
+    fn draw(
+        &mut self,
+        _scene: &mut tilo_app::vello::Scene,
+        _transform: tilo_app::vello::kurbo::Affine,
+        _text_renderer: &mut tilo_app::TextRenderer,
+        _theme: &Theme,
+        _presence: &tilo_app::PresenceCtx,
+    ) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.submit(Ballot::APPROVE.invoke());
+        }
+    }
+}
+
+impl ResourceSurface<Ballot> for WritesWhilePainting {
+    fn present(&mut self, _: &std::rc::Rc<Ballot>) {}
+
+    fn attach(&mut self, cx: SurfaceCx<Ballot>) {
+        self.dispatch = Some(cx.dispatcher());
+    }
+}
+
+struct PaintingApp;
+
+impl ResourceApp for PaintingApp {
+    type Resource = Ballot;
+    const ID: &'static str = "so.tilo.test-ballot-paint";
+    const TITLE: &'static str = "Ballot";
+
+    fn view(cx: &mut ViewCx<Ballot>) -> Element {
+        cx.surface(WritesWhilePainting::default())
+    }
+}
+
+#[test]
+#[should_panic(expected = "dispatched from a widget's draw")]
+fn a_write_dispatched_while_a_widget_paints_is_refused() {
+    let mut app = TestApp::<PaintingApp>::new().unwrap();
+    app.settle();
+}
