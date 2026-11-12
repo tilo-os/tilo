@@ -119,15 +119,23 @@ const FIND = (text, role) => `(() => {
   const wanted = ${JSON.stringify((role ?? '').toLowerCase()) || null};
   const hits = [];
   for (const element of document.querySelectorAll('[data-tilo-semantic]')) {
-    const words = [element.getAttribute('aria-label'), element.getAttribute('aria-description'), element.value, element.textContent]
-      .filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim().toLowerCase();
-    if (!words.includes(needle)) continue;
+    const label = [element.getAttribute('aria-label'), element.value].filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim().toLowerCase();
+    const seen = (element.textContent ?? '').replace(/\\s+/g, ' ').trim().toLowerCase();
+    // An element's own name comes first; the text it holds is what a
+    // container has instead, which is how a whole window matches a word one
+    // of its buttons says.
+    const named = label.includes(needle);
+    if (!named && !seen.includes(needle)) continue;
     const role = (element.getAttribute('role') ?? '').toLowerCase();
     if (wanted && role !== wanted) continue;
     const r = element.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) continue;
-    hits.push({x: r.left + r.width / 2, y: r.top + r.height / 2, rect: [r.left, r.top, r.width, r.height], role, name: words.slice(0, 80)});
+    hits.push({x: r.left + r.width / 2, y: r.top + r.height / 2, rect: [r.left, r.top, r.width, r.height], role,
+      name: (label || seen).slice(0, 80), score: named ? 0 : 1, area: r.width * r.height});
   }
+  // The control the name belongs to, not the window it sits in: its own name
+  // first, then the smallest thing that holds it.
+  hits.sort((a, b) => a.score - b.score || a.area - b.area);
   return JSON.stringify(hits.slice(0, 6));
 })()`;
 // Every name the tree holds: what a step that found nothing is told about.
@@ -228,13 +236,13 @@ const SCENARIOS = {
     {click: 'Field notes', role: 'ListItem'},
     // The note's body is painted text: the page names the title, and the
     // text under it is reached from where the title is.
-    {click: ['Field notes Page title', 0, 150]},
+    {click: ['Page title', 0, 150]},
     {type: 'A line typed into the note. '},
     {shot: 'typed'},
-    {drag: [['Field notes Page title', 0, 150], ['Field notes Page title', 0, 330]]},
+    {drag: [['Page title', 0, 150], ['Page title', 0, 330]]},
     {shot: 'selected'},
     // The text menu a right click raises over a paragraph.
-    {rightClick: ['Field notes Page title', 0, 150]},
+    {rightClick: ['Page title', 0, 150]},
     {shot: 'text-menu'},
     {key: 'Escape'},
     {shot: 'menu-closed'},
@@ -266,7 +274,7 @@ const SCENARIOS = {
     {key: 'Escape'},
     {shot: 'picker-closed'},
     // A day pressed and let go on another: the event the day holds moves.
-    {drag: ['Open Thu, Nov 12', 'Open Sat, Nov 14']},
+    {drag: ['Open Thu, Nov 12', 'Open Sat, Nov 14'], role: 'Button'},
     {shot: 'day-drag'},
     // A dialog over the month: the sheet behind it dims, and one scrim
     // painted plainly is a different month.
@@ -311,7 +319,7 @@ const SCENARIOS = {
     {click: 'A1', role: 'Cell'},
     {type: '42'},
     {shot: 'typed-cell'},
-    {drag: [['A1', 0, 0], ['C3', 0, 0]]},
+    {drag: ['A1', 'C3'], role: 'Cell'},
     {shot: 'range'},
     {click: 'Start a formula'},
     {type: 'SUM('},
@@ -320,16 +328,16 @@ const SCENARIOS = {
     {shot: 'new-sheet'},
   ],
   'so.tilo.settings': [
-    // Another pane from the sidebar, a chooser opened over it, and a density
-    // picked: three kinds of control, none of them a window bar's button.
-    {click: 'Accessibility', role: 'TreeItem'},
-    {shot: 'pane'},
+    // A chooser opened over the first pane, a density picked, then another
+    // pane: menial controls, none of them a window bar's button.
     {click: 'Interface size', role: 'ComboBox'},
     {shot: 'chooser'},
     {key: 'Escape'},
     {shot: 'chooser-closed'},
     {click: 'Compact', role: 'RadioButton'},
     {shot: 'density'},
+    {click: 'Accessibility', role: 'TreeItem'},
+    {shot: 'pane'},
   ],
   'so.tilo.photos': [
     // The sides of the library, and the sheet a new album raises.
@@ -384,7 +392,9 @@ async function step(tab, name, index, shot) {
     return {at: [Math.round(at.x), Math.round(at.y)], rect: at.rect, matches: at.matches};
   }
   if (name.drag !== undefined) {
-    const [from, to] = [await where(name.drag[0]), await where(name.drag[1])];
+    // Both ends are the same kind of thing (two cells, two days), so one role
+    // narrows the pair.
+    const [from, to] = [await where(name.drag[0], name.role), await where(name.drag[1], name.role)];
     await tab.mouse.move(from.x, from.y);
     await tab.mouse.down({x: from.x, y: from.y});
     for (let k = 1; k <= 10; k++) {
