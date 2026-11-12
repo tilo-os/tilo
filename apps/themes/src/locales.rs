@@ -30,6 +30,12 @@ pub mod keys {
     pub const THEMES_DISTINCT_LETTERS_HELP: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("themes-distinct-letters-help");
     pub const THEMES_DUPLICATE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("themes-duplicate");
+    pub const THEMES_EFFECT_APPLY_THEME: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-effect-apply-theme");
+    pub const THEMES_EFFECT_DUPLICATE_THEME: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-effect-duplicate-theme");
+    pub const THEMES_EFFECT_EXPORT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-effect-export");
     pub const THEMES_EMPHASIS: ui::i18n::LabelKey = ui::i18n::LabelKey::new("themes-emphasis");
     pub const THEMES_EMPHASIS_KIND: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("themes-emphasis-kind");
@@ -145,6 +151,13 @@ pub mod keys {
     pub const THEMES_SHAPE_DENSITY: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("themes-shape-density");
     pub const THEMES_SIZE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("themes-size");
+    pub const THEMES_STUDIO: ui::i18n::LabelKey = ui::i18n::LabelKey::new("themes-studio");
+    pub const THEMES_STUDIO_IMPORT_THEME: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-studio-import-theme");
+    pub const THEMES_STUDIO_RESET: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-studio-reset");
+    pub const THEMES_STUDIO_SWITCH_POLARITY: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("themes-studio-switch-polarity");
     pub const THEMES_SURFACES_BASE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("themes-surfaces-base");
     pub const THEMES_SURFACES_CONTENT: ui::i18n::LabelKey =

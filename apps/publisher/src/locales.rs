@@ -63,6 +63,7 @@ pub mod keys {
     pub const PUBLISHER_NO_APPLICATION: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("publisher-no-application");
     pub const PUBLISHER_NO_KEY: ui::i18n::LabelKey = ui::i18n::LabelKey::new("publisher-no-key");
+    pub const PUBLISHER_PROFILE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("publisher-profile");
     pub const PUBLISHER_PROOF_COPIED: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("publisher-proof-copied");
     pub const PUBLISHER_PROOF_EMPTY: ui::i18n::LabelKey =
@@ -100,4 +101,12 @@ pub mod keys {
         ui::i18n::LabelKey::new("publisher-status-heading");
     pub const PUBLISHER_VERBATIM: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("publisher-verbatim");
+    pub const SO_TILO_PUBLISHER_KEY_APPLY_FOR_NAMESPACES: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("so-tilo-publisher-key-apply-for-namespaces");
+    pub const SO_TILO_PUBLISHER_KEY_CHECK_STATUS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("so-tilo-publisher-key-check-status");
+    pub const SO_TILO_PUBLISHER_KEY_COPY_PROOF: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("so-tilo-publisher-key-copy-proof");
+    pub const SO_TILO_PUBLISHER_KEY_EXPORT_KEY: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("so-tilo-publisher-key-export-key");
 }

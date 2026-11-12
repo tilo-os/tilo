@@ -131,4 +131,14 @@ pub mod keys {
     pub const POKER_WON_UNCONTESTED: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("poker-won-uncontested");
     pub const POKER_WON_WITH: ui::i18n::LabelKey = ui::i18n::LabelKey::new("poker-won-with");
+    pub const SO_TILO_POKER_TABLE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("so-tilo-poker-table");
+    pub const SO_TILO_POKER_TABLE_DEAL: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("so-tilo-poker-table-deal");
+    pub const SO_TILO_POKER_TABLE_LEAVE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("so-tilo-poker-table-leave");
+    pub const SO_TILO_POKER_TABLE_SHOW: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("so-tilo-poker-table-show");
+    pub const SO_TILO_POKER_TABLE_SKIP: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("so-tilo-poker-table-skip");
 }

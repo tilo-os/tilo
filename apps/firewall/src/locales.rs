@@ -30,6 +30,9 @@ pub mod keys {
     pub const FIREWALL_ADD_RULE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("firewall-add-rule");
     pub const FIREWALL_ADD_RULE_TO_ZONE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("firewall-add-rule-to-zone");
+    pub const FIREWALL_APPLIED: ui::i18n::LabelKey = ui::i18n::LabelKey::new("firewall-applied");
+    pub const FIREWALL_APPLIED_APPLIED: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("firewall-applied-applied");
     pub const FIREWALL_APPLYING_RULES: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("firewall-applying-rules");
     pub const FIREWALL_BAR_APPLY: ui::i18n::LabelKey =
@@ -46,6 +49,19 @@ pub mod keys {
         ui::i18n::LabelKey::new("firewall-blocked-title-port");
     pub const FIREWALL_BLOCKED_TITLE_TRAFFIC: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("firewall-blocked-title-traffic");
+    pub const FIREWALL_CONFIG: ui::i18n::LabelKey = ui::i18n::LabelKey::new("firewall-config");
+    pub const FIREWALL_CONFIG_DELETE_RULE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("firewall-config-delete-rule");
+    pub const FIREWALL_CONFIG_ENTER_PANIC_MODE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("firewall-config-enter-panic-mode");
+    pub const FIREWALL_CONFIG_EXIT_PANIC_MODE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("firewall-config-exit-panic-mode");
+    pub const FIREWALL_CONFIG_IMPORT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("firewall-config-import");
+    pub const FIREWALL_CONFIG_START: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("firewall-config-start");
+    pub const FIREWALL_CONFIG_STOP: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("firewall-config-stop");
     pub const FIREWALL_DELETE_RULE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("firewall-delete-rule");
     pub const FIREWALL_DELETE_RULE_ACTION: ui::i18n::LabelKey =
@@ -56,6 +72,12 @@ pub mod keys {
         ui::i18n::LabelKey::new("firewall-edit-rule");
     pub const FIREWALL_EDIT_RULE_IN_ZONE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("firewall-edit-rule-in-zone");
+    pub const FIREWALL_EFFECT_APPLY_CONFIG: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("firewall-effect-apply-config");
+    pub const FIREWALL_EFFECT_READ_BLOCKED: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("firewall-effect-read-blocked");
+    pub const FIREWALL_EFFECT_RETRY: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("firewall-effect-retry");
     pub const FIREWALL_ENTER_PANIC_MODE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("firewall-enter-panic-mode");
     pub const FIREWALL_EXIT_PANIC_MODE: ui::i18n::LabelKey =

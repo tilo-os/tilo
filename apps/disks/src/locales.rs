@@ -23,6 +23,16 @@ pub mod keys {
         ui::i18n::LabelKey::new("disks-action-unmount");
     pub const DISKS_CAPACITY: ui::i18n::LabelKey = ui::i18n::LabelKey::new("disks-capacity");
     pub const DISKS_DEVICE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("disks-device");
+    pub const DISKS_DEVICE_DISK_USAGE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("disks-device-disk-usage");
+    pub const DISKS_DEVICE_FORMAT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("disks-device-format");
+    pub const DISKS_DEVICE_RESCAN: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("disks-device-rescan");
+    pub const DISKS_DEVICE_SELECT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("disks-device-select");
+    pub const DISKS_DEVICE_SHOW_TAB: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("disks-device-show-tab");
     pub const DISKS_DISKS_NAMES: ui::i18n::LabelKey = ui::i18n::LabelKey::new("disks-disks-names");
     pub const DISKS_DRIVE_EMPTY: ui::i18n::LabelKey = ui::i18n::LabelKey::new("disks-drive-empty");
     pub const DISKS_EMPTY_DRIVES_HINT: ui::i18n::LabelKey =
@@ -105,6 +115,9 @@ pub mod keys {
     pub const DISKS_SIZE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("disks-size");
     pub const DISKS_SPACE_LEFT: ui::i18n::LabelKey = ui::i18n::LabelKey::new("disks-space-left");
     pub const DISKS_SWAP: ui::i18n::LabelKey = ui::i18n::LabelKey::new("disks-swap");
+    pub const DISKS_SYSTEM: ui::i18n::LabelKey = ui::i18n::LabelKey::new("disks-system");
+    pub const DISKS_SYSTEM_NAME_DRIVE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("disks-system-name-drive");
     pub const DISKS_TITLE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("disks-title");
     pub const DISKS_TYPE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("disks-type");
     pub const DISKS_USED: ui::i18n::LabelKey = ui::i18n::LabelKey::new("disks-used");

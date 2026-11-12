@@ -9,6 +9,10 @@
 ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);
 
 pub mod keys {
+    pub const SO_TILO_SPEED_TEST_RUN_START: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("so-tilo-speed-test-run-start");
+    pub const SO_TILO_SPEED_TEST_RUN_STOP: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("so-tilo-speed-test-run-stop");
     pub const SPEED_TEST_CLEAR: ui::i18n::LabelKey = ui::i18n::LabelKey::new("speed-test-clear");
     pub const SPEED_TEST_COMPLETE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("speed-test-complete");
@@ -32,6 +36,12 @@ pub mod keys {
     pub const SPEED_TEST_READY_AGAIN: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("speed-test-ready-again");
     pub const SPEED_TEST_RECORD: ui::i18n::LabelKey = ui::i18n::LabelKey::new("speed-test-record");
+    pub const SPEED_TEST_RESULTS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("speed-test-results");
+    pub const SPEED_TEST_RESULTS_CLEAR: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("speed-test-results-clear");
+    pub const SPEED_TEST_RESULTS_RECORD: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("speed-test-results-record");
     pub const SPEED_TEST_SECTION_CONNECTION: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("speed-test-section-connection");
     pub const SPEED_TEST_SECTION_QUALITY: ui::i18n::LabelKey =

@@ -15,9 +15,22 @@ pub mod keys {
         ui::i18n::LabelKey::new("logs-clear-filters");
     pub const LOGS_COPY_ENTRY: ui::i18n::LabelKey = ui::i18n::LabelKey::new("logs-copy-entry");
     pub const LOGS_COPY_MESSAGE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("logs-copy-message");
+    pub const LOGS_EFFECTS_EXPORT_FILTERED_JSONL: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("logs-effects-export-filtered-jsonl");
+    pub const LOGS_EFFECTS_REFRESH: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("logs-effects-refresh");
+    pub const LOGS_EFFECTS_SELECT_ENTRY: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("logs-effects-select-entry");
+    pub const LOGS_EFFECTS_SET_LIVE_TAIL: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("logs-effects-set-live-tail");
+    pub const LOGS_EFFECTS_STOP_LIVE_TAIL: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("logs-effects-stop-live-tail");
     pub const LOGS_FACET_BOOT: ui::i18n::LabelKey = ui::i18n::LabelKey::new("logs-facet-boot");
     pub const LOGS_FACET_UNIT: ui::i18n::LabelKey = ui::i18n::LabelKey::new("logs-facet-unit");
     pub const LOGS_HOST: ui::i18n::LabelKey = ui::i18n::LabelKey::new("logs-host");
+    pub const LOGS_JOURNAL: ui::i18n::LabelKey = ui::i18n::LabelKey::new("logs-journal");
+    pub const LOGS_JOURNAL_CLEAR_FILTERS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("logs-journal-clear-filters");
     pub const LOGS_LOGS_BOOT: ui::i18n::LabelKey = ui::i18n::LabelKey::new("logs-logs-boot");
     pub const LOGS_LOGS_SEARCH: ui::i18n::LabelKey = ui::i18n::LabelKey::new("logs-logs-search");
     pub const LOGS_LOGS_SEVERITY: ui::i18n::LabelKey =

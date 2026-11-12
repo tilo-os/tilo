@@ -23,6 +23,10 @@ pub mod keys {
     pub const WEATHER_DAY_ROW_RAIN: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("weather-day-row-rain");
     pub const WEATHER_DAYS: ui::i18n::LabelKey = ui::i18n::LabelKey::new("weather-days");
+    pub const WEATHER_EFFECTS_OPEN_LOCATION: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("weather-effects-open-location");
+    pub const WEATHER_EFFECTS_REFRESH: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("weather-effects-refresh");
     pub const WEATHER_FORECAST: ui::i18n::LabelKey = ui::i18n::LabelKey::new("weather-forecast");
     pub const WEATHER_HOUR_NOW: ui::i18n::LabelKey = ui::i18n::LabelKey::new("weather-hour-now");
     pub const WEATHER_HOUR_ROW: ui::i18n::LabelKey = ui::i18n::LabelKey::new("weather-hour-row");
@@ -32,6 +36,15 @@ pub mod keys {
     pub const WEATHER_LOADING: ui::i18n::LabelKey = ui::i18n::LabelKey::new("weather-loading");
     pub const WEATHER_LOADING_FORECAST: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("weather-loading-forecast");
+    pub const WEATHER_LOCATIONS: ui::i18n::LabelKey = ui::i18n::LabelKey::new("weather-locations");
+    pub const WEATHER_LOCATIONS_MOVE_TO_TOP: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("weather-locations-move-to-top");
+    pub const WEATHER_LOCATIONS_REMOVE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("weather-locations-remove");
+    pub const WEATHER_LOCATIONS_SAVE_LOCATION: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("weather-locations-save-location");
+    pub const WEATHER_LOCATIONS_USE_AS_DEFAULT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("weather-locations-use-as-default");
     pub const WEATHER_MORNING_FIXTURE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("weather-morning-fixture");
     pub const WEATHER_MORNING_FRESHNESS: ui::i18n::LabelKey =

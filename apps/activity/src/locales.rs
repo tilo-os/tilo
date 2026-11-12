@@ -39,8 +39,11 @@ pub mod keys {
         ui::i18n::LabelKey::new("activity-detail-resources");
     pub const ACTIVITY_DETAIL_TITLE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("activity-detail-title");
+    pub const ACTIVITY_EFFECTS_REMOVE_SOURCE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("activity-effects-remove-source");
     pub const ACTIVITY_ENTRY_NOT_ON: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("activity-entry-not-on");
+    pub const ACTIVITY_FILTER: ui::i18n::LabelKey = ui::i18n::LabelKey::new("activity-filter");
     pub const ACTIVITY_FILTER_PEOPLE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("activity-filter-people");
     pub const ACTIVITY_FILTER_TIME: ui::i18n::LabelKey =
