@@ -1693,6 +1693,14 @@ impl PresenceCtx {
         if kind == ParticipantKind::Person {
             return self.labels.label(&user.0, name);
         }
+        // Acting for whoever reads this: "Claude for you".
+        let me = self.self_id();
+        let mine = me.and_then(|me| self.person_of(me)).or(me);
+        if let Some(person) = self.acting_for.get(user)
+            && (Some(person) == me || Some(person) == mine)
+        {
+            return crate::history_source::sentence::acting_line(name, Some(&person.0), true);
+        }
         // A person the roster has not named yet is left out rather than
         // shown as their raw key: "Claude" reads better than "Claude for
         // 3f9a…".

@@ -77,7 +77,9 @@ fn actor_line(
     is_reader: bool,
     task: Option<&str>,
 ) -> String {
-    // A task names who did it: the person it was taken for, else the actor.
+    // A task names who did it: the person it was taken for, else the actor. A task that goes by
+    // its agent's own name (an agent's run) is that agent's: it says who it acts for.
+    let task = task.filter(|label| label.trim() != name.trim());
     let actor = match (task, for_person) {
         (Some(_), Some(person)) => person,
         _ => name,

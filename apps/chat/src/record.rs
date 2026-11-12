@@ -551,8 +551,6 @@ pub struct Chat {
     /// The name every member shows for an agent task, as the person hosting
     /// it labelled it.
     pub agent_names: BTreeMap<String, String>,
-    /// The person each agent named by the device that admitted it acts for.
-    pub agent_people: BTreeMap<String, String>,
     /// Each person's read mark per channel: how far into the chain of
     /// message parts they have read it.
     pub read: BTreeMap<String, BTreeMap<String, crate::parts::ReadMark>>,
@@ -1505,9 +1503,6 @@ impl Chat {
             return Err(Refusal::new(
                 "only an agent task, or an agent by its own name, is named, with a short name",
             ));
-        }
-        if let Some(person) = cx.for_person().filter(|_| own) {
-            self.agent_people.insert(participant.clone(), person);
         }
         self.agent_names.insert(participant, name.into_string());
         Ok(())

@@ -810,9 +810,7 @@ fn name_sending_agent(cx: &EffectCx<Chat>, state: &Chat) {
     else {
         return;
     };
-    if state.agent_names.get(&invoker.actor).map(String::as_str) == Some(name.as_str())
-        && state.agent_people.get(&invoker.actor) == invoker.on_behalf_of.as_ref()
-    {
+    if state.agent_names.get(&invoker.actor).map(String::as_str) == Some(name.as_str()) {
         return;
     }
     cx.submit(Chat::NAME_AGENT.with(crate::record::chat::NameAgent {

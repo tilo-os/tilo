@@ -150,6 +150,11 @@ impl ChatApp {
             })
             .collect();
         self.workspace_persons.clear();
+        self.agent_people = presence
+            .names
+            .keys()
+            .filter_map(|id| Some((id.0.clone(), presence.acting_for(id)?.0.clone())))
+            .collect();
         self.workspace_names.retain(|id, _| {
             presence
                 .names

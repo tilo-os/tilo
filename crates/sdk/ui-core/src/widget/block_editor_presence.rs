@@ -28,11 +28,6 @@ impl BlockEditor {
         let brect = line.get_rect();
         // A caret's name chip ends before the text's own right edge.
         let text_right = brect.x1 - line.text_inset(ctx.theme);
-        let _tr_rect = {
-            let p0 = transformed(ctx.transform, Point::new(brect.x0, brect.y0));
-            let p1 = transformed(ctx.transform, Point::new(brect.x1, brect.y1));
-            Rect::new(p0.x, p0.y, p1.x, p1.y)
-        };
         // Drawn first, under caret/selection: the runs each foreign
         // author wrote, marker-style in their color, band by band as the
         // run wraps.

@@ -147,13 +147,8 @@ impl PresenceCtx {
 
     /// Draw an authorship "marker": translucent underlay in the author's
     /// colour behind the runs they wrote, at lower alpha than a selection.
-    ///
-    /// Not presence-fed — authorship must survive both peers closing the
-    /// doc, so it's an Automerge mark (`local_author` /
-    /// `RichTextLine::author_runs`). **Silently a no-op if
-    /// `set_local_author` was never called** — looks exactly like a network
-    /// fault. Set by `apps/notes`/`apps/chat`; `tilo-doc` has no per-run author
-    /// field yet.
+    /// What is drawn comes from the text's stored author marks, not from
+    /// presence, so it outlasts everyone closing the document.
     pub fn draw_peer_authorship(
         &self,
         scene: &mut Scene,

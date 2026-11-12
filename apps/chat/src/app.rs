@@ -409,7 +409,7 @@ pub struct ChatApp {
     // Agent display names of agent-authored messages (`agent_authors` in the
     // document): what every member renders as "<name> (agent)".
     pub(crate) agent_authors: HashMap<Id, String>,
-    /// The person each agent acts for (`agent_people` in the document).
+    /// The person each agent here acts for, as presence knows it.
     pub(crate) agent_people: HashMap<Id, String>,
     /// What the workspace's host keeps of the files members post, as it says:
     /// a file it would not take is refused here, in plain words.

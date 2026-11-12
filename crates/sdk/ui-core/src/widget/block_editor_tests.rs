@@ -1317,7 +1317,7 @@ fn rich_link_hits_track_drawn_shaped_and_bidi_ranges() {
             let theme = Theme::dark().with_text_scale(scale);
             layout_and_draw_editor(&mut editor, &theme);
             let line = &editor.blocks[0].line;
-            let right = line.pixel_x_for_byte(&theme, 3);
+            let right = line.caret_rect(&theme, 3).x0;
             let y = line.get_rect().center().y;
             assert_eq!(
                 editor.link_at_point(Point::new(right - 0.1, y)),
