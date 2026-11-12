@@ -3011,7 +3011,9 @@ arch = ["x86_64", "aarch64"]
 [[check]]
 name = "publish-rpms-{arch}"
 run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/{arch} 'once:set-{fingerprint}-{arch}'\n"
-needs = ["image-rpms-{arch}", "sign-rpms-{arch}", "signing-tools"]
+# provenance-rpms-{arch} is what writes the fingerprint the tag names ({fingerprint}): a check is
+# given the outputs of the checks it needs, and only of those.
+needs = ["image-rpms-{arch}", "provenance-rpms-{arch}", "sign-rpms-{arch}", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/publish/rpms/{arch}/receipt.json"]
 # Ahead of the images of the same run: rpm-snapshot-{arch} names publish-rpms-{arch} as an
