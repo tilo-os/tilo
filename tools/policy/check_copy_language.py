@@ -1027,7 +1027,8 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
     helper in several modules (`fn button(&self, id, label, action)` in each of
     them); a name keeps its place only when every definition paints the same
     argument, because only then does a call site say which word is copy — a
-    name the crate uses for two different jobs (`new`) says nothing.
+    name the crate uses for two different jobs (`new`) says nothing. A test
+    double's method paints nothing a person reads, so it decides no name.
     """
     bodies: list[tuple[str, list[str], str, int, int]] = []
     for path in paths:
@@ -1035,7 +1036,10 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
         if "fn " not in text:
             continue
         code, _ = rust_source.lex(text)
+        shown = rust_source.blank_test_items(code)
         for function in FUNCTION.finditer(code):
+            if shown[function.start()] == " ":
+                continue
             names = parameters(code, function.end())
             # A receiver is not an argument at a call site.
             if names and names[0] == "self":
@@ -1187,7 +1191,8 @@ def returning_words(root: Path,
         kept = rust_source.blank_test_items("".join(marked))
         for function in FUNCTION.finditer(code):
             brace = code.find("{", function.end())
-            if brace < 0 or not RETURNS_WORDS.search(code[function.end():brace]):
+            if (brace < 0 or kept[function.start()] == " "
+                    or not RETURNS_WORDS.search(code[function.end():brace])):
                 continue
             words = returned_words(code, starts, by_start, kept, brace,
                                    rust_source.matching(code, brace))

@@ -14,6 +14,11 @@
 # An entry that no longer matches anything fails the check.
 
 [[allow]]
+file = "apps/chat/src/host_model.rs"
+text = "Continue the interrupted answer. Do not repeat or perform actions."
+reason = "What Chat tells the model when a person continues an interrupted answer, never shown in a window."
+
+[[allow]]
 file = "crates/sdk/tilo-app/src/framework/root/facts.rs"
 text = "What this holds as a compact summary of plain values (names, times, counts, text), to check it against a request or compare two versions. With version, the facts as of that version."
 reason = "What the facts tool answers an agent, never shown in a window."

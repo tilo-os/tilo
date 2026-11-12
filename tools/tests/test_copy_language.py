@@ -657,6 +657,38 @@ class CopyLanguageTests(unittest.TestCase):
                 "a name a crate gives one job says which of its arguments is the word "
                 "a person reads, so the English handed to it is found")
 
+    def test_a_test_doubles_method_decides_no_helpers_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn button(id: &str, label: &str) -> Widget {",
+                "    Button::new(id, label)",
+                "}",
+                "fn pane(&self) -> Node {",
+                '    Node::new(Role::Panel).with_child(button("demo.open", "Open settings"))',
+                "}",
+                "#[cfg(test)]",
+                "mod tests {",
+                "    struct Double;",
+                "    impl Clipboard for Double {",
+                "        fn button(&self, id: &str, label: &str) -> Widget {",
+                "            Widget::none()",
+                "        }",
+                "    }",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Open settings"],
+                "a method a test double only stubs says nothing about the job a name "
+                "has in the window code")
+
     def test_the_tree_passes(self):
         self.assertEqual(
             copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS,
