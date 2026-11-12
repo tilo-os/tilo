@@ -6,6 +6,8 @@ use ui::headless::Framed;
 use ui::widget::DrawChild;
 use ui::widget::{Edits, ExternalDatePickerHit};
 
+#[path = "tests/accessibility.rs"]
+mod accessibility;
 #[path = "tests/caldav_sync.rs"]
 mod caldav_sync;
 #[path = "tests/platform_history.rs"]

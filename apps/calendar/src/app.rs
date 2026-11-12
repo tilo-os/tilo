@@ -3283,7 +3283,10 @@ impl CalendarApp {
             ),
             Action::MoveEventToDay { id, day, .. } => (
                 format!("calendar.event:move-to:{id}:{day}"),
-                format!("Move event to {}", date::fmt_day_long(*day)),
+                crate::resource::t_args(
+                    "calendar-a11y-move-event-to",
+                    &[("day", ui::i18n::ArgValue::Text(date::fmt_day_long(*day)))],
+                ),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),

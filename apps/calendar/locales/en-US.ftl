@@ -222,3 +222,4 @@ calendar-a11y-due-previous-month = Previous due-date month
 calendar-a11y-due-next-month = Next due-date month
 calendar-a11y-clear-due = Clear task due date
 calendar-a11y-set-due = Set task due date to { $day }
+calendar-a11y-move-event-to = Move event to { $day }

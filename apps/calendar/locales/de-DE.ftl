@@ -222,3 +222,4 @@ calendar-a11y-due-previous-month = Vorheriger Fälligkeitsmonat
 calendar-a11y-due-next-month = Nächster Fälligkeitsmonat
 calendar-a11y-clear-due = Fälligkeit der Aufgabe entfernen
 calendar-a11y-set-due = Fälligkeit der Aufgabe auf { $day } setzen
+calendar-a11y-move-event-to = Termin auf { $day } verschieben
