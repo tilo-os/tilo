@@ -395,9 +395,10 @@ def pan_carries_windows(session: CanvasSession) -> dict:
     before = {row["group"]: row["rect"] for row in placed_rows(session) if row.get("rect")}
     if not before:
         raise Failed("no window stands on the canvas to pan")
-    # The canvas' ground below the windows, clear of the entry and of every window.
+    # The canvas' ground below the windows, clear of every window, with room on the screen for
+    # the whole drag.
     lowest = max(rect[1] + rect[3] for rect in before.values())
-    start = (40.0, min(lowest + 40.0, screen()[1] - 60.0))
+    start = (screen()[0] / 2, min(lowest + 40.0, screen()[1] - 60.0))
     session.control({"op": "pointer_move", "x": start[0], "y": start[1]})
     session.control({"op": "pointer_button", "pressed": True, "button": "middle"})
     seen = []

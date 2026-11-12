@@ -19,8 +19,9 @@
 //!
 //! A place that arrives on the map is shown: the camera pans the least it takes for it to stand
 //! whole inside the viewport, as a scroll shows the row it was asked for, and no place moves.
-//! The lens is the person's, so a map built again around changed places takes the camera over
-//! from the one it replaces ([`Map::carry_from`]) rather than looking at the canvas' origin.
+//! The lens is the person's, so a map built again (around changed places, or with whatever holds
+//! it) takes the camera over from the one it replaces (`Lens`) rather than looking at the
+//! canvas' origin.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -242,10 +243,46 @@ pub struct Map {
     /// Something of the map moved on the last frame: the frame after lays it out once more, so
     /// the motion's last step is laid out too.
     moved: bool,
+    /// What the map is called: the map built in its place takes its lens up by it ([`Lens`]).
+    name: String,
+    /// It has looked for the lens of the map it was built in place of, at its first layout.
+    took: bool,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
+}
+
+/// What a map leaves for the one a rebuild puts in its place ([`crate::motion::keep`]): the
+/// person's lens on the canvas, and where its places were drawn.
+struct Lens {
+    camera: MapCamera,
+    shown: MapCamera,
+    followed: Option<MapCamera>,
+    glide: Option<crate::motion::ScrollTo>,
+    rect: Rect,
+    placed: HashMap<String, crate::motion::Placed>,
+    pins: Vec<String>,
+    reveal: Option<String>,
+}
+
+impl Drop for Map {
+    fn drop(&mut self) {
+        crate::motion::keep(
+            self.name.clone(),
+            None,
+            Lens {
+                camera: self.camera,
+                shown: self.shown.get(),
+                followed: self.followed.get(),
+                glide: self.glide,
+                rect: self.rect,
+                placed: std::mem::take(&mut *self.placed.borrow_mut()),
+                pins: self.pins.iter().map(|(key, _, _)| key.clone()).collect(),
+                reveal: self.reveal.take(),
+            },
+        );
+    }
 }
 
 impl Default for Map {
@@ -279,6 +316,8 @@ impl Map {
             followed: Rc::default(),
             motion: crate::tokens::EffectiveMotion::default(),
             moved: false,
+            name: String::new(),
+            took: false,
         }
     }
 
@@ -308,34 +347,28 @@ impl Map {
         }
     }
 
-    /// Take over what the person was looking at from `old`, the map this one is built around when
-    /// the places on it changed: its camera, and where its pins were drawn, so a place arriving
-    /// neither resets the lens nor makes every window on the canvas arrive again. The place that
-    /// arrived since is shown ([`Self::reveal_on_layout`]), so what a person just opened stands
-    /// where they can see it.
-    pub fn carry_from(&mut self, old: &Map) {
-        self.camera = old.camera;
-        self.shown.set(old.shown.get());
-        self.followed.set(old.followed.get());
-        self.glide = old.glide;
+    /// Take over what the person was looking at from the map this one is built in place of (a
+    /// view built again around changed places, or around anything that holds the map): its
+    /// camera, and where its pins were drawn, so a rebuild neither resets the lens nor makes every
+    /// window on the canvas arrive again. The place that arrived since is shown, so what a person
+    /// just opened stands where they can see it.
+    fn take_over(&mut self, lens: Lens) {
+        self.camera = lens.camera;
+        self.shown.set(lens.shown);
+        self.followed.set(lens.followed);
+        self.glide = lens.glide;
         // The room the places stand in was laid out last frame: a place that arrived is shown in
         // it before this layout places it.
-        self.rect = old.rect;
-        self.placed.borrow_mut().extend(
-            old.placed
-                .borrow()
-                .iter()
-                .map(|(k, p)| (k.clone(), p.clone())),
-        );
-        let arrived = self
+        self.rect = lens.rect;
+        self.placed.borrow_mut().extend(lens.placed);
+        self.reveal = self
             .pins
             .iter()
             .rev()
-            .find(|(key, _, _)| !old.pins.iter().any(|(held, _, _)| held == key))
-            .map(|(key, _, _)| key.clone());
-        if let Some(arrived) = arrived {
-            self.reveal_on_layout(arrived);
-        }
+            .find(|(key, _, _)| !lens.pins.contains(key))
+            .map(|(key, _, _)| key.clone())
+            // One that arrived on the map this replaces and was not shown yet still is.
+            .or(lens.reveal);
     }
 
     /// Put the camera on `area` (canvas pixels), with `margin` around it, at the viewport's
@@ -378,13 +411,7 @@ impl Map {
             .collect()
     }
 
-    /// Show the place `key`, once a layout places it: the camera pans the least it takes for the
-    /// whole place to stand inside the viewport, and nothing on the canvas changes its place.
-    pub fn reveal_on_layout(&mut self, key: impl Into<String>) {
-        self.reveal = Some(key.into());
-    }
-
-    /// Show the place that arrived, if any: what [`Self::carry_from`] left to be shown. The
+    /// Show the place that arrived, if any: what [`Self::take_over`] left to be shown. The
     /// camera sets off there before the places are laid out, and the places, with the windows in
     /// their wells, stand where it has carried them on every frame of the way.
     fn show_asked(&mut self) {
@@ -591,13 +618,10 @@ impl Described for Map {
     type Props = MapProps;
 
     fn from_props(_key: &str, props: MapProps) -> Self {
-        let MapProps {
-            name: _,
-            ground,
-            pins,
-        } = props;
+        let MapProps { name, ground, pins } = props;
         let mut map = Self::new();
         map.ground = ground;
+        map.name = name.unwrap_or_default();
         for pin in pins {
             let place = PinPlace {
                 x: pin.x.unwrap_or(0) as f64,
@@ -942,6 +966,11 @@ impl Widget for Map {
         self.slop = f64::from(theme.tokens.metrics.click_slop);
         self.key_pan = f64::from(theme.tokens.metrics.wheel_line);
         self.motion = theme.motion();
+        if !std::mem::replace(&mut self.took, true)
+            && let Some(lens) = crate::motion::take_kept::<Lens>(&self.name)
+        {
+            self.take_over(lens);
+        }
         // What arrived is shown before the places are laid out, so this layout stands them, and
         // the windows in their wells, where the camera carried them.
         self.show_asked();

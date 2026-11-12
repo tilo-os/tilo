@@ -9,8 +9,9 @@ fn theme() -> Theme {
     Theme::dark()
 }
 
-/// A map of pins, laid out in a viewport.
-fn map_of(pins: &[(&str, f64)], viewport: Rect) -> Map {
+/// A map of pins, not laid out yet: at its first layout it takes up the lens of a map dropped
+/// in its place.
+fn pins_of(pins: &[(&str, f64)]) -> Map {
     let mut map = Map::new();
     for (key, x) in pins {
         map = map.pin(
@@ -24,9 +25,13 @@ fn map_of(pins: &[(&str, f64)], viewport: Rect) -> Map {
             Box::new(crate::widget::Spacer::new()),
         );
     }
-    let mut text = crate::font_catalog::fixture_renderer();
-    crate::widget::layout::lay_out_detached(&mut map, viewport, &theme(), &mut text)
-        .expect("the map lays out");
+    map
+}
+
+/// A map of pins, laid out in a viewport.
+fn map_of(pins: &[(&str, f64)], viewport: Rect) -> Map {
+    let mut map = pins_of(pins);
+    lay_out_again(&mut map, viewport);
     map
 }
 
@@ -168,14 +173,15 @@ fn a_map_built_again_keeps_the_camera_and_the_places_where_they_were_drawn() {
     });
     lay_out_again(&mut old, viewport);
     draw(&mut old);
-    let mut map = map_of(&[("one", 100.0)], viewport);
-    map.carry_from(&old);
-    assert!(
-        map.camera().same(old.camera()),
-        "the lens the person left the canvas at"
-    );
+    let left = old.camera();
+    let mut map = pins_of(&[("one", 100.0)]);
+    drop(old);
     lay_out_again(&mut map, viewport);
     draw(&mut map);
+    assert!(
+        map.camera().same(left),
+        "the lens the person left the canvas at"
+    );
     let now = crate::motion::frame_now();
     assert!(
         map.placed
@@ -196,9 +202,8 @@ fn a_place_arriving_in_view_leaves_the_camera_where_the_person_left_it() {
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut old = map_of(&[("one", 0.0)], viewport);
     draw(&mut old);
-    let mut map = map_of(&[("one", 0.0), ("two", 300.0)], viewport);
-    draw(&mut map);
-    map.carry_from(&old);
+    let mut map = pins_of(&[("one", 0.0), ("two", 300.0)]);
+    drop(old);
     lay_out_again(&mut map, viewport);
     lay_out_again(&mut map, viewport);
     assert!(
@@ -212,18 +217,17 @@ fn a_place_arriving_in_view_leaves_the_camera_where_the_person_left_it() {
 fn the_camera_glides_to_a_place_arriving_past_the_edge_laying_every_place_out_on_its_way() {
     let start = crate::time::now();
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-    let (mut old, mut map) = {
+    let (old, mut map) = {
         let _frame = crate::motion::pin_frame_at(start);
         let mut old = map_of(&[("one", 0.0)], viewport);
         draw(&mut old);
-        (old, map_of(&[("one", 0.0), ("two", 700.0)], viewport))
+        (old, pins_of(&[("one", 0.0), ("two", 700.0)]))
     };
     // The person opened it: the camera glides there, whoever's input came last.
     crate::motion::note_source(crate::tokens::MotionSource::Pointer);
     {
         let _frame = crate::motion::pin_frame_at(start);
-        draw(&mut old);
-        map.carry_from(&old);
+        drop(old);
         lay_out_again(&mut map, viewport);
         draw(&mut map);
     }
@@ -260,6 +264,7 @@ fn the_camera_glides_to_a_place_arriving_past_the_edge_laying_every_place_out_on
             .any(|(_, two)| *two < 699.0 && *two > last + 1.0),
         "on its way over the frames between: {along:?}"
     );
+    let _frame = crate::motion::pin_frame_at(frame);
     assert!(
         (map.camera().origin.x - (100.0 + ARRIVAL_MARGIN)).abs() < 0.5
             && !Widget::needs_animation_frame(&map),
