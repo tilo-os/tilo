@@ -187,11 +187,8 @@ setup = "as-root"
 # Nextest starts tests in order and a test that needs every thread waits for
 # all running tests to finish, idling the rest of the pool. Tests that take the
 # whole pool therefore have the highest priority: they run back to back while
-# the pool is still empty. The four-wide compositor group and the longest tests
-# follow, so a run ends on short tests.
+# the pool is still empty. The longest tests follow, so a run ends on short ones.
 [test-groups]
-compositor = { max-threads = 4 }
-desktop-smoke = { max-threads = 1 }
 gpu-golden = { max-threads = 1 }
 agent-collaboration = { max-threads = 1 }
 imager-durable-disk = { max-threads = 2 }
@@ -216,25 +213,6 @@ test-group = "gpu-golden"
 filter = 'package(tilolang-app) and binary(hosted) and test(=cost::what_the_interactions_a_person_feels_cost)'
 success-output = "final"
 slow-timeout = { period = "60s", terminate-after = 8 }
-
-[[profile.default.overrides]]
-filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
-test-group = "compositor"
-priority = 90
-
-# The desktop smoke gate: one at a time, so the load variant's busy threads
-# never starve the quiet one, and a hang bound of two minutes, since a healthy
-# run takes well under one. A frozen compositor is reported by the test itself
-# within half a second; this only bounds a test that cannot even do that.
-# Its idle reading (CPU by thread, and what woke the compositor's loop) is
-# printed on a pass too, so a drift toward the bound shows in every CI log
-# before a run crosses it.
-[[profile.default.overrides]]
-filter = 'binary(it) and test(desktop_smoke::)'
-test-group = "desktop-smoke"
-priority = 95
-slow-timeout = { period = "60s", terminate-after = 2 }
-success-output = "final"
 
 # Not started with the pool-wide and longest tests: each suite's first route
 # join runs under the SDK's 4.5 s primary-route deadline, which the opening

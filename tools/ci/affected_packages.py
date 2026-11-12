@@ -46,16 +46,56 @@ from ci import suites as path_suites
 # tilo-app-package/tests/{app_manifests,verify_attest} and tilo-doc-codecs/tests/{convergence,office_roundtrip}.
 # These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "tilo-app-package", "tilo-doc", "tilo-doc-codecs"}
-# The desktop smoke (crates/session/session/tests/desktop_smoke.rs) drives a real
-# headless compositor through a whole session and fails when its main loop stops
-# turning. Whatever the change, if it can alter the desktop (the package is in
-# the checked closure), the smoke runs: with the package's whole test run when
-# that is scheduled anyway, otherwise as just this filter. The shell test target
-# is already built for the former, so the gate costs a build only for changes
-# that reach the shell through a foundation crate.
-DESKTOP_GATE = {
-    "shell": path_suites.ReaderScope((), "it", "binary(it) and test(desktop_smoke::)"),
-}
+# The desk, and the crates the session composes it from. A change to any of them
+# reaches tilo-session, so the desktop gate keys on the session: whatever the
+# change, if it can alter the desk and the session's whole test suite is not
+# scheduled anyway, the desk's own integration tests run instead — a window
+# becomes a tab of the strip, an app opens where the desk puts it, the owner's
+# door answers. Each is a test target of its own, so each gate entry costs a
+# link; when the suite is scheduled they come with it and the gate adds nothing.
+DESK_PACKAGES = (
+    "crates/session/desktop",
+    "crates/session/desktop-model",
+    "crates/session/desktop-policy",
+    "crates/session/desktop-surface",
+    "crates/session/core",
+)
+DESKTOP_GATE_PACKAGE = "tilo-session"
+DESKTOP_GATE_MANIFEST = "crates/session/session/Cargo.toml"
+DESKTOP_GATE_TESTS = ("hosted_windows", "launch", "owner_door")
+
+
+def desktop_gate(root: Path) -> dict[tuple[str, str], path_suites.ReaderScope]:
+    """The desk's integration tests, refused when the tree lacks what they name.
+
+    The gate keys on a package name, so a renamed or deleted crate would be in
+    no plan's selection: it would select nothing and run nothing, silently. A
+    test target that went away fails a job only once the gate fires, and a desk
+    crate the session no longer depends on takes the gate's reason with it. All
+    three fail here instead, where every plan is computed.
+    """
+    session = root / DESKTOP_GATE_MANIFEST
+    manifest = tomllib.loads(session.read_text(encoding="utf-8")) if session.is_file() else {}
+    if manifest.get("package", {}).get("name") != DESKTOP_GATE_PACKAGE:
+        raise ValueError(f"the desktop gate names {DESKTOP_GATE_PACKAGE!r}, "
+                         f"which {DESKTOP_GATE_MANIFEST} does not declare")
+    missing = [test for test in DESKTOP_GATE_TESTS
+               if not (session.parent / "tests" / f"{test}.rs").is_file()]
+    if missing:
+        raise ValueError(f"the desktop gate names test targets {missing} "
+                         f"that {session.parent / 'tests'} does not hold")
+    linked = {(session.parent / entry["path"]).resolve()
+              for entry in manifest.get("dependencies", {}).values()
+              if isinstance(entry, dict) and "path" in entry}
+    unreached = [desk for desk in DESK_PACKAGES if (root / desk).resolve() not in linked]
+    if unreached:
+        raise ValueError(f"the desktop gate names desk crates {unreached} that {DESKTOP_GATE_PACKAGE} "
+                         "does not depend on: a change to one no longer reaches the desk's tests")
+    return {(DESKTOP_GATE_PACKAGE, test): path_suites.ReaderScope((), test, f"binary({test})")
+            for test in DESKTOP_GATE_TESTS}
+
+
+DESKTOP_GATE = desktop_gate(TOOLS.parent)
 EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
 # Snapshot pins CI publishes and signs (kernel only; RPM snapshots resolve by
 # fingerprint). A pull request that changes only these changes no code:
@@ -267,11 +307,11 @@ DEDICATED_TEST_WEIGHT = 1_000
 # the structural cost one shard should hold (SHARD_COST_BUDGET). A shard of a
 # whole-workspace run carries about twice that and was killed by the kernel
 # mid-build (exit 137) on every shard above 3,400 cost; those shards ask for
-# the large class (40 GiB) instead, the way the shell shard always did: its own
-# test binaries are the tree's largest link (Cargo.toml declares 48 GiB for
-# them), so a shard that carries it asks for the large class at any size.
+# the large class (40 GiB) instead. The session's test binaries are the tree's
+# largest link, so a shard that carries them asks for the large class at any
+# size, whatever its recorded build bytes say.
 LARGE_TEST_SHARD_COST = 2 * SHARD_COST_BUDGET
-LARGE_TEST_PACKAGES = frozenset({"shell"})
+LARGE_TEST_PACKAGES = frozenset({"tilo-session"})
 # What one test job may write and use, measured on the large class (36 GiB
 # cgroup limit, about 105 GiB of free store): a whole-workspace shard of 113
 # packages reached memory.peak = memory.max (213k max events) and filled its
@@ -1189,20 +1229,20 @@ def make_plan(
         selected &= set(only["packages"])
         tested &= selected
         reason += "; re-check limited to what the base branch changed since the last green run"
-    scoped_tests = {name: scope for name, scope in reader_scopes.items()
+    # Scoped tests by (package, test target): a package's reading scope and the
+    # desk's gate can name different targets of the same package, and each target
+    # is its own run.
+    scoped_tests = {(name, scope.test): scope for name, scope in reader_scopes.items()
                     if scope is not None and name in selected and name not in tested}
-    for name, gate in DESKTOP_GATE.items():
-        if name not in selected or name in tested:
+    for key, gate in DESKTOP_GATE.items():
+        if key[0] not in selected or key[0] in tested:
             continue
-        reading = scoped_tests.get(name)
+        reading = scoped_tests.get(key)
         if reading is None:
-            scoped_tests[name] = gate
-        elif reading.test == gate.test:
-            scoped_tests[name] = path_suites.ReaderScope(
-                reading.inputs, reading.test, f"({reading.filter}) or ({gate.filter})")
+            scoped_tests[key] = gate
         else:
-            raise ValueError(f"{name}: a scope on test target {reading.test!r} cannot be "
-                             f"combined with the desktop gate on {gate.test!r}")
+            scoped_tests[key] = path_suites.ReaderScope(
+                reading.inputs, reading.test, f"({reading.filter}) or ({gate.filter})")
     shard_limit = (shard_count if force_full else
                    min(shard_count, MAX_DEVELOPER_SHARDS) if full else 1)
     effective_shards = useful_shard_count(selected, packages, shard_limit)
@@ -1219,7 +1259,7 @@ def make_plan(
     # too heavy to share a job get their own shards, which start first; the
     # rest balance around them. Arm shards are balanced as one set
     # (MAX_TEST_SHARDS_ARM).
-    test_units = (tested | scoped_tests.keys()) & selected
+    test_units = (tested | {package for package, _ in scoped_tests}) & selected
     build_edges = dependency_edges(packages)
 
     def shard_bytes(names: set[str]) -> int | None:
@@ -1251,9 +1291,8 @@ def make_plan(
     def test_row(shard: dict, arch: str) -> dict:
         shard_names = set(shard["packages"].split()[1::2])
         test_names = sorted(tested & shard_names)
-        scoped_names = sorted(scoped_tests.keys() & shard_names)
-        scoped = [{"package": name, "test": scoped_tests[name].test,
-                   "filter": scoped_tests[name].filter} for name in scoped_names]
+        scoped = [{"package": package, "test": scope.test, "filter": scope.filter}
+                  for (package, _), scope in sorted(scoped_tests.items()) if package in shard_names]
         # check_runner: a pull request runs its own check.yml against this
         # planner from the merged tree; older branches' check.yml reads it.
         # Older PR workflows still evaluate optional qualification fields.
@@ -1328,10 +1367,10 @@ def make_plan(
         "near": sorted(selected if full else
                        (seeds | checked | dev_only | readers | tested
                         | {name for seed in seeds for name in reverse.get(seed, ())}) & selected),
-        # Packages that only read a changed file through a scoped input; the
-        # test job runs just the tests that read it.
-        "scoped_tests": {name: f"--test {scope.test} -E '{scope.filter}'"
-                         for name, scope in sorted(scoped_tests.items())},
+        # Packages that only read a changed file through a scoped input, or that
+        # the desk's gate reads, and the target of each the test job runs.
+        "scoped_tests": {f"{package}:{test}": f"--test {scope.test} -E '{scope.filter}'"
+                         for (package, test), scope in sorted(scoped_tests.items())},
         # Changed packages whose direct dependants are only type-checked here
         # (and tested nightly) because testing them exceeds the budget.
         "dependants_tested_nightly": deferred_dependants,

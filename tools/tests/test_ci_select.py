@@ -28,6 +28,53 @@ class NamedPackageTests(unittest.TestCase):
                  for path in manifests}
         self.assertFalse(ci_select.ALWAYS_PACKAGES - names)
         self.assertFalse(ci_select.HEAVY_PACKAGES - names)
+        self.assertFalse(ci_select.LARGE_TEST_PACKAGES - names)
+
+
+class DesktopGateTests(unittest.TestCase):
+    """The desk's gate names a package and test targets, and all of them must exist.
+
+    A gate keyed on a package that is not there is in no plan's selection: it
+    selects and runs nothing, which is how the gate went inert when the old
+    shell's crate was removed.
+    """
+
+    def tree(self, root: Path, *, package: str = ci_select.DESKTOP_GATE_PACKAGE,
+             desktops: tuple[str, ...] = ci_select.DESK_PACKAGES,
+             tests: tuple[str, ...] = ci_select.DESKTOP_GATE_TESTS) -> Path:
+        session = root / ci_select.DESKTOP_GATE_MANIFEST
+        (session.parent / "tests").mkdir(parents=True, exist_ok=True)
+        for test in tests:
+            (session.parent / "tests" / f"{test}.rs").write_text("")
+        dependencies = "".join(f'tilo-{Path(desk).name} = {{ path = "../{Path(desk).name}" }}\n'
+                               for desk in desktops)
+        session.write_text(f'[package]\nname = "{package}"\nversion = "0.1.0"\n\n'
+                           f'[dependencies]\n{dependencies}')
+        return root
+
+    def test_the_gate_names_the_session_and_desk_tests_the_tree_holds(self):
+        self.assertEqual(ci_select.desktop_gate(REPO_ROOT), ci_select.DESKTOP_GATE)
+        self.assertEqual(sorted(ci_select.DESKTOP_GATE),
+                         [(ci_select.DESKTOP_GATE_PACKAGE, test)
+                          for test in ci_select.DESKTOP_GATE_TESTS])
+
+    def test_a_package_test_or_desk_crate_that_is_gone_fails_loudly(self):
+        for phase, named, options in (
+            ("the session's package is renamed", ci_select.DESKTOP_GATE_PACKAGE,
+             {"package": "another-session"}),
+            ("a named test target is gone", ci_select.DESKTOP_GATE_TESTS[0],
+             {"tests": ci_select.DESKTOP_GATE_TESTS[1:]}),
+            ("a desk crate is no longer the session's", ci_select.DESK_PACKAGES[0],
+             {"desktops": ci_select.DESK_PACKAGES[1:]}),
+        ):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                root = self.tree(Path(directory), **options)
+                with self.assertRaises(ValueError) as raised:
+                    ci_select.desktop_gate(root)
+                self.assertIn(named, str(raised.exception))
+        with self.subTest(phase="the session's manifest is gone"), tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                ci_select.desktop_gate(Path(directory))
 
 
 class SelectorTests(unittest.TestCase):
@@ -122,19 +169,25 @@ class SelectorTests(unittest.TestCase):
         self.assertLessEqual(set(plan["near"]), set(plan["selected"]))
 
     def test_the_desktop_gate_runs_whenever_a_change_reaches_the_desktop(self):
-        gate = ci_select.path_suites.ReaderScope((), "it", "binary(it) and test(desktop_smoke::)")
+        # The desk's tests are separate targets of the session's, so the gate
+        # names one entry per target and each is its own run.
+        gate = ci_select.path_suites.ReaderScope((), "it", "binary(it) and test(desk::)")
+        door = ci_select.path_suites.ReaderScope((), "probe", "binary(probe)")
         saved = ci_select.DESKTOP_GATE
         self.addCleanup(setattr, ci_select, "DESKTOP_GATE", saved)
-        # "leaf" stands in for the shell: the end of the dependency chain.
-        ci_select.DESKTOP_GATE = {"leaf": gate}
-        with self.subTest(phase="a foundation change reaching it without testing it still runs the smoke"):
+        # "leaf" stands in for the session: the end of the dependency chain.
+        ci_select.DESKTOP_GATE = {("leaf", "it"): gate, ("leaf", "probe"): door}
+        with self.subTest(phase="a foundation change reaching it without testing it runs its desk tests"):
             plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
             self.assertIn("leaf", plan["selected"])
             self.assertNotIn("leaf", plan["tested"])
-            self.assertEqual(plan["scoped_tests"], {"leaf": "--test it -E 'binary(it) and test(desktop_smoke::)'"})
+            self.assertEqual(plan["scoped_tests"], {
+                "leaf:it": "--test it -E 'binary(it) and test(desk::)'",
+                "leaf:probe": "--test probe -E 'binary(probe)'"})
             rows = [json.loads(row["scoped_tests"]) for row in plan["matrix"]["include"] if row["scoped_tests"]]
-            self.assertEqual(rows, [[{"package": "leaf", "test": "it", "filter": gate.filter}]])
-        with self.subTest(phase="a change to it tests all of it, and the smoke is part of that"):
+            self.assertEqual(rows, [[{"package": "leaf", "test": "it", "filter": gate.filter},
+                                     {"package": "leaf", "test": "probe", "filter": door.filter}]])
+        with self.subTest(phase="a change to it tests all of it, and the desk tests are part of that"):
             plan = ci_select.make_plan(self.metadata, self.root, ["leaf/src/main.rs"], 2)
             self.assertIn("leaf", plan["tested"])
             self.assertEqual(plan["scoped_tests"], {})
@@ -149,7 +202,18 @@ class SelectorTests(unittest.TestCase):
             plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs", "os/x.json"], 2,
                                        suite_manifest=manifest)
             self.assertEqual(plan["scoped_tests"], {
-                "leaf": "--test it -E '(test(/^audit::/)) or (binary(it) and test(desktop_smoke::))'"})
+                "leaf:it": "--test it -E '(test(/^audit::/)) or (binary(it) and test(desk::))'",
+                "leaf:probe": "--test probe -E 'binary(probe)'"})
+        with self.subTest(phase="a reading scope on another target is a run of its own"):
+            manifest = ci_select.path_suites.parse(
+                '[[cargo]]\npackage = "leaf"\ninputs = ["os/x.json"]\nreaders = ["leaf/tests/other.rs"]\n'
+                'scope = { inputs = ["os/x.json"], test = "other", filter = "test(/^audit::/)" }\n')
+            plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs", "os/x.json"], 2,
+                                       suite_manifest=manifest)
+            self.assertEqual(plan["scoped_tests"], {
+                "leaf:it": "--test it -E 'binary(it) and test(desk::)'",
+                "leaf:other": "--test other -E 'test(/^audit::/)'",
+                "leaf:probe": "--test probe -E 'binary(probe)'"})
 
     def test_a_recheck_keeps_only_what_the_base_changes_reach(self):
         with self.subTest(phase="the plan narrows to packages the base's own changes reach"):
@@ -274,7 +338,7 @@ class SelectorTests(unittest.TestCase):
             # Still checked and linted, but not tested as a whole package.
             self.assertIn("base", leaf["selected"])
             self.assertNotIn("base", leaf["tested"])
-            self.assertEqual(leaf["scoped_tests"], {"base": "--test it -E 'test(/^audit::/)'"})
+            self.assertEqual(leaf["scoped_tests"], {"base:it": "--test it -E 'test(/^audit::/)'"})
             row = leaf["matrix"]["include"][0]
             self.assertNotIn("base", row["test_packages"].split()[1::2])
             self.assertEqual(json.loads(row["scoped_tests"]),
@@ -798,7 +862,7 @@ class SelectorTests(unittest.TestCase):
                          "estimated_cost": ci_select.LARGE_TEST_SHARD_COST + 1}
             fits = {"packages": "-p base -p middle",
                     "estimated_cost": ci_select.LARGE_TEST_SHARD_COST}
-            single_large_link = {"packages": "-p shell", "estimated_cost": 1}
+            single_large_link = {"packages": "-p tilo-session", "estimated_cost": 1}
             for arch in ci_select.NATIVE_RUNNERS:
                 self.assertEqual(ci_select.test_shard_runner(oversized, arch),
                                  ci_select.LARGE_RUNNERS[arch])
