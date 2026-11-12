@@ -150,13 +150,17 @@ mod tests {
             connected.sign(b"anything").is_err(),
             "an app's broker connection never yields a signature"
         );
-        match connect_from_env() {
-            Err(NotAvailable::ConnectionFailed(error)) => {
-                assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        // A second reader shares the one connection the descriptor became;
+        // nothing makes a second owner of it.
+        let again = connect_from_env().expect("the held connection is shared");
+        match (&connected.source, &again.source) {
+            (SigningSource::Broker(first), SigningSource::Broker(second)) => {
+                assert!(std::sync::Arc::ptr_eq(first, second));
             }
-            other => panic!("second claim did not fail safely: {other:?}"),
+            _ => panic!("both readers hold the broker connection"),
         }
         drop(env);
+        drop(again);
         drop(connected);
         thread.join().unwrap();
     }

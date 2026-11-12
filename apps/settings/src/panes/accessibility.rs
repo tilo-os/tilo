@@ -48,12 +48,7 @@ pub(crate) fn software(app: &crate::settings_app::SettingsApp) -> Software {
 }
 
 fn executable_available(name: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| {
-            let candidate = dir.join(name);
-            std::fs::metadata(candidate).is_ok_and(|m| m.is_file())
-        })
-    })
+    tilo_process::tools::ToolDirs::current().find(name).is_some()
 }
 
 pub(crate) fn tts_capability() -> Option<&'static str> {

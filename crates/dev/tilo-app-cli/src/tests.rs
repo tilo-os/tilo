@@ -6237,6 +6237,12 @@ mod tests {
         let _ = std::net::TcpListener::bind("127.0.0.1:0");
     }
 }
+
+// Built for Tilo OS alone: a web build never has it.
+#[cfg(feature = "tilo-os")]
+pub fn device_only() {
+    std::thread::spawn(|| {}).join().ok();
+}
 "#,
     );
     std::fs::write(app.join("src/lib.rs"), &lib).unwrap();
@@ -6280,6 +6286,11 @@ mod tests {
             .iter()
             .all(|finding| finding.line < line("#[cfg(test)]").unwrap()),
         "tests are exempt: {sites:?}"
+    );
+    let device_only = line("pub fn device_only()").unwrap();
+    assert!(
+        sites.iter().all(|(line, _)| *line != device_only + 1),
+        "code under another platform's feature is not the web's: {sites:?}"
     );
     let rendered = report.render();
     assert!(rendered.contains("portability/W1"), "{rendered}");

@@ -53,6 +53,8 @@ tilo-locale = { path = "../../crates/platform/tilo-locale" }
 tilo-wallpapers = { version = "0.1.0", path = "../../crates/platform/tilo-wallpapers" }
 hex.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
+tilo-process = { path = "../../crates/platform/tilo-process" }
+tilo-rt = { path = "../../crates/platform/tilo-rt" }
 bounded-command = { path = "../../crates/system/bounded-command", optional = true }
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../crates/system/settings-store", features = ["model"] }

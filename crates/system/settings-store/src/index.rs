@@ -56,7 +56,7 @@ impl Page {
     /// a Tilo device, on the web only [`WEB_PAGES`].
     #[must_use]
     pub fn here(self) -> bool {
-        !cfg!(target_arch = "wasm32") || WEB_PAGES.contains(&self.slug)
+        !tilo_platform_caps::WEB || WEB_PAGES.contains(&self.slug)
     }
 }
 
