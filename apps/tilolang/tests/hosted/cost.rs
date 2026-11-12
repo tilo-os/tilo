@@ -444,8 +444,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 300_000,
             eval_layout_us: 300_000,
             held: Held {
-                optimized_us: 620_000,
-                development_us: 2_400_000,
+                optimized_us: 380_000,
+                development_us: 1_470_000,
             },
         },
     ),

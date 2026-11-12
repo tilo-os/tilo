@@ -53,6 +53,8 @@ mod menus;
 #[path = "hosted/packages.rs"]
 mod packages;
 
+use packages::{package, package_of};
+
 #[path = "hosted/offers.rs"]
 mod offers;
 
