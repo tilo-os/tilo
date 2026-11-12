@@ -1693,27 +1693,19 @@ impl PresenceCtx {
         if kind == ParticipantKind::Person {
             return self.labels.label(&user.0, name);
         }
-        // Acting for whoever reads this: "Claude for you".
-        let me = self.self_id();
-        let mine = me.and_then(|me| self.person_of(me)).or(me);
-        if let Some(person) = self.acting_for.get(user)
-            && (Some(person) == me || Some(person) == mine)
-        {
-            return crate::history_source::sentence::acting_line(name, Some(&person.0), true);
-        }
-        // A person the roster has not named yet is left out rather than
-        // shown as their raw key: "Claude" reads better than "Claude for
-        // 3f9a…".
-        if let Some(person) = self
-            .acting_for
-            .get(user)
-            .and_then(|person| self.names.get(person).map(|name| (person, name)))
-            .and_then(|(person, name)| {
-                crate::history_source::human_label(name, &person.0)
-                    .map(|name| self.labels.label(&person.0, name))
-            })
-        {
-            return crate::history_source::sentence::acting_line(name, Some(&person), false);
+        // Whom software acts for: "Claude for you", "Claude for Ada". A person the roster has not
+        // named yet is left out rather than shown as their raw key.
+        if let Some(person) = self.acting_for.get(user) {
+            let me = self.self_id();
+            let reader = Some(person) == me || Some(person) == me.and_then(|me| self.person_of(me));
+            let named = self.names.get(person).and_then(|named| {
+                crate::history_source::human_label(named, &person.0)
+                    .map(|named| self.labels.label(&person.0, named))
+            });
+            if reader || named.is_some() {
+                let person = named.unwrap_or_default();
+                return crate::history_source::sentence::acting_line(name, Some(&person), reader);
+            }
         }
         match kind {
             ParticipantKind::Shortcut => {

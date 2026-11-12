@@ -1485,23 +1485,14 @@ impl Chat {
 
     /// Name an agent.
     ///
-    /// The name every member shows for an agent task, or for an agent by the
-    /// name the device that admitted it gave it: an agent names itself only
-    /// so.
+    /// The name every member shows for an agent task.
     #[action(audience = "agents")]
-    pub fn name_agent(
-        &mut self,
-        cx: &mut ActionCx,
-        participant: String,
-        name: NonBlank,
-    ) -> Result<(), Refusal> {
-        let own = cx.author() == Some(participant.as_str())
-            && cx.agent_name().as_deref() == Some(name.as_str());
-        if !(participant.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX) || own)
+    pub fn name_agent(&mut self, participant: String, name: NonBlank) -> Result<(), Refusal> {
+        if !participant.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
             || name.len() > MAX_AGENT_NAME_BYTES
         {
             return Err(Refusal::new(
-                "only an agent task, or an agent by its own name, is named, with a short name",
+                "only an agent task is named, with a short name",
             ));
         }
         self.agent_names.insert(participant, name.into_string());

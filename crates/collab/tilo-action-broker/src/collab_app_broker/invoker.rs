@@ -115,13 +115,9 @@ mod tests {
         );
         // A task run's agent acting for its starter names them, with no caller to say so.
         let started = BrokerActor::agent("agent:alpha").for_person("owner");
-        let context = host_set_invoker(Some(forged()), &started, None, None)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            context.invoker.and_then(|invoker| invoker.on_behalf_of),
-            Some("owner".to_owned())
-        );
+        let context = host_set_invoker(Some(forged()), &started, None, None).unwrap();
+        let invoker = context.and_then(|context| context.invoker).unwrap();
+        assert_eq!(invoker.on_behalf_of.as_deref(), Some("owner"));
         let untasked = tilo_actions::ActionContext::default();
         let context = host_set_invoker(Some(untasked), &actor, None, None)
             .unwrap()
