@@ -153,8 +153,9 @@ tilo-dictation = { path = "../dictation" }
 # What the session binary's search reads of the device: the installed apps,
 # the machine's own, the person's search choices.
 # The session's own app store, read as the launcher reads it: a development session seeds the
-# tilolang apps it installed (`crate::seeded_apps`).
-package-store = { path = "../../packaging/package-store" }
+# tilolang apps it installed (`crate::seeded_apps`), and a desk style a person owns is installed
+# into it from their workspace (`crate::style_packages`), which needs the store's writer.
+package-store = { path = "../../packaging/package-store", features = ["store"] }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
 # The filesystem daemon's content store, as this desktop session reaches it:
 # what names an agent as the cause of the writes Files made for a person.
@@ -259,6 +260,9 @@ tilo-ui-host = { path = "../../platform/tilo-ui-host" }
 tilo-model-host = { path = "../../sdk/tilo-model-host" }
 tilo-model-abi = { path = "../../sdk/tilo-model-abi" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
+# `tilolang check` and build as the session's own commands over a package in the person's
+# workspace: a desk style is written, checked and installed as any app is (`shell.md` §6).
+tilolang-cli = { path = "../../lang/tilolang-cli" }
 app-catalogue = { path = "../../packaging/app-catalogue" }
 # The pictures the desk shows: the image's own, and the person's.
 tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
@@ -394,10 +398,10 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # the sample catalogue's channels and videos, never the live worker.
 tube = { path = "../../../apps/tube", default-features = false, features = ["samples"] }
 # A development session's tilolang apps, built into signed `.tapp`s the tests install into
-# their own app store: the same packages `dist/dev/shell-run.sh` installs.
-tilolang-cli = { path = "../../lang/tilolang-cli" }
+# their own app store: the same packages `dist/dev/shell-run.sh` installs. `tilolang-cli` and
+# `package-store`'s writer are normal dependencies of the session (a person's own desk style is
+# written, checked and installed the same way), so a test needs nothing extra here.
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
-package-store = { path = "../../packaging/package-store", features = ["store"] }
 # The events the actor hands the session, which its own tests hand the sync
 # directly: the membership epoch on them is the actor's to mint.
 tilo-network-actor = { path = "../network-actor", features = ["test-support"] }

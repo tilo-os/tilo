@@ -310,6 +310,8 @@ pub mod startup;
 #[cfg(target_os = "linux")]
 mod status;
 #[cfg(target_os = "linux")]
+pub mod style_packages;
+#[cfg(target_os = "linux")]
 pub mod surfaces;
 #[cfg(target_os = "linux")]
 mod switcher;

@@ -170,6 +170,24 @@ pub const fn shell_ids() -> &'static str {
     SHELL_IDS
 }
 
+/// Every file of the shell package this build ships, by the name the package knows it by
+/// (`app.tl`, `strips.tl`, …) and its source: the same copy [`compile_shell`] compiles, so
+/// "make it mine" copies exactly the style a person is looking at (`shell.md` §6). Its
+/// scenarios (`scenarios.tl`) are not here: they are fixtures, never part of the package a
+/// session runs.
+#[must_use]
+pub const fn shell_sources() -> &'static [(&'static str, &'static str)] {
+    SHELL_FILES
+}
+
+/// The shell package's own source-locale catalogue (`apps/tl/shell/locales/en-US.ftl`), as it
+/// ships: what a copy of the shell carries so its own words travel with it, as an installed
+/// app's do.
+#[must_use]
+pub const fn shell_catalogue() -> &'static str {
+    include_str!("../../../../apps/tl/shell/locales/en-US.ftl")
+}
+
 /// The desk the session writes its reading into: the `desk` view over the `Desk` root, the
 /// bar and the surface under it. The shell package has two roots (`Desk` and its `Arrangement`),
 /// so each names its own; the instance is never "the first root's default view".

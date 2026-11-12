@@ -1356,6 +1356,13 @@ impl Session {
         shared
             .doors
             .add(Rc::new(std::cell::RefCell::new(crate::diagnostics::Served)));
+        // The person's own desk styles as packages in their workspace: "make it mine", `check`
+        // and `install`, the same commands a person types at `tilolang`, so a shell view, the
+        // canvas chat's agent and the REPL make and change styles the same way
+        // (`shell.md` §6, "Agents make styles with the same commands a person types").
+        shared.doors.add(Rc::new(std::cell::RefCell::new(
+            crate::style_packages::Served::new(),
+        )));
         // The person's devices are what their other machines say of
         // themselves, which is nobody's personal content: their reading is
         // published for any app that may read the session's resources.
