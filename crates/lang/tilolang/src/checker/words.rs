@@ -12,7 +12,7 @@
 
 use super::{Checker, Ex};
 use crate::abi::Imp;
-use crate::ast::{self, ExprKind, StmtKind, StrPart};
+use crate::ast::{self, BinOp, ExprKind, StmtKind, StrPart};
 use crate::diag::Span;
 use crate::ir::{Ek, Stmt};
 use crate::meta::WordMeta;
@@ -23,11 +23,28 @@ const SLUG_WORDS: usize = 6;
 
 impl Checker<'_> {
     /// Marks the literals `value` shows as its result: the value itself, a branch's, an
-    /// option's or a list's.
+    /// option's or a list's, or one a `let` kept under the name it is given by.
     pub(super) fn mark_shown(&mut self, value: &ast::Expr) {
         match &value.kind {
             ExprKind::Str(_) => {
-                self.st.shown.insert(value.span);
+                self.shown.insert(value.span);
+            }
+            // A name a `let` bound is the value it was written as: the literals inside it are
+            // the ones the prop shows, whichever branch or binding chose them.
+            ExprKind::Ident(name) => {
+                if let Some(written) = self.lookup(name).and_then(|(id, _)| self.st.lets.get(&id)) {
+                    let written = written.clone();
+                    self.mark_shown(&written);
+                }
+            }
+            // `chosen?.label ?? "Tasks"`: the words where the value on the left is none.
+            ExprKind::Binary {
+                op: BinOp::Coalesce,
+                lhs,
+                rhs,
+            } => {
+                self.mark_shown(lhs);
+                self.mark_shown(rhs);
             }
             ExprKind::If { then, els, .. } | ExprKind::IfLet { then, els, .. } => {
                 self.mark_shown_block(then);
@@ -103,7 +120,7 @@ impl Checker<'_> {
 
     /// Whether the literal at `span` is one a component shows.
     pub(super) fn shows(&self, span: Span) -> bool {
-        self.st.shown.contains(&span)
+        self.shown.contains(&span)
     }
 
     /// A literal a view shows: its message, with each interpolation its argument, falling back

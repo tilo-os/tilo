@@ -298,7 +298,7 @@ impl Checker<'_> {
                         None => self.expr(value, None),
                     };
                     let bound = v.ty.clone();
-                    self.bind_let(&name.name, bound, v);
+                    self.bind_let(&name.name, bound, v, value);
                 }
                 UiKind::If { cond, then, els } => {
                     let c = self.expr_as(cond, &Ty::Bool);

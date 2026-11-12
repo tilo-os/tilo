@@ -1345,3 +1345,57 @@ fn a_file_is_a_field_a_parameter_and_the_persons_choice() {
     // The parameter is the file itself: no form asks for it, the person's chooser fills it.
     assert!(!Ty::File.asked_by_form());
 }
+
+/// The messages a declaration wrote, as `declaration.key text`: what a catalogue translates.
+fn messages(m: &Module) -> Vec<String> {
+    m.words
+        .iter()
+        .map(|w| format!("{}.{} {}", w.view, w.key, w.text))
+        .collect()
+}
+
+/// The literals a view shows are its messages wherever the words stand: the literal a prop of
+/// words is given, one a `let` keeps, one a branch chooses, and one it passes on to a component's
+/// parameter. A person reading the window cannot tell which was written where, so the catalogue
+/// writes them all.
+#[test]
+fn the_words_a_view_keeps_in_a_let_are_its_messages() {
+    const TYPES: &str = "type Task {\n    title: Text\n    place: Text\n}\ntype Tasks {\n    items: Collection<Task>\n}\n\
+view chip(label: Text) {\n    text(label)\n}\n";
+    let (m, ids) = lower(&format!(
+        "{TYPES}view todo(ts: Tasks) {{\n    let empty = \"No tasks yet\"\n    let heading = if ts.items.is_empty() {{ \"Nothing to do\" }} else {{ \"Your day\" }}\n    let tail = \"{{ts.items.len()}}\"\n    stack {{\n        ui.Chip(heading, tone: .neutral)\n        text(empty)\n        chip(heading)\n        text(tail)\n    }}\n}}"
+    ));
+    let todo = ids.get("todo").expect("the view's id");
+    let said = messages(&m);
+    for want in ["No tasks yet", "Nothing to do", "Your day"] {
+        assert!(
+            said.iter()
+                .any(|w| w.starts_with(&format!("{todo}.")) && w.ends_with(want)),
+            "{want} in {said:#?}"
+        );
+    }
+    // A literal of no words is text, kept in a `let` as it is written anywhere else.
+    assert!(
+        !said.iter().any(|w| w.ends_with("{ts.items.len()}")),
+        "a literal of no words is text: {said:#?}"
+    );
+}
+
+/// A literal that reaches no prop of words is data: a tag a piece of code compares, an address a
+/// link opens. A `let` keeps it as the text it is, and the catalogue never names it.
+#[test]
+fn a_literal_no_prop_of_words_shows_stays_data() {
+    let (m, _) = lower(
+        "type Task {\n    title: Text\n    place: Text\n}\ntype Tasks {\n    items: Collection<Task>\n}\n\
+         view todo(ts: Tasks) {\n    let place = \"inbox\"\n    let address = \"https://tilo.coffee\"\n    stack {\n        ui.Link(address)\n        text(if ts.items.any(t -> t.place == place) { \"Here\" } else { \"Nowhere\" })\n    }\n}",
+    );
+    let said = messages(&m);
+    assert!(
+        !said
+            .iter()
+            .any(|w| w.ends_with("inbox") || w.ends_with("tilo.coffee")),
+        "a tag and an address are data: {said:#?}"
+    );
+    // The words the view shows are still its messages.
+    assert!(said.iter().any(|w| w.ends_with("Nowhere")), "{said:#?}");
+}
