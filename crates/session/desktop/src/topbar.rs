@@ -1131,6 +1131,12 @@ impl TopBarChrome {
         self.presence
     }
 
+    /// Where the bar stands on its display: the chrome's band at the top of the screen.
+    #[must_use]
+    pub const fn rect(&self) -> Rect {
+        self.rect
+    }
+
     /// The bar shown over the windows stands on a surface of its own, the width of the display with
     /// the bar's hairline under it, so its controls read over whatever the windows show there.
     fn draw_overlay_surface(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {

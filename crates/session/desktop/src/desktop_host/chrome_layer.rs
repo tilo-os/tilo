@@ -364,12 +364,10 @@ impl DesktopChrome {
             .map(HintsFeed::search_keys)
             .unwrap_or_default();
         let avatar = self.bar.own_avatar_rect();
-        let row = self.handle.hint_places();
-        let over = HintFrame::cards_over(&row);
         HintFrame {
-            row,
-            over,
+            row: self.handle.hint_places(),
             area,
+            bar: self.bar.rect(),
             search_keys,
             avatar: (!avatar.is_zero_area()).then_some(avatar),
             colour: self.bar.own_chip().map(|own| own.rgb),

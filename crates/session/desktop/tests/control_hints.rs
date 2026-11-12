@@ -4,7 +4,10 @@
 
 #![allow(
     clippy::unwrap_used,
+    clippy::expect_used,
     clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::float_cmp,
     reason = "in a test these are the assertion, not a hazard"
 )]
 use std::rc::Rc;
@@ -89,11 +92,13 @@ fn chrome_over(tree: &DesktopTree, feed: &HintsFeed) -> (FrameHarness, DesktopHa
         false,
     );
     chrome.set_hints_feed(feed.clone());
+    // The windows settle below the bar at once, as they do when the person asks for less motion:
+    // the slide down to it is motion, not geometry, and a hint is placed against the geometry.
     let mut frame = FrameHarness::for_root(
         ui::state::State::new(),
         chrome,
         (1280, 800),
-        ui::Theme::dark(),
+        ui::Theme::dark().with_reduce_motion(true),
     );
     frame.relayout();
     draw_chrome(&mut frame);
@@ -268,32 +273,59 @@ fn no_hint_points_at_a_card_nor_covers_one() {
     });
 }
 
-/// The record of someone who has learned every hint but the one that teaches opening search.
-fn learning_search_only() -> Learned {
-    let mut learned = Learned::default();
-    for spec in HINTS.iter().filter(|spec| spec.id != "open-from-search") {
-        learned.learn(spec.id);
+/// A desk of `windows` windows with the first of them maximized.
+fn maximised(windows: u64) -> DesktopTree {
+    let mut tree = desk_tree(windows);
+    if let Some(group) = tree.workspaces[0].strips[0].window_groups.first_mut() {
+        group.maximized = true;
     }
-    learned
+    tree
 }
 
-/// A window's app stands an agent's activity cards in the top-right corner of its content: the
-/// search hint, which comes down at the middle of the desk, shares that one place rule, so it
-/// slides clear of the corner instead of hiding the agent's card.
-#[test]
-fn the_search_hint_never_covers_an_apps_activity_cards() {
-    let (_, handle) = chrome_over(&desk_tree(2), &HintsFeed::default());
+/// The desk over `tree` with the bar's band over its top edge, and the strip's row as it lays out:
+/// every window stands clear of the bar, the way the desktop stands them while its bar shows.
+fn desk_below_the_bar(tree: &DesktopTree) -> (FrameHarness, ui::widget::HintPlaces) {
+    let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
+    // Windows come to rest below the bar at once, as they do when the person asks for less motion:
+    // the slide down to it is motion, not geometry, and a hint is placed against the geometry.
+    let mut desk = FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1280, 800),
+        ui::Theme::dark().with_reduce_motion(true),
+    );
+    handle.set_top_overlay_inset(f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX));
+    for _ in 0..2 {
+        desk.relayout();
+        draw_desk(&mut desk);
+    }
     let row = handle.hint_places();
-    let cards = HintFrame::cards_over(&row);
-    assert_eq!(cards.len(), 6, "two windows' corners: {cards:?}");
-    let area = row.viewport;
-    // The hints as the chrome drives them: the desk seen, search still to learn, a strip holding no
-    // window (so no other hint is owed), and the frames a strip's row reports.
-    let mut hints = ControlHints::new(learning_search_only());
+    (desk, row)
+}
+
+/// Draw one frame of the desk, as the chrome draws it under its bar.
+fn draw_desk(desk: &mut FrameHarness) {
+    let theme = ui::Theme::dark();
+    let mut text = ui::TextRenderer::default();
+    let presence = ui::presence::PresenceCtx::default();
+    let mut scene = ui::vello::Scene::new();
+    let mut surface = desk.root_mut::<DesktopSurface>();
+    surface.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+}
+
+/// The card the hint `unlearned` paints over `tree` after `wait`, as the chrome drives it, with
+/// the strip's own places: the real geometry the hint is placed against.
+fn painted_hint(
+    tree: &DesktopTree,
+    unlearned: &str,
+    wait: ui::time::Duration,
+) -> (Rect, ui::widget::HintPlaces) {
+    let (_, row) = desk_below_the_bar(tree);
+    let mut hints = ControlHints::new(record_learning_all_but(unlearned));
     let frame = HintFrame {
-        row,
-        over: cards.clone(),
-        area,
+        row: row.clone(),
+        area: row.viewport,
+        bar: Rect::new(0.0, 0.0, row.viewport.x1, row.viewport.y0),
         search_keys: vec!["Ctrl".to_owned(), "K".to_owned()],
         avatar: None,
         colour: None,
@@ -303,7 +335,7 @@ fn the_search_hint_never_covers_an_apps_activity_cards() {
     };
     let start = ui::time::now();
     hints.update(&frame, start);
-    hints.update(&frame, start + ui::time::Duration::from_secs(18));
+    hints.update(&frame, start + wait);
     let mut scene = ui::vello::Scene::new();
     let mut text = ui::TextRenderer::default();
     hints.draw(
@@ -312,19 +344,68 @@ fn the_search_hint_never_covers_an_apps_activity_cards() {
         Affine::IDENTITY,
         &mut text,
         &ui::Theme::dark(),
-        start + ui::time::Duration::from_secs(18),
+        start + wait,
     );
-    let painted = hints
-        .card_rect()
-        .expect("search is taught once the desk is seen");
-    for card in &cards {
+    (
+        hints.card_rect().expect("the hint shows over the desk"),
+        row,
+    )
+}
+
+/// A hint never stands over a window's content nor over an app's activity cards, whatever the desk
+/// holds: a gesture with no control on screen is taught in the chrome under the bar, above every
+/// window, and one beside a window's control hangs into the window it teaches and no other.
+#[test]
+fn no_hint_stands_over_a_window_or_an_apps_cards() {
+    for tree in [desk_tree(0), desk_tree(1), desk_tree(2), maximised(3)] {
+        let (painted, row) =
+            painted_hint(&tree, "open-from-search", ui::time::Duration::from_secs(18));
+        let content: Vec<Rect> = row
+            .windows_on_desk
+            .iter()
+            .map(|(_, content)| *content)
+            .collect();
+        // Under the bar while the desk leaves that much room, else in the bar itself: never over
+        // a window's bar or its content.
+        let bar = Rect::new(0.0, 0.0, row.viewport.x1, row.viewport.y0);
         assert!(
-            !painted.overlaps(*card),
-            "the search hint {painted:?} stands over an app's card {card:?}"
+            row.chrome.contains_rect(painted) || bar.contains_rect(painted),
+            "the search hint stands in the chrome: {painted:?} in {:?} or {bar:?}",
+            row.chrome
+        );
+        assert_eq!(
+            painted.center().x,
+            row.viewport.center().x,
+            "centred across the desk: {painted:?}"
+        );
+        for card in HintFrame::cards_over(&row).into_iter().chain(content) {
+            assert!(
+                !painted.overlaps(card),
+                "the search hint {painted:?} stands over content {card:?}"
+            );
+        }
+    }
+    // A hint beside a window's own control hangs into that window and no other, and clear of the
+    // cards its app stands in a corner. (A maximised window has no handle to take: no hint.)
+    for tree in [desk_tree(2), desk_tree(3)] {
+        let (painted, row) = painted_hint(&tree, "resize-window", ui::time::Duration::ZERO);
+        let under = row
+            .windows_on_desk
+            .iter()
+            .filter(|(_, content)| content.overlaps(painted))
+            .count();
+        assert!(under <= 1, "over {under} windows: {painted:?}");
+        for card in HintFrame::cards_over(&row) {
+            assert!(
+                !painted.overlaps(card),
+                "the resize hint {painted:?} stands over a card {card:?}"
+            );
+        }
+        let (line, _) = row.focused_edge.expect("fixture: a handle to point at");
+        let at = line.p0.lerp(line.p1, 0.5);
+        assert!(
+            painted.inflate(16.0, 16.0).contains(at),
+            "the hint stays beside its handle {line:?}: {painted:?}"
         );
     }
-    assert!(
-        area.contains_rect(painted),
-        "the hint slides but stays on the desk: {painted:?} in {area:?}"
-    );
 }
