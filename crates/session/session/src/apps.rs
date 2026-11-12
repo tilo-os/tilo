@@ -378,13 +378,14 @@ impl Apps {
         state.connectors = Some(connectors);
     }
 
-    /// The person's region formats changed: every tilolang host running here is told, so the
-    /// instances it runs write the dates, clocks and weeks their windows show again in the new
-    /// ones ([`crate::formats`]).
-    pub fn formats_changed(&self) {
+    /// The person's region formats or language changed: every tilolang host running here is
+    /// told, so the instances it runs write the dates, clocks and weeks their windows show again
+    /// in the new formats ([`crate::formats`]), and their windows read their words in the
+    /// language ([`crate::i18n`]).
+    pub fn locale_changed(&self) {
         let hosts = self.state.borrow().hosts.clone();
         if let Some(hosts) = hosts {
-            hosts.formats_changed();
+            hosts.locale_changed();
         }
     }
 

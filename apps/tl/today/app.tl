@@ -20,7 +20,7 @@ action morning_cleanup(list: todo.Tasks, nb: notes.Notebook) -> Int {
     let n = list.items.count(x -> x.done)
     // The clear is refused while nothing is done, so it is asked only then.
     if n > 0 { todo.clear_done(list) }
-    notes.file_note(nb, "Morning: {n} done", "morning")
+    notes.file_note(nb, say("Morning: {n} done"), "morning")
     n
 }
 

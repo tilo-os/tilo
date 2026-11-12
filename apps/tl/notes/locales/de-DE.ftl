@@ -41,18 +41,23 @@ d-37dxigeq = Untergeordnete Notiz
 
 d-7jhaq3a5 = Verschieben nach
     .doc = Verschiebt eine Notiz an eine Stelle im Baum: unter das Ende von `parent` (oder ganz oben ohne), oder dorthin, wo `before` steht.
+    .w-a-note-cannot-go-inside-itself = Eine Notiz kann nicht in sich selbst liegen
 
 d-ai4sxgvt = Danach verschieben
     .doc = Verschiebt eine Notiz direkt hinter `n` und alle Notizen unter ihr: die Stelle, die ein Ablegen hinter einer Zeile verlangt, und die die Zeile nennt, hinter der sie landet, nicht die danach.
+    .w-a-note-cannot-go-inside-itself = Eine Notiz kann nicht in sich selbst liegen
 
 d-c34rzynx = Duplizieren
     .doc = Kopiert eine Notiz mit allen Notizen unter ihr, direkt nach der kopierten.
 
 d-jo2tztsx = Nach Titel sortieren
     .doc = Bringt die Notizen einer Notiz einmal in die Reihenfolge ihrer Titel.
+    .w-it-holds-no-notes = Sie enthält keine Notizen
 
 d-qhmjwgei = Anheften
     .doc = Heftet eine Notiz an oder löst sie.
+    .w-pin = Anheften
+    .w-unpin = Lösen
 
 d-nydyehwn = Löschen
     .doc = Löscht eine Notiz und alle Notizen unter ihr, als eine Änderung, die auf einmal zurückgenommen wird.
@@ -135,3 +140,5 @@ d-nki6assy = Notizangaben
     .w-1-word = 1 Wort
     .w-words = { $count } Wörter
 
+d-ttq2d5ah = Dateiname
+    .w-note = Notiz

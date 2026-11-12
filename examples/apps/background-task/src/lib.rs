@@ -227,7 +227,7 @@ impl ResourceApp for App {
 
         Box::new(ui::column![
             Text::new("task-title").with_role(TextRole::Title),
-            labeled_field(crate::locales::keys::TASK_LIMIT_LABEL, limit),
+            labeled_field("task-limit-label", limit),
             run,
             body,
         ])

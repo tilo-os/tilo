@@ -111,6 +111,99 @@ PROBE_ROUTES = {
 }
 
 
+# --- words ----------------------------------------------------------------------
+#
+# Every control and action is found by what the session names it in its own language: the words
+# a catalogue gives its key there, never English written into this check. A German session (LANG
+# =de_DE.UTF-8) presses "Morgenroutine" where an English one presses "Morning cleanup".
+
+def session_language() -> str:
+    """The language the session speaks, as the locale this check runs in names it (`de-DE`)."""
+    for name in ("LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"):
+        value = os.environ.get(name, "").split(":")[0].split(".")[0]
+        if value and value not in ("C", "POSIX"):
+            return value.replace("_", "-")
+    return "en-US"
+
+
+LANGUAGE = session_language()
+
+
+def fluent(path: Path) -> dict[str, str]:
+    """The messages and attributes of the Fluent catalogue at `path` (`key`, `key.attr`), each its
+    pattern on one line, the default variant of a selector standing for the selector."""
+    found: dict[str, str] = {}
+    key = base = None
+    if not path.is_file():
+        return found
+    for line in path.read_text().splitlines():
+        entry = re.fullmatch(r"([A-Za-z][\w-]*) =\s?(.*)", line)
+        attribute = re.fullmatch(r"\s+\.([\w-]+) =\s?(.*)", line)
+        default = re.fullmatch(r"\s+\*\[[^\]]*\]\s?(.*)", line)
+        if entry:
+            base = key = entry.group(1)
+            found[key] = entry.group(2)
+        elif attribute and base:
+            key = f"{base}.{attribute.group(1)}"
+            found[key] = attribute.group(2)
+        elif default and key:
+            found[key] = re.sub(r"\{\s*\$[\w-]+\s*->\s*$", "", found[key]) + default.group(1)
+    return found
+
+
+def say(unit: str, key: str, language: str | None = None, **args) -> str:
+    """The words `key` reads in `language` (the session's) in the catalogues of `unit`, the
+    directory holding its `locales/`: its translation, else its source, with `args` placed."""
+    locales = REPO / unit / "locales"
+    language = language or LANGUAGE
+    shipped = [language, *sorted(p.stem for p in locales.glob(f"{language.split('-')[0]}-*.ftl"))]
+    words = next((fluent(locales / f"{each}.ftl")[key] for each in shipped
+                  if key in fluent(locales / f"{each}.ftl")), None)
+    words = words if words is not None else fluent(locales / "en-US.ftl").get(key)
+    if words is None:
+        raise Failed(f"{unit}'s catalogues hold no {key!r}")
+    for name, value in args.items():
+        words = re.sub(r"\{\s*\$" + name + r"\s*\}", str(value), words)
+    return words
+
+
+def window_language(name: str) -> str:
+    """The language a window of the tilolang app `name` reads in: the session's when the app
+    ships it, its source language otherwise (`tilo_history::window_language`)."""
+    locales = REPO / "apps/tl" / name / "locales"
+    if (locales / f"{LANGUAGE}.ftl").is_file():
+        return LANGUAGE
+    same = sorted(locales.glob(f"{LANGUAGE.split('-')[0]}-*.ftl"))
+    return same[0].stem if same else "en-US"
+
+
+def app_id_of(name: str, declared: str) -> str:
+    """The stable id the tilolang app `name` keeps its declaration `declared` under (`app.ids`)."""
+    for line in (REPO / "apps/tl" / name / "app.ids").read_text().splitlines():
+        left, _, right = line.partition(" = ")
+        if left.strip() == declared:
+            return right.strip()
+    raise Failed(f"apps/tl/{name} declares no {declared!r}")
+
+
+def tasks_place(key: str) -> str:
+    """What Tasks' window calls its place `key` (`today`, `inbox`): the filter's own words."""
+    return say("apps/tl/tasks", f"d-{app_id_of('tasks', 'Task')}-filter-{key}",
+               window_language("tasks"))
+
+
+def toolkit_word(name: str, key: str) -> str:
+    """The toolkit's word `key` as a window of the tilolang app `name` reads it."""
+    return say("crates/sdk/ui-core", key, window_language(name))
+
+
+def app_word(name: str, declared: str, attribute: str | None = None, **args) -> str:
+    """What a window of the tilolang app `name` calls its declaration `declared` (an action, a
+    view), or one of the words it says there (`attribute`, `w-<slug>`), with `args` placed."""
+    key = f"d-{app_id_of(name, declared)}" + (f".{attribute}" if attribute else "")
+    return say(f"apps/tl/{name}", key, window_language(name), **args)
+
+
 # --- /proc --------------------------------------------------------------------
 
 def children(pid: int) -> list[int]:
@@ -373,7 +466,7 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
         return len([line for line in log_lines(session, "tilolang instance handed over")
                     if line.get("package_id") == tasks])
     before_handed = handed()
-    search_beside(session, "Tasks")
+    search_beside(session, say("apps/tl/tasks", "d-so-tilo-lang-tasks"))
     windows = until(f"a second window of {tasks}", lambda: (lambda shown: shown if len(shown) == 2
                     else None)([w for w in session.windows() if w.get("app_id") == tasks]), 30)
     until("the second window's instance handed to the host", lambda: handed() > before_handed, 30)
@@ -446,7 +539,8 @@ def check_titles(session: Session, out: Path) -> dict:
     if len(found) != 2:
         raise Failed(f"{tasks} shows {len(found)} windows, not the two this check reads")
     titles = {w["tab"]: w.get("title") for w in found}
-    if set(titles.values()) != {"Today"}:
+    today = tasks_place("today")
+    if set(titles.values()) != {today}:
         raise Failed(f"{tasks}'s tabs read {titles}: a tab names its app, not the page its window "
                      f"shows (both windows stand on Tasks' Today)")
     # Both tabs as the strip shows them, each window in front in turn: titles-*.png.
@@ -456,7 +550,7 @@ def check_titles(session: Session, out: Path) -> dict:
         time.sleep(1.0)
         session.control_cmd("snapshot", str(out / f"titles-window-{index}.png"))
     return {"titles": {str(tab): title for tab, title in titles.items()},
-            "page": "Today", "app_name": "Tasks"}
+            "page": today, "app_name": say("apps/tl/tasks", "d-so-tilo-lang-tasks")}
 
 
 def press_in(session: Session, window: dict, name: str) -> None:
@@ -491,15 +585,16 @@ def check_record_open(session: Session, out: Path) -> dict:
         names: list[str] = []
         def shows_task() -> bool:
             names[:] = window_controls(session, window)
-            return "Add date" in names
+            return toolkit_word("tasks", "date-field-add") in names
         try:
             until(f"window {window['tab']} showing the page of {title!r}", shows_task, 30)
         except Failed:
             raise Failed(f"window {window['tab']} named {title!r} shows no task's page: {names}") from None
     before = tasks_windows()
-    if [w.get("title") for w in before] != ["Today"] * len(before):
+    if [w.get("title") for w in before] != [tasks_place("today")] * len(before):
         raise Failed(f"Tasks' windows do not all stand on Today: {before}")
-    made = until("New task", lambda: app_action(session, tasks, "New task", "Document"))
+    new_task = app_word("tasks", "new_task")
+    made = until(new_task, lambda: app_action(session, tasks, new_task, "Document"))
     invoke_found(session, made, {"title": title})
     search_beside(session, title, beside=False)
     shown = until(f"a window of Tasks named {title!r}", lambda: next(
@@ -530,18 +625,19 @@ def check_places(session: Session, out: Path) -> dict:
     though another window goes by that name too — and Inbox chosen there takes that window to the
     Inbox while the other stays where it was."""
     tasks = app_id("tasks")
+    inbox, today = tasks_place("inbox"), tasks_place("today")
     window = next(w for w in session.windows()
-                  if w.get("app_id") == tasks and w.get("title") == "Today")
+                  if w.get("app_id") == tasks and w.get("title") == today)
     def tabs() -> dict[str, str]:
         return {w["tab"]: w.get("title") for w in session.windows() if w.get("app_id") == tasks}
 
     others = {tab: title for tab, title in tabs().items() if tab != window["tab"]}
-    press_in(session, window, "Show sidebar")
+    press_in(session, window, toolkit_word("tasks", "window-toolbar-show-sidebar"))
     time.sleep(1.0)
     session.control_cmd("snapshot", str(out / "places-sidebar.png"))
-    press_in(session, window, "Inbox")
+    press_in(session, window, inbox)
     _ = until(f"window {window['tab']} on the Inbox, the other windows as they were",
-              lambda: (seen := tabs()).get(window["tab"]) == "Inbox"
+              lambda: (seen := tabs()).get(window["tab"]) == inbox
               and all(seen.get(tab) == title for tab, title in others.items()), 30)
     time.sleep(1.0)
     session.control_cmd("snapshot", str(out / "places-inbox.png"))
@@ -556,10 +652,13 @@ def window_controls(session: Session, window: dict) -> list[str]:
         shown.get("tab") == window["tab"] and shown.get("active")
         for shown in session.windows()), 30)
     time.sleep(0.5)
-    rect = next((shown["rect"] for shown in session.windows()
-                 if shown.get("tab") == window["tab"]), None)
+    shown = next((shown for shown in session.windows() if shown.get("tab") == window["tab"]), None)
+    if shown is None:
+        raise Failed(f"window {window['tab']} is not on the desk to be read")
+    rect = shown.get("rect")
     if rect is None:
-        raise Failed(f"window {window['tab']} is not drawn on the desk to be read")
+        # Not drawn yet: it names nothing, and a caller waiting for a name asks again.
+        return []
     x, y, width, height = rect
     return [target["name"] for target in session.targets()
             if x <= target["rect"][0] < x + width and y <= target["rect"][1] < y + height]
@@ -605,30 +704,33 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     focus(session, next(w for w in session.windows() if w.get("app_id") == today))
     until("Tasks' tasks in Today's card", lambda: (lambda shown: shown if all(
         title in shown for title in held) else None)(named(session)), 30)
-    session.wait_target("Morning cleanup")
+    cleanup = app_word("today", "morning_cleanup")
+    session.wait_target(cleanup)
     done = mark_done(session, held[0])
     menu = menu_complete(session, held[1])
-    # The tasks the two checks above finished: what the cleanup counts.
+    # The tasks the two checks above finished: what the cleanup counts, in the words Today files
+    # its note with in the person's language.
     finished = 2
-    note = f"Morning: {finished} done"
+    note = app_word("today", "morning_cleanup", "w-morning-done", n=finished)
+    allow, deny = (say("crates/session/sheets", key) for key in ("portal-allow-once", "portal-deny"))
     named_before = named(session)
     # The cleanup, pressed on Today's window: the app runs it, which either files its note in
     # Notes and clears the tasks done, or asks the person's leave for the two apps it changes.
-    session.click_named("Morning cleanup")
+    session.click_named(cleanup)
 
     def ran():
         shown = named(session)
         if note in shown:
             return "answered"
-        return "consent" if "Allow once" in shown else None
+        return "consent" if allow in shown else None
     how = until("Today's cleanup to run", ran, 30)
     denied = 0
     if how == "consent":
         # Each question the cleanup asks is denied, as a person who gives no leave answers it.
         quiet = time.monotonic() + 3
         while time.monotonic() < quiet:
-            if "Allow once" in named(session):
-                session.click_named("Deny")
+            if allow in named(session):
+                session.click_named(deny)
                 denied += 1
                 quiet = time.monotonic() + 3
             time.sleep(0.3)
@@ -657,7 +759,7 @@ def keep_task(session: Session) -> dict:
     what Tasks' record holds when the session stops."""
     tasks = app_id("tasks")
     window = next(w for w in session.windows()
-                  if w.get("app_id") == tasks and w.get("title") == "Today")
+                  if w.get("app_id") == tasks and w.get("title") == tasks_place("today"))
     focus(session, window)
     time.sleep(0.5)
     session.control({"op": "type", "text": KEPT_TASK})
@@ -684,7 +786,7 @@ def mark_done(session: Session, title: str) -> dict:
     takes the change, so it stands in Tasks' history; a change it refused would leave none."""
     tasks = app_id("tasks")
     focus(session, next(w for w in session.windows() if w.get("app_id") == tasks))
-    box = f"Mark {title} done"
+    box = say("crates/sdk/ui-core", "list-row-check", window_language("tasks"), title=title)
     session.wait_target(box)
     before = history_total(session, "tasks")
     refused = len([line for line in session.log().splitlines()
@@ -707,18 +809,19 @@ def menu_complete(session: Session, title: str) -> dict:
     tasks = app_id("tasks")
     focus(session, next(w for w in session.windows() if w.get("app_id") == tasks))
     session.wait_target(title)
+    complete = app_word("tasks", "check", "w-complete")
     shown = named(session)
-    if "Complete" in shown:
-        raise Failed(f"the window names Complete before {title!r}'s menu opens: {shown}")
+    if complete in shown:
+        raise Failed(f"the window names {complete} before {title!r}'s menu opens: {shown}")
     session.click_named(title, verb="show-context-menu")
-    session.wait_target("Complete")
+    session.wait_target(complete)
     before = history_total(session, "tasks")
-    session.click_named("Complete")
+    session.click_named(complete)
     after = until(f"{title!r} completed from its menu in Tasks' history",
                   lambda: (lambda t: t if t > before else None)(history_total(session, "tasks")), 15)
-    if any(target["name"] == "Complete" for target in session.targets()):
-        raise Failed(f"{title!r}'s menu stood open after Complete")
-    return {"task": title, "command": "Complete", "history": [before, after]}
+    if any(target["name"] == complete for target in session.targets()):
+        raise Failed(f"{title!r}'s menu stood open after {complete}")
+    return {"task": title, "command": complete, "history": [before, after]}
 
 
 def invoke_found(session: Session, found: dict, args: dict | None = None) -> dict:
@@ -728,7 +831,7 @@ def invoke_found(session: Session, found: dict, args: dict | None = None) -> dic
 
 def history_total(session: Session, name: str) -> int:
     history = until(f"{app_id(name)}'s history action",
-                    lambda: app_action(session, app_id(name), "History", "View"))
+                    lambda: app_operation(session, app_id(name), "history"))
     answer = invoke_found(session, history)
     try:
         return answer["receipt"]["update"]["output"]["value"]["total"]
@@ -738,7 +841,8 @@ def history_total(session: Session, name: str) -> int:
 
 def check_actions(session: Session) -> dict:
     out = {}
-    news = {"notes": "New note", "chat": "New channel", "tasks": "New task"}
+    news = {name: app_word(name, action) for name, action in
+            [("notes", "new_note"), ("chat", "new_channel"), ("tasks", "new_task")]}
     for name in APPS:
         published = until(
             f"{app_id(name)}'s actions",
@@ -761,6 +865,16 @@ def value_of(answer: dict):
         return answer["receipt"]["update"]["output"]["value"]
     except (KeyError, TypeError):
         raise Failed(f"an answer without a value: {json.dumps(answer)[:2000]}") from None
+
+
+def app_operation(session: Session, app: str, operation: str):
+    """The action `operation` (`history`, `read`, `activate-window`) the window of `app`
+    publishes, by the operation it names whatever language its title reads in. Its application is
+    `app` exactly."""
+    for action in session.actions(""):
+        if action.get("application") == app and action.get("operation") == operation:
+            return action
+    return None
 
 
 def app_action(session: Session, app: str, title: str, kind: str | None = None):
@@ -786,7 +900,7 @@ def check_native(session: Session, out: Path) -> dict:
                     lambda: {w.get("app_id"): w for w in session.windows() if w.get("app_id") == NATIVE})
     session.answering(NATIVE, 30)
     # Connected: its window publishes its actions.
-    until(f"{NATIVE}'s actions", lambda: app_action(session, NATIVE, "Show this window"), 60)
+    until(f"{NATIVE}'s actions", lambda: app_operation(session, NATIVE, "activate-window"), 60)
     w = windows[NATIVE]
     focus(session, w)
     time.sleep(0.5)
@@ -799,7 +913,7 @@ def check_activation(session: Session) -> dict:
     """"Show this window" answers for a tilolang app as it does for the native app."""
     out = {}
     for app in (NATIVE, app_id("notes")):
-        action = until(f"{app}'s 'Show this window'", lambda: app_action(session, app, "Show this window"))
+        action = until(f"{app}'s 'Show this window'", lambda: app_operation(session, app, "activate-window"))
         out[app] = value_of(invoke_found(session, action))
     if out[app_id("notes")] != out[NATIVE]:
         raise Failed(f"'Show this window' answers differently from native Notes: {out}")
@@ -810,7 +924,7 @@ def check_read(session: Session) -> dict:
     """An agent or a script reads what a tilolang app holds through the door's `read`, as it
     reads a native app's content: the workspace's records, then one of them by its id."""
     action = until("tilolang Notes' 'Read the content'",
-                   lambda: app_action(session, app_id("notes"), "Read the content"))
+                   lambda: app_operation(session, app_id("notes"), "read"))
     answer = value_of(invoke_found(session, action))
     # Notes' root record, whatever its type is called: the one record of the app's own kinds.
     prefix = f"tl.{app_id('notes')}."
@@ -824,7 +938,7 @@ def check_read(session: Session) -> dict:
                   and any(i.get("type") == "Note" for i in f.get("items", []))), {})
     if read.get("kind") != kind or not notes.get("items"):
         raise Failed(f"Notes' root record's read holds no notes: {json.dumps(read)[:2000]}")
-    native = until("native Notes' 'Read the content'", lambda: app_action(session, NATIVE, "Read the content"))
+    native = until("native Notes' 'Read the content'", lambda: app_operation(session, NATIVE, "read"))
     return {
         "records": len(answer["records"]),
         "notebook": {"label": read.get("label"), "notes": notes.get("count")},

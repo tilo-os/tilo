@@ -4844,7 +4844,7 @@ requires = ["arch=x86_64"]
 isolation = "nested"
 # What it found, not what it ran: each flow's pages, reports and consoles, and each of the stack's
 # own logs; the site it served is the web entry's laid-out context again.
-outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/people-call/**", "/target/e2e/people-desk/**", "/target/e2e/people-menus/**", "/target/e2e/people-invite/**", "/target/e2e/share-link/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/passkey/**", "/target/e2e/wait-list/**", "/target/e2e/restart/**"]
+outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/people-call/**", "/target/e2e/people-desk/**", "/target/e2e/people-menus/**", "/target/e2e/people-invite/**", "/target/e2e/share-link/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/passkey/**", "/target/e2e/wait-list/**", "/target/e2e/onboarding/**", "/target/e2e/restart/**"]
 # What a failure keeps of why: every service's log, which says which of them did not answer.
 evidence = ["/target/e2e/state/logs/**"]
 timeout_secs = 1200

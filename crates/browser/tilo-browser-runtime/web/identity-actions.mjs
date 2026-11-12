@@ -68,6 +68,12 @@ export const PAIR = Object.freeze({id: 'pair-device', title: 'Pair a new device'
   subtitle: 'A code or link that opens this workspace there as you', source: 'devices'});
 /** Opening the agent setup again, in the person's card: the first screen's
  * own flow, with a fresh code (`showAgentSetup`). */
+/** The host an agent's setup code comes from: the workspace in front, else
+ * the person's home host (their own desktop has no workspace peer). */
+export function setupOrigin({peer, home}) {
+  return peer?.origin ?? home?.host?.origin ?? null;
+}
+
 export const CONNECT_AGENT = Object.freeze({id: 'connect-agent', title: 'Connect an agent or computer',
   subtitle: 'A prompt it runs, or Tilo’s MCP address for an MCP client', source: 'devices'});
 /**

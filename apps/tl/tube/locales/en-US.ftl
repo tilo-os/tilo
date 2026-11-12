@@ -181,12 +181,18 @@ d-tmam46un = Subscribe
 
 d-hcgvcroq = Subscribe
     .doc = Subscribes to the channel, or takes the subscription back.
+    .w-unsubscribe = Unsubscribe
+    .w-subscribe = Subscribe
 
 d-weyz2uyl = Like
     .doc = Likes the video, or takes the like back.
+    .w-unlike = Unlike
+    .w-like = Like
 
 d-yw4tuoq4 = Watch later
     .doc = Keeps the video to watch later, or takes it off the list.
+    .w-remove-from-watch-later = Remove from Watch later
+    .w-watch-later = Watch later
 
 d-6ux63onw = Play
     .doc = Plays the video, whether or not it was played before.
@@ -205,9 +211,11 @@ d-wzt3qvyb = Delete history
 
 d-6lgqby4s = Search
     .doc = Searches YouTube: the service answers with channels, playlists and videos, written where the search view lists them.
+    .w-type-something-to-search-for = Type something to search for
 
 d-vhf33pa7 = Leave search
     .doc = Leaves the search the feed is showing for the place the person chose: the results stay where the service wrote them (found again by the query that found them), and the client shows the place chosen.
+    .w-no-search-is-showing = No search is showing
 
 d-hpjdxg6k = Refresh
     .doc = Asks the service for the newest videos of each subscribed channel: what the subscriptions feed shows.
@@ -220,6 +228,9 @@ d-khblapap = Trending
 
 d-yc4rjoeg = Play again
     .doc = Plays the video a history entry names, from where the person left off.
+
+d-qgtk64v3 = Item clock
+    .w-live = Live
 
 d-5ozzrcey = Toggle subscription~present
 

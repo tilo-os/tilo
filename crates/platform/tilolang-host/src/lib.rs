@@ -37,6 +37,9 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use collaboration::CommittedDocument;
 use collaboration::native_initial::PrimaryRead;
+/// The person's formats and language, as the session says them on the door
+/// ([`TilolangHost::set_locale`]).
+pub use runtime_portal::tilolang_host::Locale;
 use runtime_portal::tilolang_host::{InstanceFds, InstanceRequest, Module};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
@@ -144,6 +147,9 @@ struct Opening {
     reached: Vec<(&'static str, std::time::Duration)>,
     /// The person's formats changed while it opened: its first frame writes its times again.
     formats_changed: bool,
+    /// The language the person chose while it opened: its window reads in it from its first
+    /// frame.
+    language: Option<String>,
     /// The item its window was asked to open on ([`InstanceRequest::reveal`]).
     reveal: Option<String>,
 }
@@ -318,6 +324,25 @@ impl TilolangHost {
         true
     }
 
+    /// The person's formats or language changed in Settings ([`Locale`]): the instances write
+    /// their times again in the formats, and their windows read their words in the language,
+    /// where they stand. Whether anything changed.
+    pub fn set_locale(&mut self, locale: &Locale) -> bool {
+        let mut changed = self.set_formats(locale.formats);
+        if locale.language.is_empty() {
+            return changed;
+        }
+        self.phrases.speak(&locale.language);
+        for running in &mut self.running {
+            changed |= running.hosted.speak(&locale.language);
+        }
+        for opening in &mut self.opening {
+            // An instance still opening speaks it on its first frame.
+            opening.language = Some(locale.language.clone());
+        }
+        changed
+    }
+
     /// The instances running.
     pub fn instances(&self) -> impl Iterator<Item = &Hosted> {
         self.running.iter().map(|running| &running.hosted)
@@ -387,6 +412,7 @@ impl TilolangHost {
             received: std::time::Instant::now(),
             reached: Vec::new(),
             formats_changed: false,
+            language: None,
             reveal,
         });
         Ok(())
@@ -417,6 +443,7 @@ impl TilolangHost {
             received: std::time::Instant::now(),
             reached: Vec::new(),
             formats_changed: false,
+            language: None,
             reveal: None,
         });
     }
@@ -658,6 +685,9 @@ impl TilolangHost {
         if opening.formats_changed {
             hosted.formats_changed();
             opening.formats_changed = false;
+        }
+        if let Some(language) = opening.language.take() {
+            hosted.speak(&language);
         }
         let mut hosted = match opening.identity.take() {
             Some(identity) => hosted.holding_identity(identity),

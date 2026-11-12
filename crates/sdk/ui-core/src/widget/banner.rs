@@ -1089,7 +1089,7 @@ impl Banner {
         }
     }
 
-    /// The body and the buttons, where they were laid out.
+    /// The body and the buttons, where the layout placed them.
     fn draw_contents(
         &mut self,
         scene: &mut Scene,
@@ -1098,13 +1098,48 @@ impl Banner {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.place_buttons(text, theme);
         self.body
             .draw_child(scene, transform, text, theme, presence);
         let on_well = theme.on_ground(well(theme));
         for button in self.buttons_mut() {
             button.draw_child(scene, transform, text, &on_well, presence);
         }
+    }
+
+    /// Where a control stands is the layout's, never a paint's: a frame that is
+    /// read before it is drawn — a test, assistive technology, a press on a
+    /// window that has laid out and not yet painted — finds the banner's
+    /// controls inside it rather than at the window's origin, where a control
+    /// nothing placed stands.
+    fn place_contents(&mut self) {
+        if !self.visible() || self.body.rect.width() <= 0.0 {
+            return;
+        }
+        let theme = self.body.theme.clone();
+        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            self.place_buttons(text, &theme);
+        });
+    }
+
+    /// Its contents in the slot it stands in while it moves, at the height its
+    /// text takes there: what its container places when it puts the banner
+    /// where it stood.
+    fn place_in_slot(&mut self) {
+        let slot = self.band.laid_rect;
+        if slot.width() <= 0.0 {
+            return;
+        }
+        let theme = self.body.theme.clone();
+        let height = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            self.body.geometry(text, &theme, slot.width()).height.ceil()
+        });
+        let box_ = Rect::new(slot.x0, slot.y0, slot.x1, slot.y0 + height);
+        self.band.laid_rect = box_;
+        if self.body.rect != box_ {
+            self.body.rect = box_;
+            self.body.dirty = true;
+        }
+        self.place_contents();
     }
 }
 
@@ -1242,8 +1277,8 @@ impl Widget for Banner {
         self.band
             .place_first(self.rect, visible, self.arrives_in_place);
         if !self.band.laid_in_flow {
-            // On its way: its container puts it in its slot, and its
-            // contents are placed there when it is drawn.
+            // On its way: its container puts it in its slot and its contents
+            // there ([`Self::place_in_slot`]), the frame before it is drawn.
             self.band.unplaced = true;
             return;
         }
@@ -1252,6 +1287,7 @@ impl Widget for Banner {
         if let Some(&body) = self.nodes.first() {
             self.body.apply_layout(taffy, body, origin);
         }
+        self.place_contents();
     }
 
     fn draw(
@@ -1280,12 +1316,11 @@ impl Widget for Banner {
             self.layout_dirty = true;
             return;
         }
-        // On its way, out of the layout: in its slot at its full height.
-        if !self.band.laid_in_flow && self.band.laid_rect.width() > 0.0 {
-            let slot = self.band.laid_rect;
-            let height = self.body.geometry(text, theme, slot.width()).height.ceil();
-            self.band.laid_rect = Rect::new(slot.x0, slot.y0, slot.x1, slot.y0 + height);
-            self.body.rect = self.band.laid_rect;
+        // On its way, out of the layout: in its slot at its full height, and
+        // its contents there. A container that placed it this frame already
+        // put them there; one that never did leaves nothing outside the box.
+        if !self.band.laid_in_flow {
+            self.place_in_slot();
         }
         if self.band.laid_rect.width() <= 0.0 {
             return;
@@ -1320,6 +1355,7 @@ impl Widget for Banner {
 
     fn place_disclosing(&mut self, slot: Rect) {
         self.band.place(slot);
+        self.place_in_slot();
     }
 
     fn paint_bounds(&self) -> Rect {

@@ -50,7 +50,7 @@
 "crates/collab/collaboration/src/broker_tests.rs" = 6000
 "crates/collab/tilo-action-broker/src/collab_app_broker.rs" = 15500
 "crates/collab/tilo-action-broker/src/collab_app_broker/action_host.rs" = 4000
-"crates/dev/tilo-app-cli/src/lib.rs" = 10500
+"crates/dev/tilo-app-cli/src/lib.rs" = 10000
 "crates/dev/tilo-app-cli/src/main.rs" = 4500
 "crates/dev/tilo-app-cli/src/tests.rs" = 6500
 "crates/dev/tilo-vm/src/app.rs" = 9500

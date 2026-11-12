@@ -677,6 +677,9 @@ pub struct Hosted {
     /// The app's resource, by its id and kind: where its history verbs are published.
     resource: (String, String),
     instance: Instance,
+    /// The words of the window, which the instance's platform reads: the person's language
+    /// chosen again ([`Self::speak`]) relabels the window where it stands.
+    phrases: Rc<Phrases>,
     record: InstanceRecord,
     surface: SurfaceSlot,
     /// What the broker holds of the instance's surface, and the descriptors it was built from.
@@ -781,13 +784,13 @@ impl Hosted {
         let phrases = Rc::new(window_phrases(phrases, &spec, &bundle));
         // The names the session sends for the apps installed here read in the language this
         // window speaks, whatever language the workspace's people are named in.
-        collaboration::history_source::authors::set_names_language(phrases.locale());
+        collaboration::history_source::authors::set_names_language(&phrases.locale());
         let mut record = record.speaking(phrases.locale());
         let used = used_apps(&spec, &bundle, &mut record);
         let platform = HostPlatform {
             bundle: Arc::clone(&bundle),
             installed: spec.installed.clone(),
-            phrases,
+            phrases: Rc::clone(&phrases),
             formats: Rc::clone(formats),
             wake: Arc::clone(&wake),
             surface: Rc::clone(&surface),
@@ -819,6 +822,7 @@ impl Hosted {
             bundle,
             resource,
             instance,
+            phrases,
             record,
             surface,
             published: None,
@@ -914,6 +918,24 @@ impl Hosted {
     /// in the new style, and its window shows it.
     pub fn formats_changed(&mut self) {
         self.instance.formats_changed();
+    }
+
+    /// The person chose `language` (`de-DE`) in Settings: the window reads its words in it where
+    /// its package ships it, at once and where it stands — its views, the labels it publishes and
+    /// its history's sentences. Whether its words read in another language now.
+    pub fn speak(&mut self, language: &str) -> bool {
+        if !self.phrases.speak(language) {
+            return false;
+        }
+        let locale = self.phrases.locale();
+        collaboration::history_source::authors::set_names_language(&locale);
+        self.record.speak(locale.clone());
+        // Every word is read again: the views drawn, the window's own chrome and the surface
+        // published.
+        self.instance.speak(locale);
+        self.published_from = None;
+        self.answers = Answers::default();
+        true
     }
 
     /// Run the package's scenario `scenario` in the instance on its next frame, as a capture

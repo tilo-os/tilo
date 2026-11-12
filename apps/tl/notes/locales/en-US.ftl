@@ -52,18 +52,23 @@ d-37dxigeq = New sub-note
 
 d-qhmjwgei = Pin
     .doc = Pins or unpins a note.
+    .w-pin = Pin
+    .w-unpin = Unpin
 
 d-7jhaq3a5 = Move to
     .doc = Moves a note to a place in the tree: at the end of `parent`'s own, or where `before` stands.
+    .w-a-note-cannot-go-inside-itself = A note cannot go inside itself
 
 d-ai4sxgvt = Move to
     .doc = Moves a note to just after `n` and every note under it: the place a drop after a row asks for, which names the row it lands after rather than the row after that one.
+    .w-a-note-cannot-go-inside-itself = A note cannot go inside itself
 
 d-c34rzynx = Duplicate
     .doc = Copies a note, with every note under it, just after the one it copies.
 
 d-jo2tztsx = Sort by title
     .doc = Puts a note's own in the order of their titles, once, for a branch that grew out of order.
+    .w-it-holds-no-notes = It holds no notes
 
 d-nydyehwn = Delete
     .doc = Deletes a note and every note under it, as one change a person takes back at once.
@@ -100,6 +105,9 @@ d-t4nxxtng = Import markdown
 d-h3zczsen = Import archive
     .doc = Imports a zip of Markdown (a notebook this app exported, or a Notion export) as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back.
     .did = imported a notebook
+
+d-ttq2d5ah = File name
+    .w-note = Note
 
 d-m6rqg3kf = Pin~present
 

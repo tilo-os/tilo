@@ -2539,17 +2539,20 @@ fn a_week_start_the_person_changes_is_written_again_in_the_window() {
     // Sunday in Settings, said on the host's door as the session says it: the same day stands in
     // the week that began the Sunday before it, and the window shows that week.
     let (session, door) = runtime_portal::tilolang_host::pair().expect("a door");
-    runtime_portal::tilolang_host::send_formats(
+    runtime_portal::tilolang_host::send_locale(
         &session,
-        &with_first_day(tilo_formats::FirstDayOfWeek::Sunday),
+        &runtime_portal::tilolang_host::Locale {
+            formats: with_first_day(tilo_formats::FirstDayOfWeek::Sunday),
+            language: String::new(),
+        },
     )
     .expect("the formats cross the door");
-    let Some(runtime_portal::tilolang_host::Handed::Formats(formats)) =
+    let Some(runtime_portal::tilolang_host::Handed::Locale(locale)) =
         runtime_portal::tilolang_host::receive(&door).expect("the door carries them")
     else {
         panic!("the door carries the person's formats as formats");
     };
-    assert!(host.set_formats(formats), "another first day is a change");
+    assert!(host.set_locale(&locale), "another first day is a change");
     settle(&mut host, &mut window);
     let sunday = shown(&window);
     assert!(

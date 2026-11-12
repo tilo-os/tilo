@@ -1360,6 +1360,49 @@ async fn gated_host() -> (
     (host, workspaces, lounge, stranger, dir)
 }
 
+/// The owner of a workspace whose door takes people by invitation is let in
+/// through that door: nobody here may invite them, so a door that turned its
+/// own owner away would leave the workspace with nobody in it to invite
+/// anyone.
+#[tokio::test]
+async fn the_owners_own_device_is_let_in_past_an_invitation_only_door() {
+    use tilo_relay_protocol::directory::DoorJoin;
+
+    let (key, owner) = governor();
+    let dir = tempfile::tempdir().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces().clone();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let lounge = home_of(&workspaces).await;
+    workspaces
+        .publish(
+            &lounge,
+            &owner,
+            tilo_relay_protocol::directory::Listing {
+                description: "Coffee and tea".into(),
+                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    workspaces
+        .list_invitation_only(&lounge, &owner, true)
+        .await
+        .unwrap();
+    workspaces
+        .admit_listed(
+            &lounge,
+            &DoorJoin {
+                user_public_key: hex::encode(owner.user_public_key),
+                display_name: "The operator".into(),
+            },
+        )
+        .await
+        .expect("the owner is let in through their own workspace's closed door");
+}
+
 /// The wait list gates the door: the invitation-only door lets nobody in on
 /// the strength of an address, and says it keeps one.
 #[tokio::test]

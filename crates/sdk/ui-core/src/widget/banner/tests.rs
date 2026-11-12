@@ -796,3 +796,88 @@ fn a_narrow_banner_puts_its_action_under_its_text_in_the_text_column() {
         "a wide banner keeps its action at the trailing edge: {retry:?} in {box_:?}"
     );
 }
+
+/// A control's place is the layout's: a window that has laid out and not yet
+/// painted still finds the banner's action inside the banner, never at the
+/// window's origin, where a box nothing placed stands.
+#[test]
+fn the_layout_places_the_controls_without_a_paint() {
+    use crate::bound_dispatch::BoundNodeMap;
+    use crate::widget::layout::compute_widget_layout;
+    use taffy::{AvailableSpace, TaffyTree};
+
+    let banner = || {
+        Box::new(
+            Banner::warning("You're offline")
+                .with_message("Changes will sync when you reconnect.")
+                .with_id("offline")
+                .with_action(Button::new("offline.retry", "Try again")),
+        ) as Box<dyn Widget>
+    };
+    let retry = |root: &mut dyn Widget| {
+        let mut pending: Vec<&mut dyn Widget> = vec![root];
+        while let Some(widget) = pending.pop() {
+            if widget.test_id() == Some("offline.retry") {
+                return widget.get_rect();
+            }
+            pending.extend(widget.children_mut());
+        }
+        panic!("the action is in the tree");
+    };
+
+    // In the layout: the column solves and places it, and nothing draws.
+    let mut column = Column::new().push(banner());
+    let mut tree = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let mut bindings = BoundNodeMap::new();
+    let root = column.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+    // SAFETY: the tree, its widgets and both maps live to the end of the
+    // test, and nothing else lays them out beside it.
+    unsafe {
+        bindings.rebuild(&column, &tree, root, &nodes);
+        let mut text = crate::font_catalog::fixture_renderer();
+        compute_widget_layout(
+            &mut tree,
+            root,
+            taffy::Size {
+                width: AvailableSpace::Definite(600.0),
+                height: AvailableSpace::Definite(400.0),
+            },
+            &nodes,
+            &bindings,
+            &mut text,
+        )
+        .expect("solves");
+    }
+    column.apply_layout(&tree, root, Point::ZERO);
+    let box_ = column.children()[0].get_rect();
+    let placed = retry(&mut column);
+    assert!(
+        !placed.is_zero_area(),
+        "the action stands where the layout put it: {placed:?}"
+    );
+    assert!(
+        box_.contains(placed.center()),
+        "inside the banner that holds it: {placed:?} in {box_:?}"
+    );
+
+    // Out of the layout on its way: the container that puts the banner in its
+    // slot puts its contents there too, and nothing draws.
+    let mut banner = banner();
+    let mut tree = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let node = banner.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+    let mut text = crate::font_catalog::fixture_renderer();
+    Widget::adjust_layout_style(banner.as_mut(), &mut tree, node, &mut text);
+    let slot = Rect::new(24.0, 80.0, 464.0, 80.0);
+    banner.place_disclosing(slot);
+    let placed = retry(banner.as_mut());
+    assert!(
+        !placed.is_zero_area(),
+        "the action stands in the slot the banner is drawn in: {placed:?}"
+    );
+    assert!(
+        Rect::new(slot.x0, slot.y0, slot.x1, slot.y0 + 400.0).contains(placed.center()),
+        "inside the banner's slot: {placed:?} in {slot:?}"
+    );
+}

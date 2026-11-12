@@ -11,6 +11,7 @@ d-2lehvjd6 = Heute
 
 d-4z4vz2pv = Morgenroutine
     .doc = Räumt die erledigten Aufgaben weg, wenn es welche gibt, und legt eine Notiz ab, die sagt, wie viele es waren.
+    .w-morning-done = Morgens: { $n } erledigt
 
 d-a5wukhyd = Heute
     .w-show-all = Alle { $n } zeigen

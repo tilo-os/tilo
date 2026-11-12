@@ -107,10 +107,14 @@ impl Language {
 impl crate::Session {
     /// Speak the person's language in the session's own surfaces: the manager's selection follows
     /// their settings (see [`Language`]), and what the chrome keeps between frames is laid out
-    /// again, so its words are resolved in the language now selected.
+    /// again, so its words are resolved in the language now selected. Every tilolang host running
+    /// the person's apps is told too, so the windows it draws relabel where they stand.
     pub(crate) fn follow_language(&self) {
         if self.language.follow() {
             self.shared.chrome.borrow_mut().relayout();
+            if let Some(apps) = self.shared.launch.clone() {
+                apps.locale_changed();
+            }
         }
     }
 }

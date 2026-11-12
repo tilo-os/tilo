@@ -26,7 +26,7 @@ import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetc
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
-import {createIdentityActions, SIGN_IN, syncProfile} from './identity-actions.mjs';
+import {createIdentityActions, SIGN_IN, setupOrigin, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, openFirstRun, setupDone} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
@@ -517,8 +517,10 @@ function askLine({label: text, action, save}) {
 }
 
 /** A link to hand on: shown to select, with a button that copies it
- * (inside the person's click, which a browser's clipboard asks for). */
-function shareCard({title, body, link}) {
+ * (inside the person's click, which a browser's clipboard asks for).
+ * `copied`: the link was just written from the press that opened this, so
+ * the button says so and the press is the only one a person makes. */
+function shareCard({title, body, link, copied = false}) {
   return new Promise(resolve => {
     const form = document.createElement('form');
     form.className = 'tilo-entry-card';
@@ -529,15 +531,19 @@ function shareCard({title, body, link}) {
     field.setAttribute('aria-label', 'Link');
     field.addEventListener('focus', () => field.select());
     const copy = Object.assign(document.createElement('button'), {type: 'button', textContent: 'Copy link'});
-    copy.addEventListener('click', async () => {
+    const took = async () => {
       try {
         await navigator.clipboard.writeText(link);
         copy.textContent = 'Copied';
+        return true;
       } catch {
         field.focus();
         copy.textContent = 'Select the link and copy it';
+        return false;
       }
-    });
+    };
+    copy.addEventListener('click', took);
+    if (copied) void took();
     const done = Object.assign(document.createElement('button'), {type: 'submit', textContent: 'Done'});
     form.addEventListener('submit', event => { event.preventDefault(); form.remove(); resolve(); });
     form.append(heading, about, field, copy, done);
@@ -1345,6 +1351,12 @@ export async function startEntryPage({mode}) {
         askWorkspaceName: save => askLine({label: 'Name of the new workspace', action: 'Create', save}),
         chooseMachine: origins => card('Create the workspace on', [...origins.map(origin => [new URL(origin).host, origin]), ['Cancel', null]]),
         share: shareCard,
+        copy: text => navigator.clipboard.writeText(text).then(() => true, () => false),
+        // What the page says of the invitation it keeps ready for one press
+        // (`data-invite-link`): making it, ready to hand over, or failed.
+        said: (what, state) => {
+          if (what === 'invite-link') document.documentElement.dataset.inviteLink = state;
+        },
         waitingList: waitingCard,
         fail: text => card(text, [['Close', null]]),
       },
@@ -1719,8 +1731,9 @@ function offerWaitList({workspace, contact, mail, messages}) {
 /**
  * Signing in at the door with an identity the person already has: their
  * passkey opens it (its envelope from the hosts that keep it), and the page
- * loads again to join as them. A member gets in; anyone else is told this
- * identity is not in `named` yet, with the wait list still there.
+ * loads again to join as them, opening a workspace of their own rather than
+ * the home workspace's shared desktop. A member gets in; anyone else is told
+ * this identity is not in `named` yet, with the wait list still there.
  */
 function offerSignIn({workspace, named, messages}) {
   const say = (key, english, args) => localized(messages, key, english, args);
@@ -1754,6 +1767,11 @@ function offerSignIn({workspace, named, messages}) {
         ...listedWorkspaces({home: workspace}).map(listed => listed.host.origin)].filter(Boolean))];
       const identity = await signInWithPasskey({fetchEnvelope: root => fetchEnvelope(root, origins)});
       try { sessionStorage.setItem(DOOR_SIGNED_IN, identity.userPublicKey); } catch { /* Said less, nothing lost. */ }
+      // Signed in at the door of the site's own workspace, the person comes
+      // back to a workspace of their own, as a tab their agent signed in
+      // does: the home workspace's shared desktop is where people meet, not
+      // where someone starts.
+      try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
       location.reload();
     } catch (error) {
       console.warn('signing in at the door:', error);
@@ -1889,9 +1907,11 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
     profiled: at => peer?.setProfileChanged?.(at),
     // The card's "Connect an agent" is the first screen's own setup, shown
     // again with a fresh code: the same prompt and the same MCP address the
-    // person saw when they arrived.
-    showAgentSetup: peer?.origin
-      ? () => { connectAnAgent({origin: peer.origin, identity, runtime, link}); }
+    // person saw when they arrived. On the person's own desktop no workspace
+    // peer is in front, so the code comes from their home host, as the first
+    // screen's did.
+    showAgentSetup: setupOrigin({peer, home})
+      ? () => { connectAnAgent({origin: setupOrigin({peer, home}), identity, runtime, link}); }
       : null,
   });
   void actions.attach(mount);

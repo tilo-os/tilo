@@ -596,6 +596,9 @@ pub enum ToUi {
     /// The actions the app offers the person at this window, as their command palette lists
     /// them: the app's published actions, with the keys, icons and labels it gives them.
     Actions(ActionCatalogue),
+    /// The language the window reads in now (`de-DE`): the person chose another in Settings while
+    /// it is open. Its own chrome relabels in it, as the app's words the app sends do.
+    Speak(String),
 }
 
 /// What the person did, as the window tells its app.

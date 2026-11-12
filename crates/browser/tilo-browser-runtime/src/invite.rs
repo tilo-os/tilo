@@ -334,9 +334,13 @@ impl Workspace for PageWorkspace {
     }
 
     fn pending(&self) -> Vec<sheet::Pending> {
+        // An invitation for the person themselves is no link they handed
+        // out: it brings one of their own devices in (the agent their first
+        // screen sets up), and the sheet lists only what they gave others.
         self.pending
             .borrow()
             .iter()
+            .filter(|invite| self.person.is_none() || invite.recipient != self.person)
             .map(|invite| {
                 sheet::pending(
                     &hex::encode(invite.invite_id),

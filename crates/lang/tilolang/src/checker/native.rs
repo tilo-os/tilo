@@ -1067,7 +1067,11 @@ impl Checker<'_> {
             |e: &Option<ast::Expr>| e.clone().filter(|e| mentions(e, &unbound).is_none());
         let (label, icon, on) = (readable(&label), readable(&icon), readable(&on));
         if let Some(text) = &label {
+            // The label's words are the action's messages, read in the window's language.
+            self.mark_shown(text);
+            let words_of = self.st.words_of.replace(callee.id.clone());
             let v = self.expr_as(text, &Ty::Text);
+            self.st.words_of = words_of;
             self.prop(node.clone(), "label", v, text.span);
         }
         if let Some(when) = &icon {
@@ -1164,9 +1168,12 @@ impl Checker<'_> {
         &mut self,
         view: &Callable,
         opts: &[ast::ActionOpt],
-        params: &[crate::resolve::ParamInfo],
+        action: &Callable,
     ) -> crate::ir::Func {
+        let params = action.params.as_slice();
         self.begin(super::Ctx::View, &view.params, Ty::View, &view.id);
+        // The label's words are the action's own messages, as where a view applies it.
+        self.st.words_of = Some(action.id.clone());
         // The parameters whose defaults follow from the subject are what an invocation from
         // here would pass: `done` with `done: Bool = not item.done`. The options read them.
         let mut given: Vec<Ex> = view
@@ -1213,6 +1220,7 @@ impl Checker<'_> {
             }
             match name {
                 "label" => {
+                    self.mark_shown(&opt.value);
                     let v = self.expr_as(&opt.value, &Ty::Text);
                     self.prop(node.clone(), "label", v, opt.value.span);
                 }
@@ -1257,6 +1265,7 @@ impl Checker<'_> {
             // A requirement may read `invoker`: here, the person looking, who would run it.
             self.st.invoker = super::Invoker::Viewer;
             let cond = self.expr_as(&r.cond, &Ty::Bool);
+            self.mark_shown(&r.reason);
             let reason = self.expr_as(&r.reason, &Ty::Text);
             self.st.invoker = super::Invoker::None;
             self.emit(Stmt::If(cond, Vec::new(), vec![Stmt::Return(Some(reason))]));

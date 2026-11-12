@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
+import {setupOrigin,
   ACTION_GAP_MS, ASK_AFTER_ACTIONS, CONNECT_AGENT, createIdentityActions, KEEP, LINKED_ID, NAME, PAIR, passkeysUsable, PHOTO,
   RECOVERY, RESET_PHOTO, REVOKE_DEVICE, SIGN_IN, syncProfile,
 } from './identity-actions.mjs';
@@ -684,4 +684,13 @@ test('no stand-in where the person never had one, or there is no host to keep on
   await actions.perform(KEEP.id);
   assert.deepEqual(fake.asked, [], 'nothing to retire');
   assert.equal(await createIdentityActions({identity: fakeIdentity(), passkeys: withPasskeys}).keepStandIn(), null);
+});
+
+test('an agent setup code comes from the workspace in front, else the home host', () => {
+  const home = {host: {origin: 'https://eu1.tilo.sh'}};
+  assert.equal(setupOrigin({peer: {origin: 'https://other.example'}, home}), 'https://other.example');
+  // The person's own desktop has no workspace peer: the card still offers
+  // the setup, from the home host.
+  assert.equal(setupOrigin({peer: null, home}), 'https://eu1.tilo.sh');
+  assert.equal(setupOrigin({peer: null, home: null}), null);
 });

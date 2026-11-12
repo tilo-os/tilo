@@ -138,10 +138,15 @@ impl Workspace for DeskWorkspace {
         let (Some(engine), Some(workspace)) = (self.engine.as_deref(), self.in_front()) else {
             return Vec::new();
         };
+        // An invitation for the person themselves is no link they handed
+        // out: it brings one of their own devices in, and the sheet lists
+        // only what they gave others.
+        let own = engine.identity().device_cert.user_public_key;
         engine
             .invitations(&workspace, SystemTime::now())
             .unwrap_or_default()
             .into_iter()
+            .filter(|invite| invite.recipient_user_public_key != Some(own))
             .map(|invite| {
                 sheet::pending(
                     &hex::encode(invite.invite_id),
