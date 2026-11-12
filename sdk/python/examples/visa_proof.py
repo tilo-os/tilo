@@ -1,7 +1,7 @@
 """A visa startup's backend, one agent per applicant, end to end.
 
 The backend holds one server key (`TILO_API_KEY`, all workspaces, no
-expiry) at a front door (`TILO_DOOR`). It makes a workspace per applicant,
+expiry) at an API server (`TILO_API_URL`). It makes a workspace per applicant,
 puts an applicant's passport and application form into theirs and mints a
 key that reaches that workspace alone. The applicant's agent, with only that
 key, fills the form in PDF Viewer and writes a cover letter in Writer. The
@@ -9,12 +9,12 @@ backend then invites the startup's ops person, another person, as a
 reviewer of Jane's workspace: they follow the link, sign in, and with a key
 of their own read what the agent did, who did it, and take it back.
 
-    TILO_DOOR=https://mcp.tilo.sh TILO_API_KEY=tilo_sk_… python3 visa_proof.py
+    TILO_API_URL=https://mcp.tilo.sh TILO_API_KEY=tilo_sk_… python3 visa_proof.py
 
 The run prints the reviewer's invitation, then the links to the form and the
 letter the agent changed, which open them in their apps for the reviewer, and
 asks for the key the reviewer made after following the invitation; `TILO_INVITEE` instead names an endpoint that plays the
-reviewer (the `door-on-relay` harness): it is posted the link and answers
+reviewer (the `api-on-relay` harness): it is posted the link and answers
 the reviewer's key.
 
 `VISA_APPLICANTS` sets how many workspaces it makes (200). With
@@ -225,7 +225,7 @@ async def make_workspaces(backend: AsyncTilo) -> list[Any]:
 
 
 async def main() -> int:
-    door = os.environ.get("TILO_DOOR", "https://mcp.tilo.sh")
+    door = os.environ.get("TILO_API_URL", "https://mcp.tilo.sh")
     say("Door", door)
     backend = AsyncTilo()
 

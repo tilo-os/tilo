@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The web page and the tilo.sh stack end to end, on one stack: the Lounge's
-# relay, the front door, the web entry and the programs this checkout built,
+# relay, the API server, the web entry and the programs this checkout built,
 # brought up once by tilo-sh/stack.sh as production's manifests bring them up
 # (their images' entrypoints, their environment, production's Caddy in front).
 # The site every flow meets is the web entry image's, not a server beside it,
-# and the door is the front door. They start once; then every flow runs at the
+# and the API is the API server. They start once; then every flow runs at the
 # same time against them, each as people of its own (a fresh browser profile
 # per person, so a fresh root, device and membership), never a stack of its
 # own. A flow that hangs is stopped at its own limit and named.
@@ -42,7 +42,7 @@
 #   setup-resume   a setup lands where it was through reloads, closed tabs,
 #                  history, a second tab, a code running out and the network
 #                  dropping
-#   visa           the visa run against the front door (check.sh's steps 2-6):
+#   visa           the visa run against the API server (check.sh's steps 2-6):
 #                  applicant workspaces, a one-workspace key and MCP, the agent
 #                  fills the form, a reviewer joins by invitation and takes the
 #                  run back, and the revoked keys are refused
@@ -226,7 +226,7 @@ bash "$tilo_sh/stack.sh" status || true
 timing 'phase=the stack up'
 
 export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_origin E2E_ROOM=$room \
-  E2E_ROLES=$roles E2E_SITE_CA=$state/local-ca.pem E2E_DOOR=$door_origin TILO_CLI_BIN=$tilo_bin
+  E2E_ROLES=$roles E2E_SITE_CA=$state/local-ca.pem E2E_API_URL=$door_origin TILO_CLI_BIN=$tilo_bin
 
 # What each of the stack's services complained about while it ran: each error
 # and warning it logged, without its time, with how often. A failing check

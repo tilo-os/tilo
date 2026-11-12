@@ -18,10 +18,10 @@ that, `up` takes as long as the programs take to build. `stack.sh help`
 lists every command.
 
 `stack.sh up --images` runs the release images instead: `image-lounge`,
-`image-front-door` and `image-web-entry`, built by `t` for this commit,
+`image-api` and `image-web-entry`, built by `t` for this commit,
 under rootless podman. That is the rehearsal of what ships: the images as
 they are packaged, which their own checks (`image-lounge`, `image-web-entry`,
-`test-image-front-door`) hold to booting, answering their health route and
+`test-image-api`) hold to booting, answering their health route and
 one request per route, and which the release publishes. `t test e2e` does not
 wait for them: it runs this commit's programs.
 
@@ -30,12 +30,12 @@ wait for them: it runs this commit's programs.
 `t test e2e` is the whole product, used as people use it, on the programs this
 commit builds: the check compiles nothing and starts no container. Everything
 it runs is another check's output — `tilo-sh-binaries` (the relay's context
-and the door), `tilo-sh-caddy`, `image-web-entry-context` (the site, laid out
+and the API server), `tilo-sh-caddy`, `image-web-entry-context` (the site, laid out
 as the web entry image lays it out), `lounge-gate-*` (the relay, the command
 and the tools the page's own flows run) and the web bundle — handed to
 `stack.sh` as `TILO_SH_LOUNGE`, `TILO_SH_PROGRAMS`, `TILO_SH_SITE` and
 `TILO_SH_CADDY`. The stack is brought up once, and then every flow runs at
-the same time against its site, relay and door: the page's own flows
+the same time against its site, relay and API server: the page's own flows
 (`os/containers/tilo-lounge/test-e2e.sh`) and this check's native steps, as
 flows of that runner (`check.sh --flow signin|visa|entry|passkey`). A change
 to a step reruns the run, and a change to the page or the relay reruns only
@@ -45,11 +45,11 @@ with its VM host, from the images that host runs.
 ## Changing code
 
 ```sh
-os/containers/tilo-sh/stack.sh restart relay   # or door, web, tls, discord, releases
+os/containers/tilo-sh/stack.sh restart relay   # or api, web, tls, discord, releases
 ```
 
 `restart` rebuilds the one service and starts it again, and leaves the rest
-running with their state. For the relay, the door and the fake Discord it
+running with their state. For the relay, the API server and the fake Discord it
 runs the same `t build` as `up` (the same feature set each time, so a change
 relinks only what it touches). For the web entry it rebuilds the desktop
 bundle. A one-line change in the relay is running again in about two
@@ -64,7 +64,7 @@ Everything listens on `127.0.0.1`. Ports start at `TILO_SH_PORT_BASE`
 | --- | --- | --- |
 | Lounge relay (room host and relay) | `eu1.tilo.sh` and `live-eu1.tilo.sh`, image `lounge` | `tilo-relay` through the image's entrypoint (`os/containers/tilo-lounge/entrypoint.sh`), laid out by the image's own context script, behind production's Caddy and Caddyfile at `https://127.0.0.1:24100` and `https://127.0.0.1:24106`; its door takes people by invitation and keeps a wait list, as production's does (`TILO_SH_ADMISSION=open` lets anyone in as a guest, which `check.sh` and the e2e flows ask for), and `stack.sh owner KEY` declares the first person who invites the others |
 | Mail (wait-list confirmations, invitations) | Resend | a sink that keeps each mail as a file, at `http://127.0.0.1:24123`; `stack.sh mail` lists them with their links |
-| Front door (MCP, `/v1`, keys, OAuth) | `mcp.tilo.sh`, image `front-door` | `tilo-front-door` at `http://localhost:24110` |
+| API server (MCP, `/v1`, keys, OAuth) | `mcp.tilo.sh`, image `api` | `tilo-api` at `http://localhost:24110` |
 | Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's desktop bundle, laid out and precompressed as the image does it, on `127.0.0.1:24121` behind the same Caddy, which serves it as Cloudflare serves tilo.sh (HTTPS and HTTP/2) at `https://tilo.localhost:24120`; `/releases/latest` serves this checkout's `tilo` command, signed with the stack's own key, which the site's installer downloads (`stack.sh env` exports `TILO_RELEASE_KEY` for it) |
 | Linux VM host (Firecracker) | `tilo-sh-vm-host`, image `vm-host` | the image as root (through `sudo`) where the machine has `/dev/kvm`: with `--images`, as part of the stack, and natively when `TILO_SH_VM_HOST=1` names the images it runs; otherwise skipped with the reason |
 | Hosted browser | in the workspace's own VM, on the VM host | with the VM host: the relay places it there (docs/hosted-browser.md), and `t test tilo-sh-local-vm` holds it to what it must be |
@@ -73,7 +73,7 @@ Everything listens on `127.0.0.1`. Ports start at `TILO_SH_PORT_BASE`
 With `--images`, the first three are the images themselves.
 
 Each service gets the environment its manifest sets in tilo/infra
-(`apps/tilo-sh-relay`, `apps/tilo-front-door` and `apps/tilo-web`). Only the
+(`apps/tilo-sh-relay`, `apps/tilo-api` and `apps/tilo-web`). Only the
 public names change to loopback ports, and the secrets become throwaway
 local ones. `stack.sh` lists the variables per service in `relay_env`,
 `door_env` and `web_env`, and both modes use them. A change to a production
@@ -85,10 +85,10 @@ does not know how to move stops the start.
 ### What differs from production, and why
 
 - **TLS.** In production, Cloudflare terminates TLS. Locally, Caddy's own
-  local CA signs the relay's and the site's certificates. The front door and
+  local CA signs the relay's and the site's certificates. The API server and
   the relay get that CA in the trust bundle at the fixed path Tilo's binaries
-  read. The door is plain HTTP on `http://localhost`, a development origin
-  the door, the sign-in page and the `tilo` command already accept.
+  read. The API server is plain HTTP on `http://localhost`, a development origin
+  the API server, the sign-in page and the `tilo` command already accept.
 - **The site is HTTPS on its own name under localhost.** Caddy plays
   Cloudflare's edge in front of the web entry, so the page arrives over
   HTTP/2, as it does from tilo.sh; over plain HTTP a browser falls back to
@@ -97,7 +97,7 @@ does not know how to move stops the start.
   `tilo.localhost`, which browsers, curl and glibc resolve to loopback
   without any hosts entry, and which a browser treats as a secure context.
   It is not `localhost` itself, because a browser keeps the site's HSTS
-  header per host name: on `localhost` it would then refuse the door's plain
+  header per host name: on `localhost` it would then refuse the API server's plain
   HTTP. It is not an address either, because a passkey's relying party is
   the page's host name and a browser refuses one on an address. So passkeys
   register and sign in here as on tilo.sh, for `tilo.localhost`.
@@ -117,7 +117,7 @@ does not know how to move stops the start.
   release build. `--images` runs that.
 - **Natively, the trust bundle.** Tilo's programs read one fixed bundle
   path, and no variable can redirect it. `bwrap` mounts the stack's bundle
-  over that path for the relay and the door alone, as the containers mount
+  over that path for the relay and the API server alone, as the containers mount
   it. Nothing else of the machine changes, and nothing runs as root.
 - **Natively, Caddy's version.** The relay's TLS and the web entry use the
   `caddy` the caller built (`TILO_SH_CADDY`, which `t test e2e`
@@ -157,7 +157,7 @@ does not know how to move stops the start.
 eval "$(os/containers/tilo-sh/stack.sh env)"
 ```
 
-This sets `TILO_DOOR`, `TILO_SITE`, and the local CA for Node and Python.
+This sets `TILO_API_URL`, `TILO_SITE`, and the local CA for Node and Python.
 After that, everything points at the local stack:
 
 - **A fresh visitor:** `stack.sh browser` opens Chromium on a throwaway
@@ -166,8 +166,8 @@ After that, everything points at the local stack:
   Lounge.
 - **The `tilo` command:** `tilo keys create "My backend"` prints a link.
   Approve it in the browser that `stack.sh browser` opened. The command
-  prints the key. `--door` also works.
-- **Python SDK:** `Tilo()` reads `TILO_DOOR` and `TILO_API_KEY`. For
+  prints the key. `--api` also works.
+- **Python SDK:** `Tilo()` reads `TILO_API_URL` and `TILO_API_KEY`. For
   example: `uv run --project sdk/python python
   sdk/python/examples/visa_proof.py`.
 - **TypeScript SDK:** `new Tilo()` reads the same two variables.
@@ -180,7 +180,7 @@ After that, everything points at the local stack:
   routes are documented in `crates/dev/fake-discord/src/main.rs`.
 
 `stack.sh status` shows what answers. `stack.sh logs relay` (or `tls`,
-`door`, `web`, `discord`, `releases`, and `bundle` for the web bundle's
+`api`, `web`, `discord`, `releases`, and `bundle` for the web bundle's
 build) shows a service's log.
 `stack.sh down` stops the stack, and `down --wipe` also deletes its state.
 
@@ -198,7 +198,7 @@ building one. `TILO_SH_PROGRAMS`, `TILO_SH_LOUNGE`, `TILO_SH_SITE`,
 `TILO_SH_CADDY` and `TILO_SH_CLI_DIR` name what a check built already, so the
 stack compiles and lays out nothing (see "Checking a change end to end").
 
-With `--images`, `TILO_SH_IMAGE_LOUNGE`, `TILO_SH_IMAGE_DOOR` and `TILO_SH_IMAGE_WEB` each take an OCI archive or a registry reference.
+With `--images`, `TILO_SH_IMAGE_LOUNGE`, `TILO_SH_IMAGE_API` and `TILO_SH_IMAGE_WEB` each take an OCI archive or a registry reference.
 To reproduce what is deployed, give the digests infra pins. To try a
 release candidate, give its `sha-<commit>` images.
 
@@ -216,8 +216,8 @@ the page's (`check.sh --flow signin|visa|entry|passkey`), so this is what
 1. A fresh startup identity, in its own headless Chromium, approves the
    server key that `tilo keys create` asks for on the local `/sign-in` page.
    What it reads there is kept as pictures in `startup/`: the sign-in card
-   (the "In Browser" row included), the door's grants page, and the key that
-   page makes, each light and dark. They also make a key on the door's
+   (the "In Browser" row included), the API server's grants page, and the key that
+   page makes, each light and dark. They also make a key on the API server's
    grants page with "Operate web pages in Browser" unticked, which the last
    step holds to being asked about the page actions that act on a page. The
    page also makes a recovery key for that person, which is how the machine
@@ -343,7 +343,7 @@ What it needs before it can hold:
   what the guest image is becoming; until then the check fails at step 9 and
   says exactly that.
 - **Room for the stack.** Step 8 onwards run a workspace's VM beside the
-  door, relay, web entry and VM host in the guest the check itself runs in.
+  API server, relay, web entry and VM host in the guest the check itself runs in.
   A workspace's VM runs at `default`, the size production places (4 vCPU,
   8 GiB, 50 GiB disk), and the VM host's budget is that size beside the
   host's own (10 GiB), so the placement is the one a customer's workspace

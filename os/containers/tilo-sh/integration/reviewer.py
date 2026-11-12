@@ -44,7 +44,7 @@ def review(link: str) -> dict:
     out = Path(OUT) / f"reviewer-{next(counter)}"
     ran = subprocess.run(
         ["node", str(PERSON), SITE, RELAY, str(out), "--follow", link,
-         "--key", "Rosa's review", "--tilo", TILO_BIN, "--door", DOOR],
+         "--key", "Rosa's review", "--tilo", TILO_BIN, "--api", DOOR],
         capture_output=True, text=True, timeout=600,
     )
     sys.stderr.write(ran.stderr)

@@ -21,7 +21,7 @@ export type FetchLike = typeof fetch;
 export type Answer = Record<string, unknown>;
 
 export function doorFrom(door?: string | null): string {
-  const chosen = door ?? process.env.TILO_DOOR ?? DEFAULT_DOOR;
+  const chosen = door ?? process.env.TILO_API_URL ?? DEFAULT_DOOR;
   return chosen.replace(/\/+$/, "");
 }
 

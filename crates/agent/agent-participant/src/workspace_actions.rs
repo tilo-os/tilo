@@ -2297,7 +2297,7 @@ impl Worker {
 
     /// Show the record an application's `open` names (its own record when it names none) as a
     /// window on the workspace's shared desktop: what the device an agent acts through asks for
-    /// each record the agent makes or changes (`tilo mcp`, the front door), so every member sees
+    /// each record the agent makes or changes (`tilo mcp`, the API server), so every member sees
     /// it open as they see a colleague's window, without anyone's view moving to it
     /// ([`crate::desk`]). The window is the person's the caller acts for — the host's own, or a
     /// member of the workspace — and names the agent run that opened it. A record a window

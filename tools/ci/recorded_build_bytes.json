@@ -255,7 +255,7 @@
   "tilo-font-catalog": {"libraries": 2444402, "tests": 4140648},
   "tilo-formats": {"libraries": 1308078, "tests": 10267664},
   "tilo-frame-metrics": {"libraries": 5519237, "tests": 10227376},
-  "tilo-front-door": {"libraries": 29422620, "tests": 559514800},
+  "tilo-api": {"libraries": 29422620, "tests": 559514800},
   "tilo-fs": {"libraries": 155768005, "tests": 533879912},
   "tilo-fs-client": {"libraries": 25326942, "tests": 15758704},
   "tilo-fuse-engine": {"libraries": 0, "tests": 2852064},

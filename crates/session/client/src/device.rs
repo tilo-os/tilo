@@ -1,5 +1,5 @@
 //! One device of a person in a workspace: the session every program keeps, and the one entry an
-//! agent, `tilo mcp` or the front door takes it by.
+//! agent, `tilo mcp` or the API server takes it by.
 
 use std::sync::Arc;
 
@@ -800,7 +800,7 @@ pub async fn entered(peer: &Link) -> Result<Admission, HostRefusal> {
 }
 
 /// Why a workspace's host did not do what a device asked of it, as the host said it: what every
-/// caller (the CLI, the front door, the page) reads and shows, never a sentence to parse.
+/// caller (the CLI, the API server, the page) reads and shows, never a sentence to parse.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct HostRefusal {
     /// What kind of answer it was: an [`ActionHostError::code`] when the host refused,
@@ -1057,7 +1057,7 @@ mod tests {
     #[test]
     fn every_refusal_reads_with_the_code_and_words_it_travels_with() {
         // Each refusal as it travels, with its code and words (tilo-actions holds the file to the
-        // type): what the CLI, the front door and the page read off it.
+        // type): what the CLI, the API server and the page read off it.
         let file: Vec<Value> = serde_json::from_str(include_str!(
             "../../../collab/actions/tests/host_refusals.json"
         ))

@@ -127,7 +127,7 @@ whole-program link the image's own build spends.
 
 `test-e2e.sh` is the web page end to end, on every change that reaches it
 (`t test e2e`): the tilo.sh stack runs through production's own entrypoints
-for this image, the front door and the web entry (`os/containers/tilo-sh`'s
+for this image, the API server and the web entry (`os/containers/tilo-sh`'s
 `stack.sh`), from what the checks beside it built, and every flow runs at the
 same time against that one site, relay and room, each as people of its own in
 headless Chromium: the page booting, two people chatting and calling, the

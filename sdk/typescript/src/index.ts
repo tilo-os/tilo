@@ -4,7 +4,7 @@
  * ```ts
  * import { Tilo } from "tilo-sdk";
  *
- * const tilo = new Tilo();                    // key: TILO_API_KEY, door: TILO_DOOR
+ * const tilo = new Tilo();                    // key: TILO_API_KEY, door: TILO_API_URL
  * const ws = tilo.workspace("jane-doe");
  * const page = await ws.read("notes/Todo");
  * page.title = "Done";                        // a field edit

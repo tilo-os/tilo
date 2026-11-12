@@ -12,7 +12,7 @@ bun add tilo-sdk            # or: npm install tilo-sdk
 ```ts
 import { Tilo } from "tilo-sdk";
 
-const tilo = new Tilo();                          // key: TILO_API_KEY, door: TILO_DOOR
+const tilo = new Tilo();                          // key: TILO_API_KEY, door: TILO_API_URL
 const applicant = await tilo.workspaces.create("Applicant: Jane Doe");
 const ws = tilo.workspace(applicant.id);
 
@@ -39,7 +39,7 @@ for await (const event of ws.watch("pdf-viewer/visa-form.pdf")) {
 ## How it works
 
 - **One key.** `new Tilo({ key, door })` reads `TILO_API_KEY` and
-  `TILO_DOOR` (default `https://mcp.tilo.sh`). Send it as
+  `TILO_API_URL` (default `https://mcp.tilo.sh`). Send it as
   `Authorization: Bearer`.
 - **Account and workspaces.** `/mcp` is the account: list, create and delete
   workspaces, list and mint keys. `/w/<workspace>/mcp` is one workspace.
@@ -98,5 +98,5 @@ and `ws.do(path, args)`.
 ```sh
 bun test                       # against an in-process fake door
 bunx tsc --noEmit              # types
-TILO_TEST_DOOR=http://127.0.0.1:8080 TILO_TEST_KEY=tilo_sk_… bun test test/integration.test.ts
+TILO_TEST_API_URL=http://127.0.0.1:8080 TILO_TEST_KEY=tilo_sk_… bun test test/integration.test.ts
 ```

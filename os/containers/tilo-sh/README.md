@@ -1,7 +1,7 @@
 # tilo.sh on one machine
 
 `stack.sh` starts the hosted product from this checkout. It runs the Lounge
-relay behind production's Caddy, the front door, the web entry and (where
+relay behind production's Caddy, the API server, the web entry and (where
 the machine can) the VM host, with the entrypoints and environment
 production runs: this checkout's programs as plain processes by default,
 the release images with `up --images`. `check.sh` uses it end to end. `docs/testing-tilo-sh.md` describes
@@ -20,7 +20,7 @@ both, and `stack.sh help` covers the commands.
 | `integration/hosted-terminal.py` | a hosted workspace's Linux commands: the plan a card admits, the Terminal's run and its History, an agent's key through the `tilo` command, and the tenant's account |
 | `integration/vm-proofs.py` | what the workspace's VM must be for the Browser in it: sandboxes, the browser user, its device key, memory |
 | `integration/reviewer.py` | the visa run's reviewer endpoint, played by such a person |
-| `integration/seed-history.py` | the Lounge's chat history, posted through the front door (`up --seed`) |
+| `integration/seed-history.py` | the Lounge's chat history, posted through the API server (`up --seed`) |
 
 When a production manifest changes a service's environment, change the
 matching `*_env` function in `stack.sh` the same way.

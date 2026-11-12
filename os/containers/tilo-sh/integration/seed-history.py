@@ -1,5 +1,5 @@
 """Give the Lounge a history: a member, with a key of their own, posts
-MESSAGES chat messages through the front door as any member's agent does.
+MESSAGES chat messages through the API server as any member's agent does.
 
     python3 seed-history.py DOOR KEY RECORDS_DIR MESSAGES
 

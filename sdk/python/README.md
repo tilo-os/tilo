@@ -12,7 +12,7 @@ import asyncio, pathlib
 from tilo import AsyncTilo
 
 async def main():
-    async with AsyncTilo() as tilo:                 # key: TILO_API_KEY, door: TILO_DOOR
+    async with AsyncTilo() as tilo:                 # key: TILO_API_KEY, door: TILO_API_URL
         applicant = await tilo.workspaces.create("Applicant: Jane Doe")
         ws = tilo.workspace(applicant.id)
 
@@ -43,7 +43,7 @@ The sync client has the same surface without `await`: `from tilo import Tilo`.
 ## How it works
 
 - **One key.** `AsyncTilo(key=None, door=None)` reads `TILO_API_KEY` and
-  `TILO_DOOR` (default `https://mcp.tilo.sh`). Send it as
+  `TILO_API_URL` (default `https://mcp.tilo.sh`). Send it as
   `Authorization: Bearer`.
 - **Account and workspaces.** `/mcp` is the account: list, create and delete
   workspaces, list and mint keys. `/w/<workspace>/mcp` is one workspace.
@@ -106,8 +106,8 @@ agent's run and checking no VM ran. It runs against any door with a server
 key, or against a relay with its app workers on loopback:
 
 ```sh
-cargo build -p tilo-agent-participant --example door-on-relay
-target/debug/examples/door-on-relay -- env VISA_REVOKE_SERVER_KEY=1 \
+cargo build -p tilo-agent-participant --example api-on-relay
+target/debug/examples/api-on-relay -- env VISA_REVOKE_SERVER_KEY=1 \
     uv run --project sdk/python python sdk/python/examples/visa_proof.py
 ```
 
@@ -115,5 +115,5 @@ target/debug/examples/door-on-relay -- env VISA_REVOKE_SERVER_KEY=1 \
 
 ```sh
 uv run pytest                    # against an in-process fake door
-TILO_TEST_DOOR=http://127.0.0.1:8080 TILO_TEST_KEY=tilo_sk_… uv run pytest tests/test_integration.py
+TILO_TEST_API_URL=http://127.0.0.1:8080 TILO_TEST_KEY=tilo_sk_… uv run pytest tests/test_integration.py
 ```

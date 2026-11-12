@@ -88,19 +88,19 @@ struct Cli {
         long,
         global = true,
         hide = true,
-        help = "The hosted door (also TILO_DOOR; https://mcp.tilo.sh by default)"
+        help = "The API server (also TILO_API_URL; https://mcp.tilo.sh by default)"
     )]
-    door: Option<String>,
+    api: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
 
 impl Cli {
-    /// The command `cmd`, with no hosted workspace or door named.
+    /// The command `cmd`, with no hosted workspace or API server named.
     const fn of(cmd: Cmd) -> Self {
         Self {
             workspace: None,
-            door: None,
+            api: None,
             cmd,
         }
     }
@@ -795,7 +795,7 @@ fn app_open(args: &[OsString], spelling: &tilo_control::front::Spelling) -> Resu
 /// `tilo do`: in the hosted workspace `-w` names, else on this desktop. A
 /// `-w` or `--json` after the action lands in its options, and is taken out.
 fn run_do(
-    door: Option<&str>,
+    api: Option<&str>,
     mut workspace: Option<String>,
     action: String,
     mut args: Vec<String>,
@@ -814,7 +814,7 @@ fn run_do(
     };
     let json = args.iter().any(|arg| arg == "--json");
     args.retain(|arg| arg != "--json");
-    hosted::act(door, json, &workspace, &action, &args)
+    hosted::act(api, json, &workspace, &action, &args)
 }
 
 /// `tilo completions <shell>`: every name this program goes by.
@@ -858,33 +858,33 @@ fn completions(shell: Shell) -> Result<ExitCode> {
 /// The commands that act in hosted workspaces (and `do`, which acts here or
 /// there): their answer, or the command back when it is none of them.
 fn run_hosted(
-    door: Option<&str>,
+    api: Option<&str>,
     workspace: Option<String>,
     cmd: Cmd,
     spelling: &tilo_control::front::Spelling,
 ) -> Result<Result<ExitCode>, Cmd> {
     let needs_workspace = || anyhow::anyhow!("name the workspace: -w <name or id>");
     Ok(match cmd {
-        Cmd::Do { action, args } => Ok(run_do(door, workspace, action, args, spelling)),
-        Cmd::Keys { json, cmd } => Ok(hosted::keys(door, json, workspace.as_deref(), cmd)),
+        Cmd::Do { action, args } => Ok(run_do(api, workspace, action, args, spelling)),
+        Cmd::Keys { json, cmd } => Ok(hosted::keys(api, json, workspace.as_deref(), cmd)),
         Cmd::Members { json, cmd } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::members(door, json, &workspace, cmd)),
-        Cmd::Account { json, cmd } => Ok(hosted::account(door, json, cmd)),
+            .map(|workspace| hosted::members(api, json, &workspace, cmd)),
+        Cmd::Account { json, cmd } => Ok(hosted::account(api, json, cmd)),
         Cmd::Files { json, cmd } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::files(door, json, &workspace, cmd)),
+            .map(|workspace| hosted::files(api, json, &workspace, cmd)),
         Cmd::Run { file, json } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::program(door, json, &workspace, &file)),
-        Cmd::Sdk { cmd } => Ok(sdk::generate(door, workspace.as_deref(), cmd)),
+            .map(|workspace| hosted::program(api, json, &workspace, &file)),
+        Cmd::Sdk { cmd } => Ok(sdk::generate(api, workspace.as_deref(), cmd)),
         other => return Err(other),
     })
 }
 
 fn run(cli: Cli) -> Result<ExitCode> {
     let spelling = tilo_control::front::Spelling::tilo();
-    let cmd = match run_hosted(cli.door.as_deref(), cli.workspace, cli.cmd, &spelling) {
+    let cmd = match run_hosted(cli.api.as_deref(), cli.workspace, cli.cmd, &spelling) {
         Ok(answered) => return answered,
         Err(cmd) => cmd,
     };

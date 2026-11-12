@@ -5169,63 +5169,63 @@ isolation = "vm"
 timeout_secs = 3600
 default = false
 
-# The front door of hosted Tilo (os/containers/tilo-front-door): the MCP endpoint behind
+# The Tilo API server (os/containers/tilo-api): the MCP endpoint behind
 # https://mcp.tilo.sh, with OAuth for agents and routing to the workspace's host. It is
 # configured entirely by its environment, so the deployment's values never enter the image. Its
-# program is t's own compile (front-door-binaries), so the image is packaging only: the pinned
+# program is t's own compile (api-binaries), so the image is packaging only: the pinned
 # Fedora base and the packages from the frozen RPM snapshot. Tested in a micro-VM against a real
 # start, and published on dispatch as dev-<commit> for the infra repository's deployment to pin,
 # signed on a release tag.
 [[check]]
-name = "front-door-binaries"
-run = "bash tools/ci/publish/server-binaries.sh front-door /target/publish/front-door/binaries"
+name = "api-binaries"
+run = "bash tools/ci/publish/server-binaries.sh api /target/publish/api/binaries"
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/front-door/binaries/**"]
+outputs = ["/target/publish/api/binaries/**"]
 timeout_secs = 7200
 default = false
 
 [[check]]
-name = "image-front-door"
-run = "bash tools/ci/publish/front-door-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/front-door/binaries /target/publish/front-door"
-needs = ["front-door-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
+name = "image-api"
+run = "bash tools/ci/publish/api-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/api/binaries /target/publish/api"
+needs = ["api-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
 git = true
-outputs = ["/target/publish/front-door/image.oci.tar", "/target/publish/front-door/digest", "/target/publish/front-door/rpms-source"]
+outputs = ["/target/publish/api/image.oci.tar", "/target/publish/api/digest", "/target/publish/api/rpms-source"]
 timeout_secs = 7200
 default = false
 
 [[check]]
-name = "test-image-front-door"
+name = "test-image-api"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
-run = "bash os/containers/tilo-front-door/test-image.sh /target/publish/front-door/image.oci.tar"
-needs = ["image-front-door"]
+run = "bash os/containers/tilo-api/test-image.sh /target/publish/api/image.oci.tar"
+needs = ["image-api"]
 requires = ["arch=x86_64"]
 isolation = "vm"
 timeout_secs = 1800
 default = false
 
 [[check]]
-name = "sign-front-door"
+name = "sign-api"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/front-door /target/publish/front-door"
-needs = ["image-front-door", "test-image-front-door", "signing-tools"]
-outputs = ["/target/publish/front-door/payload.json", "/target/publish/front-door/signature", "/target/publish/front-door/dry-run.pub"]
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/api /target/publish/api"
+needs = ["image-api", "test-image-api", "signing-tools"]
+outputs = ["/target/publish/api/payload.json", "/target/publish/api/signature", "/target/publish/api/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
 on = ["dispatch"]
 
 [[check]]
-name = "publish-front-door"
+name = "publish-api"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/front-door /target/publish/front-door 'dev:dev-{commit}' 'release:sha-{commit}'"
-needs = ["image-front-door", "test-image-front-door", "signing-tools"]
-optional_needs = ["sign-front-door"]
-outputs = ["/target/publish/front-door/receipt.json"]
-pointers = { front-door = "/target/publish/front-door/receipt.json" }
+run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/api /target/publish/api 'dev:dev-{commit}' 'release:sha-{commit}'"
+needs = ["image-api", "test-image-api", "signing-tools"]
+optional_needs = ["sign-api"]
+outputs = ["/target/publish/api/receipt.json"]
+pointers = { api = "/target/publish/api/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["dispatch"]

@@ -98,9 +98,9 @@ pub struct App {
 }
 
 /// `tilo sdk gen`.
-pub fn generate(door: Option<&str>, workspace: Option<&str>, cmd: SdkCmd) -> ExitCode {
+pub fn generate(api: Option<&str>, workspace: Option<&str>, cmd: SdkCmd) -> ExitCode {
     let SdkCmd::Gen { lang, out, check } = cmd;
-    let apps = match surfaces(door, workspace) {
+    let apps = match surfaces(api, workspace) {
         Ok(apps) => apps,
         Err(error) => {
             eprintln!("tilo: {error:#}");
@@ -145,9 +145,9 @@ pub fn generate(door: Option<&str>, workspace: Option<&str>, cmd: SdkCmd) -> Exi
 
 /// The apps whose types are generated: the ones installed in `workspace`, or else the ones of
 /// the checkout this runs in.
-fn surfaces(door: Option<&str>, workspace: Option<&str>) -> Result<Vec<App>> {
+fn surfaces(api: Option<&str>, workspace: Option<&str>) -> Result<Vec<App>> {
     match workspace {
-        Some(workspace) => crate::hosted::surfaces(door, workspace),
+        Some(workspace) => crate::hosted::surfaces(api, workspace),
         None => committed(Path::new("apps")),
     }
 }

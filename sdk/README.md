@@ -24,7 +24,7 @@ TypeScript: `workspaces.list/create/delete`, `keys.list/create/mint/revoke`,
 `Refused`, `AskPending` and `ProtocolError`, and for a key the door turns
 away `KeyRevoked`, `KeyExpired` or `KeyRefused`.
 
-A key is `TILO_API_KEY` and the door is `TILO_DOOR` (default
+A key is `TILO_API_KEY` and the door is `TILO_API_URL` (default
 `https://mcp.tilo.sh`). `tilo sdk gen` writes per-app types into
 `python/src/tilo/types/` and `typescript/src/types/`; both ship the proxies
 those types stand on.
@@ -34,5 +34,5 @@ cd python && uv run pytest                      # against an in-process fake doo
 cd typescript && bun test && bunx tsc --noEmit
 ```
 
-Both suites also take a real door: set `TILO_TEST_DOOR` and `TILO_TEST_KEY`
+Both suites also take a real door: set `TILO_TEST_API_URL` and `TILO_TEST_KEY`
 to run `tests/test_integration.py` or `test/integration.test.ts` against it.

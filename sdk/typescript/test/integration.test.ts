@@ -1,5 +1,5 @@
 /**
- * Against a real front door: `TILO_TEST_DOOR` and `TILO_TEST_KEY` name one.
+ * Against a real API server: `TILO_TEST_API_URL` and `TILO_TEST_KEY` name one.
  *
  * The door is the local harness; the key reaches every workspace of its
  * person. Nothing here fakes the wire.
@@ -9,12 +9,12 @@ import { describe, expect, it } from "bun:test";
 
 import { AskPending, KeyRevoked, Refused, Tilo } from "../src/index.ts";
 
-const door = process.env.TILO_TEST_DOOR;
+const door = process.env.TILO_TEST_API_URL;
 const key = process.env.TILO_TEST_KEY;
 const skip = door === undefined || key === undefined;
 const name = (prefix: string) => `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
 
-describe.skipIf(skip)("a real front door", () => {
+describe.skipIf(skip)("a real API server", () => {
   function open(): Tilo {
     return new Tilo({ key: key as string, door: door as string });
   }

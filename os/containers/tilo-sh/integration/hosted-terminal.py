@@ -41,7 +41,7 @@ the key scoped to that one workspace. Without it — a run of these steps alone
 which is a workspace's Linux commands and no Browser.
 
 HOSTED_TERMINAL_CLI is the `tilo` command `--agent` runs, and
-HOSTED_TERMINAL_DOOR the door it points at (default: DOOR).
+HOSTED_TERMINAL_API_URL the door it points at (default: DOOR).
 HOSTED_TERMINAL_PLANS is the plans file the provider writes and the account
 HOSTED_TERMINAL_ACCOUNT is named in it (default: the account the local stack
 places its workspaces' VMs for). Prints one JSON line, and keeps what it read
@@ -68,13 +68,13 @@ import plans
 DOOR, SERVER_KEY, OUT = sys.argv[1:4]
 
 # How History names the runs of each key: the name a key is made with is the
-# agent it is (front_door's `history_names_a_minted_keys_agent_by_the_name_it
+# agent it is (the API test's `history_names_a_minted_keys_agent_by_the_name_it
 # _was_minted_with`). check.sh asks for the startup's key as this name, and
 # the hosted flow mints its agent's as the other.
 PERSON_KEY_NAME = "Visa backend"
 AGENT_KEY_NAME = "Jane Doe's agent"
 CLI = os.environ.get("HOSTED_TERMINAL_CLI", "tilo")
-CLI_DOOR = os.environ.get("HOSTED_TERMINAL_DOOR", DOOR)
+CLI_DOOR = os.environ.get("HOSTED_TERMINAL_API_URL", DOOR)
 # The person answering what the host asks before a command runs: a Terminal
 # run reaches outside the workspace's records, so a person's standing puts it
 # to them, and `tilo-approve` is the approving device that answers.
@@ -478,9 +478,9 @@ async def terminal() -> dict[str, object]:
 def run_cli(workspace: str, key: str, command: str) -> tuple[int, str, str]:
     """`tilo -w WORKSPACE do terminal#run command=…`, with the key in the
     environment as the command takes it."""
-    env = dict(os.environ, TILO_API_KEY=key, TILO_DOOR=CLI_DOOR)
+    env = dict(os.environ, TILO_API_KEY=key, TILO_API_URL=CLI_DOOR)
     ran = subprocess.run(
-        [CLI, "--door", CLI_DOOR, "-w", workspace, "do", "terminal#run", f"command={command}"],
+        [CLI, "--api", CLI_DOOR, "-w", workspace, "do", "terminal#run", f"command={command}"],
         capture_output=True,
         text=True,
         timeout=600,
