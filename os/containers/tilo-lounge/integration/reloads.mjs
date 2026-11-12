@@ -38,10 +38,28 @@ mkdirSync(out, {recursive: true});
 // In every document the tab opens: a returning person, the first pagehide
 // listener (registered before any of the page's own), and what the document
 // left for the next one in sessionStorage.
+//
+// The GPU devices the page asks for are kept, so a reload the run marks
+// (every second one, TILO_RELOADS_RELEASE_GPU=0 for none) destroys them in
+// that first pagehide: reloads that do and reloads that don't, side by side on
+// the same machine, say whether an old page's GPU device is what holds the
+// new one back.
 const EARLY = `(() => {
   try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}
+  const devices = [];
+  const ask = globalThis.GPUAdapter?.prototype?.requestDevice;
+  if (ask) {
+    GPUAdapter.prototype.requestDevice = async function (...args) {
+      const device = await ask.apply(this, args);
+      devices.push(device);
+      return device;
+    };
+  }
   addEventListener('pagehide', () => {
     try { sessionStorage.setItem('tilo-reload-hide', String(Date.now())); } catch {}
+    if (sessionStorage.getItem('tilo-reload-release-gpu') === '1') {
+      for (const device of devices) { try { device.destroy(); } catch {} }
+    }
   }, {capture: true});
 })();`;
 // Added once the page arrived, so it runs after the runtime's own listeners.
@@ -140,6 +158,8 @@ for (let n = 1; n <= times; n += 1) {
   await until(tab, `(${FRAMES}) > 0`, stepLimit(3));
   await tab.evaluate(LATE).catch(() => {});
   committed.delete(tab.sessionId);
+  const release = process.env.TILO_RELOADS_RELEASE_GPU !== '0' && n % 2 === 0;
+  await tab.evaluate(`sessionStorage.setItem('tilo-reload-release-gpu', '${release ? 1 : 0}')`).catch(() => {});
   const asked = Date.now();
   await tab.reload().catch(() => {});
   const came = await until(tab, ARRIVED, stepLimit(6));
@@ -150,6 +170,7 @@ for (let n = 1; n <= times; n += 1) {
   const locks = JSON.parse(await tab.evaluate(DEVICE_LOCKS).catch(() => '[]') ?? '[]');
   const line = {
     n, result,
+    gpuReleased: release ? 'yes' : 'no',
     deviceLocks: locks.length ? locks.map(name => name.replace(/^tilo-device-custody:[^#]*/, '') || '#0').join(',') : 'none',
     hide: before.hide ? before.hide - asked : null,
     handlers: before.hidden && before.hide ? before.hidden - before.hide : null,
@@ -182,6 +203,10 @@ console.log(`TIMING device-keys=${keys.length} (${keys.join(', ')})`);
 if (keys.length > 1) {
   console.error(`FAIL: ${keys.length} device keys for one person in one tab: a reload found the key the page before it held still locked and became another device`);
 }
+// The commit, with and without the old page's GPU device destroyed as it went.
+const median = values => { const v = values.filter(x => x != null).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : null; };
+const commitOf = released => lines.filter(l => l.result === 'ok' && (l.gpuReleased === 'yes') === released).map(l => l.commit);
+console.log(`TIMING commit-median gpu-released=${median(commitOf(true))} gpu-kept=${median(commitOf(false))} (ms after the reload)`);
 const slowest = [...lines].sort((a, b) => (b.fetch ?? 0) - (a.fetch ?? 0)).slice(0, 3);
 console.log(`TIMING reloads=${times} ok=${counts.ok} crashed=${counts.crashed} never-arrived=${counts.neverArrived} stopped=${counts.stopped}`);
 console.log(`the old page held the navigation longest (fetch ms): ${slowest.map(l => `#${l.n} ${l.fetch}`).join(', ')}`);
