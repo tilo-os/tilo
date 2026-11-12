@@ -46,9 +46,10 @@ pub mod reflect;
 pub mod select;
 pub mod view;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
 
 use automerge::ChangeHash;
 use redb::{
@@ -298,6 +299,8 @@ pub struct Index {
     db: Arc<Database>,
     stats: Arc<IndexStats>,
     path: Option<PathBuf>,
+    /// The stores holding it ([`Held`]).
+    holders: AtomicUsize,
 }
 
 impl std::fmt::Debug for Index {
@@ -313,10 +316,52 @@ impl std::fmt::Debug for Index {
 #[derive(Debug)]
 pub enum Opened {
     /// An index of this format and schema, complete, reflecting these heads of each chunk.
-    Ready(Index, Stamps),
+    Ready(Held, Stamps),
     /// Nothing usable (no file, another format or schema, a broken file): an empty index to
     /// build.
-    Empty(Index),
+    Empty(Held),
+}
+
+/// The indexes kept on disk that this process has open, by file. A file is open once in a
+/// process (redb holds it), so every store reading one record's index (every window of an app on
+/// one workspace record) holds the one open index, and a window opened again reads the index the
+/// last one kept.
+static OPEN: LazyLock<Mutex<HashMap<PathBuf, Weak<Index>>>> = LazyLock::new(Mutex::default);
+
+/// One store's hold on an index. Stores that share an index each derive what their record holds
+/// into it, as each change is a resource's fields written whole over what the index holds, so
+/// they agree; emptying it for a build is the only write that is not, and a store does that only
+/// to an index it holds alone ([`Self::shared`]).
+#[derive(Debug)]
+pub struct Held(Arc<Index>);
+
+impl Held {
+    /// `index`, held by one store more.
+    #[must_use]
+    pub fn new(index: Arc<Index>) -> Self {
+        index.holders.fetch_add(1, Ordering::SeqCst);
+        Self(index)
+    }
+
+    /// Whether another store holds the index too.
+    #[must_use]
+    pub fn shared(&self) -> bool {
+        self.0.holders.load(Ordering::SeqCst) > 1
+    }
+}
+
+impl std::ops::Deref for Held {
+    type Target = Arc<Index>;
+
+    fn deref(&self) -> &Arc<Index> {
+        &self.0
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.0.holders.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// The file of the index of `app` in the directory `dir`.
@@ -363,15 +408,6 @@ pub fn record_dir(base: &Path, workspace: &str, record: Option<&str>) -> PathBuf
         None => workspace_dir(base, workspace),
         Some(record) => workspace_dir(base, &format!("{workspace}~{record}")),
     }
-}
-
-/// The directory of the indexes of `record` that the instance `instance` keeps under `base`: beside
-/// the record's ([`record_dir`]), an index file being open to one store at a time. Two windows of
-/// one app in one host both read their own index, rather than one of them opening the other's file
-/// and building its own rows in memory.
-#[must_use]
-pub fn instance_dir(base: &Path, workspace: &str, record: Option<&str>, instance: u64) -> PathBuf {
-    record_dir(base, workspace, record).join(format!("instance-{instance}"))
 }
 
 fn create_tables(txn: &WriteTransaction) -> Result<(), IndexError> {
@@ -434,7 +470,44 @@ impl Index {
     /// build. An index whose file needs repairing (the process was killed in the middle of a
     /// commit) is built anew too: repairing reads the whole file, and what it held is not trusted
     /// anyway.
+    ///
+    /// An index this process has open already is that one, shared ([`Held`]), read as the heads
+    /// it reflects say (none yet while the store holding it builds it); one of another schema is
+    /// not this one's to empty (an error, as for a file another process holds).
     pub fn open(path: &Path, app: &str, schema: &str) -> Result<Opened, IndexError> {
+        let mut open = OPEN.lock().unwrap_or_else(PoisonError::into_inner);
+        open.retain(|_, index| index.strong_count() > 0);
+        if let Some(index) = open.get(path).and_then(Weak::upgrade) {
+            drop(open);
+            return Self::join(index, app, schema);
+        }
+        // Held while the file opens: a store opening it at once on another thread shares it.
+        let opened = Self::open_file(path, app, schema)?;
+        let (Opened::Ready(held, _) | Opened::Empty(held)) = &opened;
+        open.insert(path.to_owned(), Arc::downgrade(held));
+        drop(open);
+        Ok(opened)
+    }
+
+    /// The index `index` this process has open, for one store more (see [`Self::open`]).
+    fn join(index: Arc<Index>, app: &str, schema: &str) -> Result<Opened, IndexError> {
+        if index.app != app || index.schema != schema || index.stats.is_corrupt() {
+            return Err(IndexError::Io("the index is open elsewhere".into()));
+        }
+        let alone = index.holders.load(Ordering::SeqCst) == 0;
+        let held = Held::new(index);
+        match held.valid(schema) {
+            Ok(Some(heads)) => Ok(Opened::Ready(held, heads)),
+            // Nobody reads it any more: it is this store's to build.
+            _ if alone => {
+                held.clear(schema)?;
+                Ok(Opened::Empty(held))
+            }
+            _ => Err(IndexError::Io("the index is open elsewhere".into())),
+        }
+    }
+
+    fn open_file(path: &Path, app: &str, schema: &str) -> Result<Opened, IndexError> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| IndexError::Io(e.to_string()))?;
         }
@@ -449,8 +522,7 @@ impl Index {
         let opened = builder.create(path);
         let db = match opened {
             Ok(db) => db,
-            // Another index holds the file (a window whose instance is not this one's): it is
-            // not this one's to empty.
+            // Another process holds the file: it is not this one's to empty.
             Err(redb::DatabaseError::DatabaseAlreadyOpen) => {
                 return Err(IndexError::Io("the index is open elsewhere".into()));
             }
@@ -468,7 +540,7 @@ impl Index {
                     .create(path)?
             }
         };
-        let index = Self::with(app, schema, db, Some(path.to_owned()));
+        let index = Held::new(Arc::new(Self::with(app, schema, db, Some(path.to_owned()))));
         if let Ok(Some(heads)) = index.valid(schema) {
             Ok(Opened::Ready(index, heads))
         } else {
@@ -494,6 +566,7 @@ impl Index {
             db,
             stats,
             path,
+            holders: AtomicUsize::new(0),
         }
     }
 

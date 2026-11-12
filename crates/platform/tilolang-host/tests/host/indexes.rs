@@ -1,5 +1,5 @@
-//! The indexes a host keeps for the windows it runs: one file per instance, open to that
-//! instance's store alone, so two windows of one app both read their own rows.
+//! The indexes a host keeps for the windows it runs: one per workspace record, read by every
+//! window of it.
 
 use super::*;
 
@@ -23,24 +23,23 @@ fn settle_all(host: &mut TilolangHost, windows: &mut [Window]) {
     }
 }
 
-/// Two windows of one app in one host keep an index each and both read it. An index file is open
-/// to one store at a time (redb holds it), so a window that shared another's could not open it and
-/// would build its rows in memory at every open.
+/// Two windows of one app in one host share the record's index and both read it: the second reads
+/// what the first built rather than building it again, and nothing is kept per window. Copies an
+/// earlier build kept per window are removed.
 #[test]
-fn two_windows_of_one_app_in_a_host_each_keep_their_own_index_and_read_it() {
+fn two_windows_of_one_app_in_a_host_share_one_index_and_both_read_it() {
     let storage = tempfile::tempdir().unwrap();
     let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
     let workspace = route.cluster_id.to_string();
-    let index_file = |instance: u64| {
-        storage
-            .path()
-            .join(APP)
-            .join("indexes")
-            .join("rooms")
-            .join(&workspace)
-            .join(format!("instance-{instance}"))
-            .join(format!("{APP}.index"))
-    };
+    let record_dir = storage
+        .path()
+        .join(APP)
+        .join("indexes")
+        .join("rooms")
+        .join(&workspace);
+    let old_copy = record_dir.join("instance-1");
+    std::fs::create_dir_all(&old_copy).unwrap();
+    std::fs::write(old_copy.join(format!("{APP}.index")), b"").unwrap();
     let mut host = TilolangHost::new(Some(storage.path().to_owned()), wake());
     let mut windows = Vec::new();
     for instance in [1, 2] {
@@ -54,31 +53,34 @@ fn two_windows_of_one_app_in_a_host_each_keep_their_own_index_and_read_it() {
             automerge::AutoCommit::new(),
         );
         windows.push(window);
+        settle_all(&mut host, &mut windows);
     }
-    settle_all(&mut host, &mut windows);
     let instances: Vec<&Hosted> = host.instances().collect();
     assert_eq!(
         instances.len(),
         2,
         "both windows of the app run in the host"
     );
+    let mut builds = Vec::new();
     for instance in &instances {
         assert_eq!(value_of(instance), 0, "the window reads the counter");
         let store = instance.instance().host().unwrap();
         let store = store.store();
-        assert!(store.index_ready(), "the window reads an index of its own");
+        assert!(store.index_ready(), "the window reads the index");
         assert!(
             store.index_contents(APP).is_some(),
             "and reads its rows from it"
         );
-        assert!(
-            store.stats().builds > 0,
-            "the window built the index it keeps"
-        );
+        builds.push(store.stats().builds);
     }
-    // The file each window keeps is where its own instance keeps it: the second window did not
-    // open the first's (it would have been told the index is open elsewhere, and built its rows in
-    // memory with nothing on disk).
-    assert!(index_file(1).is_file(), "one window's index is kept");
-    assert!(index_file(2).is_file(), "and the other's beside it");
+    builds.sort_unstable();
+    assert!(
+        builds[0] == 0 && builds[1] > 0,
+        "one window built the indexes, and the other read what it built: {builds:?}"
+    );
+    assert!(
+        record_dir.join(format!("{APP}.index")).is_file(),
+        "the record's index is kept"
+    );
+    assert!(!old_copy.exists(), "a window's own copy is gone");
 }

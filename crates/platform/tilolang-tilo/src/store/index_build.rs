@@ -23,7 +23,7 @@ use crate::background::{Pending, Poll};
 use crate::chunk::{self, ChunkNo, Stamps};
 use crate::index::derive::{Derive, DocReads, Reached};
 use crate::index::view::View;
-use crate::index::{self as idx, Index, IndexError, Opened};
+use crate::index::{self as idx, Held, Index, IndexError, Opened};
 use crate::reads::Places;
 
 /// Whose the things a chunk the record's manifest names are: the apps the store knows them by, or
@@ -57,7 +57,7 @@ enum Stage {
 
 /// One package's index, as the store holds it.
 pub(super) struct AppIndex {
-    pub(super) index: Arc<Index>,
+    pub(super) index: Held,
     /// The index as its last commit left it.
     pub(super) snapshot: Arc<idx::Snapshot>,
     /// The heads that commit reflects of each chunk it was built from.
@@ -106,10 +106,11 @@ impl TiloStore {
         inner.apps.remove(app);
         let opened = match inner.index_dir.as_deref() {
             Some(dir) => Index::open(&idx::file_of(dir, app), app, schema),
-            None => Index::in_memory(app, schema).map(Opened::Empty),
+            None => in_memory(app, schema).map(Opened::Empty),
         };
-        // A file that cannot be had (another window holds it) leaves an index in memory.
-        let opened = opened.or_else(|_| Index::in_memory(app, schema).map(Opened::Empty));
+        // A file that cannot be had (another process holds it, or a window of another version of
+        // the package reads it) leaves an index in memory.
+        let opened = opened.or_else(|_| in_memory(app, schema).map(Opened::Empty));
         let Ok(opened) = opened else {
             return;
         };
@@ -121,7 +122,7 @@ impl TiloStore {
             return;
         };
         let held = AppIndex {
-            index: Arc::new(index),
+            index,
             snapshot,
             heads: heads.clone().unwrap_or_default(),
             schema: schema.to_owned(),
@@ -298,13 +299,13 @@ impl TiloStore {
                     .get(&app)
                     .map(|held| held.schema.clone())
                     .unwrap_or_default();
-                if let Ok(index) = Index::in_memory(&app, &schema)
+                if let Ok(index) = in_memory(&app, &schema)
                     && let Ok(snapshot) = index.snapshot()
                 {
                     inner.apps.insert(
                         app.clone(),
                         AppIndex {
-                            index: Arc::new(index),
+                            index,
                             snapshot,
                             heads: Stamps::new(),
                             schema,
@@ -681,7 +682,10 @@ impl Inner {
         let Some(held) = self.apps.remove(app) else {
             return;
         };
-        let path = held.index.path().map(Path::to_path_buf);
+        // Another window of the record reads the file: it is not this one's to remove.
+        let path = (!held.index.shared())
+            .then(|| held.index.path().map(Path::to_path_buf))
+            .flatten();
         let schema = held.schema.clone();
         drop(held);
         let fresh = path
@@ -705,7 +709,7 @@ impl Inner {
             .map(|opened| match opened {
                 Opened::Ready(index, _) | Opened::Empty(index) => index,
             })
-            .map_or_else(|| Index::in_memory(app, &schema), Ok);
+            .map_or_else(|| in_memory(app, &schema), Ok);
         let index = match fresh {
             Ok(index) => index,
             Err(error) => {
@@ -723,7 +727,7 @@ impl Inner {
         self.apps.insert(
             app.to_owned(),
             AppIndex {
-                index: Arc::new(index),
+                index,
                 snapshot,
                 heads: Stamps::new(),
                 schema,
@@ -750,6 +754,17 @@ impl Inner {
         let Some(held) = self.apps.get_mut(app) else {
             return;
         };
+        if held.index.shared() {
+            // Another window of the record reads the index: emptied, it would read nothing while
+            // this one builds. This one builds its own, in memory.
+            match in_memory(app, &held.schema) {
+                Ok(index) => held.index = index,
+                Err(error) => {
+                    tracing::error!(app, %error, "an index could not be made in memory");
+                    return;
+                }
+            }
+        }
         let cleared = held.index.clear_for_build();
         if cleared.is_ok() {
             // What a fresh build derives is read once its first step is taken in: until then
@@ -832,7 +847,7 @@ impl Inner {
         let Some(held) = self.apps.get(app) else {
             return;
         };
-        let index = Arc::clone(&held.index);
+        let index = Arc::clone(&*held.index);
         let before: BTreeMap<DocId, (AppId, TypeId)> = held
             .snapshot
             .docs()
@@ -872,7 +887,7 @@ impl Inner {
             return;
         }
         let heads = self.chunks.heads();
-        let Some(index) = self.apps.get(app).map(|held| Arc::clone(&held.index)) else {
+        let Some(index) = self.apps.get(app).map(|held| Arc::clone(&*held.index)) else {
             return;
         };
         let schemas = Arc::clone(&self.schemas);
@@ -946,7 +961,7 @@ impl Inner {
         for (doc, ty, _chunk) in held.snapshot.docs().unwrap_or_default() {
             before.insert(doc, (app.to_owned(), ty));
         }
-        let index = Arc::clone(&held.index);
+        let index = Arc::clone(&*held.index);
         let docs = self.index.clone();
         let chunks = self.chunks.clone();
         let clock = self.clock.read();
@@ -1123,4 +1138,9 @@ fn stamps_after(chunks: &crate::chunk::Chunks, from: &Stamps, part: &[ChunkNo]) 
         }
     }
     now
+}
+
+/// An empty index of `app` in memory, held by the store alone.
+fn in_memory(app: &str, schema: &str) -> Result<Held, IndexError> {
+    Index::in_memory(app, schema).map(|index| Held::new(Arc::new(index)))
 }

@@ -451,11 +451,32 @@ impl Platform for HostPlatform {
     }
 }
 
-/// Where an instance keeps what it keeps: its workspace record's on-disk copy, and its own indexes,
+/// Where an instance keeps what it keeps: its workspace record's on-disk copy and its indexes,
 /// under its package's directory in the host's storage.
 pub struct Kept {
     pub documents: Rc<dyn durable_store::DurableStore>,
     pub indexes: Option<std::path::PathBuf>,
+}
+
+/// The directory of the indexes of `record` of `workspace` under `indexes`: one per record, read by
+/// every window of it ([`tilolang_tilo::index::Held`]). A window opened again reads what the last
+/// one kept. Copies an earlier build kept per window beside it are derived and go.
+fn record_indexes(
+    indexes: &std::path::Path,
+    workspace: &str,
+    record: Option<&str>,
+) -> std::path::PathBuf {
+    let dir = tilolang_tilo::index::record_dir(indexes, workspace, record);
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("instance-")
+                && let Err(error) = std::fs::remove_dir_all(entry.path())
+            {
+                tracing::warn!(path = %entry.path().display(), %error, "a window's own index copy was not removed");
+            }
+        }
+    }
+    dir
 }
 
 /// What the actions of the rows a window shows answered, by resource and action: a window asks
@@ -676,12 +697,7 @@ impl Hosted {
                 mode: Mode::Live,
                 device: None,
                 index_dir: kept.indexes.as_ref().map(|indexes| {
-                    tilolang_tilo::index::instance_dir(
-                        indexes,
-                        &spec.workspace,
-                        record.route().record.as_deref(),
-                        spec.instance,
-                    )
+                    record_indexes(indexes, &spec.workspace, record.route().record.as_deref())
                 }),
                 record_loader: None,
                 root: tilolang_tilo::host::RootView::default(),

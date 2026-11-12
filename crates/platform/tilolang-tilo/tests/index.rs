@@ -708,27 +708,42 @@ fn what_the_store_writes_reads_back_before_the_record_holds_it() {
     assert_eq!(kept(&ada), anew(&ada, &lock));
 }
 
-/// An index file is open to one store at a time: redb holds it, so a second store is told it is
-/// open elsewhere rather than opening it. Each window of an app keeps its own for that reason
-/// ([`tilolang_tilo::index::instance_dir`]).
+/// An index file is open once in a process (redb holds it): a second store opening it shares the
+/// one open and reads what it reflects (nothing yet, while the first builds it) rather than
+/// emptying it, and an index of another schema does not empty it either. Closed by every store,
+/// the file opens again as it was kept.
 #[test]
-fn an_index_file_is_open_to_one_store_at_a_time() {
-    let dir = TempDir::new("one-owner");
+fn an_index_file_is_shared_by_the_stores_that_open_it() {
+    let dir = TempDir::new("shared");
     let path = tilolang_tilo::index::file_of(dir.path(), APP);
-    let first = Index::open(&path, APP, "schema").unwrap();
-    assert!(
-        matches!(first, Opened::Empty(_)),
-        "a file made anew is empty"
+    let Opened::Empty(first) = Index::open(&path, APP, "schema").unwrap() else {
+        panic!("a file made anew is empty");
+    };
+    let heads: tilolang_tilo::chunk::Stamps = std::iter::once((0, Vec::new())).collect();
+    first.write(|writer| writer.set_heads(&heads)).unwrap();
+    let Opened::Ready(second, reflected) = Index::open(&path, APP, "schema").unwrap() else {
+        panic!("a second store does not read what the first built");
+    };
+    assert_eq!(
+        reflected, heads,
+        "the second store reads what the first committed"
     );
-    let second = Index::open(&path, APP, "schema");
+    assert!(first.shared() && second.shared(), "both hold the one index");
     assert!(
-        second.is_err(),
-        "a second store opened the file the first holds"
+        Arc::ptr_eq(&*first, &*second),
+        "the second store opened the file again"
     );
-    drop(first);
     assert!(
-        Index::open(&path, APP, "schema").is_ok(),
-        "closed, the file opens"
+        Index::open(&path, APP, "another schema").is_err(),
+        "an index of another schema emptied the one stores read"
+    );
+    drop((first, second));
+    assert!(
+        matches!(
+            Index::open(&path, APP, "schema").unwrap(),
+            Opened::Ready(..)
+        ),
+        "closed, the file opens as it was kept"
     );
 }
 

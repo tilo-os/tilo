@@ -17,8 +17,8 @@
 //!
 //! **Storage.** One directory per workspace and author, granted to the host at its start, keyed by
 //! package inside: `<storage>/<package>/documents` holds the workspace record's on-disk copy, and
-//! `<storage>/<package>/indexes` the indexes its instances read the record through, one directory
-//! per instance: an index file is open to one store at a time.
+//! `<storage>/<package>/indexes` the indexes its instances read the record through, one per
+//! record, shared by every window of it.
 
 pub mod files;
 pub mod hosted;
