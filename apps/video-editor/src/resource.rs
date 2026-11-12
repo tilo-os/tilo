@@ -42,7 +42,6 @@ fn instant(at: f64) -> Result<f64, Refusal> {
 
 #[resource(
     kind = "video-editor.project",
-    label = "Project",
     params = video_project,
     search = crate::search::project_entries,
     read_content = crate::agent_timeline::read_timeline,
@@ -83,14 +82,14 @@ impl Project {
     }
 
     /// Mark where a render begins.
-    #[action]
+    #[action(label = "video-editor-mark-in-button")]
     pub fn mark_in(&mut self, #[param("Seconds on the timeline")] at: f64) -> Result<(), Refusal> {
         self.set_mark_in(instant(at)?);
         Ok(())
     }
 
     /// Mark where a render ends.
-    #[action]
+    #[action(label = "video-editor-mark-out-button")]
     pub fn mark_out(&mut self, #[param("Seconds on the timeline")] at: f64) -> Result<(), Refusal> {
         self.set_mark_out(instant(at)?);
         Ok(())
@@ -552,7 +551,7 @@ impl Project {
     }
 
     /// Add an effect to a clip.
-    #[action(item = clips)]
+    #[action(item = clips, label = "video-editor-add-effect-button")]
     pub fn add_effect(
         &mut self,
         clip: &Id,

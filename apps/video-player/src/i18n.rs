@@ -40,4 +40,34 @@ mod german_catalogue_tests {
         CATALOG.set_locale("en-US");
         assert_eq!(CATALOG.t("video-queue"), "Queue");
     }
+
+    /// What the player's actions are called comes from its catalogue, in the
+    /// window's language: the same label the palette, a shortcut and the
+    /// history read, not words written in the code.
+    #[test]
+    fn the_actions_are_named_from_the_catalogue() {
+        use super::CATALOG;
+        use ui::tilo_resource::effect::Effect as _;
+
+        let label = |id: &str| {
+            crate::actions::VideoEffect::rows()
+                .into_iter()
+                .find(|row| row.id == id)
+                .expect("the player declares it")
+                .label
+        };
+        for row in crate::actions::VideoEffect::rows() {
+            assert!(
+                row.label.catalogue.is_some(),
+                "{} is named from the catalogue, not by a literal",
+                row.id
+            );
+        }
+        CATALOG.set_locale("en-US");
+        assert_eq!(label("open-video").read(), "Open video");
+        CATALOG.set_locale("de-DE");
+        assert_eq!(label("open-video").read(), "Video öffnen");
+        assert_eq!(label("toggle-fullscreen").read(), "Vollbild umschalten");
+        CATALOG.set_locale("en-US");
+    }
 }

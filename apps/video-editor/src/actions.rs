@@ -56,6 +56,7 @@ pub enum VideoEditorEffect {
     },
     /// Import media.
     #[effect(job)]
+    #[effect(label = "video-editor-shortcut-import-media")]
     Import {
         #[param("Absolute path; omit to use the system picker")]
         path: Option<tilo_resource::AbsolutePath>,
@@ -84,12 +85,14 @@ pub enum VideoEditorEffect {
     /// Writes the rendered timeline to a file, an outside effect like any
     /// other.
     #[effect(cancellable)]
+    #[effect(label = "video-editor-shortcut-export-video")]
     Export {
         #[param("Absolute export path; omit to use the system picker")]
         path: Option<tilo_resource::AbsolutePath>,
     },
     /// Cancel export.
     #[effect(destructive)]
+    #[effect(label = "video-editor-a11y-cancel-export")]
     CancelExport,
     /// Import content.
     ///
@@ -129,6 +132,7 @@ pub enum VideoEditorEffect {
     /// Moves the playhead to the start of the next clip after it, or of the
     /// previous one when none follows, so the preview shows a picture.
     #[effect(view)]
+    #[effect(label = "video-editor-go-to-clip")]
     GoToClip,
     /// Split selected clips at playhead.
     ///

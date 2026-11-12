@@ -103,7 +103,6 @@ impl Document {
 
 #[resource(
     kind = "word-processor.document",
-    label = "Document",
     children = Document::objects,
     load = Document::demand,
     locate = Document::locate,
@@ -177,7 +176,7 @@ impl Document {
     /// Insert a table.
     ///
     /// An empty table of `rows` by `columns` after the paragraph `after`.
-    #[action(answers, audience = "agents")]
+    #[action(answers, audience = "agents", label = "a11y-insert-table")]
     pub fn insert_table(&mut self, after: String, rows: usize, columns: usize) {
         self.body.perform(RichTextAction::InsertTable {
             after,
@@ -189,7 +188,7 @@ impl Document {
     /// Add a row.
     ///
     /// A new empty row at the bottom of the table.
-    #[action(answers, audience = "agents")]
+    #[action(answers, audience = "agents", label = "toolbar-row-add")]
     pub fn add_row(&mut self, table: String) -> Result<(), Refusal> {
         let (rows, _) = self.table_size(&table)?;
         self.edit_table(table, TableEdit::InsertRow { at: rows });
@@ -199,7 +198,7 @@ impl Document {
     /// Add a column.
     ///
     /// A new empty column at the right of the table.
-    #[action(answers, audience = "agents")]
+    #[action(answers, audience = "agents", label = "toolbar-col-add")]
     pub fn add_column(&mut self, table: String) -> Result<(), Refusal> {
         let (_, columns) = self.table_size(&table)?;
         self.edit_table(table, TableEdit::InsertColumn { at: columns });
@@ -207,19 +206,19 @@ impl Document {
     }
 
     /// Delete a row.
-    #[action(destructive, audience = "agents")]
+    #[action(destructive, audience = "agents", label = "toolbar-row-del")]
     pub fn delete_row(&mut self, table: String, row: usize) {
         self.edit_table(table, TableEdit::DeleteRow { row });
     }
 
     /// Delete a column.
-    #[action(destructive, audience = "agents")]
+    #[action(destructive, audience = "agents", label = "toolbar-col-del")]
     pub fn delete_column(&mut self, table: String, column: usize) {
         self.edit_table(table, TableEdit::DeleteColumn { column });
     }
 
     /// Delete a table.
-    #[action(destructive, audience = "agents")]
+    #[action(destructive, audience = "agents", label = "toolbar-table-delete")]
     pub fn delete_table(&mut self, table: String) {
         self.edit_table(table, TableEdit::Delete);
     }
@@ -251,14 +250,14 @@ impl Document {
     }
 
     /// Accept all changes.
-    #[action(destructive)]
+    #[action(destructive, label = "review-accept-all")]
     pub fn accept_all_changes(&mut self) {
         self.body
             .perform(RichTextAction::AcceptChanges { id: None });
     }
 
     /// Reject all changes.
-    #[action(destructive)]
+    #[action(destructive, label = "review-reject-all")]
     pub fn reject_all_changes(&mut self) {
         self.body
             .perform(RichTextAction::RejectChanges { id: None });
@@ -310,7 +309,7 @@ impl Document {
     /// Resolve a comment.
     ///
     /// The thread is done with and goes away.
-    #[action(item = comments)]
+    #[action(item = comments, label = "review-resolve-comment")]
     pub fn resolve_comment(&mut self, comment: &Id) -> Result<(), Refusal> {
         self.comments
             .remove(comment)

@@ -99,7 +99,6 @@ impl RecentVideos {
 
 #[resource(
     kind = "video-player.recent",
-    label = "Recent videos",
     read_content = RecentVideos::read_document
 )]
 impl RecentVideos {

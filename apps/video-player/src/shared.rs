@@ -177,7 +177,6 @@ impl Library {
 
 #[resource(
     kind = "video-player.library",
-    label = "Video Player",
     read_content = Library::read_document
 )]
 impl Library {

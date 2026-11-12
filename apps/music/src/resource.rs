@@ -36,7 +36,6 @@ impl Library {
 
 #[resource(
     kind = "music.library",
-    label = "Music",
     params = library,
     version = 2,
     migrate = crate::library_migration::migrate,

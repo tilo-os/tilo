@@ -186,6 +186,7 @@ pub enum WordProcessorEffect {
     ///
     /// Selects the whole document (or the header or footer you are editing).
     #[effect(view, participant, idempotent)]
+    #[effect(label = "menu-select-all")]
     SelectAll,
     /// Find text.
     ///
@@ -316,6 +317,7 @@ pub enum WordProcessorEffect {
     /// Pastes text or Markdown (headings, lists, pipe tables) at your caret,
     /// replacing your selection.
     #[effect(edit, participant, job, returns, audience = "agents")]
+    #[effect(label = "menu-paste")]
     Paste {
         #[param("Plain text; each line becomes a paragraph")]
         text: Option<String>,
